@@ -1,0 +1,49 @@
+services:
+  bt-high-low-runner:
+    image: python:3.13-slim
+    container_name: bt-high-low-runner
+    working_dir: /app
+    volumes:
+      - ./:/app
+    networks:
+      - shared_net
+    environment:
+      PGHOST: "db"
+      PGPORT: "5432"
+      PGUSER: backtesting-account
+      PGPASSWORD: backtesting-account-pw
+      PGSOURCE_DB: market-data
+      PGTARGET_DB: backtesting
+
+      # Skript-Konfiguration
+      START_DATE: "2020-01-01"
+      SYMBOL: "NAS100"
+      BOT: "py-backtester"
+      LB: "5"
+      RB: "5"
+      TIMEFRAME: "1min"
+      WARMUP_BARS: "2000"
+
+      # Optional: Standardtabellen überschreiben
+      SOURCE_TABLE: "public.market_data_1min"
+      TARGET_TABLE: "public.bt_high_low"
+    command: >
+      sh -lc '
+        set -e
+        pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore \
+          numpy pandas tzdata sqlalchemy "psycopg[binary]"
+        python /app/bt_high_low_from_market_data_1min.py \
+          --start-date "$$START_DATE" \
+          --symbol "$$SYMBOL" \
+          --bot "$$BOT" \
+          --lb "$$LB" \
+          --rb "$$RB" \
+          --timeframe "$$TIMEFRAME" \
+          --warmup-bars "$$WARMUP_BARS" \
+          --source-table "$$SOURCE_TABLE" \
+          --target-table "$$TARGET_TABLE"
+      '
+networks:
+  shared_net:
+    external: true
+    name: shared_net
