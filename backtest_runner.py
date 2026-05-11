@@ -460,6 +460,17 @@ DB = {
     "options": os.getenv("PGOPTIONS", f"-c search_path={RESULT_SCHEMA}"),
 }
 
+SOURCE_INDEX_DB = {
+    "host":            os.getenv("SOURCE_INDEX_PGHOST", DB["host"]),
+    "port":            int(os.getenv("SOURCE_INDEX_PGPORT", str(DB["port"]))),
+    "dbname":          os.getenv("SOURCE_INDEX_PGDATABASE", DB["dbname"]),
+    "user":            os.getenv("SOURCE_INDEX_PGUSER", DB["user"]),
+    "password":        os.getenv("SOURCE_INDEX_PGPASSWORD", DB["password"]),
+    "connect_timeout": int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10")),
+    "application_name": "backtest_runner_source_index_builder",
+    "options": os.getenv("SOURCE_INDEX_PGOPTIONS", DB["options"]),
+}
+
 _BAR_CACHE: dict[str, tuple[list[datetime], list[Bar]]] = {}
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
@@ -568,6 +579,26 @@ def connect_with_retry() -> psycopg2.extensions.connection:
                 raise
             delay = DB_CONNECT_RETRY_DELAY_S * (2 ** (attempt - 1))
             log.warning("DB connect failed (%d/%d, retry in %.0fs): %s", attempt, DB_CONNECT_RETRIES, delay, exc)
+            _time.sleep(delay)
+    raise RuntimeError("unreachable")
+
+
+def connect_source_index_with_retry() -> psycopg2.extensions.connection:
+    """Connect with credentials allowed to CREATE INDEX on source hypertables."""
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            return psycopg2.connect(**SOURCE_INDEX_DB)
+        except psycopg2.OperationalError as exc:
+            if attempt == DB_CONNECT_RETRIES:
+                raise
+            delay = DB_CONNECT_RETRY_DELAY_S * (2 ** (attempt - 1))
+            log.warning(
+                "Source-index DB connect failed (%d/%d, retry in %.0fs): %s",
+                attempt,
+                DB_CONNECT_RETRIES,
+                delay,
+                exc,
+            )
             _time.sleep(delay)
     raise RuntimeError("unreachable")
 
@@ -691,12 +722,21 @@ def ensure_source_indexes(conn: psycopg2.extensions.connection) -> None:
     with conn.cursor() as cur:
         for index_name, statement in index_statements:
             log.info(
-                "Ensuring source index %s — first run can take a while on large TimescaleDB tables",
+                "Ensuring source index %s — first run can take a while on large TimescaleDB tables; index_user=%s",
                 index_name,
+                SOURCE_INDEX_DB["user"],
             )
             started_at = _time.monotonic()
-            cur.execute(statement)
-            conn.commit()
+            try:
+                cur.execute(statement)
+                conn.commit()
+            except psycopg2.errors.InsufficientPrivilege as exc:
+                conn.rollback()
+                raise RuntimeError(
+                    "Cannot create source indexes with current SOURCE_INDEX_PGUSER="
+                    f"{SOURCE_INDEX_DB['user']!r}. Use the owner/superuser of the source hypertables "
+                    "(for example postgres-ts), or set ENSURE_SOURCE_INDEXES=false if the indexes already exist."
+                ) from exc
             log.info(
                 "Source index ready %s — elapsed=%.1fs",
                 index_name,
@@ -2072,7 +2112,11 @@ def main() -> None:
         log.info("Connected. Starting backtest %s → %s, equity=%.0f", START_DATE, END_DATE, INITIAL_EQUITY)
         validate_source_schema(conn)
         if ENSURE_SOURCE_INDEXES:
-            ensure_source_indexes(conn)
+            index_conn = connect_source_index_with_retry()
+            try:
+                ensure_source_indexes(index_conn)
+            finally:
+                index_conn.close()
         else:
             log.info("Source index check skipped — ENSURE_SOURCE_INDEXES=false")
         log.info(

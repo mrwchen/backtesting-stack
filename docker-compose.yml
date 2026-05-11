@@ -36,6 +36,13 @@ services:
       - BAR_CACHE_WARMUP_DAYS=120
       # Set to false after the source indexes exist if you want fastest startup.
       - ENSURE_SOURCE_INDEXES=true
+      # Source index creation needs the owner/superuser of source hypertables.
+      # The actual backtest still uses PGUSER/PGPASSWORD above.
+      - SOURCE_INDEX_PGHOST=timescaledb
+      - SOURCE_INDEX_PGPORT=5432
+      - SOURCE_INDEX_PGDATABASE=postgres
+      - SOURCE_INDEX_PGUSER=postgres-ts
+      - SOURCE_INDEX_PGPASSWORD=postgres-ts-root-pw
       - RUN_NOTES=2022 v4 MC
 
       # ── Generic: model selection ───────────────────────────────────────────
