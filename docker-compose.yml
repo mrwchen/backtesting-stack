@@ -32,8 +32,10 @@ services:
       - DB_CONNECT_RETRY_DELAY_S=5.0
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
-      - PROGRESS_LOG_EVERY_DAYS=1
+      - PROGRESS_LOG_EVERY_DAYS=25
       - BAR_CACHE_WARMUP_DAYS=120
+      # Set to false after the source indexes exist if you want fastest startup.
+      - ENSURE_SOURCE_INDEXES=true
       - RUN_NOTES=2022 v4 MC
 
       # ── Generic: model selection ───────────────────────────────────────────

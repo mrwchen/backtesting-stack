@@ -13,7 +13,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 -- ── Run metadata ──────────────────────────────────────────────────────────────
 
-CREATE TABLE swing_backtest_runs (
+CREATE TABLE backtest_runs (
     run_id               SERIAL        PRIMARY KEY,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     notes                TEXT,
@@ -92,9 +92,9 @@ CREATE TABLE swing_backtest_runs (
 
 -- ── Individual trades ─────────────────────────────────────────────────────────
 
-CREATE TABLE swing_backtest_trades (
+CREATE TABLE backtest_trades (
     id                   SERIAL        PRIMARY KEY,
-    run_id               INTEGER       NOT NULL REFERENCES swing_backtest_runs(run_id),
+    run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id),
     signal_date          DATE          NOT NULL,
     symbol               TEXT          NOT NULL,
     direction            TEXT          NOT NULL,   -- LONG | SHORT
@@ -143,62 +143,33 @@ CREATE TABLE swing_backtest_trades (
     UNIQUE (run_id, signal_date, symbol)
 );
 
-CREATE INDEX IF NOT EXISTS idx_swing_backtest_trades_run_id
-    ON swing_backtest_trades (run_id, signal_date);
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
+    ON backtest_trades (run_id, signal_date);
 
-CREATE INDEX IF NOT EXISTS idx_swing_backtest_trades_symbol
-    ON swing_backtest_trades (symbol, signal_date);
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
+    ON backtest_trades (symbol, signal_date);
 
 -- ── Dashboard lookup indexes ─────────────────────────────────────────────────
 
-CREATE INDEX IF NOT EXISTS idx_swing_backtest_runs_model_created
-    ON swing_backtest_runs (model_file, created_at DESC, run_id DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
+    ON backtest_runs (model_file, created_at DESC, run_id DESC);
 
--- ── Source-table lookup indexes used by the runner ───────────────────────────
--- Python validates source schemas/data. Database structure lives here.
-
-CREATE INDEX IF NOT EXISTS idx_backtest_alpaca_market_data_1h_symbol_ts_cover
-    ON alpaca_market_data_1h (symbol, ts DESC)
-    INCLUDE (open, high, low, close, volume);
-
-CREATE INDEX IF NOT EXISTS idx_backtest_safs_symbol_available_time_cover
-    ON stocks_analysis_fundamental_scores (
-        symbol,
-        (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
-        time DESC
-    )
-    INCLUDE (
-        composite_score, sector, industry, valuation_label, mispricing_score,
-        negative_earnings_flag, high_leverage_flag, market_cap_m,
-        current_price_currency, market_cap_currency, currency, financial_currency,
-        market_universe
-    );
-
-CREATE INDEX IF NOT EXISTS idx_backtest_safs_available_time_symbol_cover
-    ON stocks_analysis_fundamental_scores (
-        (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
-        time DESC,
-        symbol
-    )
-    INCLUDE (
-        composite_score, sector, industry, valuation_label, mispricing_score,
-        negative_earnings_flag, high_leverage_flag, market_cap_m,
-        current_price_currency, market_cap_currency, currency, financial_currency,
-        market_universe
-    );
-
-CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps
-    ON pepperstone_data (symbol)
-    WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE;
-
-CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps24
-    ON pepperstone_data (symbol)
-    WHERE symbol_ps24 IS NOT NULL AND is_trading_enabled IS NOT FALSE;
+-- IMPORTANT PROJECT EXCEPTION:
+-- Source-table performance indexes for alpaca_market_data_1h,
+-- stocks_analysis_fundamental_scores and pepperstone_data are intentionally
+-- created by backtest_runner.py, not here.
+--
+-- Reason: these indexes can take minutes on large TimescaleDB hypertables.
+-- Python logs each index operation with elapsed time so startup progress is
+-- visible in container logs.
+--
+-- Do not move them back into this init SQL unless that logging requirement is
+-- explicitly removed.
 
 -- ── Monte Carlo results ───────────────────────────────────────────────────────
 
-CREATE TABLE swing_backtest_monte_carlo (
-    run_id                 INTEGER       PRIMARY KEY REFERENCES swing_backtest_runs(run_id) ON DELETE CASCADE,
+CREATE TABLE backtest_monte_carlo (
+    run_id                 INTEGER       PRIMARY KEY REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
     n_simulations          INTEGER       NOT NULL,
     -- Final equity percentiles
     final_equity_p05       NUMERIC(14,2),
@@ -228,8 +199,9 @@ CREATE TABLE swing_backtest_monte_carlo (
     created_at             TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON swing_backtest_runs  TO "market-data-account";
-GRANT SELECT, INSERT, UPDATE, DELETE ON swing_backtest_trades TO "market-data-account";
-GRANT SELECT, INSERT, UPDATE, DELETE ON swing_backtest_monte_carlo TO "market-data-account";
-GRANT USAGE, SELECT ON SEQUENCE swing_backtest_runs_run_id_seq  TO "market-data-account";
-GRANT USAGE, SELECT ON SEQUENCE swing_backtest_trades_id_seq     TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_runs  TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_trades TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_monte_carlo TO "market-data-account";
+GRANT USAGE, SELECT ON SEQUENCE backtest_runs_run_id_seq   TO "market-data-account";
+GRANT USAGE, SELECT ON SEQUENCE backtest_trades_id_seq     TO "market-data-account";
+

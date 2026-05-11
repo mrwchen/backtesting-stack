@@ -2,7 +2,7 @@
 Swing trade backtester.
 
 Generates swing signals day-by-day on historical data, simulates a margin
-account, and writes results to swing_backtest_runs / swing_backtest_trades.
+account, and writes results to backtest_runs / backtest_trades.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv  : as_of each simulated day  (true PIT)
@@ -165,6 +165,10 @@ def get_world_regime(
     source_table: str = "world_regime_daily_scores_mv",
     as_of_date: Optional[date] = None,
 ) -> Optional[WorldRegime]:
+    cache_key = (source_table, as_of_date)
+    if cache_key in _WORLD_REGIME_CACHE:
+        return _WORLD_REGIME_CACHE[cache_key]
+
     if as_of_date:
         query = sql.SQL(
             "SELECT day, regime_label, composite_score FROM {} "
@@ -182,8 +186,11 @@ def get_world_regime(
         cur.execute(query, params)
         row = cur.fetchone()
     if not row:
+        _WORLD_REGIME_CACHE[cache_key] = None
         return None
-    return WorldRegime(day=row[0], label=row[1], score=float(row[2]))
+    regime = WorldRegime(day=row[0], label=row[1], score=float(row[2]))
+    _WORLD_REGIME_CACHE[cache_key] = regime
+    return regime
 
 
 def get_candidates(
@@ -202,6 +209,24 @@ def get_candidates(
     required_currency: Optional[str] = "USD",
     fundamental_market_universe: Optional[str] = None,
 ) -> list[FundamentalRow]:
+    cache_key = (
+        direction,
+        long_min_fundamental,
+        short_max_fundamental,
+        min_market_cap_m,
+        source_table,
+        as_of_date,
+        as_of_ts,
+        tuple(long_label_blocklist or ()),
+        tuple(short_label_blocklist or ()),
+        symbol_universe,
+        pepperstone_table,
+        required_currency,
+        fundamental_market_universe,
+    )
+    if cache_key in _CANDIDATE_CACHE:
+        return _CANDIDATE_CACHE[cache_key]
+
     if direction == "LONG":
         score_filter = sql.SQL("composite_score >= %(score_val)s")
         score_val = long_min_fundamental
@@ -283,7 +308,7 @@ def get_candidates(
     with conn.cursor() as cur:
         cur.execute(query, params)
         rows = cur.fetchall()
-    return [
+    candidates = [
         FundamentalRow(
             symbol=r[0],
             composite_score=float(r[1]),
@@ -296,6 +321,8 @@ def get_candidates(
         )
         for r in rows
     ]
+    _CANDIDATE_CACHE[cache_key] = candidates
+    return candidates
 
 
 sys.modules.setdefault("backtest_shared", sys.modules[__name__])
@@ -372,6 +399,7 @@ RUN_NOTES              = os.getenv("RUN_NOTES", "")
 RUN_LABEL_TZ           = os.getenv("RUN_LABEL_TZ", "Europe/Berlin")
 PROGRESS_LOG_EVERY_DAYS = max(1, int(os.getenv("PROGRESS_LOG_EVERY_DAYS", "25")))
 BAR_CACHE_WARMUP_DAYS = max(1, int(os.getenv("BAR_CACHE_WARMUP_DAYS", "120")))
+ENSURE_SOURCE_INDEXES = os.getenv("ENSURE_SOURCE_INDEXES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 MONTE_CARLO_ENABLED       = os.getenv("MONTE_CARLO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 N_MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("N_MONTE_CARLO_SIMULATIONS", "2000")))
 MIN_MARKET_CAP_M = float(os.getenv("MIN_MARKET_CAP_M", "1000.0"))
@@ -433,6 +461,9 @@ DB = {
 }
 
 _BAR_CACHE: dict[str, tuple[list[datetime], list[Bar]]] = {}
+_TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
+_WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
+_CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _MODEL_MODULE: Optional[ModuleType] = None
 
@@ -576,6 +607,101 @@ def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, r
         len(required),
         len(columns),
     )
+
+
+# IMPORTANT PROJECT EXCEPTION:
+# These source-table performance indexes are intentionally created here, not in
+# init/schema.sql. Reason: on large TimescaleDB hypertables, CREATE INDEX can
+# take minutes. Running it here makes the container logs show exactly which
+# index is currently being created/checked and how long it takes.
+#
+# Do not move these source-table index statements back to init/schema.sql unless
+# the visible startup logging requirement is explicitly removed.
+SOURCE_INDEXES_ARE_INTENTIONALLY_CREATED_IN_PYTHON_FOR_VISIBLE_STARTUP_LOGS = True
+
+
+def ensure_source_indexes(conn: psycopg2.extensions.connection) -> None:
+    """Create read-performance indexes on source tables, with explicit logs.
+
+    Project exception: these are source-table performance helpers for the
+    backtest runner, intentionally created here so the container logs show
+    exactly which potentially long-running index operation is in progress.
+    """
+    index_statements = [
+        (
+            "idx_backtest_alpaca_market_data_1h_symbol_ts_cover",
+            sql.SQL("""
+                CREATE INDEX IF NOT EXISTS idx_backtest_alpaca_market_data_1h_symbol_ts_cover
+                ON {} (symbol, ts DESC)
+                INCLUDE (open, high, low, close, volume)
+            """).format(relation_identifier(SOURCE_1H)),
+        ),
+        (
+            "idx_backtest_safs_symbol_available_time_cover",
+            sql.SQL("""
+                CREATE INDEX IF NOT EXISTS idx_backtest_safs_symbol_available_time_cover
+                ON {} (
+                    symbol,
+                    (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
+                    time DESC
+                )
+                INCLUDE (
+                    composite_score, sector, industry, valuation_label, mispricing_score,
+                    negative_earnings_flag, high_leverage_flag, market_cap_m,
+                    current_price_currency, market_cap_currency, currency, financial_currency,
+                    market_universe
+                )
+            """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
+        ),
+        (
+            "idx_backtest_safs_available_time_symbol_cover",
+            sql.SQL("""
+                CREATE INDEX IF NOT EXISTS idx_backtest_safs_available_time_symbol_cover
+                ON {} (
+                    (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
+                    time DESC,
+                    symbol
+                )
+                INCLUDE (
+                    composite_score, sector, industry, valuation_label, mispricing_score,
+                    negative_earnings_flag, high_leverage_flag, market_cap_m,
+                    current_price_currency, market_cap_currency, currency, financial_currency,
+                    market_universe
+                )
+            """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
+        ),
+        (
+            "idx_backtest_pepperstone_symbol_ps",
+            sql.SQL("""
+                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps
+                ON {} (symbol)
+                WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE
+            """).format(relation_identifier(PEPPERSTONE_TABLE)),
+        ),
+        (
+            "idx_backtest_pepperstone_symbol_ps24",
+            sql.SQL("""
+                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps24
+                ON {} (symbol)
+                WHERE symbol_ps24 IS NOT NULL AND is_trading_enabled IS NOT FALSE
+            """).format(relation_identifier(PEPPERSTONE_TABLE)),
+        ),
+    ]
+
+    with conn.cursor() as cur:
+        for index_name, statement in index_statements:
+            log.info(
+                "Ensuring source index %s — first run can take a while on large TimescaleDB tables",
+                index_name,
+            )
+            started_at = _time.monotonic()
+            cur.execute(statement)
+            conn.commit()
+            log.info(
+                "Source index ready %s — elapsed=%.1fs",
+                index_name,
+                _time.monotonic() - started_at,
+            )
 
 
 def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
@@ -725,6 +851,10 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
 
 def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: date) -> list[date]:
     """Return distinct NY trading dates present in the configured 1h source."""
+    cache_key = (SOURCE_1H, start, end)
+    if cache_key in _TRADING_DAYS_CACHE:
+        return _TRADING_DAYS_CACHE[cache_key]
+
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -735,7 +865,9 @@ def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: dat
             ).format(relation_identifier(SOURCE_1H)),
             (start, end + timedelta(days=1)),
         )
-        return [row[0] for row in cur.fetchall()]
+        days = [row[0] for row in cur.fetchall()]
+    _TRADING_DAYS_CACHE[cache_key] = days
+    return days
 
 
 # ── Outcome simulation ────────────────────────────────────────────────────────
@@ -857,13 +989,16 @@ def get_cached_bars(
     timestamps, bars = _load_symbol_bars(conn, symbol)
     end_idx = bisect_right(timestamps, up_to_ts)
     selected: list[Bar] = []
-    for bar in reversed(bars[:end_idx]):
+    bar_idx = end_idx - 1
+    while bar_idx >= 0 and len(selected) < limit:
+        bar = bars[bar_idx]
         if not _is_in_entry_window(bar.ts):
+            bar_idx -= 1
             continue
         selected.append(bar)
-        if len(selected) >= limit:
-            break
-    return list(reversed(selected))
+        bar_idx -= 1
+    selected.reverse()
+    return selected
 
 
 def get_bars_range(
@@ -879,12 +1014,19 @@ def get_bars_range(
     timestamps, bars = _load_symbol_bars(conn, symbol)
     start_idx = bisect_right(timestamps, after_ts)
     end_idx = bisect_right(timestamps, _day_close_ts(up_to_date))
-    return [(b.ts, b.open, b.high, b.low, b.close) for b in bars[start_idx:end_idx]]
+    return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]
 
 
 def log_cache_stats() -> None:
     cached_bars = sum(len(bars) for _, bars in _BAR_CACHE.values())
-    log.info("Cache stats — symbols_with_bars=%d  bars=%d", len(_BAR_CACHE), cached_bars)
+    log.info(
+        "Cache stats — symbols_with_bars=%d  bars=%d  trading_day_sets=%d  regimes=%d  candidate_sets=%d",
+        len(_BAR_CACHE),
+        cached_bars,
+        len(_TRADING_DAYS_CACHE),
+        len(_WORLD_REGIME_CACHE),
+        len(_CANDIDATE_CACHE),
+    )
 
 
 def simulate_outcome(
@@ -1205,7 +1347,7 @@ def create_run(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            INSERT INTO {_result_table("swing_backtest_runs")} (
+            INSERT INTO {_result_table("backtest_runs")} (
                 start_date, end_date, notes, run_label, model_file,
                 account_profile, account_currency,
                 initial_equity, risk_per_trade_pct, max_open_positions,
@@ -1336,7 +1478,7 @@ def write_trades(
             entry_ts       = EXCLUDED.entry_ts,
             tp1_exit_ts    = EXCLUDED.tp1_exit_ts,
             exit_ts        = EXCLUDED.exit_ts
-    """.format(table=_result_table("swing_backtest_trades"))
+    """.format(table=_result_table("backtest_trades"))
     with conn.cursor() as cur:
         execute_values(cur, query, rows, page_size=200)
     conn.commit()
@@ -1380,7 +1522,7 @@ def update_run_summary(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            UPDATE {_result_table("swing_backtest_runs")} SET
+            UPDATE {_result_table("backtest_runs")} SET
                 final_equity     = %s,
                 total_trades     = %s,
                 winning_trades   = %s,
@@ -1444,7 +1586,7 @@ def run_monte_carlo(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            INSERT INTO {_result_table("swing_backtest_monte_carlo")} (
+            INSERT INTO {_result_table("backtest_monte_carlo")} (
                 run_id, n_simulations,
                 final_equity_p05, final_equity_p25, final_equity_p50, final_equity_p75, final_equity_p95,
                 max_drawdown_p05, max_drawdown_p25, max_drawdown_p50, max_drawdown_p75, max_drawdown_p95,
@@ -1652,6 +1794,8 @@ def run_backtest(
 
         signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
         opened_today = 0
+        account_equity_today = _account_equity(conn, open_positions, equity, day)
+        used_margin = sum(_active_margin_used(p) for p in open_positions)
 
         for signal in signals:
             if len(open_positions) >= MAX_OPEN_POSITIONS:
@@ -1659,21 +1803,19 @@ def run_backtest(
             if signal.symbol in open_symbols:
                 continue
 
-            account_equity = _account_equity(conn, open_positions, equity, day)
-            if account_equity <= 0:
+            if account_equity_today <= 0:
                 break
 
-            margin_used, shares, position_size_usd = calc_position(signal, account_equity)
+            margin_used, shares, position_size_usd = calc_position(signal, account_equity_today)
             if position_size_usd <= 0:
                 continue
 
-            used_margin = sum(_active_margin_used(p) for p in open_positions)
-            free_margin = account_equity - used_margin
+            free_margin = account_equity_today - used_margin
             free_margin_after = free_margin - margin_used
 
             if free_margin_after < 0:
                 continue
-            if free_margin_after < account_equity * MIN_FREE_MARGIN_PCT / 100.0:
+            if free_margin_after < account_equity_today * MIN_FREE_MARGIN_PCT / 100.0:
                 continue
 
             open_positions.append(OpenPosition(
@@ -1693,13 +1835,14 @@ def run_backtest(
                 shares=shares,
                 position_size_usd=position_size_usd,
                 margin_used=margin_used,
-                equity_before=account_equity,
+                equity_before=account_equity_today,
                 signal=signal,
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
                 valuation_label=signal.valuation_label,
             ))
             open_symbols.add(signal.symbol)
+            used_margin += margin_used
             opened_today += 1
             log.debug("Opened  %-6s %s  entry=%.2f  sl=%.2f  margin=%.0f  equity=%.0f",
                       signal.symbol, signal.direction, signal.entry_price,
@@ -1928,6 +2071,10 @@ def main() -> None:
     try:
         log.info("Connected. Starting backtest %s → %s, equity=%.0f", START_DATE, END_DATE, INITIAL_EQUITY)
         validate_source_schema(conn)
+        if ENSURE_SOURCE_INDEXES:
+            ensure_source_indexes(conn)
+        else:
+            log.info("Source index check skipped — ENSURE_SOURCE_INDEXES=false")
         log.info(
             "Source tables — bars=%s  fundamentals=%s  world_regime=%s  symbol_universe=%s  pepperstone_table=%s",
             SOURCE_1H,
@@ -1975,6 +2122,10 @@ def main() -> None:
             FUNDAMENTAL_MARKET_UNIVERSE or "all",
         )
         log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
+        log.info(
+            "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on  ensure_source_indexes=%s",
+            ENSURE_SOURCE_INDEXES,
+        )
         if GRID_SEARCH_ENABLED:
             results = run_grid_search(conn, cfg)
             _print_grid_summary(results)
@@ -1986,3 +2137,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
