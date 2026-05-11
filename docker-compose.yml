@@ -9,7 +9,7 @@ services:
       PGPASSWORD: postgres-ts-root-pw
       # Set to true to drop/recreate all backtesting result tables before each run.
       # This intentionally does not touch market-data/source tables in the same DB.
-      DROP_BACKTEST_TABLES: "true"
+      DROP_BACKTEST_TABLES: "false"
     command:
       - sh
       - -ec
@@ -86,7 +86,7 @@ services:
       # ACCOUNT_PROFILE selects which profile defaults the runner uses.
       #   ps_acc   = Pepperstone EU retail share CFD / PS24 approximation
       #   ibkr_acc = Interactive Brokers margin account approximation for US stocks
-      - ACCOUNT_PROFILE=ps_acc
+      - ACCOUNT_PROFILE=ibkr_acc
       - INITIAL_EQUITY=5000
       - RISK_PER_TRADE_PCT=1.0
       - MAX_OPEN_POSITIONS=5
