@@ -1,0 +1,165 @@
+services:
+  init-backtest-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: postgres-ts-root-pw
+    command: psql -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
+    networks:
+      - shared_net
+
+  backtest-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      init-backtest-schema:
+        condition: service_completed_successfully
+    environment:
+      # ── Generic: database / runtime ────────────────────────────────────────
+      - PGHOST=timescaledb
+      - PGPORT=5432
+      - PGDATABASE=postgres
+      - PGUSER=market-data-account
+      - PGPASSWORD=market-data-account-pw
+      - RESULT_SCHEMA=public
+      - CONNECT_TIMEOUT_SECONDS=10
+      - PGOPTIONS=-c search_path=public
+      - DB_CONNECT_RETRIES=5
+      - DB_CONNECT_RETRY_DELAY_S=5.0
+      - LOG_LEVEL=INFO
+      - RUN_LABEL_TZ=Europe/Berlin
+      - PROGRESS_LOG_EVERY_DAYS=1
+      - BAR_CACHE_WARMUP_DAYS=120
+      - RUN_NOTES=2022 v4 MC
+
+      # ── Generic: model selection ───────────────────────────────────────────
+      # Put new strategy files into ./backtest_models and set the filename here.
+      - MODEL_FILE=pullback_bounce_fundamental_v1.py
+
+      # ── Generic: source tables ─────────────────────────────────────────────
+      - SOURCE_1H=alpaca_market_data_1h
+      - SOURCE_FUNDAMENTAL=stocks_analysis_fundamental_scores
+      - SOURCE_WORLD_REGIME=world_regime_daily_scores_mv
+      - PEPPERSTONE_TABLE=pepperstone_data
+      - SYMBOL_UNIVERSE=pepperstone # all | pepperstone | pepperstone24
+      - REQUIRE_USD_FUNDAMENTALS=true
+      - FUNDAMENTAL_MARKET_UNIVERSE=
+
+      # ── Generic: time range ────────────────────────────────────────────────
+      - START_DATE=2022-01-01
+      - END_DATE=2026-05-06
+
+      # ── Account 1/3: generic account selection / risk ──────────────────────
+      # ACCOUNT_PROFILE selects which profile defaults the runner uses.
+      #   ps_acc   = Pepperstone EU retail share CFD / PS24 approximation
+      #   ibkr_acc = Interactive Brokers margin account approximation for US stocks
+      - ACCOUNT_PROFILE=ps_acc
+      - ACCOUNT_CURRENCY=USD
+      - INITIAL_EQUITY=5000
+      - RISK_PER_TRADE_PCT=1.0
+      - MAX_OPEN_POSITIONS=5
+      - MIN_FREE_MARGIN_PCT=20
+      - ENTRY_WINDOW_ENABLED=true
+      - ENTRY_WINDOW_TZ=America/New_York
+      - ENTRY_WINDOW_START=05:00
+      - ENTRY_WINDOW_END=17:45
+
+      # ── Account 2/3: ps_acc / Pepperstone PS24 overrides ──────────────────
+      # Defaults when ACCOUNT_PROFILE=ps_acc:
+      #   margin=20%, maintenance=20%, fractional=false
+      #   commission=0.02 USD/share, min=0.02 USD, max cap disabled
+      #   spread=2 bps, slippage=1 bps, financing=5%
+      # Uncomment to override the ps_acc defaults.
+      # - MARGIN_REQUIREMENT_PCT=20
+      # - MAINTENANCE_MARGIN_PCT=20
+      # - ALLOW_FRACTIONAL_SHARES=false
+      # - COMMISSION_PER_ORDER_USD=0.0
+      # - COMMISSION_PER_SHARE_USD=0.02
+      # - COMMISSION_MIN_PER_ORDER_USD=0.02
+      # - COMMISSION_MAX_PCT=0.0
+      # - COMMISSION_BPS=0.0
+      # - SPREAD_BPS=2.0
+      # - SLIPPAGE_BPS=1.0
+      # - MARGIN_FINANCING_RATE_PCT=5.0
+
+      # ── Account 3/3: ibkr_acc / Interactive Brokers overrides ─────────────
+      # Defaults when ACCOUNT_PROFILE=ibkr_acc:
+      #   margin=50%, maintenance=25%, fractional=true
+      #   commission=0.0035 USD/share, min=0.35 USD, max=1% of trade value
+      #   spread=0 bps, slippage=1 bps, financing=6.5%
+      # Uncomment to override the ibkr_acc defaults.
+      # - MARGIN_REQUIREMENT_PCT=50
+      # - MAINTENANCE_MARGIN_PCT=25
+      # - ALLOW_FRACTIONAL_SHARES=true
+      # - COMMISSION_PER_ORDER_USD=0.0
+      # - COMMISSION_PER_SHARE_USD=0.0035
+      # - COMMISSION_MIN_PER_ORDER_USD=0.35
+      # - COMMISSION_MAX_PCT=1.0
+      # - COMMISSION_BPS=0.0
+      # - SPREAD_BPS=0.0
+      # - SLIPPAGE_BPS=1.0
+      # - MARGIN_FINANCING_RATE_PCT=6.5
+
+      # ── Generic: Monte Carlo ───────────────────────────────────────────────
+      - MONTE_CARLO_ENABLED=false
+      - N_MONTE_CARLO_SIMULATIONS=2000
+
+      # ── Generic: grid search runner ────────────────────────────────────────
+      - GRID_SEARCH_ENABLED=true
+
+      # ── Model: pullback_bounce_fundamental_v1.py ───────────────────────────
+      - LONG_MAX_SCORE=55.0
+      - SHORT_MIN_SCORE=60.0
+      - LONG_MIN_FUNDAMENTAL=62.0
+      - SHORT_MAX_FUNDAMENTAL=42.0
+      - MIN_MARKET_CAP_M=5000.0
+      - LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
+      - SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
+      - USE_MISPRICING_SCORE=true
+      - MISPRICING_WEIGHT=0.3
+      - TOP_N=15
+      - MIN_BARS=150
+      - PRICE_LOOKBACK_BARS=320
+      - VOL_SHORT_BARS=5
+      - VOL_LONG_BARS=25
+      - LONG_MIN_PULLBACK=5.0
+      - LONG_MAX_PULLBACK=25.0
+      - LONG_IDEAL_PULLBACK=12.5
+      - LONG_MAX_RSI=50.0
+      - SHORT_MIN_BOUNCE=3.0
+      - SHORT_MAX_BOUNCE=20.0
+      - SHORT_IDEAL_BOUNCE=8.5
+      - SHORT_MIN_RSI=35.0
+      - SHORT_MAX_RSI=65.0
+      - LONG_SL_BUFFER=0.008
+      - SHORT_SL_BUFFER=0.008
+      - LONG_TP1_PCT=0.06
+      - LONG_TP2_PCT=0.08
+      - SHORT_TP1_PCT=0.06
+      - SHORT_TP2_PCT=0.08
+      - SL_LOOKBACK_BARS=12
+      - LONG_VALID_DAYS=10
+      - SHORT_VALID_DAYS=7
+      - LONG_MAX_HOLD_DAYS=5.0
+      - SHORT_MAX_HOLD_DAYS=3.0
+      - TP1_CLOSE_RATIO=0.75
+
+      # ── Model grid: pullback_bounce_fundamental_v1.py ──────────────────────
+      - GRID_LONG_TP1_PCT=0.03
+      - GRID_LONG_TP2_PCT=0.07
+      - GRID_SHORT_TP1_PCT=0.05
+      - GRID_SHORT_TP2_PCT=0.10
+      - GRID_LONG_MAX_HOLD_DAYS=4,6
+      - GRID_SHORT_MAX_HOLD_DAYS=2,3,4
+      - GRID_TP1_CLOSE_RATIO=0.6,1
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+    name: shared_net
