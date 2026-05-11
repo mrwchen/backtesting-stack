@@ -13,7 +13,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 -- ── Run metadata ──────────────────────────────────────────────────────────────
 
-CREATE TABLE backtest_runs (
+CREATE TABLE IF NOT EXISTS backtest_runs (
     run_id               SERIAL        PRIMARY KEY,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     notes                TEXT,
@@ -92,7 +92,7 @@ CREATE TABLE backtest_runs (
 
 -- ── Individual trades ─────────────────────────────────────────────────────────
 
-CREATE TABLE backtest_trades (
+CREATE TABLE IF NOT EXISTS backtest_trades (
     id                   SERIAL        PRIMARY KEY,
     run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id),
     signal_date          DATE          NOT NULL,
@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
 
 -- ── Monte Carlo results ───────────────────────────────────────────────────────
 
-CREATE TABLE backtest_monte_carlo (
+CREATE TABLE IF NOT EXISTS backtest_monte_carlo (
     run_id                 INTEGER       PRIMARY KEY REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
     n_simulations          INTEGER       NOT NULL,
     -- Final equity percentiles
