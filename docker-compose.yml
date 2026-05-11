@@ -57,6 +57,9 @@ services:
       - SYMBOL_UNIVERSE=pepperstone # all | pepperstone | pepperstone24
       - REQUIRE_USD_FUNDAMENTALS=true
       - FUNDAMENTAL_MARKET_UNIVERSE=
+      # Research switch: true ignores data_available_at for rebuilt historical fundamentals.
+      # This can introduce look-ahead bias; keep false for final strategy validation.
+      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=true
 
       # ── Generic: time range ────────────────────────────────────────────────
       - START_DATE=2022-01-01

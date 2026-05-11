@@ -6,7 +6,7 @@ account, and writes results to backtest_runs / backtest_trades.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv  : as_of each simulated day  (true PIT)
-  - stocks_analysis_fundamental_scores : available at each simulated entry cutoff (true PIT)
+  - stocks_analysis_fundamental_scores : available at each simulated entry cutoff (true PIT by default)
   - alpaca_market_data_1h         : up_to each simulated entry cutoff (true PIT)
 
 Run once, write results, exit.
@@ -208,6 +208,7 @@ def get_candidates(
     pepperstone_table: str = "pepperstone_data",
     required_currency: Optional[str] = "USD",
     fundamental_market_universe: Optional[str] = None,
+    allow_rebuilt_historical_fundamentals: bool = False,
 ) -> list[FundamentalRow]:
     cache_key = (
         direction,
@@ -223,6 +224,7 @@ def get_candidates(
         pepperstone_table,
         required_currency,
         fundamental_market_universe,
+        allow_rebuilt_historical_fundamentals,
     )
     if cache_key in _CANDIDATE_CACHE:
         return _CANDIDATE_CACHE[cache_key]
@@ -247,10 +249,9 @@ def get_candidates(
         as_of_ts = _default_as_of_ts(as_of_date)
     if as_of_ts is not None:
         params["as_of_ts"] = as_of_ts
-        where_parts.extend([
-            sql.SQL("time <= %(as_of_ts)s"),
-            sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) <= %(as_of_ts)s"),
-        ])
+        where_parts.append(sql.SQL("time <= %(as_of_ts)s"))
+        if not allow_rebuilt_historical_fundamentals:
+            where_parts.append(sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) <= %(as_of_ts)s"))
 
     if direction == "LONG" and long_label_blocklist:
         where_parts.append(sql.SQL("(valuation_label IS NULL OR valuation_label != ALL(%(label_list)s))"))
@@ -285,6 +286,11 @@ def get_candidates(
             "WHERE symbol_ps24 IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
         ).format(relation_identifier(pepperstone_table)))
 
+    if allow_rebuilt_historical_fundamentals:
+        recency_order = sql.SQL("time DESC")
+    else:
+        recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) DESC NULLS LAST, time DESC")
+
     query = sql.SQL("""
         SELECT DISTINCT ON (symbol)
             symbol,
@@ -299,11 +305,11 @@ def get_candidates(
         WHERE {}
         ORDER BY
             symbol,
-            COALESCE(data_available_at, fundamental_data_available_at, time) DESC NULLS LAST,
-            time DESC
+            {}
     """).format(
         relation_identifier(source_table),
         sql.SQL("\n          AND ").join(where_parts),
+        recency_order,
     )
     with conn.cursor() as cur:
         cur.execute(query, params)
@@ -331,6 +337,7 @@ sys.modules.setdefault("backtest_shared", sys.modules[__name__])
 
 START_DATE             = date.fromisoformat(os.getenv("START_DATE", "2023-01-01"))
 END_DATE               = date.fromisoformat(os.getenv("END_DATE", str(date.today())))
+ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False)
 ACCOUNT_PROFILE        = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
 ACCOUNT_CURRENCY       = os.getenv("ACCOUNT_CURRENCY", "USD").strip().upper()
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
@@ -1776,6 +1783,7 @@ def run_backtest(
             pepperstone_table=PEPPERSTONE_TABLE,
             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
             fundamental_market_universe=FUNDAMENTAL_MARKET_UNIVERSE or None,
+            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
         )
 
         if not candidates:
@@ -2160,11 +2168,16 @@ def main() -> None:
             SHORT_MAX_HOLD_DAYS,
         )
         log.info(
-            "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  fundamental_market_universe=%s",
+            "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  fundamental_market_universe=%s  allow_rebuilt_historical_fundamentals=%s",
             MIN_MARKET_CAP_M,
             REQUIRE_USD_FUNDAMENTALS,
             FUNDAMENTAL_MARKET_UNIVERSE or "all",
+            ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
         )
+        if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
+            log.warning(
+                "Point-in-time guard relaxed — rebuilt historical fundamentals are allowed even when data_available_at is after the simulated day. Use these results for research only, not final strategy validation."
+            )
         log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
         log.info(
             "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on  ensure_source_indexes=%s",
