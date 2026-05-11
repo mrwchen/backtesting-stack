@@ -400,6 +400,7 @@ MIN_MARKET_CAP_M = float(os.getenv("MIN_MARKET_CAP_M", "1000.0"))
 LONG_MAX_HOLD_DAYS = max(0.0, float(os.getenv("LONG_MAX_HOLD_DAYS", "5.0")))
 SHORT_MAX_HOLD_DAYS = max(0.0, float(os.getenv("SHORT_MAX_HOLD_DAYS", "5.0")))
 TP1_CLOSE_RATIO = max(0.0, min(1.0, float(os.getenv("TP1_CLOSE_RATIO", "0.5"))))
+SECTOR_DIVERSIFICATION_ENABLED = env_bool("SECTOR_DIVERSIFICATION_ENABLED", False)
 
 GRID_SEARCH_ENABLED = os.getenv("GRID_SEARCH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
 MODEL_FILE = os.getenv("MODEL_FILE", "pullback_bounce_fundamental_v1.py").strip()
@@ -1817,21 +1818,22 @@ def run_backtest(
 
         # ── 3. Open new positions ────────────────────────────────────────────
         open_symbols = {p.symbol for p in open_positions}
-        open_sectors: set[str] = {p.signal.sector for p in open_positions if p.signal.sector}
-        open_sector_industries: set[tuple[str, str]] = {
-            (p.signal.sector, p.signal.industry)
-            for p in open_positions
-            if p.signal.sector
-        }
+        if SECTOR_DIVERSIFICATION_ENABLED:
+            open_sectors: set[str] = {p.signal.sector for p in open_positions if p.signal.sector}
+            open_sector_industries: set[tuple[str, str]] = {
+                (p.signal.sector, p.signal.industry)
+                for p in open_positions
+                if p.signal.sector
+            }
 
-        def _sector_tier(s: Signal) -> int:
-            if not s.sector or s.sector not in open_sectors:
-                return 0  # new sector — preferred
-            if (s.sector, s.industry) not in open_sector_industries:
-                return 1  # same sector, different industry — acceptable
-            return 2      # same sector and industry — last resort
+            def _sector_tier(s: Signal) -> int:
+                if not s.sector or s.sector not in open_sectors:
+                    return 0  # new sector preferred
+                if (s.sector, s.industry) not in open_sector_industries:
+                    return 1  # same sector, different industry
+                return 2      # same sector and industry
 
-        signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
+            signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
         opened_today = 0
         account_equity_today = _account_equity(conn, open_positions, equity, day)
         used_margin = sum(_active_margin_used(p) for p in open_positions)
@@ -2174,6 +2176,7 @@ def main() -> None:
             REQUIRE_USD_FUNDAMENTALS,
             ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
         )
+        log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
         if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
             log.warning(
                 "Point-in-time guard relaxed — rebuilt historical fundamentals are allowed even when data_available_at is after the simulated day. Use these results for research only, not final strategy validation."
