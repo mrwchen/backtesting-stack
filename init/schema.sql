@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     run_label            TEXT          NOT NULL,
     model_file           TEXT          NOT NULL,
     account_profile      TEXT          NOT NULL,
-    account_currency     TEXT          NOT NULL DEFAULT 'USD',
 
     -- Time range
     start_date           DATE          NOT NULL,
@@ -68,8 +67,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     long_tp2_pct         NUMERIC(6,4)  NOT NULL,
     short_tp1_pct        NUMERIC(6,4)  NOT NULL,
     short_tp2_pct        NUMERIC(6,4)  NOT NULL,
-    long_valid_days      INTEGER,
-    short_valid_days     INTEGER,
     long_max_hold_days   NUMERIC(6,2),
     short_max_hold_days  NUMERIC(6,2),
     tp1_close_ratio      NUMERIC(4,3),

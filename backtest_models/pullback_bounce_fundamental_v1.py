@@ -8,7 +8,7 @@ Model idea:
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from itertools import product
 from typing import Optional
 
@@ -29,7 +29,6 @@ class SignalConfig:
     short_max_fundamental: float = 42.0
 
     # Signal limits
-    top_n: int = 15
     min_bars: int = 150
 
     # Entry filters — LONG
@@ -52,10 +51,6 @@ class SignalConfig:
     long_tp2_pct: float = 0.12
     short_tp1_pct: float = 0.06
     short_tp2_pct: float = 0.12
-
-    # Signal validity
-    long_valid_days: int = 10
-    short_valid_days: int = 7
 
     # Fundamental label blocklists
     long_label_blocklist: list = field(default_factory=lambda: ["value_trap", "overvalued", "overvalued_weak"])
@@ -80,7 +75,6 @@ def signal_config_from_env() -> SignalConfig:
         short_min_score=env_float("SHORT_MIN_SCORE", defaults.short_min_score),
         long_min_fundamental=env_float("LONG_MIN_FUNDAMENTAL", defaults.long_min_fundamental),
         short_max_fundamental=env_float("SHORT_MAX_FUNDAMENTAL", defaults.short_max_fundamental),
-        top_n=env_int("TOP_N", defaults.top_n),
         min_bars=env_int("MIN_BARS", defaults.min_bars),
         long_min_pullback=env_float("LONG_MIN_PULLBACK", defaults.long_min_pullback),
         long_max_pullback=env_float("LONG_MAX_PULLBACK", defaults.long_max_pullback),
@@ -97,8 +91,6 @@ def signal_config_from_env() -> SignalConfig:
         long_tp2_pct=env_float("LONG_TP2_PCT", defaults.long_tp2_pct),
         short_tp1_pct=env_float("SHORT_TP1_PCT", defaults.short_tp1_pct),
         short_tp2_pct=env_float("SHORT_TP2_PCT", defaults.short_tp2_pct),
-        long_valid_days=env_int("LONG_VALID_DAYS", defaults.long_valid_days),
-        short_valid_days=env_int("SHORT_VALID_DAYS", defaults.short_valid_days),
         long_label_blocklist=env_list("LONG_LABEL_BLOCKLIST", defaults.long_label_blocklist),
         short_label_blocklist=env_list("SHORT_LABEL_BLOCKLIST", defaults.short_label_blocklist),
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", defaults.use_mispricing_score),
@@ -235,7 +227,6 @@ def compute_long_signal(
         rsi_1h=round(rsi, 2),
         volume_ratio=round(vol_ratio, 3),
         entry_reason=reason,
-        signal_valid_until=now + timedelta(days=cfg.long_valid_days),
         valuation_label=fundamental.valuation_label,
         sector=fundamental.sector,
         industry=fundamental.industry,
@@ -308,7 +299,6 @@ def compute_short_signal(
         rsi_1h=round(rsi, 2),
         volume_ratio=round(vol_ratio, 3),
         entry_reason=reason,
-        signal_valid_until=now + timedelta(days=cfg.short_valid_days),
         valuation_label=fundamental.valuation_label,
         sector=fundamental.sector,
         industry=fundamental.industry,

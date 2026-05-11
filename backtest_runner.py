@@ -86,7 +86,6 @@ class Signal:
     rsi_1h: float
     volume_ratio: float
     entry_reason: str
-    signal_valid_until: datetime
     valuation_label: str = ""
     sector: str = ""
     industry: str = ""
@@ -204,10 +203,8 @@ def get_candidates(
     as_of_ts: Optional[object] = None,
     long_label_blocklist: Optional[list] = None,
     short_label_blocklist: Optional[list] = None,
-    symbol_universe: str = "all",
-    pepperstone_table: str = "pepperstone_data",
+    pepperstone_table: str = "public.pepperstone_data",
     required_currency: Optional[str] = "USD",
-    fundamental_market_universe: Optional[str] = None,
     allow_rebuilt_historical_fundamentals: bool = False,
 ) -> list[FundamentalRow]:
     cache_key = (
@@ -220,10 +217,9 @@ def get_candidates(
         as_of_ts,
         tuple(long_label_blocklist or ()),
         tuple(short_label_blocklist or ()),
-        symbol_universe,
+        ACCOUNT_PROFILE,
         pepperstone_table,
         required_currency,
-        fundamental_market_universe,
         allow_rebuilt_historical_fundamentals,
     )
     if cache_key in _CANDIDATE_CACHE:
@@ -270,20 +266,10 @@ def get_candidates(
             "%(required_currency)s) = %(required_currency)s"
         ))
 
-    if fundamental_market_universe:
-        params["fundamental_market_universe"] = fundamental_market_universe
-        where_parts.append(sql.SQL("market_universe = %(fundamental_market_universe)s"))
-
-    universe = (symbol_universe or "all").strip().lower()
-    if universe == "pepperstone":
+    if ACCOUNT_PROFILE == "ps_acc":
         where_parts.append(sql.SQL(
             "symbol IN (SELECT symbol FROM {} "
             "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
-        ).format(relation_identifier(pepperstone_table)))
-    elif universe == "pepperstone24":
-        where_parts.append(sql.SQL(
-            "symbol IN (SELECT symbol FROM {} "
-            "WHERE symbol_ps24 IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
         ).format(relation_identifier(pepperstone_table)))
 
     if allow_rebuilt_historical_fundamentals:
@@ -339,7 +325,6 @@ START_DATE             = date.fromisoformat(os.getenv("START_DATE", "2023-01-01"
 END_DATE               = date.fromisoformat(os.getenv("END_DATE", str(date.today())))
 ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False)
 ACCOUNT_PROFILE        = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
-ACCOUNT_CURRENCY       = os.getenv("ACCOUNT_CURRENCY", "USD").strip().upper()
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
@@ -347,8 +332,9 @@ MIN_FREE_MARGIN_PCT    = float(os.getenv("MIN_FREE_MARGIN_PCT", "20.0"))
 ALLOW_FRACTIONAL_SHARES = os.getenv("ALLOW_FRACTIONAL_SHARES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 ACCOUNT_PROFILE_DEFAULTS = {
-    # Pepperstone EU retail, individual shares CFDs: 5:1 leverage => 20% margin.
-    # US Share/ETF CFDs: 0.02 USD/share per side, 0.02 USD minimum.
+    # Pepperstone EU retail US Share/ETF CFDs:
+    # 5:1 share leverage => 20% margin; 0.02 USD/share per side, 0.02 USD minimum;
+    # direct underlying exchange prices without an extra Pepperstone spread mark-up.
     "ps_acc": {
         "margin_requirement_pct": 20.0,
         "maintenance_margin_pct": 20.0,
@@ -357,13 +343,14 @@ ACCOUNT_PROFILE_DEFAULTS = {
         "commission_min_per_order_usd": 0.02,
         "commission_max_pct": 0.0,
         "commission_bps": 0.0,
-        "spread_bps": 2.0,
+        "spread_bps": 0.0,
         "slippage_bps": 1.0,
         "margin_financing_rate_pct": 5.0,
         "allow_fractional_shares": False,
     },
-    # IBKR margin account approximation for US stocks, Germany retail user:
-    # Reg-T-like overnight initial margin 50%; IBKR Pro tiered first tier.
+    # IBKR Pro Tiered US stocks:
+    # Reg-T overnight initial margin 50%, maintenance 25%;
+    # first tier commission and current first-tier USD margin loan rate.
     "ibkr_acc": {
         "margin_requirement_pct": 50.0,
         "maintenance_margin_pct": 25.0,
@@ -374,7 +361,7 @@ ACCOUNT_PROFILE_DEFAULTS = {
         "commission_bps": 0.0,
         "spread_bps": 0.0,
         "slippage_bps": 1.0,
-        "margin_financing_rate_pct": 6.5,
+        "margin_financing_rate_pct": 5.14,
         "allow_fractional_shares": True,
     },
 }
@@ -402,7 +389,7 @@ SPREAD_BPS            = _account_float("SPREAD_BPS", "spread_bps")
 SLIPPAGE_BPS          = _account_float("SLIPPAGE_BPS", "slippage_bps")
 MARGIN_FINANCING_RATE_PCT = _account_float("MARGIN_FINANCING_RATE_PCT", "margin_financing_rate_pct")
 ALLOW_FRACTIONAL_SHARES = _account_bool("ALLOW_FRACTIONAL_SHARES", "allow_fractional_shares")
-RUN_NOTES              = os.getenv("RUN_NOTES", "")
+RUN_NOTES_EXTRA        = os.getenv("RUN_NOTES_EXTRA", "")
 RUN_LABEL_TZ           = os.getenv("RUN_LABEL_TZ", "Europe/Berlin")
 PROGRESS_LOG_EVERY_DAYS = max(1, int(os.getenv("PROGRESS_LOG_EVERY_DAYS", "25")))
 BAR_CACHE_WARMUP_DAYS = max(1, int(os.getenv("BAR_CACHE_WARMUP_DAYS", "120")))
@@ -430,6 +417,18 @@ def _result_table(name: str) -> str:
     return f"{_qident(RESULT_SCHEMA)}.{_qident(name)}"
 
 
+def _build_run_notes(notes: Optional[str]) -> str:
+    created_local = datetime.now(ZoneInfo(RUN_LABEL_TZ))
+    prefix = (
+        f"{created_local:%Y-%m-%d %H:%M} | "
+        f"{MODEL_FILE} | "
+        f"{ACCOUNT_PROFILE} | "
+        f"{START_DATE}->{END_DATE}"
+    )
+    suffix = (notes if notes is not None else RUN_NOTES_EXTRA).strip()
+    return f"{prefix} | {suffix}" if suffix else prefix
+
+
 def _parse_grid_vals(env_key: str, default_val: float) -> list[float]:
     raw = os.getenv(env_key, str(default_val))
     return sorted({float(x.strip()) for x in raw.split(",") if x.strip()})
@@ -442,14 +441,15 @@ ENTRY_WINDOW_ENABLED = os.getenv("ENTRY_WINDOW_ENABLED", "true").strip().lower()
 ENTRY_WINDOW_TZ = os.getenv("ENTRY_WINDOW_TZ", "America/New_York")
 ENTRY_WINDOW_START = os.getenv("ENTRY_WINDOW_START", "06:30")
 ENTRY_WINDOW_END = os.getenv("ENTRY_WINDOW_END", "19:00")
+SL_TP_WINDOW_TZ = os.getenv("SL_TP_WINDOW_TZ", "America/New_York")
+SL_TP_WINDOW_START = os.getenv("SL_TP_WINDOW_START", "09:30")
+SL_TP_WINDOW_END = os.getenv("SL_TP_WINDOW_END", "16:00")
 
 SOURCE_1H           = os.getenv("SOURCE_1H", "alpaca_market_data_1h")
 SOURCE_FUNDAMENTAL  = os.getenv("SOURCE_FUNDAMENTAL", "stocks_analysis_fundamental_scores")
 SOURCE_WORLD_REGIME = os.getenv("SOURCE_WORLD_REGIME", "world_regime_daily_scores_mv")
-SYMBOL_UNIVERSE     = os.getenv("SYMBOL_UNIVERSE", "all")  # all | pepperstone | pepperstone24
-PEPPERSTONE_TABLE   = os.getenv("PEPPERSTONE_TABLE", "pepperstone_data")
+PEPPERSTONE_TABLE   = os.getenv("PEPPERSTONE_TABLE", "public.pepperstone_data")
 REQUIRE_USD_FUNDAMENTALS = os.getenv("REQUIRE_USD_FUNDAMENTALS", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-FUNDAMENTAL_MARKET_UNIVERSE = os.getenv("FUNDAMENTAL_MARKET_UNIVERSE", "").strip()
 
 DB_CONNECT_RETRIES       = int(os.getenv("DB_CONNECT_RETRIES", "5"))
 DB_CONNECT_RETRY_DELAY_S = float(os.getenv("DB_CONNECT_RETRY_DELAY_S", "5.0"))
@@ -483,6 +483,7 @@ _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
+_SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _MODEL_MODULE: Optional[ModuleType] = None
 
 
@@ -686,8 +687,7 @@ def ensure_source_indexes(conn: psycopg2.extensions.connection) -> None:
                 INCLUDE (
                     composite_score, sector, industry, valuation_label, mispricing_score,
                     negative_earnings_flag, high_leverage_flag, market_cap_m,
-                    current_price_currency, market_cap_currency, currency, financial_currency,
-                    market_universe
+                    current_price_currency, market_cap_currency, currency, financial_currency
                 )
             """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
         ),
@@ -703,28 +703,20 @@ def ensure_source_indexes(conn: psycopg2.extensions.connection) -> None:
                 INCLUDE (
                     composite_score, sector, industry, valuation_label, mispricing_score,
                     negative_earnings_flag, high_leverage_flag, market_cap_m,
-                    current_price_currency, market_cap_currency, currency, financial_currency,
-                    market_universe
+                    current_price_currency, market_cap_currency, currency, financial_currency
                 )
             """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
         ),
-        (
+    ]
+    if ACCOUNT_PROFILE == "ps_acc":
+        index_statements.append((
             "idx_backtest_pepperstone_symbol_ps",
             sql.SQL("""
                 CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps
                 ON {} (symbol)
                 WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE
             """).format(relation_identifier(PEPPERSTONE_TABLE)),
-        ),
-        (
-            "idx_backtest_pepperstone_symbol_ps24",
-            sql.SQL("""
-                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps24
-                ON {} (symbol)
-                WHERE symbol_ps24 IS NOT NULL AND is_trading_enabled IS NOT FALSE
-            """).format(relation_identifier(PEPPERSTONE_TABLE)),
-        ),
-    ]
+        ))
 
     with conn.cursor() as cur:
         for index_name, statement in index_statements:
@@ -774,17 +766,13 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "currency",
             "financial_currency",
         })
-    if FUNDAMENTAL_MARKET_UNIVERSE:
-        fundamental_required.add("market_universe")
 
     _require_columns(conn, SOURCE_1H, {"symbol", "ts", "open", "high", "low", "close", "volume"})
     _require_columns(conn, SOURCE_FUNDAMENTAL, fundamental_required)
     _require_columns(conn, SOURCE_WORLD_REGIME, {"day", "regime_label", "composite_score"})
 
-    universe = (SYMBOL_UNIVERSE or "all").strip().lower()
-    if universe in {"pepperstone", "pepperstone24"}:
-        symbol_column = "symbol_ps24" if universe == "pepperstone24" else "symbol_ps"
-        _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", symbol_column, "is_trading_enabled"})
+    if ACCOUNT_PROFILE == "ps_acc":
+        _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
 
     _validate_source_coverage(conn)
 
@@ -822,10 +810,6 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             "%s) = %s"
         ))
         fundamental_params.extend(["USD", "USD"])
-    if FUNDAMENTAL_MARKET_UNIVERSE:
-        fundamental_where.append(sql.SQL("market_universe = %s"))
-        fundamental_params.append(FUNDAMENTAL_MARKET_UNIVERSE)
-
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -871,25 +855,23 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
         regime_max_day,
     )
 
-    universe = (SYMBOL_UNIVERSE or "all").strip().lower()
-    if universe in {"pepperstone", "pepperstone24"}:
-        symbol_column = "symbol_ps24" if universe == "pepperstone24" else "symbol_ps"
+    if ACCOUNT_PROFILE == "ps_acc":
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     "SELECT COUNT(*) FROM {} "
-                    "WHERE {} IS NOT NULL AND is_trading_enabled IS NOT FALSE"
-                ).format(relation_identifier(PEPPERSTONE_TABLE), sql.Identifier(symbol_column)),
+                    "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE"
+                ).format(relation_identifier(PEPPERSTONE_TABLE)),
             )
             tradable_symbols = cur.fetchone()[0]
         if tradable_symbols <= 0:
             raise RuntimeError(
-                f"Symbol universe {SYMBOL_UNIVERSE} selected, but {PEPPERSTONE_TABLE}.{symbol_column} has no tradable rows"
+                f"Pepperstone account selected, but {PEPPERSTONE_TABLE}.symbol_ps has no tradable rows"
             )
         log.info(
-            "Source coverage — pepperstone relation=%s universe=%s tradable_symbols=%d",
+            "Source coverage — pepperstone relation=%s account_profile=%s tradable_symbols=%d",
             PEPPERSTONE_TABLE,
-            universe,
+            ACCOUNT_PROFILE,
             tradable_symbols,
         )
 
@@ -947,14 +929,23 @@ def _is_in_entry_window(ts: datetime) -> bool:
     if not ENTRY_WINDOW_ENABLED:
         return True
     local = ts.astimezone(_ENTRY_WINDOW_ZONE)
-    start_h, start_m = _parse_hhmm(ENTRY_WINDOW_START)
-    end_h, end_m = _parse_hhmm(ENTRY_WINDOW_END)
+    return _is_local_time_in_window(local, ENTRY_WINDOW_START, ENTRY_WINDOW_END)
+
+
+def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) -> bool:
+    start_h, start_m = _parse_hhmm(start_hhmm)
+    end_h, end_m = _parse_hhmm(end_hhmm)
     current = local.hour * 60 + local.minute
     start = start_h * 60 + start_m
     end = end_h * 60 + end_m
     if start <= end:
         return start <= current <= end
     return current >= start or current <= end
+
+
+def _is_in_sl_tp_window(ts: datetime) -> bool:
+    local = ts.astimezone(_SL_TP_WINDOW_ZONE)
+    return _is_local_time_in_window(local, SL_TP_WINDOW_START, SL_TP_WINDOW_END)
 
 
 def _day_signal_cutoff_ts(d: date) -> datetime:
@@ -1107,10 +1098,11 @@ def simulate_outcome(
     for bar_idx, (ts, _, high, low, close) in enumerate(bars):
         bar_date = ts.date() if hasattr(ts, "date") else ts
         total_bars = pos.bars_processed + bar_idx + 1
+        sl_tp_active = _is_in_sl_tp_window(ts)
 
         if is_long:
             # SL check first (conservative — if same bar hits both, SL wins)
-            if low <= effective_sl:
+            if sl_tp_active and low <= effective_sl:
                 price = effective_sl
                 if tp1_hit:
                     pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
@@ -1120,19 +1112,19 @@ def simulate_outcome(
                     status = "HIT_SL"
                 return _make_trade(pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
 
-            if not tp1_hit and high >= pos.take_profit_1:
+            if sl_tp_active and not tp1_hit and high >= pos.take_profit_1:
                 tp1_hit = True
                 tp1_price = pos.take_profit_1
                 tp1_exit_ts = ts
                 effective_sl = pos.entry_price  # move SL to breakeven
 
-            if tp1_hit and high >= pos.take_profit_2:
+            if sl_tp_active and tp1_hit and high >= pos.take_profit_2:
                 price = pos.take_profit_2
                 pnl = _pnl_long(pos, tp1_price, price)
                 return _make_trade(pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
 
         else:  # SHORT
-            if high >= effective_sl:
+            if sl_tp_active and high >= effective_sl:
                 price = effective_sl
                 if tp1_hit:
                     pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
@@ -1142,13 +1134,13 @@ def simulate_outcome(
                     status = "HIT_SL"
                 return _make_trade(pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
 
-            if not tp1_hit and low <= pos.take_profit_1:
+            if sl_tp_active and not tp1_hit and low <= pos.take_profit_1:
                 tp1_hit = True
                 tp1_price = pos.take_profit_1
                 tp1_exit_ts = ts
                 effective_sl = pos.entry_price
 
-            if tp1_hit and low <= pos.take_profit_2:
+            if sl_tp_active and tp1_hit and low <= pos.take_profit_2:
                 price = pos.take_profit_2
                 pnl = _pnl_short(pos, tp1_price, price)
                 return _make_trade(pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
@@ -1391,12 +1383,13 @@ def create_run(
     tp1_close_ratio: float,
     notes: Optional[str] = None,
 ) -> int:
+    run_notes = _build_run_notes(notes)
     with conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO {_result_table("backtest_runs")} (
                 start_date, end_date, notes, run_label, model_file,
-                account_profile, account_currency,
+                account_profile,
                 initial_equity, risk_per_trade_pct, max_open_positions,
                 margin_requirement_pct, maintenance_margin_pct, min_free_margin_pct,
                 allow_fractional_shares, spread_bps, slippage_bps,
@@ -1410,11 +1403,11 @@ def create_run(
                 short_min_bounce, short_max_bounce, short_ideal_bounce, short_min_rsi, short_max_rsi,
                 long_sl_buffer, short_sl_buffer,
                 long_tp1_pct, long_tp2_pct, short_tp1_pct, short_tp2_pct,
-                long_valid_days, short_valid_days, long_max_hold_days, short_max_hold_days,
+                long_max_hold_days, short_max_hold_days,
                 tp1_close_ratio
             ) VALUES (
                 %s, %s, %s, to_char(NOW() AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI'), %s,
-                %s, %s,
+                %s,
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s,
@@ -1427,13 +1420,13 @@ def create_run(
                 %s, %s, %s, %s, %s,
                 %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, %s,
+                %s, %s,
                 %s
             ) RETURNING run_id
             """,
             (
-                START_DATE, END_DATE, notes if notes is not None else (RUN_NOTES or None), RUN_LABEL_TZ, MODEL_FILE,
-                ACCOUNT_PROFILE, ACCOUNT_CURRENCY,
+                START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, MODEL_FILE,
+                ACCOUNT_PROFILE,
                 INITIAL_EQUITY, RISK_PER_TRADE_PCT, MAX_OPEN_POSITIONS,
                 MARGIN_REQUIREMENT_PCT, MAINTENANCE_MARGIN_PCT, MIN_FREE_MARGIN_PCT,
                 ALLOW_FRACTIONAL_SHARES, SPREAD_BPS, SLIPPAGE_BPS,
@@ -1447,7 +1440,7 @@ def create_run(
                 cfg.short_min_bounce, cfg.short_max_bounce, cfg.short_ideal_bounce, cfg.short_min_rsi, cfg.short_max_rsi,
                 cfg.long_sl_buffer, cfg.short_sl_buffer,
                 cfg.long_tp1_pct, cfg.long_tp2_pct, cfg.short_tp1_pct, cfg.short_tp2_pct,
-                cfg.long_valid_days, cfg.short_valid_days, long_max_hold_days, short_max_hold_days,
+                long_max_hold_days, short_max_hold_days,
                 tp1_close_ratio,
             ),
         )
@@ -1779,10 +1772,8 @@ def run_backtest(
             as_of_ts=day_end_ts,
             long_label_blocklist=cfg.long_label_blocklist or None,
             short_label_blocklist=cfg.short_label_blocklist or None,
-            symbol_universe=SYMBOL_UNIVERSE,
             pepperstone_table=PEPPERSTONE_TABLE,
             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-            fundamental_market_universe=FUNDAMENTAL_MARKET_UNIVERSE or None,
             allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
         )
 
@@ -2128,18 +2119,22 @@ def main() -> None:
         else:
             log.info("Source index check skipped — ENSURE_SOURCE_INDEXES=false")
         log.info(
-            "Source tables — bars=%s  fundamentals=%s  world_regime=%s  symbol_universe=%s  pepperstone_table=%s",
+            "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
             SOURCE_1H,
             SOURCE_FUNDAMENTAL,
             SOURCE_WORLD_REGIME,
-            SYMBOL_UNIVERSE,
+            ACCOUNT_PROFILE,
             PEPPERSTONE_TABLE,
         )
+        if ACCOUNT_PROFILE == "ps_acc":
+            log.info(
+                "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
+                PEPPERSTONE_TABLE,
+            )
         log.info("Backtesting model — file=%s  dir=%s", MODEL_FILE, MODEL_DIR)
         log.info(
-            "Account profile — profile=%s  currency=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%.2f",
+            "Account profile — profile=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%.2f",
             ACCOUNT_PROFILE,
-            ACCOUNT_CURRENCY,
             MARGIN_REQUIREMENT_PCT,
             MAINTENANCE_MARGIN_PCT,
         )
@@ -2156,11 +2151,17 @@ def main() -> None:
             MARGIN_FINANCING_RATE_PCT,
         )
         log.info(
-            "Entry window — enabled=%s  tz=%s  start=%s  end=%s  sl_tp_window=all_bars",
+            "Entry window — enabled=%s  tz=%s  start=%s  end=%s",
             ENTRY_WINDOW_ENABLED,
             ENTRY_WINDOW_TZ,
             ENTRY_WINDOW_START,
             ENTRY_WINDOW_END,
+        )
+        log.info(
+            "SL/TP window — tz=%s  start=%s  end=%s",
+            SL_TP_WINDOW_TZ,
+            SL_TP_WINDOW_START,
+            SL_TP_WINDOW_END,
         )
         log.info(
             "Holding rule — long_max_hold_days=%.2f  short_max_hold_days=%.2f  sl_tp_active_from=next_1h_bar",
@@ -2168,10 +2169,9 @@ def main() -> None:
             SHORT_MAX_HOLD_DAYS,
         )
         log.info(
-            "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  fundamental_market_universe=%s  allow_rebuilt_historical_fundamentals=%s",
+            "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  allow_rebuilt_historical_fundamentals=%s",
             MIN_MARKET_CAP_M,
             REQUIRE_USD_FUNDAMENTALS,
-            FUNDAMENTAL_MARKET_UNIVERSE or "all",
             ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
         )
         if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
