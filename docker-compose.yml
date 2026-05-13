@@ -6,20 +6,14 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
+      DROP_BACKTEST_TABLES_ON_START: "false"
     command:
-      - psql
-      - -v
-      - ON_ERROR_STOP=1
-      - -h
-      - timescaledb
-      - -p
-      - "5432"
-      - -U
-      - postgres-ts
-      - -d
-      - postgres
-      - -f
-      - /init.sql
+      - sh
+      - -c
+      - >
+        psql -v ON_ERROR_STOP=1
+        -v drop_backtest_tables_on_start="$${DROP_BACKTEST_TABLES_ON_START:-false}"
+        -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
     networks:
       - shared_net
 

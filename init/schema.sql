@@ -11,6 +11,12 @@ $$;
 GRANT CONNECT ON DATABASE postgres TO "market-data-account";
 GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
+\if :drop_backtest_tables_on_start
+DROP TABLE IF EXISTS backtest_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest_trades CASCADE;
+DROP TABLE IF EXISTS backtest_runs CASCADE;
+\endif
+
 -- ── Run metadata ──────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS backtest_runs (
