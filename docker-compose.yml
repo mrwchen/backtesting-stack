@@ -4,27 +4,22 @@ services:
     restart: "no"
     volumes:
       - ./init/schema.sql:/init.sql:ro
-      - ./init/drop_backtest_tables.sql:/drop_backtest_tables.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      # Set to true to drop/recreate all backtesting result tables before each run.
-      # This intentionally does not touch market-data/source tables in the same DB.
-      DROP_BACKTEST_TABLES: "false"
     command:
-      - sh
-      - -ec
-      - |
-        case "$${DROP_BACKTEST_TABLES:-false}" in
-          1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss])
-            echo "DROP_BACKTEST_TABLES=true: dropping backtesting result tables"
-            psql -v ON_ERROR_STOP=1 -h timescaledb -p 5432 -U postgres-ts -d postgres -f /drop_backtest_tables.sql
-            ;;
-          *)
-            echo "DROP_BACKTEST_TABLES=false: keeping existing backtesting result tables"
-            ;;
-        esac
-
-        psql -v ON_ERROR_STOP=1 -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -h
+      - timescaledb
+      - -p
+      - "5432"
+      - -U
+      - postgres-ts
+      - -d
+      - postgres
+      - -f
+      - /init.sql
     networks:
       - shared_net
 
