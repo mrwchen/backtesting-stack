@@ -5,7 +5,7 @@ Generates swing signals day-by-day on historical data, simulates a margin
 account, and writes results to backtest_runs / backtest_trades.
 
 Point-in-time data used:
-  - world_regime_daily_scores_mv  : as_of each simulated day  (true PIT)
+  - world_regime_daily_scores_mv / _historical_mv : as_of each simulated day
   - stocks_analysis_fundamental_scores : available at each simulated entry cutoff (true PIT by default)
   - alpaca_market_data_1h         : up_to each simulated entry cutoff (true PIT)
 
