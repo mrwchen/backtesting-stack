@@ -2,7 +2,8 @@
 Swing trade backtester.
 
 Generates swing signals day-by-day on historical data, simulates a margin
-account, and writes results to backtest_runs / backtest_trades.
+account, and writes results to backtest_runs / backtest_trades /
+backtest_decision_events / backtest_monte_carlo.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv / _historical_mv : as_of each simulated day
@@ -424,7 +425,6 @@ RUN_NOTES_EXTRA        = os.getenv("RUN_NOTES_EXTRA", "")
 RUN_LABEL_TZ           = os.getenv("RUN_LABEL_TZ", "Europe/Berlin")
 PROGRESS_LOG_EVERY_DAYS = max(1, int(os.getenv("PROGRESS_LOG_EVERY_DAYS", "25")))
 BAR_CACHE_WARMUP_DAYS = max(1, int(os.getenv("BAR_CACHE_WARMUP_DAYS", "120")))
-ENSURE_SOURCE_INDEXES = os.getenv("ENSURE_SOURCE_INDEXES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 MONTE_CARLO_ENABLED       = os.getenv("MONTE_CARLO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 N_MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("N_MONTE_CARLO_SIMULATIONS", "2000")))
 MIN_MARKET_CAP_M = float(os.getenv("MIN_MARKET_CAP_M", "1000.0"))
@@ -434,7 +434,9 @@ TP1_CLOSE_RATIO = max(0.0, min(1.0, float(os.getenv("TP1_CLOSE_RATIO", "0.5"))))
 SECTOR_DIVERSIFICATION_ENABLED = env_bool("SECTOR_DIVERSIFICATION_ENABLED", False)
 
 GRID_SEARCH_ENABLED = os.getenv("GRID_SEARCH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+MODEL_SELECTION = os.getenv("MODEL_SELECTION", "single").strip().lower()
 MODEL_FILE = os.getenv("MODEL_FILE", "pullback_bounce_fundamental_v1.py").strip()
+MODEL_FILES = env_list("MODEL_FILES", [])
 MODEL_DIR = os.getenv("MODEL_DIR", str(Path(__file__).resolve().parent / "backtest_models")).strip()
 RESULT_SCHEMA = os.getenv("RESULT_SCHEMA", "public").strip() or "public"
 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", RESULT_SCHEMA):
@@ -453,7 +455,7 @@ def _build_run_notes(notes: Optional[str]) -> str:
     created_local = datetime.now(ZoneInfo(RUN_LABEL_TZ))
     prefix = (
         f"{created_local:%Y-%m-%d %H:%M} | "
-        f"{MODEL_FILE} | "
+        f"{CURRENT_MODEL_FILE} | "
         f"{ACCOUNT_PROFILE} | "
         f"{START_DATE}->{END_DATE}"
     )
@@ -497,17 +499,6 @@ DB = {
     "options": os.getenv("PGOPTIONS", f"-c search_path={RESULT_SCHEMA}"),
 }
 
-SOURCE_INDEX_DB = {
-    "host":            os.getenv("SOURCE_INDEX_PGHOST", DB["host"]),
-    "port":            int(os.getenv("SOURCE_INDEX_PGPORT", str(DB["port"]))),
-    "dbname":          os.getenv("SOURCE_INDEX_PGDATABASE", DB["dbname"]),
-    "user":            os.getenv("SOURCE_INDEX_PGUSER", DB["user"]),
-    "password":        os.getenv("SOURCE_INDEX_PGPASSWORD", DB["password"]),
-    "connect_timeout": int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10")),
-    "application_name": "backtest_runner_source_index_builder",
-    "options": os.getenv("SOURCE_INDEX_PGOPTIONS", DB["options"]),
-}
-
 _BAR_CACHE: dict[str, tuple[list[datetime], list[Bar]]] = {}
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
@@ -515,19 +506,55 @@ _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _MODEL_MODULE: Optional[ModuleType] = None
+CURRENT_MODEL_FILE = MODEL_FILE
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
-def load_model_module() -> ModuleType:
-    """Load the configured backtesting model from backtest_models/<MODEL_FILE>."""
-    model_file = MODEL_FILE
+def _validate_model_filename(model_file: str) -> None:
     model_path = Path(model_file)
     if not model_file or model_path.name != model_file or model_path.suffix != ".py":
         raise ValueError(
-            f"Invalid MODEL_FILE {MODEL_FILE!r}. Use a plain Python filename like pullback_bounce_fundamental_v1.py"
+            f"Invalid model file {model_file!r}. Use a plain Python filename like pullback_bounce_fundamental_v1.py"
         )
 
+
+def select_model_files() -> list[str]:
+    if MODEL_SELECTION not in {"single", "multi", "all"}:
+        raise ValueError("MODEL_SELECTION must be one of: single, multi, all")
+
+    model_dir = Path(MODEL_DIR)
+    if MODEL_SELECTION == "single":
+        selected = [MODEL_FILE]
+    elif MODEL_SELECTION == "multi":
+        if not MODEL_FILES:
+            raise ValueError("MODEL_SELECTION=multi requires MODEL_FILES with a comma-separated file list")
+        selected = MODEL_FILES
+    else:
+        if not model_dir.is_dir():
+            raise FileNotFoundError(f"MODEL_DIR not found: {model_dir}")
+        selected = sorted(
+            path.name
+            for path in model_dir.glob("*.py")
+            if not path.name.startswith("_") and path.name != "__init__.py"
+        )
+        if not selected:
+            raise FileNotFoundError(f"MODEL_SELECTION=all found no model files in {model_dir}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for model_file in selected:
+        _validate_model_filename(model_file)
+        if model_file not in seen:
+            deduped.append(model_file)
+            seen.add(model_file)
+    return deduped
+
+
+def load_model_module(model_file: str) -> ModuleType:
+    """Load one configured backtesting model from backtest_models/<model_file>."""
+    _validate_model_filename(model_file)
+    model_path = Path(model_file)
     full_path = Path(MODEL_DIR) / model_file
     if not full_path.is_file():
         raise FileNotFoundError(f"Backtesting model file not found: {full_path}")
@@ -668,26 +695,6 @@ def connect_with_retry() -> psycopg2.extensions.connection:
     raise RuntimeError("unreachable")
 
 
-def connect_source_index_with_retry() -> psycopg2.extensions.connection:
-    """Connect with credentials allowed to CREATE INDEX on source hypertables."""
-    for attempt in range(1, DB_CONNECT_RETRIES + 1):
-        try:
-            return psycopg2.connect(**SOURCE_INDEX_DB)
-        except psycopg2.OperationalError as exc:
-            if attempt == DB_CONNECT_RETRIES:
-                raise
-            delay = DB_CONNECT_RETRY_DELAY_S * (2 ** (attempt - 1))
-            log.warning(
-                "Source-index DB connect failed (%d/%d, retry in %.0fs): %s",
-                attempt,
-                DB_CONNECT_RETRIES,
-                delay,
-                exc,
-            )
-            _time.sleep(delay)
-    raise RuntimeError("unreachable")
-
-
 # ── Source validation ─────────────────────────────────────────────────────────
 
 def _relation_columns(conn: psycopg2.extensions.connection, relation_name: str) -> set[str]:
@@ -723,101 +730,6 @@ def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, r
         len(required),
         len(columns),
     )
-
-
-# IMPORTANT PROJECT EXCEPTION:
-# These source-table performance indexes are intentionally created here, not in
-# init/schema.sql. Reason: on large TimescaleDB hypertables, CREATE INDEX can
-# take minutes. Running it here makes the container logs show exactly which
-# index is currently being created/checked and how long it takes.
-#
-# Do not move these source-table index statements back to init/schema.sql unless
-# the visible startup logging requirement is explicitly removed.
-SOURCE_INDEXES_ARE_INTENTIONALLY_CREATED_IN_PYTHON_FOR_VISIBLE_STARTUP_LOGS = True
-
-
-def ensure_source_indexes(conn: psycopg2.extensions.connection) -> None:
-    """Create read-performance indexes on source tables, with explicit logs.
-
-    Project exception: these are source-table performance helpers for the
-    backtest runner, intentionally created here so the container logs show
-    exactly which potentially long-running index operation is in progress.
-    """
-    index_statements = [
-        (
-            "idx_backtest_alpaca_market_data_1h_symbol_ts_cover",
-            sql.SQL("""
-                CREATE INDEX IF NOT EXISTS idx_backtest_alpaca_market_data_1h_symbol_ts_cover
-                ON {} (symbol, ts DESC)
-                INCLUDE (open, high, low, close, volume)
-            """).format(relation_identifier(SOURCE_1H)),
-        ),
-        (
-            "idx_backtest_safs_symbol_available_time_cover",
-            sql.SQL("""
-                CREATE INDEX IF NOT EXISTS idx_backtest_safs_symbol_available_time_cover
-                ON {} (
-                    symbol,
-                    (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
-                    time DESC
-                )
-                INCLUDE (
-                    composite_score, sector, industry, valuation_label, mispricing_score,
-                    negative_earnings_flag, high_leverage_flag, market_cap_m,
-                    current_price_currency, market_cap_currency, currency, financial_currency
-                )
-            """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
-        ),
-        (
-            "idx_backtest_safs_available_time_symbol_cover",
-            sql.SQL("""
-                CREATE INDEX IF NOT EXISTS idx_backtest_safs_available_time_symbol_cover
-                ON {} (
-                    (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
-                    time DESC,
-                    symbol
-                )
-                INCLUDE (
-                    composite_score, sector, industry, valuation_label, mispricing_score,
-                    negative_earnings_flag, high_leverage_flag, market_cap_m,
-                    current_price_currency, market_cap_currency, currency, financial_currency
-                )
-            """).format(relation_identifier(SOURCE_FUNDAMENTAL)),
-        ),
-    ]
-    if ACCOUNT_PROFILE == "ps_acc":
-        index_statements.append((
-            "idx_backtest_pepperstone_symbol_ps",
-            sql.SQL("""
-                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps
-                ON {} (symbol)
-                WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE
-            """).format(relation_identifier(PEPPERSTONE_TABLE)),
-        ))
-
-    with conn.cursor() as cur:
-        for index_name, statement in index_statements:
-            log.info(
-                "Ensuring source index %s — first run can take a while on large TimescaleDB tables; index_user=%s",
-                index_name,
-                SOURCE_INDEX_DB["user"],
-            )
-            started_at = _time.monotonic()
-            try:
-                cur.execute(statement)
-                conn.commit()
-            except psycopg2.errors.InsufficientPrivilege as exc:
-                conn.rollback()
-                raise RuntimeError(
-                    "Cannot create source indexes with current SOURCE_INDEX_PGUSER="
-                    f"{SOURCE_INDEX_DB['user']!r}. Use the owner/superuser of the source hypertables "
-                    "(for example postgres-ts), or set ENSURE_SOURCE_INDEXES=false if the indexes already exist."
-                ) from exc
-            log.info(
-                "Source index ready %s — elapsed=%.1fs",
-                index_name,
-                _time.monotonic() - started_at,
-            )
 
 
 def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
@@ -1502,7 +1414,7 @@ def create_run(
             ) RETURNING run_id
             """,
             (
-                START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, MODEL_FILE,
+                START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, CURRENT_MODEL_FILE,
                 ACCOUNT_PROFILE,
                 INITIAL_EQUITY, RISK_PER_TRADE_PCT, MAX_OPEN_POSITIONS,
                 MARGIN_REQUIREMENT_PCT, MAINTENANCE_MARGIN_PCT, MIN_FREE_MARGIN_PCT,
@@ -1523,7 +1435,7 @@ def create_run(
         )
         run_id = cur.fetchone()[0]
     conn.commit()
-    log.info("Created run_id=%d model_file=%s account_profile=%s", run_id, MODEL_FILE, ACCOUNT_PROFILE)
+    log.info("Created run_id=%d model_file=%s account_profile=%s", run_id, CURRENT_MODEL_FILE, ACCOUNT_PROFILE)
     return run_id
 
 
@@ -2356,7 +2268,7 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
     model = get_model_module()
     if not hasattr(model, "iter_grid_search_configs"):
         raise RuntimeError(
-            f"Backtesting model {MODEL_FILE} does not define iter_grid_search_configs(). "
+            f"Backtesting model {CURRENT_MODEL_FILE} does not define iter_grid_search_configs(). "
             "Either disable GRID_SEARCH_ENABLED or add the grid hook to the model file."
         )
 
@@ -2370,7 +2282,7 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
     ))
 
     total = len(grid_items)
-    log.info("Grid search — model=%s combinations=%d", MODEL_FILE, total)
+    log.info("Grid search — model=%s combinations=%d", CURRENT_MODEL_FILE, total)
 
     results: list[dict] = []
     for i, item in enumerate(grid_items, 1):
@@ -2378,7 +2290,7 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
         lmhd = item.get("long_max_hold_days", LONG_MAX_HOLD_DAYS)
         smhd = item.get("short_max_hold_days", SHORT_MAX_HOLD_DAYS)
         tcr = item.get("tp1_close_ratio", TP1_CLOSE_RATIO)
-        run_notes = item.get("notes", f"grid model={MODEL_FILE} idx={i}")
+        run_notes = item.get("notes", f"grid model={CURRENT_MODEL_FILE} idx={i}")
         log.info("Grid %d/%d — %s", i, total, run_notes)
         _, summary = run_backtest(conn, cfg, lmhd, smhd, tcr, notes=run_notes)
         summary.update(item.get("summary", {}))
@@ -2468,21 +2380,12 @@ def _print_grid_summary(results: list[dict]) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _MODEL_MODULE
-    _MODEL_MODULE = load_model_module()
-    cfg = _MODEL_MODULE.signal_config_from_env()
+    global _MODEL_MODULE, CURRENT_MODEL_FILE
+    model_files = select_model_files()
     conn = connect_with_retry()
     try:
         log.info("Connected. Starting backtest %s → %s, equity=%.0f", START_DATE, END_DATE, INITIAL_EQUITY)
         validate_source_schema(conn)
-        if ENSURE_SOURCE_INDEXES:
-            index_conn = connect_source_index_with_retry()
-            try:
-                ensure_source_indexes(index_conn)
-            finally:
-                index_conn.close()
-        else:
-            log.info("Source index check skipped — ENSURE_SOURCE_INDEXES=false")
         log.info(
             "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
             SOURCE_1H,
@@ -2496,7 +2399,13 @@ def main() -> None:
                 "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
                 PEPPERSTONE_TABLE,
             )
-        log.info("Backtesting model — file=%s  dir=%s", MODEL_FILE, MODEL_DIR)
+        log.info(
+            "Backtesting model selection — selection=%s  count=%d  files=%s  dir=%s",
+            MODEL_SELECTION,
+            len(model_files),
+            ",".join(model_files),
+            MODEL_DIR,
+        )
         log.info(
             "Account profile — profile=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%.2f",
             ACCOUNT_PROFILE,
@@ -2546,14 +2455,24 @@ def main() -> None:
             )
         log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
         log.info(
-            "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on  ensure_source_indexes=%s",
-            ENSURE_SOURCE_INDEXES,
+            "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on",
         )
-        if GRID_SEARCH_ENABLED:
-            results = run_grid_search(conn, cfg)
-            _print_grid_summary(results)
-        else:
-            run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
+        for idx, model_file in enumerate(model_files, start=1):
+            CURRENT_MODEL_FILE = model_file
+            _MODEL_MODULE = load_model_module(model_file)
+            cfg = _MODEL_MODULE.signal_config_from_env()
+            log.info(
+                "Model run %d/%d — file=%s  grid_search=%s",
+                idx,
+                len(model_files),
+                CURRENT_MODEL_FILE,
+                GRID_SEARCH_ENABLED,
+            )
+            if GRID_SEARCH_ENABLED:
+                results = run_grid_search(conn, cfg)
+                _print_grid_summary(results)
+            else:
+                run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
     finally:
         conn.close()
 

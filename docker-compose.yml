@@ -41,20 +41,16 @@ services:
       - RUN_LABEL_TZ=Europe/Berlin
       - PROGRESS_LOG_EVERY_DAYS=1
       - BAR_CACHE_WARMUP_DAYS=120
-      # Set to false after the source indexes exist if you want fastest startup.
-      - ENSURE_SOURCE_INDEXES=true
-      # Source index creation needs the owner/superuser of source hypertables.
-      # The actual backtest still uses PGUSER/PGPASSWORD above.
-      - SOURCE_INDEX_PGHOST=timescaledb
-      - SOURCE_INDEX_PGPORT=5432
-      - SOURCE_INDEX_PGDATABASE=postgres
-      - SOURCE_INDEX_PGUSER=postgres-ts
-      - SOURCE_INDEX_PGPASSWORD=postgres-ts-root-pw
       - RUN_NOTES_EXTRA=v1
 
       # ── Generic: model selection ───────────────────────────────────────────
-      # Put new strategy files into ./backtest_models and set the filename here.
-      - MODEL_FILE=pullback_bounce_fundamental_v1.py
+      # MODEL_SELECTION:
+      #   single = run MODEL_FILE only
+      #   multi  = run comma-separated MODEL_FILES
+      #   all    = run every *.py model in ./backtest_models except helper files starting with "_"
+      - MODEL_SELECTION=all
+      #- MODEL_FILE=pullback_bounce_fundamental_v1.py
+      # - MODEL_FILES=pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,weak_fundamental_breakdown_v1.py
 
       # ── Generic: source tables ─────────────────────────────────────────────
       - SOURCE_1H=alpaca_market_data_1h
@@ -68,7 +64,7 @@ services:
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
       # ── Generic: time range ────────────────────────────────────────────────
-      - START_DATE=2022-01-01
+      - START_DATE=2024-01-01
       - END_DATE=2026-05-06
 
       # ── Account 1/3: generic account selection / risk ──────────────────────
@@ -132,7 +128,10 @@ services:
       # ── Generic: grid search runner ────────────────────────────────────────
       - GRID_SEARCH_ENABLED=false
 
-      # ── Model: pullback_bounce_fundamental_v1.py ───────────────────────────
+      # ── Shared model parameters ────────────────────────────────────────────
+      # These parameters are read by all current strategy models. In multi/all
+      # mode the same values are applied to every selected model unless a model
+      # has its own default for an unset parameter.
       - LONG_MAX_SCORE=55.0
       - SHORT_MIN_SCORE=60.0
       - LONG_MIN_FUNDAMENTAL=62.0
@@ -165,7 +164,9 @@ services:
       - SHORT_MAX_HOLD_DAYS=5.0
       - TP1_CLOSE_RATIO=0.6
 
-      # ── Model grid: pullback_bounce_fundamental_v1.py ──────────────────────
+      # ── Shared/simple model grid parameters ────────────────────────────────
+      # The original pullback model uses these for TP/holding-period grid search.
+      # The newer strategy files currently expose a single-config grid stub.
       - GRID_LONG_TP1_PCT=0.03
       - GRID_LONG_TP2_PCT=0.07
       - GRID_SHORT_TP1_PCT=0.05

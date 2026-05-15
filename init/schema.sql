@@ -5,7 +5,7 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'market-data-account') THEN
         CREATE USER "market-data-account" WITH PASSWORD 'market-data-account-pw';
     END IF;
-END
+END;
 $$;
 
 GRANT CONNECT ON DATABASE postgres TO "market-data-account";
@@ -225,17 +225,59 @@ CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
     ON backtest_runs (model_file, created_at DESC, run_id DESC);
 
--- IMPORTANT PROJECT EXCEPTION:
--- Source-table performance indexes for alpaca_market_data_1h,
--- stocks_analysis_fundamental_scores and pepperstone_data are intentionally
--- created by backtest_runner.py, not here.
---
--- Reason: these indexes can take minutes on large TimescaleDB hypertables.
--- Python logs each index operation with elapsed time so startup progress is
--- visible in container logs.
---
--- Do not move them back into this init SQL unless that logging requirement is
--- explicitly removed.
+-- ── Source-table performance indexes ─────────────────────────────────────────
+-- DB structure changes live in this init SQL. These indexes support the default
+-- source tables configured in docker-compose.yml.
+
+CREATE INDEX IF NOT EXISTS idx_backtest_alpaca_market_data_1h_symbol_ts_cover
+    ON alpaca_market_data_1h (symbol, ts DESC)
+    INCLUDE (open, high, low, close, volume);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_safs_symbol_available_time_cover
+    ON stocks_analysis_fundamental_scores (
+        symbol,
+        (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
+        time DESC
+    )
+    INCLUDE (
+        composite_score, sector, industry, valuation_label, mispricing_score,
+        negative_earnings_flag, high_leverage_flag, market_cap_m,
+        current_price_currency, market_cap_currency, currency, financial_currency
+    );
+
+CREATE INDEX IF NOT EXISTS idx_backtest_safs_available_time_symbol_cover
+    ON stocks_analysis_fundamental_scores (
+        (COALESCE(data_available_at, fundamental_data_available_at, time)) DESC,
+        time DESC,
+        symbol
+    )
+    INCLUDE (
+        composite_score, sector, industry, valuation_label, mispricing_score,
+        negative_earnings_flag, high_leverage_flag, market_cap_m,
+        current_price_currency, market_cap_currency, currency, financial_currency
+    );
+
+DO $$
+BEGIN
+    IF to_regclass('public.pepperstone_data') IS NOT NULL
+       AND EXISTS (
+           SELECT 1
+           FROM pg_attribute
+           WHERE attrelid = to_regclass('public.pepperstone_data')
+             AND attname IN ('symbol', 'symbol_ps', 'is_trading_enabled')
+             AND attnum > 0
+             AND NOT attisdropped
+           GROUP BY attrelid
+           HAVING COUNT(*) = 3
+       ) THEN
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_ps
+            ON public.pepperstone_data (symbol)
+            WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE
+        ';
+    END IF;
+END;
+$$;
 
 -- ── Monte Carlo results ───────────────────────────────────────────────────────
 
