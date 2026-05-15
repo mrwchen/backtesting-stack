@@ -12,7 +12,7 @@ from datetime import datetime
 from itertools import product
 from typing import Optional
 
-from backtest_shared import Bar, FundamentalRow, Signal
+from backtest_shared import Bar, FundamentalRow, Signal, SignalEvaluation
 from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, env_list, mean
 
 
@@ -168,6 +168,15 @@ def compute_long_signal(
     now: datetime,
     cfg: SignalConfig,
 ) -> Optional[Signal]:
+    return evaluate_long_signal(bars, fundamental, now, cfg).signal
+
+
+def evaluate_long_signal(
+    bars: list[Bar],
+    fundamental: FundamentalRow,
+    now: datetime,
+    cfg: SignalConfig,
+) -> SignalEvaluation:
     closes = [b.close for b in bars]
     highs = [b.high for b in bars]
     lows = [b.low for b in bars]
@@ -178,15 +187,45 @@ def compute_long_signal(
     high_20d = max(lookback_highs) if lookback_highs else entry_price
 
     if high_20d <= 0 or entry_price <= 0:
-        return None
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="invalid_price",
+            reason_text="Entry price or lookback high is not positive.",
+            entry_price=entry_price,
+        )
 
     pullback_pct = (high_20d - entry_price) / high_20d * 100.0
-    if pullback_pct < cfg.long_min_pullback or pullback_pct > cfg.long_max_pullback:
-        return None
+    if pullback_pct < cfg.long_min_pullback:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="pullback_below_min",
+            reason_text=f"Pullback {pullback_pct:.2f}% is below minimum {cfg.long_min_pullback:.2f}%.",
+            entry_price=entry_price,
+            pullback_pct=round(pullback_pct, 2),
+        )
+    if pullback_pct > cfg.long_max_pullback:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="pullback_above_max",
+            reason_text=f"Pullback {pullback_pct:.2f}% is above maximum {cfg.long_max_pullback:.2f}%.",
+            entry_price=entry_price,
+            pullback_pct=round(pullback_pct, 2),
+        )
 
     rsi = compute_rsi(closes[-50:])
     if rsi > cfg.long_max_rsi:
-        return None
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="rsi_above_max",
+            reason_text=f"RSI {rsi:.2f} is above maximum {cfg.long_max_rsi:.2f}.",
+            entry_price=entry_price,
+            pullback_pct=round(pullback_pct, 2),
+            rsi_1h=round(rsi, 2),
+        )
 
     vol_short = mean(volumes[-cfg.vol_short_bars:])
     vol_long = mean(volumes[-cfg.vol_long_bars:-cfg.vol_short_bars]) if len(volumes) > cfg.vol_long_bars else vol_short
@@ -213,7 +252,7 @@ def compute_long_signal(
 
     reason = f"Pullback {pullback_pct:.1f}% | RSI {rsi:.0f} | Vol {vol_ratio:.2f}x"
 
-    return Signal(
+    signal = Signal(
         symbol=fundamental.symbol,
         direction="LONG",
         fundamental_score=fundamental.composite_score,
@@ -231,6 +270,21 @@ def compute_long_signal(
         sector=fundamental.sector,
         industry=fundamental.industry,
     )
+    return SignalEvaluation(
+        signal=signal,
+        decision="signal",
+        reason_code="signal_passed",
+        reason_text=reason,
+        entry_price=entry_price,
+        stop_loss=sl,
+        take_profit_1=tp1,
+        take_profit_2=tp2,
+        pullback_pct=round(pullback_pct, 2),
+        rsi_1h=round(rsi, 2),
+        volume_ratio=round(vol_ratio, 3),
+        entry_score=round(entry_score, 4),
+        combined_score=round(combined, 4),
+    )
 
 
 def compute_short_signal(
@@ -239,6 +293,15 @@ def compute_short_signal(
     now: datetime,
     cfg: SignalConfig,
 ) -> Optional[Signal]:
+    return evaluate_short_signal(bars, fundamental, now, cfg).signal
+
+
+def evaluate_short_signal(
+    bars: list[Bar],
+    fundamental: FundamentalRow,
+    now: datetime,
+    cfg: SignalConfig,
+) -> SignalEvaluation:
     closes = [b.close for b in bars]
     highs = [b.high for b in bars]
     lows = [b.low for b in bars]
@@ -249,15 +312,55 @@ def compute_short_signal(
     low_20d = min(lookback_lows) if lookback_lows else entry_price
 
     if low_20d <= 0 or entry_price <= 0:
-        return None
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="invalid_price",
+            reason_text="Entry price or lookback low is not positive.",
+            entry_price=entry_price,
+        )
 
     bounce_pct = (entry_price - low_20d) / low_20d * 100.0
-    if bounce_pct < cfg.short_min_bounce or bounce_pct > cfg.short_max_bounce:
-        return None
+    if bounce_pct < cfg.short_min_bounce:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="bounce_below_min",
+            reason_text=f"Bounce {bounce_pct:.2f}% is below minimum {cfg.short_min_bounce:.2f}%.",
+            entry_price=entry_price,
+            pullback_pct=round(bounce_pct, 2),
+        )
+    if bounce_pct > cfg.short_max_bounce:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="bounce_above_max",
+            reason_text=f"Bounce {bounce_pct:.2f}% is above maximum {cfg.short_max_bounce:.2f}%.",
+            entry_price=entry_price,
+            pullback_pct=round(bounce_pct, 2),
+        )
 
     rsi = compute_rsi(closes[-50:])
-    if not (cfg.short_min_rsi <= rsi <= cfg.short_max_rsi):
-        return None
+    if rsi < cfg.short_min_rsi:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="rsi_below_min",
+            reason_text=f"RSI {rsi:.2f} is below minimum {cfg.short_min_rsi:.2f}.",
+            entry_price=entry_price,
+            pullback_pct=round(bounce_pct, 2),
+            rsi_1h=round(rsi, 2),
+        )
+    if rsi > cfg.short_max_rsi:
+        return SignalEvaluation(
+            signal=None,
+            decision="rejected",
+            reason_code="rsi_above_max",
+            reason_text=f"RSI {rsi:.2f} is above maximum {cfg.short_max_rsi:.2f}.",
+            entry_price=entry_price,
+            pullback_pct=round(bounce_pct, 2),
+            rsi_1h=round(rsi, 2),
+        )
 
     vol_short = mean(volumes[-cfg.vol_short_bars:])
     vol_long = mean(volumes[-cfg.vol_long_bars:-cfg.vol_short_bars]) if len(volumes) > cfg.vol_long_bars else vol_short
@@ -285,7 +388,7 @@ def compute_short_signal(
 
     reason = f"Bounce {bounce_pct:.1f}% | RSI {rsi:.0f} | Vol {vol_ratio:.2f}x"
 
-    return Signal(
+    signal = Signal(
         symbol=fundamental.symbol,
         direction="SHORT",
         fundamental_score=fundamental.composite_score,
@@ -302,4 +405,19 @@ def compute_short_signal(
         valuation_label=fundamental.valuation_label,
         sector=fundamental.sector,
         industry=fundamental.industry,
+    )
+    return SignalEvaluation(
+        signal=signal,
+        decision="signal",
+        reason_code="signal_passed",
+        reason_text=reason,
+        entry_price=entry_price,
+        stop_loss=sl,
+        take_profit_1=tp1,
+        take_profit_2=tp2,
+        pullback_pct=round(bounce_pct, 2),
+        rsi_1h=round(rsi, 2),
+        volume_ratio=round(vol_ratio, 3),
+        entry_score=round(entry_score, 4),
+        combined_score=round(combined, 4),
     )

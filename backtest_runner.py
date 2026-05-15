@@ -13,10 +13,12 @@ Run once, write results, exit.
 """
 
 import logging
+import math
 import os
 import re
 import importlib.util
 import sys
+import time as _time
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -32,9 +34,10 @@ from psycopg2 import sql
 from psycopg2.extras import execute_values
 
 
+logging.Formatter.converter = _time.gmtime
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    format="%(asctime)sZ  %(levelname)-8s  process=%(processName)s  thread=%(threadName)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
@@ -59,6 +62,7 @@ class FundamentalRow:
     mispricing_score: float | None = None
     negative_earnings_flag: bool = False
     high_leverage_flag: bool = False
+    market_cap_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,23 @@ class Signal:
     sector: str = ""
     industry: str = ""
     entry_ts: Optional[datetime] = None
+
+
+@dataclass
+class SignalEvaluation:
+    signal: Optional[Signal]
+    decision: str
+    reason_code: str
+    reason_text: str
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
+    take_profit_2: Optional[float] = None
+    pullback_pct: Optional[float] = None
+    rsi_1h: Optional[float] = None
+    volume_ratio: Optional[float] = None
+    entry_score: Optional[float] = None
+    combined_score: Optional[float] = None
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -286,7 +307,8 @@ def get_candidates(
             COALESCE(valuation_label, ''),
             mispricing_score,
             COALESCE(negative_earnings_flag, false),
-            COALESCE(high_leverage_flag, false)
+            COALESCE(high_leverage_flag, false),
+            market_cap_m
         FROM {}
         WHERE {}
         ORDER BY
@@ -310,6 +332,7 @@ def get_candidates(
             mispricing_score=float(r[5]) if r[5] is not None else None,
             negative_earnings_flag=bool(r[6]),
             high_leverage_flag=bool(r[7]),
+            market_cap_m=float(r[8]) if r[8] is not None else None,
         )
         for r in rows
     ]
@@ -329,7 +352,6 @@ INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
 MIN_FREE_MARGIN_PCT    = float(os.getenv("MIN_FREE_MARGIN_PCT", "20.0"))
-ALLOW_FRACTIONAL_SHARES = os.getenv("ALLOW_FRACTIONAL_SHARES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 ACCOUNT_PROFILE_DEFAULTS = {
     # Pepperstone EU retail US Share/ETF CFDs:
@@ -350,7 +372,7 @@ ACCOUNT_PROFILE_DEFAULTS = {
     },
     # IBKR Pro Tiered US stocks:
     # Reg-T overnight initial margin 50%, maintenance 25%;
-    # first tier commission and current first-tier USD margin loan rate.
+    # first tier commission and configured first-tier USD margin loan rate.
     "ibkr_acc": {
         "margin_requirement_pct": 50.0,
         "maintenance_margin_pct": 25.0,
@@ -368,12 +390,21 @@ ACCOUNT_PROFILE_DEFAULTS = {
 if ACCOUNT_PROFILE not in ACCOUNT_PROFILE_DEFAULTS:
     raise ValueError("ACCOUNT_PROFILE must be one of: ps_acc, ibkr_acc")
 _ACC = ACCOUNT_PROFILE_DEFAULTS[ACCOUNT_PROFILE]
+_ACC_ENV_PREFIX = {
+    "ps_acc": "PS",
+    "ibkr_acc": "IBKR",
+}[ACCOUNT_PROFILE]
 
 def _account_float(env_key: str, default_key: str) -> float:
-    return float(os.getenv(env_key, str(_ACC[default_key])))
+    prefixed_key = f"{_ACC_ENV_PREFIX}_{env_key}"
+    raw = os.getenv(prefixed_key)
+    if raw is None:
+        raw = str(_ACC[default_key])
+    return float(raw)
 
 def _account_bool(env_key: str, default_key: str) -> bool:
-    raw = os.getenv(env_key)
+    prefixed_key = f"{_ACC_ENV_PREFIX}_{env_key}"
+    raw = os.getenv(prefixed_key)
     if raw is None:
         return bool(_ACC[default_key])
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -454,8 +485,6 @@ REQUIRE_USD_FUNDAMENTALS = os.getenv("REQUIRE_USD_FUNDAMENTALS", "true").strip()
 
 DB_CONNECT_RETRIES       = int(os.getenv("DB_CONNECT_RETRIES", "5"))
 DB_CONNECT_RETRY_DELAY_S = float(os.getenv("DB_CONNECT_RETRY_DELAY_S", "5.0"))
-
-import time as _time
 
 DB = {
     "host":            os.getenv("PGHOST", "timescaledb"),
@@ -575,6 +604,53 @@ class ClosedTrade:
     equity_after: float
     exit_ts: datetime = None
     tp1_exit_ts: Optional[datetime] = None
+
+
+@dataclass
+class DecisionEvent:
+    run_id: int
+    signal_date: date
+    as_of_ts: Optional[datetime]
+    symbol: Optional[str]
+    direction: Optional[str]
+    decision_stage: str
+    decision: str
+    reason_code: str
+    reason_text: str = ""
+    signal_passed: bool = False
+    opened: bool = False
+    candidate_rank: Optional[int] = None
+    signal_rank: Optional[int] = None
+    world_regime_label: str = ""
+    world_regime_score: Optional[float] = None
+    valuation_label: str = ""
+    sector: str = ""
+    industry: str = ""
+    fundamental_score: Optional[float] = None
+    mispricing_score: Optional[float] = None
+    market_cap_m: Optional[float] = None
+    bar_count: Optional[int] = None
+    min_bars: Optional[int] = None
+    entry_ts: Optional[datetime] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
+    take_profit_2: Optional[float] = None
+    pullback_pct: Optional[float] = None
+    rsi_1h: Optional[float] = None
+    volume_ratio: Optional[float] = None
+    entry_score: Optional[float] = None
+    combined_score: Optional[float] = None
+    open_positions: Optional[int] = None
+    max_open_positions: Optional[int] = None
+    account_equity: Optional[float] = None
+    used_margin: Optional[float] = None
+    free_margin: Optional[float] = None
+    required_margin: Optional[float] = None
+    free_margin_after: Optional[float] = None
+    min_free_margin_pct: Optional[float] = None
+    position_size_usd: Optional[float] = None
+    shares: Optional[float] = None
 
 
 # ── DB connect ────────────────────────────────────────────────────────────────
@@ -1525,6 +1601,89 @@ def write_trades(
     conn.commit()
 
 
+def _decimal_or_none(value: Optional[float], digits: int) -> Optional[Decimal]:
+    if value is None:
+        return None
+    if not math.isfinite(float(value)):
+        return None
+    return Decimal(str(round(float(value), digits)))
+
+
+def write_decision_events(
+    conn: psycopg2.extensions.connection,
+    events: list[DecisionEvent],
+) -> None:
+    if not events:
+        return
+
+    rows = [
+        (
+            e.run_id,
+            e.signal_date,
+            e.as_of_ts,
+            e.symbol,
+            e.direction,
+            e.decision_stage,
+            e.decision,
+            e.reason_code,
+            e.reason_text or None,
+            e.signal_passed,
+            e.opened,
+            e.candidate_rank,
+            e.signal_rank,
+            e.world_regime_label or None,
+            _decimal_or_none(e.world_regime_score, 2),
+            e.valuation_label or None,
+            e.sector or None,
+            e.industry or None,
+            _decimal_or_none(e.fundamental_score, 4),
+            _decimal_or_none(e.mispricing_score, 4),
+            _decimal_or_none(e.market_cap_m, 2),
+            e.bar_count,
+            e.min_bars,
+            e.entry_ts,
+            _decimal_or_none(e.entry_price, 4),
+            _decimal_or_none(e.stop_loss, 4),
+            _decimal_or_none(e.take_profit_1, 4),
+            _decimal_or_none(e.take_profit_2, 4),
+            _decimal_or_none(e.pullback_pct, 2),
+            _decimal_or_none(e.rsi_1h, 2),
+            _decimal_or_none(e.volume_ratio, 3),
+            _decimal_or_none(e.entry_score, 4),
+            _decimal_or_none(e.combined_score, 4),
+            e.open_positions,
+            e.max_open_positions,
+            _decimal_or_none(e.account_equity, 2),
+            _decimal_or_none(e.used_margin, 2),
+            _decimal_or_none(e.free_margin, 2),
+            _decimal_or_none(e.required_margin, 2),
+            _decimal_or_none(e.free_margin_after, 2),
+            _decimal_or_none(e.min_free_margin_pct, 2),
+            _decimal_or_none(e.position_size_usd, 2),
+            _decimal_or_none(e.shares, 6),
+        )
+        for e in events
+    ]
+
+    query = """
+        INSERT INTO {table} (
+            run_id, signal_date, as_of_ts, symbol, direction,
+            decision_stage, decision, reason_code, reason_text,
+            signal_passed, opened, candidate_rank, signal_rank,
+            world_regime_label, world_regime_score, valuation_label,
+            sector, industry, fundamental_score, mispricing_score, market_cap_m,
+            bar_count, min_bars, entry_ts, entry_price, stop_loss,
+            take_profit_1, take_profit_2, pullback_pct, rsi_1h, volume_ratio,
+            entry_score, combined_score, open_positions, max_open_positions,
+            account_equity, used_margin, free_margin, required_margin,
+            free_margin_after, min_free_margin_pct, position_size_usd, shares
+        ) VALUES %s
+    """.format(table=_result_table("backtest_decision_events"))
+    with conn.cursor() as cur:
+        execute_values(cur, query, rows, page_size=500)
+    conn.commit()
+
+
 def update_run_summary(
     conn: psycopg2.extensions.connection,
     run_id: int,
@@ -1739,9 +1898,24 @@ def run_backtest(
         open_positions = still_open
 
         # ── 2. Generate signals for today ───────────────────────────────────
+        day_end_ts = _day_signal_cutoff_ts(day)
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME, as_of_date=day)
         if not regime:
             days_no_regime += 1
+            write_decision_events(conn, [DecisionEvent(
+                run_id=run_id,
+                signal_date=day,
+                as_of_ts=day_end_ts,
+                symbol=None,
+                direction=None,
+                decision_stage="regime_filter",
+                decision="skipped_day",
+                reason_code="no_regime",
+                reason_text="No world-regime row was available for this trading day.",
+                open_positions=len(open_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            )])
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s — no regime  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
@@ -1755,6 +1929,25 @@ def run_backtest(
             direction = "SHORT"
         else:
             days_neutral += 1
+            write_decision_events(conn, [DecisionEvent(
+                run_id=run_id,
+                signal_date=day,
+                as_of_ts=day_end_ts,
+                symbol=None,
+                direction=None,
+                decision_stage="regime_filter",
+                decision="skipped_day",
+                reason_code="neutral_regime",
+                reason_text=(
+                    f"World-regime score {regime.score:.2f} is between long threshold "
+                    f"{cfg.long_max_score:.2f} and short threshold {cfg.short_min_score:.2f}."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                open_positions=len(open_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            )])
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s — neutral regime %.1f  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
@@ -1762,7 +1955,6 @@ def run_backtest(
                 )
             continue
 
-        day_end_ts = _day_signal_cutoff_ts(day)
         candidates = get_candidates(
             conn, direction,
             long_min_fundamental=cfg.long_min_fundamental,
@@ -1780,6 +1972,22 @@ def run_backtest(
 
         if not candidates:
             days_no_candidates += 1
+            write_decision_events(conn, [DecisionEvent(
+                run_id=run_id,
+                signal_date=day,
+                as_of_ts=day_end_ts,
+                symbol=None,
+                direction=direction,
+                decision_stage="candidate_filter",
+                decision="no_candidates",
+                reason_code="no_candidates_after_fundamental_filters",
+                reason_text="No symbols passed the point-in-time fundamental, currency, market-cap and broker filters.",
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                open_positions=len(open_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            )])
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s — %s regime %.1f  no candidates  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
@@ -1792,10 +2000,17 @@ def run_backtest(
 
         model = get_model_module()
         compute_fn = model.compute_long_signal if direction == "LONG" else model.compute_short_signal
+        evaluate_fn = getattr(
+            model,
+            "evaluate_long_signal" if direction == "LONG" else "evaluate_short_signal",
+            None,
+        )
         signals: list[Signal] = []
+        decision_events: list[DecisionEvent] = []
+        signal_events: dict[str, DecisionEvent] = {}
         skipped_no_bars = 0
 
-        for fundamental in candidates:
+        for candidate_rank, fundamental in enumerate(candidates, start=1):
             bars = get_cached_bars(
                 conn, fundamental.symbol,
                 cfg.min_bars + cfg.price_lookback_bars,
@@ -1803,13 +2018,101 @@ def run_backtest(
             )
             if len(bars) < cfg.min_bars:
                 skipped_no_bars += 1
+                decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    signal_date=day,
+                    as_of_ts=day_end_ts,
+                    symbol=fundamental.symbol,
+                    direction=direction,
+                    decision_stage="bar_load",
+                    decision="rejected",
+                    reason_code="insufficient_bars",
+                    reason_text=f"Only {len(bars)} cached 1h bars were available; model requires at least {cfg.min_bars}.",
+                    candidate_rank=candidate_rank,
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    valuation_label=fundamental.valuation_label,
+                    sector=fundamental.sector,
+                    industry=fundamental.industry,
+                    fundamental_score=fundamental.composite_score,
+                    mispricing_score=fundamental.mispricing_score,
+                    market_cap_m=fundamental.market_cap_m,
+                    bar_count=len(bars),
+                    min_bars=cfg.min_bars,
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
                 continue
-            signal = compute_fn(bars, fundamental, datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc), cfg)
+            if evaluate_fn is not None:
+                evaluation = evaluate_fn(
+                    bars,
+                    fundamental,
+                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                    cfg,
+                )
+                signal = evaluation.signal
+            else:
+                signal = compute_fn(
+                    bars,
+                    fundamental,
+                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                    cfg,
+                )
+                evaluation = SignalEvaluation(
+                    signal=signal,
+                    decision="signal" if signal else "rejected",
+                    reason_code="signal_passed" if signal else "no_signal",
+                    reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
+                )
             if signal:
                 signal.entry_ts = bars[-1].ts
                 signals.append(signal)
+            event = DecisionEvent(
+                run_id=run_id,
+                signal_date=day,
+                as_of_ts=day_end_ts,
+                symbol=fundamental.symbol,
+                direction=direction,
+                decision_stage="signal_eval",
+                decision="signal" if signal else "rejected",
+                reason_code=evaluation.reason_code,
+                reason_text=evaluation.reason_text,
+                signal_passed=bool(signal),
+                candidate_rank=candidate_rank,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                mispricing_score=fundamental.mispricing_score,
+                market_cap_m=fundamental.market_cap_m,
+                bar_count=len(bars),
+                min_bars=cfg.min_bars,
+                entry_ts=signal.entry_ts if signal else None,
+                entry_price=evaluation.entry_price if evaluation.entry_price is not None else (signal.entry_price if signal else None),
+                stop_loss=evaluation.stop_loss if evaluation.stop_loss is not None else (signal.stop_loss if signal else None),
+                take_profit_1=evaluation.take_profit_1 if evaluation.take_profit_1 is not None else (signal.take_profit_1 if signal else None),
+                take_profit_2=evaluation.take_profit_2 if evaluation.take_profit_2 is not None else (signal.take_profit_2 if signal else None),
+                pullback_pct=evaluation.pullback_pct if evaluation.pullback_pct is not None else (signal.pullback_pct if signal else None),
+                rsi_1h=evaluation.rsi_1h if evaluation.rsi_1h is not None else (signal.rsi_1h if signal else None),
+                volume_ratio=evaluation.volume_ratio if evaluation.volume_ratio is not None else (signal.volume_ratio if signal else None),
+                entry_score=evaluation.entry_score if evaluation.entry_score is not None else (signal.entry_score if signal else None),
+                combined_score=evaluation.combined_score if evaluation.combined_score is not None else (signal.combined_score if signal else None),
+                open_positions=len(open_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            )
+            decision_events.append(event)
+            if signal:
+                signal_events[signal.symbol] = event
 
         signals.sort(key=lambda s: s.combined_score, reverse=True)
+        for signal_rank, signal in enumerate(signals, start=1):
+            event = signal_events.get(signal.symbol)
+            if event:
+                event.signal_rank = signal_rank
 
         if signals:
             days_with_signals += 1
@@ -1834,29 +2137,81 @@ def run_backtest(
                 return 2      # same sector and industry
 
             signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
+            for signal_rank, signal in enumerate(signals, start=1):
+                event = signal_events.get(signal.symbol)
+                if event:
+                    event.signal_rank = signal_rank
         opened_today = 0
         account_equity_today = _account_equity(conn, open_positions, equity, day)
         used_margin = sum(_active_margin_used(p) for p in open_positions)
 
         for signal in signals:
+            event = signal_events.get(signal.symbol)
+            free_margin = account_equity_today - used_margin
+            if event:
+                event.open_positions = len(open_positions)
+                event.max_open_positions = MAX_OPEN_POSITIONS
+                event.account_equity = account_equity_today
+                event.used_margin = used_margin
+                event.free_margin = free_margin
+                event.min_free_margin_pct = MIN_FREE_MARGIN_PCT
+
             if len(open_positions) >= MAX_OPEN_POSITIONS:
-                break
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "max_open_positions_reached"
+                    event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
+                continue
             if signal.symbol in open_symbols:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "symbol_already_open"
+                    event.reason_text = "Symbol already had an open position."
                 continue
 
             if account_equity_today <= 0:
-                break
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "account_equity_non_positive"
+                    event.reason_text = "Account equity was not positive at decision time."
+                continue
 
             margin_used, shares, position_size_usd = calc_position(signal, account_equity_today)
+            if event:
+                event.required_margin = margin_used
+                event.position_size_usd = position_size_usd
+                event.shares = shares
             if position_size_usd <= 0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "position_size_non_positive"
+                    event.reason_text = "Position sizing produced a non-positive position size."
                 continue
 
-            free_margin = account_equity_today - used_margin
             free_margin_after = free_margin - margin_used
+            if event:
+                event.free_margin_after = free_margin_after
 
             if free_margin_after < 0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "insufficient_margin"
+                    event.reason_text = "Required margin exceeded current free margin."
                 continue
             if free_margin_after < account_equity_today * MIN_FREE_MARGIN_PCT / 100.0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "min_free_margin_guard"
+                    event.reason_text = (
+                        f"Free margin after entry would fall below {MIN_FREE_MARGIN_PCT:.2f}% "
+                        "of account equity."
+                    )
                 continue
 
             open_positions.append(OpenPosition(
@@ -1885,9 +2240,17 @@ def run_backtest(
             open_symbols.add(signal.symbol)
             used_margin += margin_used
             opened_today += 1
+            if event:
+                event.decision_stage = "order_open"
+                event.decision = "opened"
+                event.reason_code = "opened"
+                event.reason_text = "Signal passed portfolio checks and a simulated position was opened."
+                event.opened = True
             log.debug("Opened  %-6s %s  entry=%.2f  sl=%.2f  margin=%.0f  equity=%.0f",
                       signal.symbol, signal.direction, signal.entry_price,
                       signal.stop_loss, margin_used, equity)
+
+        write_decision_events(conn, decision_events)
 
         if log_progress_today or opened_today > 0:
             log.info(

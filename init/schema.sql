@@ -13,6 +13,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 \if :drop_backtest_tables_on_start
 DROP TABLE IF EXISTS backtest_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest_decision_events CASCADE;
 DROP TABLE IF EXISTS backtest_trades CASCADE;
 DROP TABLE IF EXISTS backtest_runs CASCADE;
 \endif
@@ -92,6 +93,73 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     avg_loss_pct         NUMERIC(12,4),
     profit_factor        NUMERIC(12,4)
 );
+
+-- ── Per-day decision trace ───────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS backtest_decision_events (
+    id                   BIGSERIAL     PRIMARY KEY,
+    run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    signal_date          DATE          NOT NULL,
+    as_of_ts             TIMESTAMPTZ,
+    symbol               TEXT,
+    direction            TEXT,
+
+    -- Decision taxonomy
+    decision_stage       TEXT          NOT NULL, -- regime_filter | candidate_filter | bar_load | signal_eval | portfolio_filter | order_open
+    decision             TEXT          NOT NULL, -- skipped_day | no_candidates | rejected | signal | blocked | opened
+    reason_code          TEXT          NOT NULL,
+    reason_text          TEXT,
+    signal_passed        BOOLEAN       NOT NULL DEFAULT FALSE,
+    opened               BOOLEAN       NOT NULL DEFAULT FALSE,
+    candidate_rank       INTEGER,
+    signal_rank          INTEGER,
+
+    -- Market and fundamental context
+    world_regime_label   TEXT,
+    world_regime_score   NUMERIC(5,2),
+    valuation_label      TEXT,
+    sector               TEXT,
+    industry             TEXT,
+    fundamental_score    NUMERIC(8,4),
+    mispricing_score     NUMERIC(8,4),
+    market_cap_m         NUMERIC(18,2),
+
+    -- Bar and signal context
+    bar_count            INTEGER,
+    min_bars             INTEGER,
+    entry_ts             TIMESTAMPTZ,
+    entry_price          NUMERIC(15,4),
+    stop_loss            NUMERIC(15,4),
+    take_profit_1        NUMERIC(15,4),
+    take_profit_2        NUMERIC(15,4),
+    pullback_pct         NUMERIC(6,2),
+    rsi_1h               NUMERIC(5,2),
+    volume_ratio         NUMERIC(6,3),
+    entry_score          NUMERIC(8,4),
+    combined_score       NUMERIC(8,4),
+
+    -- Portfolio context at decision time
+    open_positions       INTEGER,
+    max_open_positions   INTEGER,
+    account_equity       NUMERIC(15,2),
+    used_margin          NUMERIC(15,2),
+    free_margin          NUMERIC(15,2),
+    required_margin      NUMERIC(15,2),
+    free_margin_after    NUMERIC(15,2),
+    min_free_margin_pct  NUMERIC(5,2),
+    position_size_usd    NUMERIC(15,2),
+    shares               NUMERIC(15,6)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_run_day
+    ON backtest_decision_events (run_id, signal_date, decision_stage, decision);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_symbol_day
+    ON backtest_decision_events (run_id, symbol, signal_date);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_reason
+    ON backtest_decision_events (run_id, reason_code, signal_date);
 
 -- ── Individual trades ─────────────────────────────────────────────────────────
 
@@ -203,8 +271,10 @@ CREATE TABLE IF NOT EXISTS backtest_monte_carlo (
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_runs  TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_decision_events TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_trades TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_monte_carlo TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_runs_run_id_seq   TO "market-data-account";
+GRANT USAGE, SELECT ON SEQUENCE backtest_decision_events_id_seq TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_trades_id_seq     TO "market-data-account";
 

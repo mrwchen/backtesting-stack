@@ -65,7 +65,7 @@ services:
       - MIN_MARKET_CAP_M=5000.0
       # Research switch: true ignores data_available_at for rebuilt historical fundamentals.
       # This can introduce look-ahead bias; keep false for final strategy validation.
-      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=true
+      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
       # ── Generic: time range ────────────────────────────────────────────────
       - START_DATE=2022-01-01
@@ -95,35 +95,35 @@ services:
       #   commission=0.02 USD/share, min=0.02 USD, max cap disabled
       #   no extra Pepperstone spread markup, slippage=1 bps, financing=5% approximation
       # Uncomment to override the ps_acc defaults.
-      - MARGIN_REQUIREMENT_PCT=20
-      - MAINTENANCE_MARGIN_PCT=20
-      - ALLOW_FRACTIONAL_SHARES=false
-      - COMMISSION_PER_ORDER_USD=0.0
-      - COMMISSION_PER_SHARE_USD=0.02
-      - COMMISSION_MIN_PER_ORDER_USD=0.02
-      - COMMISSION_MAX_PCT=0.0
-      - COMMISSION_BPS=0.0
-      - SPREAD_BPS=0.0
-      - SLIPPAGE_BPS=1.0
-      - MARGIN_FINANCING_RATE_PCT=5.0
+      # - PS_MARGIN_REQUIREMENT_PCT=20
+      # - PS_MAINTENANCE_MARGIN_PCT=20
+      # - PS_ALLOW_FRACTIONAL_SHARES=false
+      # - PS_COMMISSION_PER_ORDER_USD=0.0
+      # - PS_COMMISSION_PER_SHARE_USD=0.02
+      # - PS_COMMISSION_MIN_PER_ORDER_USD=0.02
+      # - PS_COMMISSION_MAX_PCT=0.0
+      # - PS_COMMISSION_BPS=0.0
+      # - PS_SPREAD_BPS=0.0
+      # - PS_SLIPPAGE_BPS=1.0
+      # - PS_MARGIN_FINANCING_RATE_PCT=5.0
 
       # ── Account 3/3: ibkr_acc / Interactive Brokers Pro Tiered overrides ───
       # Defaults when ACCOUNT_PROFILE=ibkr_acc:
       #   Reg-T overnight margin=50%, maintenance=25%, fractional=true
       #   Pro Tiered first tier: commission=0.0035 USD/share, min=0.35 USD, max=1%
-      #   spread=0 bps, slippage=1 bps, current first-tier USD margin rate=5.14%
+      #   spread=0 bps, slippage=1 bps, configured first-tier USD margin rate=5.14%
       # Uncomment to override the ibkr_acc defaults.
-      # - MARGIN_REQUIREMENT_PCT=50
-      # - MAINTENANCE_MARGIN_PCT=25
-      # - ALLOW_FRACTIONAL_SHARES=true
-      # - COMMISSION_PER_ORDER_USD=0.0
-      # - COMMISSION_PER_SHARE_USD=0.0035
-      # - COMMISSION_MIN_PER_ORDER_USD=0.35
-      # - COMMISSION_MAX_PCT=1.0
-      # - COMMISSION_BPS=0.0
-      # - SPREAD_BPS=0.0
-      # - SLIPPAGE_BPS=1.0
-      # - MARGIN_FINANCING_RATE_PCT=5.14
+      # - IBKR_MARGIN_REQUIREMENT_PCT=50
+      # - IBKR_MAINTENANCE_MARGIN_PCT=25
+      # - IBKR_ALLOW_FRACTIONAL_SHARES=true
+      # - IBKR_COMMISSION_PER_ORDER_USD=0.0
+      # - IBKR_COMMISSION_PER_SHARE_USD=0.0035
+      # - IBKR_COMMISSION_MIN_PER_ORDER_USD=0.35
+      # - IBKR_COMMISSION_MAX_PCT=1.0
+      # - IBKR_COMMISSION_BPS=0.0
+      # - IBKR_SPREAD_BPS=0.0
+      # - IBKR_SLIPPAGE_BPS=1.0
+      # - IBKR_MARGIN_FINANCING_RATE_PCT=5.14
 
       # ── Generic: Monte Carlo ───────────────────────────────────────────────
       - MONTE_CARLO_ENABLED=false
