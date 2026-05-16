@@ -40,7 +40,7 @@ from psycopg2.extras import execute_values
 logging.Formatter.converter = _time.gmtime
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)sZ  %(levelname)-8s  process=%(processName)s  thread=%(threadName)s  %(message)s",
+    format="%(asctime)sZ  %(levelname)-8s  process=%(processName)-48s  thread=%(threadName)-16s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
