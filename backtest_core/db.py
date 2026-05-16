@@ -1,0 +1,225 @@
+"""Database connection and source/result schema validation."""
+
+import logging
+import time as _time
+from datetime import datetime, timedelta, timezone
+
+import psycopg2
+from psycopg2 import sql
+
+from .config import *
+from .market_data import _day_close_ts
+from .sql_utils import relation_identifier
+
+log = logging.getLogger(__name__)
+
+def connect_with_retry() -> psycopg2.extensions.connection:
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            return psycopg2.connect(**DB)
+        except psycopg2.OperationalError as exc:
+            if attempt == DB_CONNECT_RETRIES:
+                raise
+            delay = DB_CONNECT_RETRY_DELAY_S * (2 ** (attempt - 1))
+            log.warning("DB connect failed (%d/%d, retry in %.0fs): %s", attempt, DB_CONNECT_RETRIES, delay, exc)
+            _time.sleep(delay)
+    raise RuntimeError("unreachable")
+
+
+# ── Source validation ─────────────────────────────────────────────────────────
+
+def _relation_columns(conn: psycopg2.extensions.connection, relation_name: str) -> set[str]:
+    """Return column names for a table/view/materialized view, or fail clearly."""
+    relation_identifier(relation_name)  # validates plain/schema-qualified identifier
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.attname
+            FROM pg_attribute a
+            WHERE a.attrelid = to_regclass(%s)
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            """,
+            (relation_name,),
+        )
+        columns = {row[0] for row in cur.fetchall()}
+    if not columns:
+        raise RuntimeError(f"Required source relation not found or has no columns: {relation_name}")
+    return columns
+
+
+def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, required: set[str]) -> None:
+    columns = _relation_columns(conn, relation_name)
+    missing = sorted(required - columns)
+    if missing:
+        raise RuntimeError(
+            f"Required relation {relation_name} is missing columns: {', '.join(missing)}"
+        )
+    log.info(
+        "Validated relation schema — relation=%s required_columns=%d available_columns=%d",
+        relation_name,
+        len(required),
+        len(columns),
+    )
+
+
+def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
+    """Validate source tables/columns and basic date coverage before the run."""
+    fundamental_required = {
+        "time",
+        "symbol",
+        "data_available_at",
+        "fundamental_data_available_at",
+        "composite_score",
+        "sector",
+        "industry",
+        "valuation_label",
+        "mispricing_score",
+        "negative_earnings_flag",
+        "high_leverage_flag",
+        "market_cap_m",
+    }
+    if REQUIRE_USD_FUNDAMENTALS:
+        fundamental_required.update({
+            "current_price_currency",
+            "market_cap_currency",
+            "currency",
+            "financial_currency",
+        })
+
+    _require_columns(conn, SOURCE_1H, {"symbol", "ts", "open", "high", "low", "close", "volume"})
+    _require_columns(conn, SOURCE_FUNDAMENTAL, fundamental_required)
+    _require_columns(conn, SOURCE_WORLD_REGIME, {"day", "regime_label", "composite_score"})
+
+    if ACCOUNT_PROFILE == "ps_acc":
+        _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
+
+    _validate_source_coverage(conn)
+
+
+def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
+    """Validate result tables created by the init container before writing."""
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_runs", {
+        "run_id",
+        "initial_equity",
+        "ps_share_cfd_arr_pct",
+        "ps_share_cfd_admin_fee_pct",
+        "ps_share_cfd_short_borrow_rate_pct",
+        "ps_share_cfd_overnight_day_count",
+    })
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "entry_ts", "pnl_usd", "equity_after"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
+        "run_id",
+        "ts",
+        "trade_date",
+        "seq_in_run",
+        "balance_usd",
+        "open_pnl_usd",
+        "equity_usd",
+        "initial_margin_usd",
+        "maintenance_margin_usd",
+        "available_funds_usd",
+        "excess_liquidity_usd",
+        "open_positions",
+        "realized_pnl_usd",
+        "closed_trades",
+    })
+
+
+def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
+    start_ts = datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
+    end_ts = _day_close_ts(END_DATE)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT MIN(ts), MAX(ts) FROM {} "
+                "WHERE ts >= %s AND ts <= %s"
+            ).format(relation_identifier(SOURCE_1H)),
+            (start_ts, end_ts),
+        )
+        bar_min_ts, bar_max_ts = cur.fetchone()
+    if bar_min_ts is None:
+        raise RuntimeError(
+            f"No 1h bars in {SOURCE_1H} for required window {start_ts} to {end_ts}"
+        )
+    log.info("Source coverage — bars relation=%s min_ts=%s max_ts=%s", SOURCE_1H, bar_min_ts, bar_max_ts)
+
+    fundamental_where = [
+        sql.SQL("time <= %s"),
+        sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) <= %s"),
+    ]
+    fundamental_params: list[object] = [end_ts, end_ts]
+    if REQUIRE_USD_FUNDAMENTALS:
+        fundamental_where.append(sql.SQL(
+            "COALESCE(NULLIF(current_price_currency, ''), "
+            "NULLIF(market_cap_currency, ''), "
+            "NULLIF(currency, ''), "
+            "NULLIF(financial_currency, ''), "
+            "%s) = %s"
+        ))
+        fundamental_params.extend(["USD", "USD"])
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT MIN(time), MAX(time), "
+                "MAX(COALESCE(data_available_at, fundamental_data_available_at, time)) "
+                "FROM {} WHERE {}"
+            ).format(
+                relation_identifier(SOURCE_FUNDAMENTAL),
+                sql.SQL(" AND ").join(fundamental_where),
+            ),
+            fundamental_params,
+        )
+        fund_min_ts, fund_max_ts, fund_max_available_ts = cur.fetchone()
+    if fund_min_ts is None:
+        raise RuntimeError(
+            f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL} up to {end_ts}"
+        )
+    log.info(
+        "Source coverage — fundamentals relation=%s min_time=%s max_time=%s max_available_at=%s",
+        SOURCE_FUNDAMENTAL,
+        fund_min_ts,
+        fund_max_ts,
+        fund_max_available_ts,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT MIN(day), MAX(day) FROM {} "
+                "WHERE day <= %s AND composite_score IS NOT NULL"
+            ).format(relation_identifier(SOURCE_WORLD_REGIME)),
+            (END_DATE,),
+        )
+        regime_min_day, regime_max_day = cur.fetchone()
+    if regime_min_day is None:
+        raise RuntimeError(
+            f"No world regime rows in {SOURCE_WORLD_REGIME} up to {END_DATE}"
+        )
+    log.info(
+        "Source coverage — world_regime relation=%s min_day=%s max_day=%s",
+        SOURCE_WORLD_REGIME,
+        regime_min_day,
+        regime_max_day,
+    )
+
+    if ACCOUNT_PROFILE == "ps_acc":
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "SELECT COUNT(*) FROM {} "
+                    "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE"
+                ).format(relation_identifier(PEPPERSTONE_TABLE)),
+            )
+            tradable_symbols = cur.fetchone()[0]
+        if tradable_symbols <= 0:
+            raise RuntimeError(
+                f"Pepperstone account selected, but {PEPPERSTONE_TABLE}.symbol_ps has no tradable rows"
+            )
+        log.info(
+            "Source coverage — pepperstone relation=%s account_profile=%s tradable_symbols=%d",
+            PEPPERSTONE_TABLE,
+            ACCOUNT_PROFILE,
+            tradable_symbols,
+        )
