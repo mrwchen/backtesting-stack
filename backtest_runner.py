@@ -854,7 +854,14 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
 
 def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     """Validate result tables created by the init container before writing."""
-    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_runs", {"run_id", "initial_equity"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_runs", {
+        "run_id",
+        "initial_equity",
+        "ps_share_cfd_arr_pct",
+        "ps_share_cfd_admin_fee_pct",
+        "ps_share_cfd_short_borrow_rate_pct",
+        "ps_share_cfd_overnight_day_count",
+    })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "entry_ts", "pnl_usd", "equity_after"})
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",
@@ -1904,6 +1911,8 @@ def create_run(
                 commission_per_order_usd, commission_per_share_usd,
                 commission_min_per_order_usd, commission_max_pct,
                 commission_bps, margin_financing_rate_pct,
+                ps_share_cfd_arr_pct, ps_share_cfd_admin_fee_pct,
+                ps_share_cfd_short_borrow_rate_pct, ps_share_cfd_overnight_day_count,
                 entry_window_enabled, entry_window_tz, entry_window_start, entry_window_end,
                 long_max_score, short_min_score,
                 long_min_fundamental, short_max_fundamental, min_market_cap_m,
@@ -1922,6 +1931,7 @@ def create_run(
                 %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
+                %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
                 %s, %s, %s,
@@ -1944,6 +1954,10 @@ def create_run(
                 COMMISSION_PER_ORDER_USD, COMMISSION_PER_SHARE_USD,
                 COMMISSION_MIN_PER_ORDER_USD, COMMISSION_MAX_PCT,
                 COMMISSION_BPS, MARGIN_FINANCING_RATE_PCT,
+                PS_SHARE_CFD_ARR_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+                PS_SHARE_CFD_ADMIN_FEE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+                PS_SHARE_CFD_SHORT_BORROW_RATE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+                PS_SHARE_CFD_OVERNIGHT_DAY_COUNT if ACCOUNT_PROFILE == "ps_acc" else None,
                 ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
                 cfg.long_max_score, cfg.short_min_score,
                 cfg.long_min_fundamental, cfg.short_max_fundamental, MIN_MARKET_CAP_M,
