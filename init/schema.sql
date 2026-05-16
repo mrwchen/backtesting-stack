@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     risk_per_trade_pct   NUMERIC(5,2)  NOT NULL,   -- % of equity risked per trade
     max_open_positions   INTEGER       NOT NULL,
     margin_requirement_pct NUMERIC(5,2) NOT NULL,  -- margin needed as % of position size
-    maintenance_margin_pct NUMERIC(5,2) NOT NULL,
+    maintenance_margin_pct NUMERIC(5,2),
     min_free_margin_pct  NUMERIC(5,2)  NOT NULL,   -- halt new trades if free margin < X% of equity
     allow_fractional_shares BOOLEAN,
     spread_bps           NUMERIC(6,2),

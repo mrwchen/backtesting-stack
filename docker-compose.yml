@@ -94,9 +94,11 @@ services:
       #   Pepperstone EU retail shares leverage=5:1 => margin=20%, fractional=false
       #   commission=0.02 USD/share, min=0.02 USD, max cap disabled
       #   no extra Pepperstone spread markup, slippage=1 bps, financing=5% approximation
+      #   stop-out at margin level <=50%; new entries require margin level >=100%
       # Uncomment to override the ps_acc defaults.
+      - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
+      - PS_MIN_ENTRY_MARGIN_LEVEL_PCT=100
       # - PS_MARGIN_REQUIREMENT_PCT=20
-      # - PS_MAINTENANCE_MARGIN_PCT=20
       # - PS_ALLOW_FRACTIONAL_SHARES=false
       # - PS_COMMISSION_PER_ORDER_USD=0.0
       # - PS_COMMISSION_PER_SHARE_USD=0.02
