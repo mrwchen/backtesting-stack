@@ -62,7 +62,7 @@ services:
       - SOURCE_WORLD_REGIME=world_regime_daily_scores_historical_mv
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - REQUIRE_USD_FUNDAMENTALS=true
-      - MIN_MARKET_CAP_M=5000.0
+      - MIN_MARKET_CAP_M=2000.0
       # Must stay false: candidate selection always requires point-in-time fundamental availability.
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
