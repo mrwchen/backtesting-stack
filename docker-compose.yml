@@ -48,9 +48,10 @@ services:
       #   single = run MODEL_FILE only
       #   multi  = run comma-separated MODEL_FILES
       #   all    = run every *.py model in ./backtest_models except helper files starting with "_"
-      - MODEL_SELECTION=all
+      - MODEL_SELECTION=statistical_regime_probability_v1.py
       #- MODEL_FILE=pullback_bounce_fundamental_v1.py
-      # - MODEL_FILES=pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,weak_fundamental_breakdown_v1.py
+      # - MODEL_FILES=statistical_regime_probability_v1.py
+      # - MODEL_FILES=pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
 
       # ── Generic: source tables ─────────────────────────────────────────────
       - SOURCE_1H=alpaca_market_data_1h
@@ -163,6 +164,23 @@ services:
       - LONG_MAX_HOLD_DAYS=12.0
       - SHORT_MAX_HOLD_DAYS=5.0
       - TP1_CLOSE_RATIO=0.6
+
+      # ── Statistical probability model parameters ──────────────────────────
+      # Used by statistical_regime_probability_v1.py. It remains purely
+      # statistical: same-symbol event study, Beta-smoothed probabilities,
+      # realized volatility for stop distance, no RSI/EMA/TA inputs.
+      - PROBABILITY_HISTORY_BARS=2200
+      - PROBABILITY_MIN_BARS=650
+      - PROBABILITY_SESSION_TZ=America/New_York
+      - EVENT_LOOKBACK_DAYS=5
+      - MIN_EVENT_DROP_PCT=2.0
+      - MIN_CONSECUTIVE_DOWN_DAYS=2
+      - MIN_DAILY_OBSERVATIONS=90
+      - MIN_ANALOG_EVENTS=25
+      - MAX_ANALOG_EVENTS=120
+      - LONG_MIN_PROBABILITY=0.56
+      - SHORT_MIN_PROBABILITY=0.56
+      - MIN_EDGE_PCT_POINTS=2.0
 
       # ── Shared/simple model grid parameters ────────────────────────────────
       # The original pullback model uses these for TP/holding-period grid search.
