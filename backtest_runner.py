@@ -365,6 +365,8 @@ ACCOUNT_PROFILE_DEFAULTS = {
     # Pepperstone EU retail US Share/ETF CFDs:
     # 5:1 share leverage => 20% margin; 0.02 USD/share per side, 0.02 USD minimum;
     # direct underlying exchange prices without an extra Pepperstone spread mark-up.
+    # Share CFD overnight funding is charged at the 5pm New York rollover on full
+    # active notional, with Friday carrying the weekend financing.
     "ps_acc": {
         "margin_requirement_pct": 20.0,
         "commission_per_order_usd": 0.0,
@@ -374,7 +376,10 @@ ACCOUNT_PROFILE_DEFAULTS = {
         "commission_bps": 0.0,
         "spread_bps": 0.0,
         "slippage_bps": 1.0,
-        "margin_financing_rate_pct": 5.0,
+        "share_cfd_arr_pct": 5.0,
+        "share_cfd_admin_fee_pct": 2.5,
+        "share_cfd_short_borrow_rate_pct": 0.0,
+        "share_cfd_overnight_day_count": 360.0,
         "allow_fractional_shares": False,
     },
     # IBKR Pro Tiered US stocks:
@@ -431,14 +436,24 @@ COMMISSION_MAX_PCT = _account_float("COMMISSION_MAX_PCT", "commission_max_pct")
 COMMISSION_BPS        = _account_float("COMMISSION_BPS", "commission_bps")
 SPREAD_BPS            = _account_float("SPREAD_BPS", "spread_bps")
 SLIPPAGE_BPS          = _account_float("SLIPPAGE_BPS", "slippage_bps")
-MARGIN_FINANCING_RATE_PCT = _account_float("MARGIN_FINANCING_RATE_PCT", "margin_financing_rate_pct")
+MARGIN_FINANCING_RATE_PCT = _account_float("MARGIN_FINANCING_RATE_PCT", "margin_financing_rate_pct") if "margin_financing_rate_pct" in _ACC else 0.0
 ALLOW_FRACTIONAL_SHARES = _account_bool("ALLOW_FRACTIONAL_SHARES", "allow_fractional_shares")
+PS_SHARE_CFD_ARR_PCT = float(os.getenv("PS_SHARE_CFD_ARR_PCT", str(_ACC.get("share_cfd_arr_pct", 0.0)))) if ACCOUNT_PROFILE == "ps_acc" else 0.0
+PS_SHARE_CFD_ADMIN_FEE_PCT = float(os.getenv("PS_SHARE_CFD_ADMIN_FEE_PCT", str(_ACC.get("share_cfd_admin_fee_pct", 0.0)))) if ACCOUNT_PROFILE == "ps_acc" else 0.0
+PS_SHARE_CFD_SHORT_BORROW_RATE_PCT = float(os.getenv("PS_SHARE_CFD_SHORT_BORROW_RATE_PCT", str(_ACC.get("share_cfd_short_borrow_rate_pct", 0.0)))) if ACCOUNT_PROFILE == "ps_acc" else 0.0
+PS_SHARE_CFD_OVERNIGHT_DAY_COUNT = float(os.getenv("PS_SHARE_CFD_OVERNIGHT_DAY_COUNT", str(_ACC.get("share_cfd_overnight_day_count", 360.0)))) if ACCOUNT_PROFILE == "ps_acc" else 360.0
 PS_MARGIN_STOP_OUT_LEVEL_PCT = float(os.getenv("PS_MARGIN_STOP_OUT_LEVEL_PCT", "50.0"))
 PS_MIN_ENTRY_MARGIN_LEVEL_PCT = float(os.getenv("PS_MIN_ENTRY_MARGIN_LEVEL_PCT", "100.0"))
 if PS_MARGIN_STOP_OUT_LEVEL_PCT < 0.0:
     raise ValueError("PS_MARGIN_STOP_OUT_LEVEL_PCT must be >= 0")
 if PS_MIN_ENTRY_MARGIN_LEVEL_PCT < 0.0:
     raise ValueError("PS_MIN_ENTRY_MARGIN_LEVEL_PCT must be >= 0")
+if ACCOUNT_PROFILE == "ps_acc":
+    for _name, _value in {
+        "PS_SHARE_CFD_OVERNIGHT_DAY_COUNT": PS_SHARE_CFD_OVERNIGHT_DAY_COUNT,
+    }.items():
+        if _value <= 0.0:
+            raise ValueError(f"{_name} must be > 0")
 for _name, _value in {
     "IBKR_LONG_INITIAL_MARGIN_PCT": IBKR_LONG_INITIAL_MARGIN_PCT,
     "IBKR_LONG_MAINTENANCE_MARGIN_PCT": IBKR_LONG_MAINTENANCE_MARGIN_PCT,
@@ -534,6 +549,7 @@ _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
+_PEPPERSTONE_ROLLOVER_ZONE = ZoneInfo("America/New_York")
 _MODEL_MODULE: Optional[ModuleType] = None
 CURRENT_MODEL_FILE = MODEL_FILE
 
@@ -1197,7 +1213,7 @@ def simulate_outcome(
                 else:
                     pnl = _pnl_long(pos, price, price, split_exits=False)
                     status = "HIT_SL"
-                return _make_trade(pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
+                return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
 
             if sl_tp_active and not tp1_hit and high >= pos.take_profit_1:
                 tp1_hit = True
@@ -1208,7 +1224,7 @@ def simulate_outcome(
             if sl_tp_active and tp1_hit and high >= pos.take_profit_2:
                 price = pos.take_profit_2
                 pnl = _pnl_long(pos, tp1_price, price)
-                return _make_trade(pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
+                return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
 
         else:  # SHORT
             if sl_tp_active and high >= effective_sl:
@@ -1219,7 +1235,7 @@ def simulate_outcome(
                 else:
                     pnl = _pnl_short(pos, price, price, split_exits=False)
                     status = "HIT_SL"
-                return _make_trade(pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
+                return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
 
             if sl_tp_active and not tp1_hit and low <= pos.take_profit_1:
                 tp1_hit = True
@@ -1230,7 +1246,7 @@ def simulate_outcome(
             if sl_tp_active and tp1_hit and low <= pos.take_profit_2:
                 price = pos.take_profit_2
                 pnl = _pnl_short(pos, tp1_price, price)
-                return _make_trade(pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
+                return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
 
         if ts >= pos.valid_until:
             price = float(close)
@@ -1239,7 +1255,7 @@ def simulate_outcome(
             else:
                 pnl = _pnl_short(pos, tp1_price if tp1_hit else price, price, split_exits=tp1_hit)
             status = "MAX_HOLD_TP1" if tp1_hit else "MAX_HOLD"
-            return _make_trade(pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
+            return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
 
     # Still open — persist incremental state for the next day's call
     pos.tp1_hit = tp1_hit
@@ -1301,6 +1317,8 @@ def _exit_cost(shares: float, fill_price: float) -> float:
 
 def _order_cost(shares: float, fill_price: float) -> float:
     notional = abs(shares * fill_price)
+    if abs(shares) <= 0.0 or notional <= 0.0:
+        return 0.0
     cost = (
         COMMISSION_PER_ORDER_USD
         + abs(shares) * COMMISSION_PER_SHARE_USD
@@ -1373,7 +1391,12 @@ def _latest_close_price_at(
     return float(bars[idx].close)
 
 
-def _open_position_mark_to_market_pnl(pos: OpenPosition, mark_price: float, as_of_date: date) -> float:
+def _open_position_mark_to_market_pnl(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    mark_price: float,
+    as_of_date: date,
+) -> float:
     if pos.direction == "LONG":
         if pos.tp1_hit:
             pnl = _pnl_long(pos, pos.tp1_price or pos.take_profit_1, mark_price, split_exits=True)
@@ -1384,10 +1407,15 @@ def _open_position_mark_to_market_pnl(pos: OpenPosition, mark_price: float, as_o
             pnl = _pnl_short(pos, pos.tp1_price or pos.take_profit_1, mark_price, split_exits=True)
         else:
             pnl = _pnl_short(pos, mark_price, mark_price, split_exits=False)
-    return pnl - _financing_cost(pos, as_of_date, _day_close_ts(as_of_date), pos.tp1_exit_ts, pos.tp1_hit)
+    return pnl - _financing_cost(conn, pos, as_of_date, _day_close_ts(as_of_date), pos.tp1_exit_ts, pos.tp1_hit)
 
 
-def _open_position_mark_to_market_pnl_at(pos: OpenPosition, mark_price: float, as_of_ts: datetime) -> float:
+def _open_position_mark_to_market_pnl_at(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    mark_price: float,
+    as_of_ts: datetime,
+) -> float:
     as_of_ts = _ensure_utc_ts(as_of_ts)
     if pos.direction == "LONG":
         if pos.tp1_hit:
@@ -1399,7 +1427,7 @@ def _open_position_mark_to_market_pnl_at(pos: OpenPosition, mark_price: float, a
             pnl = _pnl_short(pos, pos.tp1_price or pos.take_profit_1, mark_price, split_exits=True)
         else:
             pnl = _pnl_short(pos, mark_price, mark_price, split_exits=False)
-    return pnl - _financing_cost(pos, as_of_ts.date(), as_of_ts, pos.tp1_exit_ts, pos.tp1_hit)
+    return pnl - _financing_cost(conn, pos, as_of_ts.date(), as_of_ts, pos.tp1_exit_ts, pos.tp1_hit)
 
 
 def _account_snapshot_values(
@@ -1411,7 +1439,7 @@ def _account_snapshot_values(
     open_pnl = 0.0
     for pos in open_positions:
         mark_price = _latest_close_price_at(conn, pos, as_of_ts)
-        open_pnl += _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
+        open_pnl += _open_position_mark_to_market_pnl_at(conn, pos, mark_price, as_of_ts)
     initial_margin = sum(_active_margin_used(pos) for pos in open_positions)
     maintenance_margin = sum(_active_maintenance_margin_used(pos) for pos in open_positions)
     equity_with_loan_value = balance + open_pnl
@@ -1426,6 +1454,7 @@ def _account_snapshot_values(
 
 
 def _mark_to_market_close_trade(
+    conn: psycopg2.extensions.connection,
     pos: OpenPosition,
     status: str,
     mark_price: float,
@@ -1444,6 +1473,7 @@ def _mark_to_market_close_trade(
         else:
             pnl = _pnl_short(pos, mark_price, mark_price, split_exits=False)
     return _make_trade(
+        conn,
         pos,
         status,
         mark_price,
@@ -1463,7 +1493,7 @@ def _position_stop_out_rank(
     as_of_ts: datetime,
 ) -> tuple[float, float, str]:
     mark_price = _latest_close_price_at(conn, pos, as_of_ts)
-    pnl = _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
+    pnl = _open_position_mark_to_market_pnl_at(conn, pos, mark_price, as_of_ts)
     return (pnl, -_active_margin_used(pos), pos.symbol)
 
 
@@ -1473,7 +1503,7 @@ def _position_ibkr_liquidation_rank(
     as_of_ts: datetime,
 ) -> tuple[float, float, str]:
     mark_price = _latest_close_price_at(conn, pos, as_of_ts)
-    pnl = _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
+    pnl = _open_position_mark_to_market_pnl_at(conn, pos, mark_price, as_of_ts)
     return (pnl, -_active_maintenance_margin_used(pos), pos.symbol)
 
 
@@ -1507,6 +1537,7 @@ def _enforce_pepperstone_margin_stop_out(
         )
         mark_price = _latest_close_price_at(conn, position, as_of_ts)
         trade = _mark_to_market_close_trade(
+            conn,
             position,
             "MARGIN_STOP_OUT",
             mark_price,
@@ -1553,6 +1584,7 @@ def _enforce_ibkr_excess_liquidity_liquidation(
         )
         mark_price = _latest_close_price_at(conn, position, as_of_ts)
         trade = _mark_to_market_close_trade(
+            conn,
             position,
             "IBKR_MARGIN_LIQUIDATION",
             mark_price,
@@ -1603,7 +1635,7 @@ def _account_equity(
 ) -> float:
     open_pnl = 0.0
     for pos in open_positions:
-        open_pnl += _open_position_mark_to_market_pnl(pos, _latest_close_price(conn, pos, as_of_date), as_of_date)
+        open_pnl += _open_position_mark_to_market_pnl(conn, pos, _latest_close_price(conn, pos, as_of_date), as_of_date)
     return realized_equity + open_pnl
 
 
@@ -1611,10 +1643,89 @@ def _financing_days(start_ts: datetime, end_ts: datetime) -> float:
     return max(0.0, (end_ts - start_ts).total_seconds() / 86400.0)
 
 
-def _financing_cost(
+def _pepperstone_rollover_ts(local_day: date) -> datetime:
+    local_ts = datetime(
+        local_day.year,
+        local_day.month,
+        local_day.day,
+        17,
+        0,
+        0,
+        tzinfo=_PEPPERSTONE_ROLLOVER_ZONE,
+    )
+    return local_ts.astimezone(timezone.utc)
+
+
+def _pepperstone_rollover_multiplier(local_day: date) -> float:
+    return 3.0 if local_day.weekday() == 4 else 1.0
+
+
+def _pepperstone_rollovers_between(start_ts: datetime, end_ts: datetime) -> list[tuple[datetime, float]]:
+    start_ts = _ensure_utc_ts(start_ts)
+    end_ts = _ensure_utc_ts(end_ts)
+    if end_ts <= start_ts:
+        return []
+
+    start_day = start_ts.astimezone(_PEPPERSTONE_ROLLOVER_ZONE).date()
+    end_day = end_ts.astimezone(_PEPPERSTONE_ROLLOVER_ZONE).date()
+    days = (end_day - start_day).days
+    rollovers: list[tuple[datetime, float]] = []
+    for day_offset in range(days + 1):
+        local_day = start_day + timedelta(days=day_offset)
+        if local_day.weekday() >= 5:
+            continue
+        rollover_ts = _pepperstone_rollover_ts(local_day)
+        if start_ts < rollover_ts <= end_ts:
+            rollovers.append((rollover_ts, _pepperstone_rollover_multiplier(local_day)))
+    return rollovers
+
+
+def _active_shares_at_rollover(
     pos: OpenPosition,
-    outcome_date: date,
-    exit_ts: Optional[datetime] = None,
+    rollover_ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+    tp1_hit: bool,
+) -> float:
+    if not tp1_hit or tp1_exit_ts is None:
+        return pos.shares
+    if _ensure_utc_ts(tp1_exit_ts) <= rollover_ts:
+        return pos.shares * max(0.0, 1.0 - pos.tp1_close_ratio)
+    return pos.shares
+
+
+def _pepperstone_share_cfd_overnight_cost(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    end_ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+    tp1_hit: bool,
+) -> float:
+    if ACCOUNT_PROFILE != "ps_acc":
+        return 0.0
+
+    if pos.direction == "LONG":
+        annual_rate_pct = PS_SHARE_CFD_ADMIN_FEE_PCT + PS_SHARE_CFD_ARR_PCT
+    else:
+        annual_rate_pct = (
+            PS_SHARE_CFD_ADMIN_FEE_PCT
+            - PS_SHARE_CFD_ARR_PCT
+            + PS_SHARE_CFD_SHORT_BORROW_RATE_PCT
+        )
+
+    total = 0.0
+    for rollover_ts, multiplier in _pepperstone_rollovers_between(pos.entry_ts, end_ts):
+        active_shares = _active_shares_at_rollover(pos, rollover_ts, tp1_exit_ts, tp1_hit)
+        if active_shares <= 0.0:
+            continue
+        mark_price = _latest_close_price_at(conn, pos, rollover_ts)
+        active_notional = abs(active_shares * mark_price)
+        total += active_notional * annual_rate_pct / 100.0 * multiplier / PS_SHARE_CFD_OVERNIGHT_DAY_COUNT
+    return total
+
+
+def _generic_margin_financing_cost(
+    pos: OpenPosition,
+    end_ts: datetime,
     tp1_exit_ts: Optional[datetime] = None,
     tp1_hit: bool = False,
 ) -> float:
@@ -1622,7 +1733,7 @@ def _financing_cost(
     if borrowed_notional <= 0.0:
         return 0.0
 
-    end_ts = exit_ts or _day_close_ts(outcome_date)
+    end_ts = _ensure_utc_ts(end_ts)
     total_days = max(1.0, _financing_days(pos.entry_ts, end_ts))
     tp1_ts = tp1_exit_ts or pos.tp1_exit_ts
     if not tp1_hit or tp1_ts is None or tp1_ts >= end_ts:
@@ -1644,7 +1755,22 @@ def _financing_cost(
     return financed_notional_days * MARGIN_FINANCING_RATE_PCT / 100.0 / 365.0
 
 
+def _financing_cost(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    outcome_date: date,
+    exit_ts: Optional[datetime] = None,
+    tp1_exit_ts: Optional[datetime] = None,
+    tp1_hit: bool = False,
+) -> float:
+    end_ts = exit_ts or _day_close_ts(outcome_date)
+    if ACCOUNT_PROFILE == "ps_acc":
+        return _pepperstone_share_cfd_overnight_cost(conn, pos, end_ts, tp1_exit_ts or pos.tp1_exit_ts, tp1_hit)
+    return _generic_margin_financing_cost(pos, end_ts, tp1_exit_ts, tp1_hit)
+
+
 def _make_trade(
+    conn: psycopg2.extensions.connection,
     pos: OpenPosition,
     status: str,
     outcome_price: float,
@@ -1656,7 +1782,7 @@ def _make_trade(
     exit_ts: datetime = None,
     tp1_exit_ts: Optional[datetime] = None,
 ) -> ClosedTrade:
-    pnl -= _financing_cost(pos, outcome_date, exit_ts, tp1_exit_ts, tp1_hit)
+    pnl -= _financing_cost(conn, pos, outcome_date, exit_ts, tp1_exit_ts, tp1_hit)
     return_pct = pnl / pos.position_size_usd * 100.0 if pos.position_size_usd else 0.0
     return ClosedTrade(
         position=pos,
@@ -1675,6 +1801,57 @@ def _make_trade(
 
 # ── Position sizing ───────────────────────────────────────────────────────────
 
+def _stop_loss_cash_risk(
+    shares: float,
+    entry_fill: float,
+    stop_fill: float,
+    direction: str,
+) -> float:
+    if shares <= 0.0:
+        return 0.0
+    if direction == "LONG":
+        gross_loss = shares * (entry_fill - stop_fill)
+    else:
+        gross_loss = shares * (stop_fill - entry_fill)
+    return gross_loss + _entry_cost(shares, entry_fill) + _exit_cost(shares, stop_fill)
+
+
+def _max_shares_for_stop_risk(
+    risk_usd: float,
+    entry_fill: float,
+    stop_fill: float,
+    direction: str,
+) -> float:
+    def risk_for(shares: float) -> float:
+        return _stop_loss_cash_risk(shares, entry_fill, stop_fill, direction)
+
+    high = 1.0
+    while risk_for(high) <= risk_usd:
+        high *= 2.0
+        if high > 1e12:
+            break
+
+    if ALLOW_FRACTIONAL_SHARES:
+        low = 0.0
+        for _ in range(80):
+            mid = (low + high) / 2.0
+            if risk_for(mid) <= risk_usd:
+                low = mid
+            else:
+                high = mid
+        return low
+
+    low_i = 0
+    high_i = max(1, int(math.ceil(high)))
+    while low_i + 1 < high_i:
+        mid = (low_i + high_i) // 2
+        if risk_for(float(mid)) <= risk_usd:
+            low_i = mid
+        else:
+            high_i = mid
+    return float(low_i)
+
+
 def calc_position(
     signal: Signal,
     equity: float,
@@ -1690,17 +1867,12 @@ def calc_position(
         stop_fill = _buy_fill(signal.stop_loss)
         loss_per_share_before_commission = stop_fill - entry_fill
 
-    commission_per_share = (abs(entry_fill) + abs(stop_fill)) * COMMISSION_BPS / 10000.0
-    loss_per_share = loss_per_share_before_commission + commission_per_share
-    fixed_round_trip_cost = COMMISSION_PER_ORDER_USD * 2.0
-    if loss_per_share <= 0 or risk_usd <= fixed_round_trip_cost:
+    if loss_per_share_before_commission <= 0 or risk_usd <= 0:
         return 0.0, 0.0, 0.0, 0.0
 
-    shares = (risk_usd - fixed_round_trip_cost) / loss_per_share
-    if not ALLOW_FRACTIONAL_SHARES:
-        shares = float(int(shares))
-        if shares < 1:
-            return 0.0, 0.0, 0.0, 0.0
+    shares = _max_shares_for_stop_risk(risk_usd, entry_fill, stop_fill, signal.direction)
+    if shares <= 0.0 or (not ALLOW_FRACTIONAL_SHARES and shares < 1.0):
+        return 0.0, 0.0, 0.0, 0.0
     position_size_usd = abs(shares * entry_fill)
     initial_margin_used = position_size_usd * _initial_margin_pct(signal.direction) / 100.0
     maintenance_margin_used = position_size_usd * _maintenance_margin_pct(signal.direction) / 100.0
@@ -2742,6 +2914,7 @@ def run_backtest(
             else:
                 pnl = _pnl_short(pos, last_price, last_price, split_exits=False)
         trade = _make_trade(
+            conn,
             pos,
             "FORCE_CLOSED",
             last_price,
@@ -2959,7 +3132,7 @@ def log_backtest_context(model_files: list[str]) -> None:
             IBKR_SHORT_MAINTENANCE_MARGIN_PCT,
         )
     log.info(
-        "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f  margin_financing_rate_pct=%.2f",
+        "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f",
         ALLOW_FRACTIONAL_SHARES,
         SPREAD_BPS,
         SLIPPAGE_BPS,
@@ -2968,8 +3141,20 @@ def log_backtest_context(model_files: list[str]) -> None:
         COMMISSION_MIN_PER_ORDER_USD,
         COMMISSION_MAX_PCT,
         COMMISSION_BPS,
-        MARGIN_FINANCING_RATE_PCT,
     )
+    if ACCOUNT_PROFILE == "ps_acc":
+        log.info(
+            "Pepperstone share CFD overnight model — rollover_tz=America/New_York rollover_time=17:00 arr_pct=%.2f admin_fee_pct=%.2f short_borrow_rate_pct=%.2f day_count=%.0f friday_multiplier=3",
+            PS_SHARE_CFD_ARR_PCT,
+            PS_SHARE_CFD_ADMIN_FEE_PCT,
+            PS_SHARE_CFD_SHORT_BORROW_RATE_PCT,
+            PS_SHARE_CFD_OVERNIGHT_DAY_COUNT,
+        )
+    else:
+        log.info(
+            "Margin financing model — margin_financing_rate_pct=%.2f",
+            MARGIN_FINANCING_RATE_PCT,
+        )
     log.info(
         "Entry window — enabled=%s  tz=%s  start=%s  end=%s",
         ENTRY_WINDOW_ENABLED,

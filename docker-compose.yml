@@ -92,7 +92,8 @@ services:
       # Defaults when ACCOUNT_PROFILE=ps_acc:
       #   Pepperstone EU retail shares leverage=5:1 => margin=20%, fractional=false
       #   commission=0.02 USD/share, min=0.02 USD, max cap disabled
-      #   no extra Pepperstone spread markup, slippage=1 bps, financing=5% approximation
+      #   no extra Pepperstone spread markup, slippage=1 bps
+      #   share CFD overnight funding at 17:00 New York on full active notional
       #   stop-out at margin level <=50%; new entries require margin level >=100%
       # Uncomment to override the ps_acc defaults.
       - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
@@ -106,7 +107,10 @@ services:
       # - PS_COMMISSION_BPS=0.0
       # - PS_SPREAD_BPS=0.0
       # - PS_SLIPPAGE_BPS=1.0
-      # - PS_MARGIN_FINANCING_RATE_PCT=5.0
+      # - PS_SHARE_CFD_ARR_PCT=5.0
+      # - PS_SHARE_CFD_ADMIN_FEE_PCT=2.5
+      # - PS_SHARE_CFD_SHORT_BORROW_RATE_PCT=0.0
+      # - PS_SHARE_CFD_OVERNIGHT_DAY_COUNT=360.0
 
       # ── Account 3/3: ibkr_acc / Interactive Brokers Pro Tiered overrides ───
       # Defaults when ACCOUNT_PROFILE=ibkr_acc:
