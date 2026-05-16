@@ -6,7 +6,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_BACKTEST_TABLES_ON_START: "false"
+      DROP_BACKTEST_TABLES_ON_START: "true"
     command:
       - sh
       - -c
@@ -49,9 +49,10 @@ services:
       #   multi  = run comma-separated MODEL_FILES
       #   all    = run every *.py model in ./backtest_models except helper files starting with "_"
       #- MODEL_SELECTION=single
-      - MODEL_SELECTION=multi
+      #- MODEL_SELECTION=multi
+      - MODEL_SELECTION=all
       #- MODEL_FILE=statistical_regime_probability_v1.py
-      - MODEL_FILES=deep_pullback_quality_mean_reversion_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,regime_adaptive_swing_v1.py,sector_rotation_long_short_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
+      #- MODEL_FILES=deep_pullback_quality_mean_reversion_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,regime_adaptive_swing_v1.py,sector_rotation_long_short_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
       - MODEL_PARALLELISM=4
       - MODEL_FAILURE_MODE=fail_fast
 
@@ -77,7 +78,7 @@ services:
       - ACCOUNT_PROFILE=ibkr_acc
       - INITIAL_EQUITY=5000
       - RISK_PER_TRADE_PCT=2
-      - MAX_OPEN_POSITIONS=5
+      - MAX_OPEN_POSITIONS=10
       - MIN_FREE_MARGIN_PCT=20
       - SECTOR_DIVERSIFICATION_ENABLED=false
       - ENTRY_WINDOW_ENABLED=true
