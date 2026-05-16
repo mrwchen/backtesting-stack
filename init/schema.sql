@@ -37,9 +37,13 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     initial_equity       NUMERIC(15,2) NOT NULL,
     risk_per_trade_pct   NUMERIC(5,2)  NOT NULL,   -- % of equity risked per trade
     max_open_positions   INTEGER       NOT NULL,
-    margin_requirement_pct NUMERIC(5,2) NOT NULL,  -- margin needed as % of position size
-    maintenance_margin_pct NUMERIC(5,2),
-    min_free_margin_pct  NUMERIC(5,2)  NOT NULL,   -- halt new trades if free margin < X% of equity
+    ps_margin_requirement_pct NUMERIC(5,2),
+    ps_margin_stop_out_level_pct NUMERIC(5,2),
+    ps_min_entry_margin_level_pct NUMERIC(5,2),
+    ibkr_long_initial_margin_pct NUMERIC(5,2),
+    ibkr_long_maintenance_margin_pct NUMERIC(5,2),
+    ibkr_short_initial_margin_pct NUMERIC(5,2),
+    ibkr_short_maintenance_margin_pct NUMERIC(5,2),
     allow_fractional_shares BOOLEAN,
     spread_bps           NUMERIC(6,2),
     slippage_bps         NUMERIC(6,2),
@@ -144,11 +148,14 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     open_positions       INTEGER,
     max_open_positions   INTEGER,
     account_equity       NUMERIC(15,2),
-    used_margin          NUMERIC(15,2),
-    free_margin          NUMERIC(15,2),
-    required_margin      NUMERIC(15,2),
-    free_margin_after    NUMERIC(15,2),
-    min_free_margin_pct  NUMERIC(5,2),
+    initial_margin       NUMERIC(15,2),
+    maintenance_margin   NUMERIC(15,2),
+    available_funds      NUMERIC(15,2),
+    excess_liquidity     NUMERIC(15,2),
+    required_initial_margin NUMERIC(15,2),
+    required_maintenance_margin NUMERIC(15,2),
+    available_funds_after NUMERIC(15,2),
+    excess_liquidity_after NUMERIC(15,2),
     position_size_usd    NUMERIC(15,2),
     shares               NUMERIC(15,6)
 );
@@ -197,10 +204,11 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     position_size_usd    NUMERIC(15,2),
     shares               NUMERIC(15,6),
     margin_used          NUMERIC(15,2),
+    maintenance_margin_used NUMERIC(15,2),
     equity_before        NUMERIC(15,2),
 
     -- Outcome
-    outcome_status       TEXT,          -- HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | MAX_HOLD_TP1 | FORCE_CLOSED
+    outcome_status       TEXT,          -- HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | MAX_HOLD_TP1 | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price        NUMERIC(15,4),
     outcome_date         DATE,
     outcome_bars         INTEGER,       -- 1h bars from entry to close
@@ -231,8 +239,10 @@ CREATE TABLE IF NOT EXISTS backtest_account_curve (
     balance_usd          NUMERIC(15,2) NOT NULL,
     open_pnl_usd         NUMERIC(15,2) NOT NULL,
     equity_usd           NUMERIC(15,2) NOT NULL,
-    used_margin_usd      NUMERIC(15,2) NOT NULL,
-    free_margin_usd      NUMERIC(15,2) NOT NULL,
+    initial_margin_usd   NUMERIC(15,2) NOT NULL,
+    maintenance_margin_usd NUMERIC(15,2) NOT NULL,
+    available_funds_usd  NUMERIC(15,2) NOT NULL,
+    excess_liquidity_usd NUMERIC(15,2) NOT NULL,
     open_positions       INTEGER       NOT NULL,
     realized_pnl_usd     NUMERIC(15,2) NOT NULL,
     closed_trades        INTEGER       NOT NULL,

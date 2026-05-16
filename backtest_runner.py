@@ -360,7 +360,6 @@ ACCOUNT_PROFILE        = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
-MIN_FREE_MARGIN_PCT    = float(os.getenv("MIN_FREE_MARGIN_PCT", "20.0"))
 
 ACCOUNT_PROFILE_DEFAULTS = {
     # Pepperstone EU retail US Share/ETF CFDs:
@@ -379,11 +378,14 @@ ACCOUNT_PROFILE_DEFAULTS = {
         "allow_fractional_shares": False,
     },
     # IBKR Pro Tiered US stocks:
-    # Reg-T overnight initial margin 50%, maintenance 25%;
+    # Europe retail securities account approximation:
+    # available funds uses initial margin; excess liquidity uses maintenance margin.
     # first tier commission and configured first-tier USD margin loan rate.
     "ibkr_acc": {
-        "margin_requirement_pct": 50.0,
-        "maintenance_margin_pct": 25.0,
+        "long_initial_margin_pct": 50.0,
+        "long_maintenance_margin_pct": 25.0,
+        "short_initial_margin_pct": 50.0,
+        "short_maintenance_margin_pct": 50.0,
         "commission_per_order_usd": 0.0,
         "commission_per_share_usd": 0.0035,
         "commission_min_per_order_usd": 0.35,
@@ -417,12 +419,11 @@ def _account_bool(env_key: str, default_key: str) -> bool:
         return bool(_ACC[default_key])
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-MARGIN_REQUIREMENT_PCT = _account_float("MARGIN_REQUIREMENT_PCT", "margin_requirement_pct")
-MAINTENANCE_MARGIN_PCT = (
-    _account_float("MAINTENANCE_MARGIN_PCT", "maintenance_margin_pct")
-    if "maintenance_margin_pct" in _ACC
-    else None
-)
+MARGIN_REQUIREMENT_PCT = _account_float("MARGIN_REQUIREMENT_PCT", "margin_requirement_pct") if "margin_requirement_pct" in _ACC else None
+IBKR_LONG_INITIAL_MARGIN_PCT = _account_float("LONG_INITIAL_MARGIN_PCT", "long_initial_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
+IBKR_LONG_MAINTENANCE_MARGIN_PCT = _account_float("LONG_MAINTENANCE_MARGIN_PCT", "long_maintenance_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
+IBKR_SHORT_INITIAL_MARGIN_PCT = _account_float("SHORT_INITIAL_MARGIN_PCT", "short_initial_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
+IBKR_SHORT_MAINTENANCE_MARGIN_PCT = _account_float("SHORT_MAINTENANCE_MARGIN_PCT", "short_maintenance_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
 COMMISSION_PER_ORDER_USD = _account_float("COMMISSION_PER_ORDER_USD", "commission_per_order_usd")
 COMMISSION_PER_SHARE_USD = _account_float("COMMISSION_PER_SHARE_USD", "commission_per_share_usd")
 COMMISSION_MIN_PER_ORDER_USD = _account_float("COMMISSION_MIN_PER_ORDER_USD", "commission_min_per_order_usd")
@@ -438,6 +439,14 @@ if PS_MARGIN_STOP_OUT_LEVEL_PCT < 0.0:
     raise ValueError("PS_MARGIN_STOP_OUT_LEVEL_PCT must be >= 0")
 if PS_MIN_ENTRY_MARGIN_LEVEL_PCT < 0.0:
     raise ValueError("PS_MIN_ENTRY_MARGIN_LEVEL_PCT must be >= 0")
+for _name, _value in {
+    "IBKR_LONG_INITIAL_MARGIN_PCT": IBKR_LONG_INITIAL_MARGIN_PCT,
+    "IBKR_LONG_MAINTENANCE_MARGIN_PCT": IBKR_LONG_MAINTENANCE_MARGIN_PCT,
+    "IBKR_SHORT_INITIAL_MARGIN_PCT": IBKR_SHORT_INITIAL_MARGIN_PCT,
+    "IBKR_SHORT_MAINTENANCE_MARGIN_PCT": IBKR_SHORT_MAINTENANCE_MARGIN_PCT,
+}.items():
+    if _value is not None and _value < 0.0:
+        raise ValueError(f"{_name} must be >= 0")
 RUN_NOTES_EXTRA        = os.getenv("RUN_NOTES_EXTRA", "")
 RUN_LABEL_TZ           = os.getenv("RUN_LABEL_TZ", "Europe/Berlin")
 PROGRESS_LOG_EVERY_DAYS = max(1, int(os.getenv("PROGRESS_LOG_EVERY_DAYS", "25")))
@@ -624,6 +633,7 @@ class OpenPosition:
     shares: float
     position_size_usd: float
     margin_used: float
+    maintenance_margin_used: float
     equity_before: float
     signal: Signal
     world_regime_label: str = ""
@@ -641,7 +651,7 @@ class OpenPosition:
 @dataclass
 class ClosedTrade:
     position: OpenPosition
-    outcome_status: str        # HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT
+    outcome_status: str        # HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price: float
     outcome_date: date
     outcome_bars: int
@@ -662,11 +672,23 @@ class AccountCurvePoint:
     balance_usd: float
     open_pnl_usd: float
     equity_usd: float
-    used_margin_usd: float
-    free_margin_usd: float
+    initial_margin_usd: float
+    maintenance_margin_usd: float
+    available_funds_usd: float
+    excess_liquidity_usd: float
     open_positions: int
     realized_pnl_usd: float
     closed_trades: int
+
+
+@dataclass(frozen=True)
+class AccountMarginSnapshot:
+    open_pnl: float
+    equity_with_loan_value: float
+    initial_margin: float
+    maintenance_margin: float
+    available_funds: float
+    excess_liquidity: float
 
 
 @dataclass(frozen=True)
@@ -716,11 +738,14 @@ class DecisionEvent:
     open_positions: Optional[int] = None
     max_open_positions: Optional[int] = None
     account_equity: Optional[float] = None
-    used_margin: Optional[float] = None
-    free_margin: Optional[float] = None
-    required_margin: Optional[float] = None
-    free_margin_after: Optional[float] = None
-    min_free_margin_pct: Optional[float] = None
+    initial_margin: Optional[float] = None
+    maintenance_margin: Optional[float] = None
+    available_funds: Optional[float] = None
+    excess_liquidity: Optional[float] = None
+    required_initial_margin: Optional[float] = None
+    required_maintenance_margin: Optional[float] = None
+    available_funds_after: Optional[float] = None
+    excess_liquidity_after: Optional[float] = None
     position_size_usd: Optional[float] = None
     shares: Optional[float] = None
 
@@ -823,8 +848,10 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "balance_usd",
         "open_pnl_usd",
         "equity_usd",
-        "used_margin_usd",
-        "free_margin_usd",
+        "initial_margin_usd",
+        "maintenance_margin_usd",
+        "available_funds_usd",
+        "excess_liquidity_usd",
         "open_positions",
         "realized_pnl_usd",
         "closed_trades",
@@ -1296,6 +1323,26 @@ def _active_margin_used(pos: OpenPosition) -> float:
     return pos.margin_used * _active_position_ratio(pos)
 
 
+def _active_maintenance_margin_used(pos: OpenPosition) -> float:
+    return pos.maintenance_margin_used * _active_position_ratio(pos)
+
+
+def _initial_margin_pct(direction: str) -> float:
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        if direction == "SHORT":
+            return float(IBKR_SHORT_INITIAL_MARGIN_PCT)
+        return float(IBKR_LONG_INITIAL_MARGIN_PCT)
+    return float(MARGIN_REQUIREMENT_PCT)
+
+
+def _maintenance_margin_pct(direction: str) -> float:
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        if direction == "SHORT":
+            return float(IBKR_SHORT_MAINTENANCE_MARGIN_PCT)
+        return float(IBKR_LONG_MAINTENANCE_MARGIN_PCT)
+    return float(MARGIN_REQUIREMENT_PCT)
+
+
 def _margin_level_pct(account_equity: float, used_margin: float) -> float:
     if used_margin <= 0.0:
         return math.inf
@@ -1360,15 +1407,22 @@ def _account_snapshot_values(
     open_positions: list[OpenPosition],
     balance: float,
     as_of_ts: datetime,
-) -> tuple[float, float, float, float]:
+) -> AccountMarginSnapshot:
     open_pnl = 0.0
     for pos in open_positions:
         mark_price = _latest_close_price_at(conn, pos, as_of_ts)
         open_pnl += _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
-    used_margin = sum(_active_margin_used(pos) for pos in open_positions)
-    account_equity = balance + open_pnl
-    free_margin = account_equity - used_margin
-    return open_pnl, account_equity, used_margin, free_margin
+    initial_margin = sum(_active_margin_used(pos) for pos in open_positions)
+    maintenance_margin = sum(_active_maintenance_margin_used(pos) for pos in open_positions)
+    equity_with_loan_value = balance + open_pnl
+    return AccountMarginSnapshot(
+        open_pnl=open_pnl,
+        equity_with_loan_value=equity_with_loan_value,
+        initial_margin=initial_margin,
+        maintenance_margin=maintenance_margin,
+        available_funds=equity_with_loan_value - initial_margin,
+        excess_liquidity=equity_with_loan_value - maintenance_margin,
+    )
 
 
 def _mark_to_market_close_trade(
@@ -1413,6 +1467,16 @@ def _position_stop_out_rank(
     return (pnl, -_active_margin_used(pos), pos.symbol)
 
 
+def _position_ibkr_liquidation_rank(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    as_of_ts: datetime,
+) -> tuple[float, float, str]:
+    mark_price = _latest_close_price_at(conn, pos, as_of_ts)
+    pnl = _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
+    return (pnl, -_active_maintenance_margin_used(pos), pos.symbol)
+
+
 def _enforce_pepperstone_margin_stop_out(
     conn: psycopg2.extensions.connection,
     open_positions: list[OpenPosition],
@@ -1427,13 +1491,13 @@ def _enforce_pepperstone_margin_stop_out(
     active_positions = open_positions
 
     while active_positions:
-        _, account_equity, used_margin, _ = _account_snapshot_values(
+        snapshot = _account_snapshot_values(
             conn,
             active_positions,
             realized_equity,
             as_of_ts,
         )
-        margin_level = _margin_level_pct(account_equity, used_margin)
+        margin_level = _margin_level_pct(snapshot.equity_with_loan_value, snapshot.initial_margin)
         if margin_level > PS_MARGIN_STOP_OUT_LEVEL_PCT:
             break
 
@@ -1463,6 +1527,65 @@ def _enforce_pepperstone_margin_stop_out(
         )
 
     return stop_out_trades, realized_equity
+
+
+def _enforce_ibkr_excess_liquidity_liquidation(
+    conn: psycopg2.extensions.connection,
+    open_positions: list[OpenPosition],
+    realized_equity: float,
+    as_of_ts: datetime,
+) -> tuple[list[ClosedTrade], float]:
+    if ACCOUNT_PROFILE != "ibkr_acc" or not open_positions:
+        return [], realized_equity
+
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    liquidation_trades: list[ClosedTrade] = []
+    active_positions = open_positions
+
+    while active_positions:
+        snapshot = _account_snapshot_values(conn, active_positions, realized_equity, as_of_ts)
+        if snapshot.excess_liquidity > 0.0:
+            break
+
+        position = min(
+            active_positions,
+            key=lambda p: _position_ibkr_liquidation_rank(conn, p, as_of_ts),
+        )
+        mark_price = _latest_close_price_at(conn, position, as_of_ts)
+        trade = _mark_to_market_close_trade(
+            position,
+            "IBKR_MARGIN_LIQUIDATION",
+            mark_price,
+            realized_equity,
+            as_of_ts,
+        )
+        _remove_position_by_identity(active_positions, position)
+        realized_equity = round(realized_equity + trade.pnl_usd, 2)
+        trade.equity_after = realized_equity
+        liquidation_trades.append(trade)
+        log.warning(
+            "IBKR margin liquidation — symbol=%s excess_liquidity=%.2f maintenance_margin=%.2f pnl=%.2f balance=%.2f",
+            position.symbol,
+            snapshot.excess_liquidity,
+            snapshot.maintenance_margin,
+            trade.pnl_usd,
+            realized_equity,
+        )
+
+    return liquidation_trades, realized_equity
+
+
+def _enforce_account_margin_liquidation(
+    conn: psycopg2.extensions.connection,
+    open_positions: list[OpenPosition],
+    realized_equity: float,
+    as_of_ts: datetime,
+) -> tuple[list[ClosedTrade], float]:
+    if ACCOUNT_PROFILE == "ps_acc":
+        return _enforce_pepperstone_margin_stop_out(conn, open_positions, realized_equity, as_of_ts)
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        return _enforce_ibkr_excess_liquidity_liquidation(conn, open_positions, realized_equity, as_of_ts)
+    return [], realized_equity
 
 
 def _remove_position_by_identity(open_positions: list[OpenPosition], position: OpenPosition) -> None:
@@ -1555,8 +1678,8 @@ def _make_trade(
 def calc_position(
     signal: Signal,
     equity: float,
-) -> tuple[float, float, float]:
-    """Return (margin_used, shares, position_size_usd)."""
+) -> tuple[float, float, float, float]:
+    """Return (initial_margin_used, maintenance_margin_used, shares, position_size_usd)."""
     risk_usd = equity * RISK_PER_TRADE_PCT / 100.0
     if signal.direction == "LONG":
         entry_fill = _buy_fill(signal.entry_price)
@@ -1571,16 +1694,17 @@ def calc_position(
     loss_per_share = loss_per_share_before_commission + commission_per_share
     fixed_round_trip_cost = COMMISSION_PER_ORDER_USD * 2.0
     if loss_per_share <= 0 or risk_usd <= fixed_round_trip_cost:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
     shares = (risk_usd - fixed_round_trip_cost) / loss_per_share
     if not ALLOW_FRACTIONAL_SHARES:
         shares = float(int(shares))
         if shares < 1:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
     position_size_usd = abs(shares * entry_fill)
-    margin_used = position_size_usd * MARGIN_REQUIREMENT_PCT / 100.0
-    return margin_used, shares, position_size_usd
+    initial_margin_used = position_size_usd * _initial_margin_pct(signal.direction) / 100.0
+    maintenance_margin_used = position_size_usd * _maintenance_margin_pct(signal.direction) / 100.0
+    return initial_margin_used, maintenance_margin_used, shares, position_size_usd
 
 
 # ── DB writes ─────────────────────────────────────────────────────────────────
@@ -1601,7 +1725,9 @@ def create_run(
                 start_date, end_date, notes, run_label, model_file,
                 account_profile,
                 initial_equity, risk_per_trade_pct, max_open_positions,
-                margin_requirement_pct, maintenance_margin_pct, min_free_margin_pct,
+                ps_margin_requirement_pct, ps_margin_stop_out_level_pct, ps_min_entry_margin_level_pct,
+                ibkr_long_initial_margin_pct, ibkr_long_maintenance_margin_pct,
+                ibkr_short_initial_margin_pct, ibkr_short_maintenance_margin_pct,
                 allow_fractional_shares, spread_bps, slippage_bps,
                 commission_per_order_usd, commission_per_share_usd,
                 commission_min_per_order_usd, commission_max_pct,
@@ -1620,6 +1746,7 @@ def create_run(
                 %s,
                 %s, %s, %s,
                 %s, %s, %s,
+                %s, %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
@@ -1638,7 +1765,9 @@ def create_run(
                 START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, CURRENT_MODEL_FILE,
                 ACCOUNT_PROFILE,
                 INITIAL_EQUITY, RISK_PER_TRADE_PCT, MAX_OPEN_POSITIONS,
-                MARGIN_REQUIREMENT_PCT, MAINTENANCE_MARGIN_PCT, MIN_FREE_MARGIN_PCT,
+                MARGIN_REQUIREMENT_PCT, PS_MARGIN_STOP_OUT_LEVEL_PCT, PS_MIN_ENTRY_MARGIN_LEVEL_PCT,
+                IBKR_LONG_INITIAL_MARGIN_PCT, IBKR_LONG_MAINTENANCE_MARGIN_PCT,
+                IBKR_SHORT_INITIAL_MARGIN_PCT, IBKR_SHORT_MAINTENANCE_MARGIN_PCT,
                 ALLOW_FRACTIONAL_SHARES, SPREAD_BPS, SLIPPAGE_BPS,
                 COMMISSION_PER_ORDER_USD, COMMISSION_PER_SHARE_USD,
                 COMMISSION_MIN_PER_ORDER_USD, COMMISSION_MAX_PCT,
@@ -1693,6 +1822,7 @@ def write_trades(
             Decimal(str(round(p.position_size_usd, 2))),
             Decimal(str(round(p.shares, 6))),
             Decimal(str(round(p.margin_used, 2))),
+            Decimal(str(round(p.maintenance_margin_used, 2))),
             Decimal(str(round(p.equity_before, 2))),
             t.outcome_status,
             Decimal(str(round(t.outcome_price, 4))),
@@ -1714,7 +1844,7 @@ def write_trades(
             fundamental_score, entry_score, combined_score,
             entry_price, stop_loss, take_profit_1, take_profit_2,
             pullback_pct, rsi_1h, volume_ratio, entry_reason,
-            position_size_usd, shares, margin_used, equity_before,
+            position_size_usd, shares, margin_used, maintenance_margin_used, equity_before,
             outcome_status, outcome_price, outcome_date, outcome_bars,
             tp1_hit, return_pct, pnl_usd, equity_after,
             entry_ts, tp1_exit_ts, exit_ts
@@ -1750,8 +1880,10 @@ def write_account_curve(
             Decimal(str(round(p.balance_usd, 2))),
             Decimal(str(round(p.open_pnl_usd, 2))),
             Decimal(str(round(p.equity_usd, 2))),
-            Decimal(str(round(p.used_margin_usd, 2))),
-            Decimal(str(round(p.free_margin_usd, 2))),
+            Decimal(str(round(p.initial_margin_usd, 2))),
+            Decimal(str(round(p.maintenance_margin_usd, 2))),
+            Decimal(str(round(p.available_funds_usd, 2))),
+            Decimal(str(round(p.excess_liquidity_usd, 2))),
             p.open_positions,
             Decimal(str(round(p.realized_pnl_usd, 2))),
             p.closed_trades,
@@ -1763,7 +1895,8 @@ def write_account_curve(
         INSERT INTO {table} (
             run_id, ts, trade_date, seq_in_run,
             balance_usd, open_pnl_usd, equity_usd,
-            used_margin_usd, free_margin_usd,
+            initial_margin_usd, maintenance_margin_usd,
+            available_funds_usd, excess_liquidity_usd,
             open_positions, realized_pnl_usd, closed_trades
         ) VALUES %s
         ON CONFLICT (run_id, ts, seq_in_run) DO UPDATE SET
@@ -1771,8 +1904,10 @@ def write_account_curve(
             balance_usd      = EXCLUDED.balance_usd,
             open_pnl_usd     = EXCLUDED.open_pnl_usd,
             equity_usd       = EXCLUDED.equity_usd,
-            used_margin_usd  = EXCLUDED.used_margin_usd,
-            free_margin_usd  = EXCLUDED.free_margin_usd,
+            initial_margin_usd = EXCLUDED.initial_margin_usd,
+            maintenance_margin_usd = EXCLUDED.maintenance_margin_usd,
+            available_funds_usd = EXCLUDED.available_funds_usd,
+            excess_liquidity_usd = EXCLUDED.excess_liquidity_usd,
             open_positions   = EXCLUDED.open_positions,
             realized_pnl_usd = EXCLUDED.realized_pnl_usd,
             closed_trades    = EXCLUDED.closed_trades
@@ -1836,11 +1971,14 @@ def write_decision_events(
             e.open_positions,
             e.max_open_positions,
             _decimal_or_none(e.account_equity, 2),
-            _decimal_or_none(e.used_margin, 2),
-            _decimal_or_none(e.free_margin, 2),
-            _decimal_or_none(e.required_margin, 2),
-            _decimal_or_none(e.free_margin_after, 2),
-            _decimal_or_none(e.min_free_margin_pct, 2),
+            _decimal_or_none(e.initial_margin, 2),
+            _decimal_or_none(e.maintenance_margin, 2),
+            _decimal_or_none(e.available_funds, 2),
+            _decimal_or_none(e.excess_liquidity, 2),
+            _decimal_or_none(e.required_initial_margin, 2),
+            _decimal_or_none(e.required_maintenance_margin, 2),
+            _decimal_or_none(e.available_funds_after, 2),
+            _decimal_or_none(e.excess_liquidity_after, 2),
             _decimal_or_none(e.position_size_usd, 2),
             _decimal_or_none(e.shares, 6),
         )
@@ -1857,8 +1995,11 @@ def write_decision_events(
             bar_count, min_bars, entry_ts, entry_price, stop_loss,
             take_profit_1, take_profit_2, pullback_pct, rsi_1h, volume_ratio,
             entry_score, combined_score, open_positions, max_open_positions,
-            account_equity, used_margin, free_margin, required_margin,
-            free_margin_after, min_free_margin_pct, position_size_usd, shares
+            account_equity, initial_margin, maintenance_margin,
+            available_funds, excess_liquidity,
+            required_initial_margin, required_maintenance_margin,
+            available_funds_after, excess_liquidity_after,
+            position_size_usd, shares
         ) VALUES %s
     """.format(table=_result_table("backtest_decision_events"))
     with conn.cursor() as cur:
@@ -2054,7 +2195,7 @@ def run_backtest(
         nonlocal account_curve_seq
         account_curve_seq += 1
         as_of_ts = _ensure_utc_ts(as_of_ts)
-        open_pnl, account_equity, used_margin, free_margin = _account_snapshot_values(
+        snapshot = _account_snapshot_values(
             conn,
             active_positions,
             equity,
@@ -2066,10 +2207,12 @@ def run_backtest(
             trade_date=as_of_ts.date(),
             seq_in_run=account_curve_seq,
             balance_usd=round(equity, 2),
-            open_pnl_usd=round(open_pnl, 2),
-            equity_usd=round(account_equity, 2),
-            used_margin_usd=round(used_margin, 2),
-            free_margin_usd=round(free_margin, 2),
+            open_pnl_usd=round(snapshot.open_pnl, 2),
+            equity_usd=round(snapshot.equity_with_loan_value, 2),
+            initial_margin_usd=round(snapshot.initial_margin, 2),
+            maintenance_margin_usd=round(snapshot.maintenance_margin, 2),
+            available_funds_usd=round(snapshot.available_funds, 2),
+            excess_liquidity_usd=round(snapshot.excess_liquidity, 2),
             open_positions=len(active_positions),
             realized_pnl_usd=round(equity - INITIAL_EQUITY, 2),
             closed_trades=len(closed_trades),
@@ -2153,16 +2296,16 @@ def run_backtest(
                 record_account_curve(event.ts, active_positions)
         open_positions = active_positions
         stop_out_ts = _day_close_ts(day)
-        stop_out_trades, equity = _enforce_pepperstone_margin_stop_out(
+        liquidation_trades, equity = _enforce_account_margin_liquidation(
             conn,
             open_positions,
             equity,
             stop_out_ts,
         )
-        if stop_out_trades:
-            closed_trades.extend(stop_out_trades)
-            closed_today += len(stop_out_trades)
-            day_pnl += sum(t.pnl_usd for t in stop_out_trades)
+        if liquidation_trades:
+            closed_trades.extend(liquidation_trades)
+            closed_today += len(liquidation_trades)
+            day_pnl += sum(t.pnl_usd for t in liquidation_trades)
             record_account_curve(stop_out_ts, open_positions)
 
         # ── 2. Generate signals for today ───────────────────────────────────
@@ -2411,18 +2554,21 @@ def run_backtest(
                     event.signal_rank = signal_rank
         opened_today = 0
         account_equity_today = _account_equity(conn, open_positions, equity, day)
-        used_margin = sum(_active_margin_used(p) for p in open_positions)
+        initial_margin = sum(_active_margin_used(p) for p in open_positions)
+        maintenance_margin = sum(_active_maintenance_margin_used(p) for p in open_positions)
 
         for signal in signals:
             event = signal_events.get(signal.symbol)
-            free_margin = account_equity_today - used_margin
+            available_funds = account_equity_today - initial_margin
+            excess_liquidity = account_equity_today - maintenance_margin
             if event:
                 event.open_positions = len(open_positions)
                 event.max_open_positions = MAX_OPEN_POSITIONS
                 event.account_equity = account_equity_today
-                event.used_margin = used_margin
-                event.free_margin = free_margin
-                event.min_free_margin_pct = None if ACCOUNT_PROFILE == "ps_acc" else MIN_FREE_MARGIN_PCT
+                event.initial_margin = initial_margin
+                event.maintenance_margin = maintenance_margin
+                event.available_funds = available_funds
+                event.excess_liquidity = excess_liquidity
 
             if len(open_positions) >= MAX_OPEN_POSITIONS:
                 if event:
@@ -2447,9 +2593,10 @@ def run_backtest(
                     event.reason_text = "Account equity was not positive at decision time."
                 continue
 
-            margin_used, shares, position_size_usd = calc_position(signal, account_equity_today)
+            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(signal, account_equity_today)
             if event:
-                event.required_margin = margin_used
+                event.required_initial_margin = initial_margin_used
+                event.required_maintenance_margin = maintenance_margin_used
                 event.position_size_usd = position_size_usd
                 event.shares = shares
             if position_size_usd <= 0:
@@ -2460,13 +2607,16 @@ def run_backtest(
                     event.reason_text = "Position sizing produced a non-positive position size."
                 continue
 
-            used_margin_after = used_margin + margin_used
-            free_margin_after = account_equity_today - used_margin_after
+            initial_margin_after = initial_margin + initial_margin_used
+            maintenance_margin_after = maintenance_margin + maintenance_margin_used
+            available_funds_after = account_equity_today - initial_margin_after
+            excess_liquidity_after = account_equity_today - maintenance_margin_after
             if event:
-                event.free_margin_after = free_margin_after
+                event.available_funds_after = available_funds_after
+                event.excess_liquidity_after = excess_liquidity_after
 
             if ACCOUNT_PROFILE == "ps_acc":
-                margin_level_after = _margin_level_pct(account_equity_today, used_margin_after)
+                margin_level_after = _margin_level_pct(account_equity_today, initial_margin_after)
                 if margin_level_after <= PS_MARGIN_STOP_OUT_LEVEL_PCT:
                     if event:
                         event.decision_stage = "portfolio_filter"
@@ -2487,22 +2637,25 @@ def run_backtest(
                             f"below configured Pepperstone backtest minimum {PS_MIN_ENTRY_MARGIN_LEVEL_PCT:.2f}%."
                         )
                     continue
-            else:
-                if free_margin_after < 0:
+            elif ACCOUNT_PROFILE == "ibkr_acc":
+                if available_funds_after < 0:
                     if event:
                         event.decision_stage = "portfolio_filter"
                         event.decision = "blocked"
-                        event.reason_code = "insufficient_margin"
-                        event.reason_text = "Required margin exceeded current free margin."
-                    continue
-                if free_margin_after < account_equity_today * MIN_FREE_MARGIN_PCT / 100.0:
-                    if event:
-                        event.decision_stage = "portfolio_filter"
-                        event.decision = "blocked"
-                        event.reason_code = "min_free_margin_guard"
+                        event.reason_code = "available_funds_insufficient"
                         event.reason_text = (
-                            f"Free margin after entry would fall below {MIN_FREE_MARGIN_PCT:.2f}% "
-                            "of account equity."
+                            f"Available Funds after entry would be {available_funds_after:.2f}, "
+                            "below zero."
+                        )
+                    continue
+                if excess_liquidity_after <= 0:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "excess_liquidity_non_positive_guard"
+                        event.reason_text = (
+                            f"Excess Liquidity after entry would be {excess_liquidity_after:.2f}, "
+                            "at or below zero."
                         )
                     continue
 
@@ -2522,7 +2675,8 @@ def run_backtest(
                 tp1_close_ratio=tp1_close_ratio,
                 shares=shares,
                 position_size_usd=position_size_usd,
-                margin_used=margin_used,
+                margin_used=initial_margin_used,
+                maintenance_margin_used=maintenance_margin_used,
                 equity_before=account_equity_today,
                 signal=signal,
                 world_regime_label=regime.label,
@@ -2530,7 +2684,8 @@ def run_backtest(
                 valuation_label=signal.valuation_label,
             ))
             open_symbols.add(signal.symbol)
-            used_margin += margin_used
+            initial_margin += initial_margin_used
+            maintenance_margin += maintenance_margin_used
             opened_today += 1
             record_account_curve(signal.entry_ts or day_end_ts, open_positions)
             if event:
@@ -2541,7 +2696,7 @@ def run_backtest(
                 event.opened = True
             log.debug("Opened  %-6s %s  entry=%.2f  sl=%.2f  margin=%.0f  equity=%.0f",
                       signal.symbol, signal.direction, signal.entry_price,
-                      signal.stop_loss, margin_used, equity)
+                      signal.stop_loss, initial_margin_used, equity)
 
         write_decision_events(conn, decision_events)
 
@@ -2787,22 +2942,21 @@ def log_backtest_context(model_files: list[str]) -> None:
         MODEL_DIR,
         MODEL_PARALLELISM,
     )
-    log.info(
-        "Account profile — profile=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%s",
-        ACCOUNT_PROFILE,
-        MARGIN_REQUIREMENT_PCT,
-        f"{MAINTENANCE_MARGIN_PCT:.2f}" if MAINTENANCE_MARGIN_PCT is not None else "n/a",
-    )
+    log.info("Account profile — profile=%s", ACCOUNT_PROFILE)
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
-            "Pepperstone margin policy — stop_out_margin_level_pct=%.2f  min_entry_margin_level_pct=%.2f  min_free_margin_pct_ignored=true",
+            "Pepperstone margin policy — margin_requirement_pct=%.2f  stop_out_margin_level_pct=%.2f  min_entry_margin_level_pct=%.2f",
+            MARGIN_REQUIREMENT_PCT,
             PS_MARGIN_STOP_OUT_LEVEL_PCT,
             PS_MIN_ENTRY_MARGIN_LEVEL_PCT,
         )
     else:
         log.info(
-            "IBKR margin policy — min_free_margin_pct=%.2f",
-            MIN_FREE_MARGIN_PCT,
+            "IBKR margin policy — long_initial=%.2f  long_maintenance=%.2f  short_initial=%.2f  short_maintenance=%.2f",
+            IBKR_LONG_INITIAL_MARGIN_PCT,
+            IBKR_LONG_MAINTENANCE_MARGIN_PCT,
+            IBKR_SHORT_INITIAL_MARGIN_PCT,
+            IBKR_SHORT_MAINTENANCE_MARGIN_PCT,
         )
     log.info(
         "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f  margin_financing_rate_pct=%.2f",
