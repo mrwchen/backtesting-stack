@@ -18,6 +18,7 @@ import math
 import os
 import re
 import importlib.util
+import subprocess
 import sys
 import time as _time
 from bisect import bisect_right
@@ -438,6 +439,9 @@ MODEL_SELECTION = os.getenv("MODEL_SELECTION", "single").strip().lower()
 MODEL_FILE = os.getenv("MODEL_FILE", "pullback_bounce_fundamental_v1.py").strip()
 MODEL_FILES = env_list("MODEL_FILES", [])
 MODEL_DIR = os.getenv("MODEL_DIR", str(Path(__file__).resolve().parent / "backtest_models")).strip()
+MODEL_PARALLELISM = max(1, env_int("MODEL_PARALLELISM", 2))
+MODEL_FAILURE_MODE = os.getenv("MODEL_FAILURE_MODE", "fail_fast").strip().lower()
+BACKTEST_PARALLEL_CHILD = env_bool("BACKTEST_PARALLEL_CHILD", False)
 RESULT_SCHEMA = os.getenv("RESULT_SCHEMA", "public").strip() or "public"
 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", RESULT_SCHEMA):
     raise ValueError(f"Invalid RESULT_SCHEMA: {RESULT_SCHEMA!r}")
@@ -495,7 +499,7 @@ DB = {
     "user":            os.getenv("PGUSER", "market-data-account"),
     "password":        os.getenv("PGPASSWORD", "market-data-account-pw"),
     "connect_timeout": int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10")),
-    "application_name": "backtest_runner",
+    "application_name": os.getenv("PGAPPNAME", "backtest_runner"),
     "options": os.getenv("PGOPTIONS", f"-c search_path={RESULT_SCHEMA}"),
 }
 
@@ -2054,8 +2058,8 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s — no regime  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
-                    day_idx, len(trading_days), day, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
+                    "Progress %d/%d %s model=%s — no regime  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    day_idx, len(trading_days), day, CURRENT_MODEL_FILE, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
@@ -2086,8 +2090,8 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s — neutral regime %.1f  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
-                    day_idx, len(trading_days), day, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
+                    "Progress %d/%d %s model=%s — neutral regime %.1f  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    day_idx, len(trading_days), day, CURRENT_MODEL_FILE, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
@@ -2126,8 +2130,8 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s — %s regime %.1f  no candidates  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
-                    day_idx, len(trading_days), day, direction, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
+                    "Progress %d/%d %s model=%s — %s regime %.1f  no candidates  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    day_idx, len(trading_days), day, CURRENT_MODEL_FILE, direction, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
@@ -2391,10 +2395,11 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s — %s regime %.1f  candidates=%d  signals=%d  skipped_no_bars=%d  opened=%d  closed_today=%d  day_pnl=%.0f  open=%d  equity=%.0f  closed_total=%d",
+                "Progress %d/%d %s model=%s — %s regime %.1f  candidates=%d  signals=%d  skipped_no_bars=%d  opened=%d  closed_today=%d  day_pnl=%.0f  open=%d  equity=%.0f  closed_total=%d",
                 day_idx,
                 len(trading_days),
                 day,
+                CURRENT_MODEL_FILE,
                 direction,
                 regime.score,
                 len(candidates),
@@ -2608,103 +2613,222 @@ def _print_grid_summary(results: list[dict]) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def main() -> None:
-    global _MODEL_MODULE, CURRENT_MODEL_FILE
-    model_files = select_model_files()
-    conn = connect_with_retry()
-    try:
-        log.info("Connected. Starting backtest %s → %s, equity=%.0f", START_DATE, END_DATE, INITIAL_EQUITY)
-        validate_source_schema(conn)
-        validate_result_schema(conn)
+def log_backtest_context(model_files: list[str]) -> None:
+    log.info(
+        "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
+        SOURCE_1H,
+        SOURCE_FUNDAMENTAL,
+        SOURCE_WORLD_REGIME,
+        ACCOUNT_PROFILE,
+        PEPPERSTONE_TABLE,
+    )
+    if ACCOUNT_PROFILE == "ps_acc":
         log.info(
-            "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
-            SOURCE_1H,
-            SOURCE_FUNDAMENTAL,
-            SOURCE_WORLD_REGIME,
-            ACCOUNT_PROFILE,
+            "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
             PEPPERSTONE_TABLE,
         )
-        if ACCOUNT_PROFILE == "ps_acc":
-            log.info(
-                "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
-                PEPPERSTONE_TABLE,
-            )
-        log.info(
-            "Backtesting model selection — selection=%s  count=%d  files=%s  dir=%s",
-            MODEL_SELECTION,
-            len(model_files),
-            ",".join(model_files),
-            MODEL_DIR,
+    log.info(
+        "Backtesting model selection — selection=%s  count=%d  files=%s  dir=%s  parallelism=%d",
+        MODEL_SELECTION,
+        len(model_files),
+        ",".join(model_files),
+        MODEL_DIR,
+        MODEL_PARALLELISM,
+    )
+    log.info(
+        "Account profile — profile=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%.2f",
+        ACCOUNT_PROFILE,
+        MARGIN_REQUIREMENT_PCT,
+        MAINTENANCE_MARGIN_PCT,
+    )
+    log.info(
+        "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f  margin_financing_rate_pct=%.2f",
+        ALLOW_FRACTIONAL_SHARES,
+        SPREAD_BPS,
+        SLIPPAGE_BPS,
+        COMMISSION_PER_ORDER_USD,
+        COMMISSION_PER_SHARE_USD,
+        COMMISSION_MIN_PER_ORDER_USD,
+        COMMISSION_MAX_PCT,
+        COMMISSION_BPS,
+        MARGIN_FINANCING_RATE_PCT,
+    )
+    log.info(
+        "Entry window — enabled=%s  tz=%s  start=%s  end=%s",
+        ENTRY_WINDOW_ENABLED,
+        ENTRY_WINDOW_TZ,
+        ENTRY_WINDOW_START,
+        ENTRY_WINDOW_END,
+    )
+    log.info(
+        "SL/TP window — tz=%s  start=%s  end=%s",
+        SL_TP_WINDOW_TZ,
+        SL_TP_WINDOW_START,
+        SL_TP_WINDOW_END,
+    )
+    log.info(
+        "Holding rule — long_max_hold_days=%.2f  short_max_hold_days=%.2f  sl_tp_active_from=next_1h_bar",
+        LONG_MAX_HOLD_DAYS,
+        SHORT_MAX_HOLD_DAYS,
+    )
+    log.info(
+        "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  allow_rebuilt_historical_fundamentals=%s",
+        MIN_MARKET_CAP_M,
+        REQUIRE_USD_FUNDAMENTALS,
+        ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+    )
+    log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
+    if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
+        log.warning(
+            "Point-in-time guard relaxed — rebuilt historical fundamentals are allowed even when data_available_at is after the simulated day. Use these results for research only, not final strategy validation."
         )
+    log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
+    log.info(
+        "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on",
+    )
+
+
+def run_single_model_worker() -> None:
+    global _MODEL_MODULE, CURRENT_MODEL_FILE
+    model_file = MODEL_FILE
+    _validate_model_filename(model_file)
+    model_files = [model_file]
+    CURRENT_MODEL_FILE = model_file
+    conn = connect_with_retry()
+    try:
         log.info(
-            "Account profile — profile=%s  margin_requirement_pct=%.2f  maintenance_margin_pct=%.2f",
-            ACCOUNT_PROFILE,
-            MARGIN_REQUIREMENT_PCT,
-            MAINTENANCE_MARGIN_PCT,
+            "Connected. Starting backtest model=%s %s → %s, equity=%.0f application_name=%s",
+            CURRENT_MODEL_FILE,
+            START_DATE,
+            END_DATE,
+            INITIAL_EQUITY,
+            DB["application_name"],
         )
+        validate_source_schema(conn)
+        validate_result_schema(conn)
+        log_backtest_context(model_files)
+        _MODEL_MODULE = load_model_module(model_file)
+        cfg = _MODEL_MODULE.signal_config_from_env()
         log.info(
-            "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f  margin_financing_rate_pct=%.2f",
-            ALLOW_FRACTIONAL_SHARES,
-            SPREAD_BPS,
-            SLIPPAGE_BPS,
-            COMMISSION_PER_ORDER_USD,
-            COMMISSION_PER_SHARE_USD,
-            COMMISSION_MIN_PER_ORDER_USD,
-            COMMISSION_MAX_PCT,
-            COMMISSION_BPS,
-            MARGIN_FINANCING_RATE_PCT,
+            "Model worker — file=%s  grid_search=%s",
+            CURRENT_MODEL_FILE,
+            GRID_SEARCH_ENABLED,
         )
-        log.info(
-            "Entry window — enabled=%s  tz=%s  start=%s  end=%s",
-            ENTRY_WINDOW_ENABLED,
-            ENTRY_WINDOW_TZ,
-            ENTRY_WINDOW_START,
-            ENTRY_WINDOW_END,
-        )
-        log.info(
-            "SL/TP window — tz=%s  start=%s  end=%s",
-            SL_TP_WINDOW_TZ,
-            SL_TP_WINDOW_START,
-            SL_TP_WINDOW_END,
-        )
-        log.info(
-            "Holding rule — long_max_hold_days=%.2f  short_max_hold_days=%.2f  sl_tp_active_from=next_1h_bar",
-            LONG_MAX_HOLD_DAYS,
-            SHORT_MAX_HOLD_DAYS,
-        )
-        log.info(
-            "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  allow_rebuilt_historical_fundamentals=%s",
-            MIN_MARKET_CAP_M,
-            REQUIRE_USD_FUNDAMENTALS,
-            ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-        )
-        log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
-        if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
-            log.warning(
-                "Point-in-time guard relaxed — rebuilt historical fundamentals are allowed even when data_available_at is after the simulated day. Use these results for research only, not final strategy validation."
-            )
-        log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
-        log.info(
-            "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on",
-        )
-        for idx, model_file in enumerate(model_files, start=1):
-            CURRENT_MODEL_FILE = model_file
-            _MODEL_MODULE = load_model_module(model_file)
-            cfg = _MODEL_MODULE.signal_config_from_env()
-            log.info(
-                "Model run %d/%d — file=%s  grid_search=%s",
-                idx,
-                len(model_files),
-                CURRENT_MODEL_FILE,
-                GRID_SEARCH_ENABLED,
-            )
-            if GRID_SEARCH_ENABLED:
-                results = run_grid_search(conn, cfg)
-                _print_grid_summary(results)
-            else:
-                run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
+        if GRID_SEARCH_ENABLED:
+            results = run_grid_search(conn, cfg)
+            _print_grid_summary(results)
+        else:
+            run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
     finally:
         conn.close()
+
+
+def _pg_application_name_for_model(model_file: str) -> str:
+    model_stem = Path(model_file).stem
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", model_stem)
+    return f"backtest_runner:{safe_stem}"[:63]
+
+
+def _child_env(model_file: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["BACKTEST_PARALLEL_CHILD"] = "1"
+    env["MODEL_SELECTION"] = "single"
+    env["MODEL_FILE"] = model_file
+    env["PGAPPNAME"] = _pg_application_name_for_model(model_file)
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    return env
+
+
+def _terminate_running_workers(running: dict[subprocess.Popen, str]) -> None:
+    for process, model_file in running.items():
+        if process.poll() is None:
+            log.warning("Terminating model worker pid=%d model=%s", process.pid, model_file)
+            process.terminate()
+    for process, model_file in running.items():
+        if process.poll() is not None:
+            continue
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            log.error("Killing model worker pid=%d model=%s", process.pid, model_file)
+            process.kill()
+            process.wait(timeout=30)
+
+
+def run_parallel_parent() -> None:
+    if MODEL_FAILURE_MODE not in {"fail_fast", "continue"}:
+        raise ValueError("MODEL_FAILURE_MODE must be one of: fail_fast, continue")
+
+    model_files = select_model_files()
+    parallelism = min(MODEL_PARALLELISM, len(model_files))
+    script_path = Path(__file__).resolve()
+    pending = list(model_files)
+    running: dict[subprocess.Popen, str] = {}
+    succeeded: list[str] = []
+    failed: list[tuple[str, int]] = []
+
+    log.info(
+        "Parallel backtest orchestration starting — models=%d parallelism=%d failure_mode=%s files=%s",
+        len(model_files),
+        parallelism,
+        MODEL_FAILURE_MODE,
+        ",".join(model_files),
+    )
+
+    while pending or running:
+        while pending and len(running) < parallelism:
+            model_file = pending.pop(0)
+            command = [sys.executable, str(script_path)]
+            process = subprocess.Popen(command, env=_child_env(model_file))
+            running[process] = model_file
+            log.info(
+                "Started model worker pid=%d model=%s slot=%d/%d",
+                process.pid,
+                model_file,
+                len(running),
+                parallelism,
+            )
+
+        finished: subprocess.Popen | None = None
+        while finished is None:
+            for process in list(running):
+                if process.poll() is not None:
+                    finished = process
+                    break
+            if finished is None:
+                _time.sleep(1.0)
+
+        model_file = running.pop(finished)
+        exit_code = int(finished.returncode or 0)
+        if exit_code == 0:
+            succeeded.append(model_file)
+            log.info("Model worker finished model=%s exit_code=0", model_file)
+            continue
+
+        failed.append((model_file, exit_code))
+        log.error("Model worker failed model=%s exit_code=%d", model_file, exit_code)
+        if MODEL_FAILURE_MODE == "fail_fast":
+            _terminate_running_workers(running)
+            raise SystemExit(exit_code if exit_code > 0 else 1)
+
+    log.info(
+        "Parallel backtest orchestration complete — succeeded=%d failed=%d",
+        len(succeeded),
+        len(failed),
+    )
+    if failed:
+        log.error(
+            "Parallel backtest failures — %s",
+            ", ".join(f"{model}:{code}" for model, code in failed),
+        )
+        raise SystemExit(1)
+
+
+def main() -> None:
+    if BACKTEST_PARALLEL_CHILD:
+        run_single_model_worker()
+    else:
+        run_parallel_parent()
 
 
 if __name__ == "__main__":
