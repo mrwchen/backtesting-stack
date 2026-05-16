@@ -13,6 +13,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 \if :drop_backtest_tables_on_start
 DROP TABLE IF EXISTS backtest_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest_account_curve CASCADE;
 DROP TABLE IF EXISTS backtest_decision_events CASCADE;
 DROP TABLE IF EXISTS backtest_trades CASCADE;
 DROP TABLE IF EXISTS backtest_runs CASCADE;
@@ -220,6 +221,34 @@ CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
     ON backtest_trades (symbol, signal_date);
 
+-- ── Account curve snapshots ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS backtest_account_curve (
+    run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
+    ts                   TIMESTAMPTZ   NOT NULL,
+    trade_date           DATE          NOT NULL,
+    seq_in_run           INTEGER       NOT NULL,
+    balance_usd          NUMERIC(15,2) NOT NULL,
+    open_pnl_usd         NUMERIC(15,2) NOT NULL,
+    equity_usd           NUMERIC(15,2) NOT NULL,
+    used_margin_usd      NUMERIC(15,2) NOT NULL,
+    free_margin_usd      NUMERIC(15,2) NOT NULL,
+    open_positions       INTEGER       NOT NULL,
+    realized_pnl_usd     NUMERIC(15,2) NOT NULL,
+    closed_trades        INTEGER       NOT NULL,
+    PRIMARY KEY (run_id, ts, seq_in_run)
+);
+
+SELECT create_hypertable(
+    'backtest_account_curve',
+    'ts',
+    chunk_time_interval => INTERVAL '365 days',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_account_curve_run_ts
+    ON backtest_account_curve (run_id, ts DESC);
+
 -- ── Dashboard lookup indexes ─────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
@@ -261,6 +290,7 @@ CREATE TABLE IF NOT EXISTS backtest_monte_carlo (
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_runs  TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_decision_events TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_trades TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_account_curve TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_monte_carlo TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_runs_run_id_seq   TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_decision_events_id_seq TO "market-data-account";

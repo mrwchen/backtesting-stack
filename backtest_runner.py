@@ -3,7 +3,7 @@ Swing trade backtester.
 
 Generates swing signals day-by-day on historical data, simulates a margin
 account, and writes results to backtest_runs / backtest_trades /
-backtest_decision_events / backtest_monte_carlo.
+backtest_decision_events / backtest_account_curve / backtest_monte_carlo.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv / _historical_mv : as_of each simulated day
@@ -634,6 +634,31 @@ class ClosedTrade:
 
 
 @dataclass
+class AccountCurvePoint:
+    run_id: int
+    ts: datetime
+    trade_date: date
+    seq_in_run: int
+    balance_usd: float
+    open_pnl_usd: float
+    equity_usd: float
+    used_margin_usd: float
+    free_margin_usd: float
+    open_positions: int
+    realized_pnl_usd: float
+    closed_trades: int
+
+
+@dataclass(frozen=True)
+class PortfolioEvent:
+    ts: datetime
+    priority: int
+    kind: str
+    position: OpenPosition
+    trade: Optional[ClosedTrade] = None
+
+
+@dataclass
 class DecisionEvent:
     run_id: int
     signal_date: date
@@ -722,10 +747,10 @@ def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, r
     missing = sorted(required - columns)
     if missing:
         raise RuntimeError(
-            f"Required source relation {relation_name} is missing columns: {', '.join(missing)}"
+            f"Required relation {relation_name} is missing columns: {', '.join(missing)}"
         )
     log.info(
-        "Validated source schema — relation=%s required_columns=%d available_columns=%d",
+        "Validated relation schema — relation=%s required_columns=%d available_columns=%d",
         relation_name,
         len(required),
         len(columns),
@@ -764,6 +789,26 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
         _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
 
     _validate_source_coverage(conn)
+
+
+def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
+    """Validate result tables created by the init container before writing."""
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_runs", {"run_id", "initial_equity"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "entry_ts", "pnl_usd", "equity_after"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
+        "run_id",
+        "ts",
+        "trade_date",
+        "seq_in_run",
+        "balance_usd",
+        "open_pnl_usd",
+        "equity_usd",
+        "used_margin_usd",
+        "free_margin_usd",
+        "open_positions",
+        "realized_pnl_usd",
+        "closed_trades",
+    })
 
 
 def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
@@ -893,6 +938,12 @@ def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: dat
 def _day_close_ts(d: date) -> datetime:
     """23:59:59 UTC on the given date — used to cap bar queries to end of day."""
     return datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def _ensure_utc_ts(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -1237,6 +1288,18 @@ def _latest_close_price(
     return float(bars[idx].close)
 
 
+def _latest_close_price_at(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    as_of_ts: datetime,
+) -> float:
+    timestamps, bars = _load_symbol_bars(conn, pos.symbol)
+    idx = bisect_right(timestamps, _ensure_utc_ts(as_of_ts)) - 1
+    if idx < 0:
+        return pos.entry_price
+    return float(bars[idx].close)
+
+
 def _open_position_mark_to_market_pnl(pos: OpenPosition, mark_price: float, as_of_date: date) -> float:
     if pos.direction == "LONG":
         if pos.tp1_hit:
@@ -1249,6 +1312,44 @@ def _open_position_mark_to_market_pnl(pos: OpenPosition, mark_price: float, as_o
         else:
             pnl = _pnl_short(pos, mark_price, mark_price, split_exits=False)
     return pnl - _financing_cost(pos, as_of_date, _day_close_ts(as_of_date), pos.tp1_exit_ts, pos.tp1_hit)
+
+
+def _open_position_mark_to_market_pnl_at(pos: OpenPosition, mark_price: float, as_of_ts: datetime) -> float:
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    if pos.direction == "LONG":
+        if pos.tp1_hit:
+            pnl = _pnl_long(pos, pos.tp1_price or pos.take_profit_1, mark_price, split_exits=True)
+        else:
+            pnl = _pnl_long(pos, mark_price, mark_price, split_exits=False)
+    else:
+        if pos.tp1_hit:
+            pnl = _pnl_short(pos, pos.tp1_price or pos.take_profit_1, mark_price, split_exits=True)
+        else:
+            pnl = _pnl_short(pos, mark_price, mark_price, split_exits=False)
+    return pnl - _financing_cost(pos, as_of_ts.date(), as_of_ts, pos.tp1_exit_ts, pos.tp1_hit)
+
+
+def _account_snapshot_values(
+    conn: psycopg2.extensions.connection,
+    open_positions: list[OpenPosition],
+    balance: float,
+    as_of_ts: datetime,
+) -> tuple[float, float, float, float]:
+    open_pnl = 0.0
+    for pos in open_positions:
+        mark_price = _latest_close_price_at(conn, pos, as_of_ts)
+        open_pnl += _open_position_mark_to_market_pnl_at(pos, mark_price, as_of_ts)
+    used_margin = sum(_active_margin_used(pos) for pos in open_positions)
+    account_equity = balance + open_pnl
+    free_margin = account_equity - used_margin
+    return open_pnl, account_equity, used_margin, free_margin
+
+
+def _remove_position_by_identity(open_positions: list[OpenPosition], position: OpenPosition) -> None:
+    for idx, current in enumerate(open_positions):
+        if current is position:
+            del open_positions[idx]
+            return
 
 
 def _account_equity(
@@ -1511,6 +1612,55 @@ def write_trades(
     with conn.cursor() as cur:
         execute_values(cur, query, rows, page_size=200)
     conn.commit()
+
+
+def write_account_curve(
+    conn: psycopg2.extensions.connection,
+    run_id: int,
+    points: list[AccountCurvePoint],
+) -> None:
+    if not points:
+        return
+    rows = [
+        (
+            p.run_id,
+            p.ts,
+            p.trade_date,
+            p.seq_in_run,
+            Decimal(str(round(p.balance_usd, 2))),
+            Decimal(str(round(p.open_pnl_usd, 2))),
+            Decimal(str(round(p.equity_usd, 2))),
+            Decimal(str(round(p.used_margin_usd, 2))),
+            Decimal(str(round(p.free_margin_usd, 2))),
+            p.open_positions,
+            Decimal(str(round(p.realized_pnl_usd, 2))),
+            p.closed_trades,
+        )
+        for p in points
+    ]
+
+    query = """
+        INSERT INTO {table} (
+            run_id, ts, trade_date, seq_in_run,
+            balance_usd, open_pnl_usd, equity_usd,
+            used_margin_usd, free_margin_usd,
+            open_positions, realized_pnl_usd, closed_trades
+        ) VALUES %s
+        ON CONFLICT (run_id, ts, seq_in_run) DO UPDATE SET
+            trade_date       = EXCLUDED.trade_date,
+            balance_usd      = EXCLUDED.balance_usd,
+            open_pnl_usd     = EXCLUDED.open_pnl_usd,
+            equity_usd       = EXCLUDED.equity_usd,
+            used_margin_usd  = EXCLUDED.used_margin_usd,
+            free_margin_usd  = EXCLUDED.free_margin_usd,
+            open_positions   = EXCLUDED.open_positions,
+            realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+            closed_trades    = EXCLUDED.closed_trades
+    """.format(table=_result_table("backtest_account_curve"))
+    with conn.cursor() as cur:
+        execute_values(cur, query, rows, page_size=500)
+    conn.commit()
+    log.info("Wrote %d account-curve snapshots for run_id=%d", len(points), run_id)
 
 
 def _decimal_or_none(value: Optional[float], digits: int) -> Optional[Decimal]:
@@ -1777,9 +1927,37 @@ def run_backtest(
     equity: float = INITIAL_EQUITY
     open_positions: list[OpenPosition] = []
     closed_trades: list[ClosedTrade] = []
+    account_curve: list[AccountCurvePoint] = []
+    account_curve_seq = 0
+
+    def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
+        nonlocal account_curve_seq
+        account_curve_seq += 1
+        as_of_ts = _ensure_utc_ts(as_of_ts)
+        open_pnl, account_equity, used_margin, free_margin = _account_snapshot_values(
+            conn,
+            active_positions,
+            equity,
+            as_of_ts,
+        )
+        account_curve.append(AccountCurvePoint(
+            run_id=run_id,
+            ts=as_of_ts,
+            trade_date=as_of_ts.date(),
+            seq_in_run=account_curve_seq,
+            balance_usd=round(equity, 2),
+            open_pnl_usd=round(open_pnl, 2),
+            equity_usd=round(account_equity, 2),
+            used_margin_usd=round(used_margin, 2),
+            free_margin_usd=round(free_margin, 2),
+            open_positions=len(active_positions),
+            realized_pnl_usd=round(equity - INITIAL_EQUITY, 2),
+            closed_trades=len(closed_trades),
+        ))
 
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
+    record_account_curve(datetime.combine(START_DATE, datetime.min.time(), tzinfo=timezone.utc), open_positions)
 
     # Diagnostic counters
     days_no_regime = 0
@@ -1791,23 +1969,69 @@ def run_backtest(
     for day_idx, day in enumerate(trading_days, start=1):
         log_progress_today = day_idx == 1 or day_idx == len(trading_days) or day_idx % PROGRESS_LOG_EVERY_DAYS == 0
 
-        # ── 1. Close positions that resolved today ──────────────────────────
-        still_open = []
+        # ── 1. Apply open-position state changes for today ──────────────────
+        portfolio_events: list[PortfolioEvent] = []
         closed_today = 0
         day_pnl = 0.0
         for pos in open_positions:
+            before_tp1_hit = pos.tp1_hit
+            before_tp1_price = pos.tp1_price
+            before_tp1_exit_ts = pos.tp1_exit_ts
+            before_effective_sl = pos.effective_sl
             trade = simulate_outcome(conn, pos, day, equity)
             if trade is not None:
-                equity = trade.equity_after
-                closed_trades.append(trade)
+                close_ts = trade.exit_ts or _day_close_ts(trade.outcome_date)
+                if not before_tp1_hit and trade.tp1_hit and trade.tp1_exit_ts and trade.tp1_exit_ts < close_ts:
+                    portfolio_events.append(PortfolioEvent(
+                        ts=trade.tp1_exit_ts,
+                        priority=0,
+                        kind="tp1",
+                        position=pos,
+                    ))
+                portfolio_events.append(PortfolioEvent(
+                    ts=close_ts,
+                    priority=1,
+                    kind="close",
+                    position=pos,
+                    trade=trade,
+                ))
+                continue
+
+            if not before_tp1_hit and pos.tp1_hit:
+                tp1_event_ts = pos.tp1_exit_ts or _day_close_ts(day)
+                pos.tp1_hit = before_tp1_hit
+                pos.tp1_price = before_tp1_price
+                pos.tp1_exit_ts = before_tp1_exit_ts
+                pos.effective_sl = before_effective_sl
+                portfolio_events.append(PortfolioEvent(
+                    ts=tp1_event_ts,
+                    priority=0,
+                    kind="tp1",
+                    position=pos,
+                ))
+
+        active_positions = list(open_positions)
+        for event in sorted(portfolio_events, key=lambda e: (_ensure_utc_ts(e.ts), e.priority)):
+            if event.kind == "tp1":
+                event.position.tp1_hit = True
+                event.position.tp1_price = event.position.take_profit_1
+                event.position.tp1_exit_ts = _ensure_utc_ts(event.ts)
+                event.position.effective_sl = event.position.entry_price
+                record_account_curve(event.ts, active_positions)
+                continue
+
+            if event.kind == "close" and event.trade is not None:
+                _remove_position_by_identity(active_positions, event.position)
+                event.trade.equity_after = round(equity + event.trade.pnl_usd, 2)
+                equity = event.trade.equity_after
+                closed_trades.append(event.trade)
                 closed_today += 1
-                day_pnl += trade.pnl_usd
-                log.debug("Closed %-6s %s %s  pnl=%.0f  equity=%.0f",
-                          pos.symbol, pos.direction, trade.outcome_status,
-                          trade.pnl_usd, equity)
-            else:
-                still_open.append(pos)
-        open_positions = still_open
+                day_pnl += event.trade.pnl_usd
+                log.debug("Closed %-6s %s %s  pnl=%.0f  balance=%.0f",
+                          event.position.symbol, event.position.direction, event.trade.outcome_status,
+                          event.trade.pnl_usd, equity)
+                record_account_curve(event.ts, active_positions)
+        open_positions = active_positions
 
         # ── 2. Generate signals for today ───────────────────────────────────
         day_end_ts = _day_signal_cutoff_ts(day)
@@ -2152,6 +2376,7 @@ def run_backtest(
             open_symbols.add(signal.symbol)
             used_margin += margin_used
             opened_today += 1
+            record_account_curve(signal.entry_ts or day_end_ts, open_positions)
             if event:
                 event.decision_stage = "order_open"
                 event.decision = "opened"
@@ -2191,7 +2416,7 @@ def run_backtest(
 
     # ── 4. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
-    for pos in open_positions:
+    for pos in list(open_positions):
         bars = get_bars_range(conn, pos.symbol, pos.entry_ts, last_day)
         last_price = float(bars[-1][4]) if bars else pos.entry_price
         if pos.direction == "LONG":
@@ -2216,14 +2441,18 @@ def run_backtest(
             _day_close_ts(last_day),
             pos.tp1_exit_ts,
         )
+        _remove_position_by_identity(open_positions, pos)
+        trade.equity_after = round(equity + trade.pnl_usd, 2)
         equity = trade.equity_after
         closed_trades.append(trade)
+        record_account_curve(trade.exit_ts or _day_close_ts(last_day), open_positions)
 
     # ── 5. Persist results ───────────────────────────────────────────────────
-    log.info("Writing %d trades for run_id=%d", len(closed_trades), run_id)
+    log.info("Writing %d trades and %d account snapshots for run_id=%d", len(closed_trades), len(account_curve), run_id)
 
     # Patch world_regime_label into rows (stored on signal, pass through)
     # (already embedded in entry_reason; trade write accesses signal directly)
+    write_account_curve(conn, run_id, account_curve)
     write_trades(conn, run_id, closed_trades)
     update_run_summary(conn, run_id, closed_trades, equity)
     if MONTE_CARLO_ENABLED:
@@ -2386,6 +2615,7 @@ def main() -> None:
     try:
         log.info("Connected. Starting backtest %s → %s, equity=%.0f", START_DATE, END_DATE, INITIAL_EQUITY)
         validate_source_schema(conn)
+        validate_result_schema(conn)
         log.info(
             "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
             SOURCE_1H,
