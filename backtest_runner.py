@@ -18,6 +18,7 @@ import math
 import os
 import re
 import importlib.util
+import multiprocessing
 import subprocess
 import sys
 import time as _time
@@ -43,6 +44,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+
+def set_log_process_name(name: str) -> None:
+    """Set Python logging's processName for clearer interleaved child logs."""
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "_", name).strip("_")
+    multiprocessing.current_process().name = safe[:48] or "backtest"
 
 
 # ── Shared model API: types, env helpers, indicators, source queries ──────────
@@ -2694,6 +2701,7 @@ def run_single_model_worker() -> None:
     _validate_model_filename(model_file)
     model_files = [model_file]
     CURRENT_MODEL_FILE = model_file
+    set_log_process_name(f"bt-{Path(model_file).stem}")
     conn = connect_with_retry()
     try:
         log.info(
@@ -2756,6 +2764,7 @@ def _terminate_running_workers(running: dict[subprocess.Popen, str]) -> None:
 
 
 def run_parallel_parent() -> None:
+    set_log_process_name("bt-parent")
     if MODEL_FAILURE_MODE not in {"fail_fast", "continue"}:
         raise ValueError("MODEL_FAILURE_MODE must be one of: fail_fast, continue")
 
