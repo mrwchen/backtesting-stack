@@ -94,16 +94,11 @@ def log_backtest_context(model_files: list[str]) -> None:
         SHORT_MAX_HOLD_DAYS,
     )
     log.info(
-        "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  allow_rebuilt_historical_fundamentals=%s",
+        "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  pit_fundamental_guard=strict",
         MIN_MARKET_CAP_M,
         REQUIRE_USD_FUNDAMENTALS,
-        ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
     )
     log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
-    if ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS:
-        log.warning(
-            "Point-in-time guard relaxed — rebuilt historical fundamentals are allowed even when data_available_at is after the simulated day. Use these results for research only, not final strategy validation."
-        )
     log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
     log.info(
         "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on",

@@ -63,8 +63,7 @@ services:
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - REQUIRE_USD_FUNDAMENTALS=true
       - MIN_MARKET_CAP_M=5000.0
-      # Research switch: true ignores data_available_at for rebuilt historical fundamentals.
-      # This can introduce look-ahead bias; keep false for final strategy validation.
+      # Must stay false: candidate selection always requires point-in-time fundamental availability.
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
       # ── Generic: time range ────────────────────────────────────────────────

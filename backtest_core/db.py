@@ -147,7 +147,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
 
     fundamental_where = [
         sql.SQL("time <= %s"),
-        sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) <= %s"),
+        sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %s"),
     ]
     fundamental_params: list[object] = [end_ts, end_ts]
     if REQUIRE_USD_FUNDAMENTALS:
@@ -163,7 +163,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
         cur.execute(
             sql.SQL(
                 "SELECT MIN(time), MAX(time), "
-                "MAX(COALESCE(data_available_at, fundamental_data_available_at, time)) "
+                "MAX(COALESCE(data_available_at, fundamental_data_available_at)) "
                 "FROM {} WHERE {}"
             ).format(
                 relation_identifier(SOURCE_FUNDAMENTAL),

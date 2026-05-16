@@ -14,7 +14,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 START_DATE             = date.fromisoformat(os.getenv("START_DATE", "2023-01-01"))
 END_DATE               = date.fromisoformat(os.getenv("END_DATE", str(date.today())))
-ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False)
+if env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False):
+    raise ValueError(
+        "ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=true is disabled; backtests must use point-in-time data_available_at guards."
+    )
+ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = False
 ACCOUNT_PROFILE        = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))

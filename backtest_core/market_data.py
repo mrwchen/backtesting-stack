@@ -74,6 +74,10 @@ def get_candidates(
     required_currency: Optional[str] = "USD",
     allow_rebuilt_historical_fundamentals: bool = False,
 ) -> list[FundamentalRow]:
+    if allow_rebuilt_historical_fundamentals:
+        raise ValueError(
+            "allow_rebuilt_historical_fundamentals=True is disabled; candidate queries must stay point-in-time safe."
+        )
     cache_key = (
         direction,
         long_min_fundamental,
@@ -113,8 +117,7 @@ def get_candidates(
     if as_of_ts is not None:
         params["as_of_ts"] = as_of_ts
         where_parts.append(sql.SQL("time <= %(as_of_ts)s"))
-        if not allow_rebuilt_historical_fundamentals:
-            where_parts.append(sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) <= %(as_of_ts)s"))
+        where_parts.append(sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %(as_of_ts)s"))
 
     if direction == "LONG" and long_label_blocklist:
         where_parts.append(sql.SQL("(valuation_label IS NULL OR valuation_label != ALL(%(label_list)s))"))
@@ -139,10 +142,7 @@ def get_candidates(
             "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
         ).format(relation_identifier(pepperstone_table)))
 
-    if allow_rebuilt_historical_fundamentals:
-        recency_order = sql.SQL("time DESC")
-    else:
-        recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at, time) DESC NULLS LAST, time DESC")
+    recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
 
     query = sql.SQL("""
         SELECT DISTINCT ON (symbol)
