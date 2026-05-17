@@ -63,6 +63,9 @@ services:
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - REQUIRE_USD_FUNDAMENTALS=true
       - MIN_MARKET_CAP_M=2000.0
+      # false = ignore negative_earnings_flag for that direction.
+      - FILTER_NEGATIVE_EARNINGS_LONG=false
+      - FILTER_NEGATIVE_EARNINGS_SHORT=false
       # Must stay false: candidate selection always requires point-in-time fundamental availability.
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 

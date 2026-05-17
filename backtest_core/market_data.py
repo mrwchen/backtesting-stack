@@ -74,6 +74,7 @@ def get_candidates(
     pepperstone_table: str = "public.pepperstone_data",
     required_currency: Optional[str] = "USD",
     allow_rebuilt_historical_fundamentals: bool = False,
+    filter_negative_earnings: bool = False,
 ) -> list[FundamentalRow]:
     if allow_rebuilt_historical_fundamentals:
         raise ValueError(
@@ -93,6 +94,7 @@ def get_candidates(
         pepperstone_table,
         required_currency,
         allow_rebuilt_historical_fundamentals,
+        filter_negative_earnings,
     )
     if cache_key in _CANDIDATE_CACHE:
         return _CANDIDATE_CACHE[cache_key]
@@ -109,9 +111,10 @@ def get_candidates(
         score_filter,
         sql.SQL("composite_score IS NOT NULL"),
         sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
-        sql.SQL("negative_earnings_flag IS NOT TRUE"),
         sql.SQL("high_leverage_flag IS NOT TRUE"),
     ]
+    if filter_negative_earnings:
+        where_parts.append(sql.SQL("negative_earnings_flag IS NOT TRUE"))
 
     if as_of_ts is None and as_of_date:
         as_of_ts = _default_as_of_ts(as_of_date)

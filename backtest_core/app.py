@@ -101,9 +101,11 @@ def log_backtest_context(model_files: list[str]) -> None:
         SHORT_MAX_HOLD_DAYS,
     )
     log.info(
-        "Candidate filter — min_market_cap_m=%.0f  require_usd_fundamentals=%s  pit_fundamental_guard=strict",
+        "Candidate filter %.0f %s strict negative_earnings_long_filter %s negative_earnings_short_filter %s",
         MIN_MARKET_CAP_M,
         REQUIRE_USD_FUNDAMENTALS,
+        FILTER_NEGATIVE_EARNINGS_LONG,
+        FILTER_NEGATIVE_EARNINGS_SHORT,
     )
     log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
     log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)

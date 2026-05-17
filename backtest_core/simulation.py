@@ -349,6 +349,9 @@ def run_backtest(
             pepperstone_table=PEPPERSTONE_TABLE,
             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
             allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+            filter_negative_earnings=(
+                FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
+            ),
         )
 
         if not candidates:
