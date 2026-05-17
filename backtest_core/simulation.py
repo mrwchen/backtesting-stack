@@ -31,6 +31,8 @@ from .market_data import (
     get_candidates,
     get_trading_days,
     get_world_regime,
+    _is_stop_loss_active,
+    _is_in_sl_tp_window,
     log_cache_stats,
     preload_symbol_bars,
 )
@@ -78,10 +80,11 @@ def simulate_outcome(
         bar_date = ts.date() if hasattr(ts, "date") else ts
         total_bars = pos.bars_processed + bar_idx + 1
         sl_tp_active = _is_in_sl_tp_window(ts)
+        stop_loss_active = _is_stop_loss_active(ts)
 
         if is_long:
             # SL check first (conservative — if same bar hits both, SL wins)
-            if sl_tp_active and low <= effective_sl:
+            if stop_loss_active and low <= effective_sl:
                 price = effective_sl
                 if tp1_hit:
                     pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
@@ -103,7 +106,7 @@ def simulate_outcome(
                 return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
 
         else:  # SHORT
-            if sl_tp_active and high >= effective_sl:
+            if stop_loss_active and high >= effective_sl:
                 price = effective_sl
                 if tp1_hit:
                     pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)

@@ -86,6 +86,10 @@ services:
       - SL_TP_WINDOW_TZ=America/New_York
       - SL_TP_WINDOW_START=09:30
       - SL_TP_WINDOW_END=16:00
+      - STOP_LOSS_RTH_ONLY=true
+      - STOP_LOSS_RTH_TZ=America/New_York
+      - STOP_LOSS_RTH_START=09:30
+      - STOP_LOSS_RTH_END=16:00
 
       # ── Account 2/3: ps_acc / Pepperstone EU retail US Share CFD overrides ─
       # Defaults when ACCOUNT_PROFILE=ps_acc:

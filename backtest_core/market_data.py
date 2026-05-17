@@ -21,6 +21,7 @@ _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
+_STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
 
 def _default_as_of_ts(as_of_date: date) -> datetime:
     return datetime.combine(as_of_date, time.max, tzinfo=timezone.utc)
@@ -261,6 +262,15 @@ def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) ->
 def _is_in_sl_tp_window(ts: datetime) -> bool:
     local = ts.astimezone(_SL_TP_WINDOW_ZONE)
     return _is_local_time_in_window(local, SL_TP_WINDOW_START, SL_TP_WINDOW_END)
+
+
+def _is_stop_loss_active(ts: datetime) -> bool:
+    if not _is_in_sl_tp_window(ts):
+        return False
+    if not STOP_LOSS_RTH_ONLY:
+        return True
+    local = ts.astimezone(_STOP_LOSS_RTH_ZONE)
+    return _is_local_time_in_window(local, STOP_LOSS_RTH_START, STOP_LOSS_RTH_END)
 
 
 def _day_signal_cutoff_ts(d: date) -> datetime:

@@ -89,6 +89,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         SL_TP_WINDOW_END,
     )
     log.info(
+        "Stop loss RTH guard — %s %s %s %s",
+        STOP_LOSS_RTH_ONLY,
+        STOP_LOSS_RTH_TZ,
+        STOP_LOSS_RTH_START,
+        STOP_LOSS_RTH_END,
+    )
+    log.info(
         "Holding rule — long_max_hold_days=%.2f  short_max_hold_days=%.2f  sl_tp_active_from=next_1h_bar",
         LONG_MAX_HOLD_DAYS,
         SHORT_MAX_HOLD_DAYS,
