@@ -120,7 +120,7 @@ def _latest_close_price(
     as_of_date: date,
 ) -> float:
     as_of_ts = _day_close_ts(as_of_date)
-    timestamps, bars = _load_symbol_bars_through(conn, pos.symbol, as_of_ts)
+    timestamps, bars = _load_symbol_bars_through(conn, pos.isin, as_of_ts)
     idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
@@ -133,7 +133,7 @@ def _latest_close_price_at(
     as_of_ts: datetime,
 ) -> float:
     as_of_ts = _ensure_utc_ts(as_of_ts)
-    timestamps, bars = _load_symbol_bars_through(conn, pos.symbol, as_of_ts)
+    timestamps, bars = _load_symbol_bars_through(conn, pos.isin, as_of_ts)
     idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price

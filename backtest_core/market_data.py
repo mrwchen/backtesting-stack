@@ -122,6 +122,7 @@ def get_candidates(
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
     where_parts = [
         score_filter,
+        sql.SQL("isin IS NOT NULL"),
         sql.SQL("composite_score IS NOT NULL"),
         sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
         sql.SQL("high_leverage_flag IS NOT TRUE"),
@@ -169,7 +170,8 @@ def get_candidates(
     recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
 
     query = sql.SQL("""
-        SELECT DISTINCT ON (symbol)
+        SELECT DISTINCT ON (isin)
+            isin,
             symbol,
             composite_score,
             COALESCE(sector, ''),
@@ -182,7 +184,7 @@ def get_candidates(
         FROM {}
         WHERE {}
         ORDER BY
-            symbol,
+            isin,
             {}
     """).format(
         relation_identifier(source_table),
@@ -194,15 +196,16 @@ def get_candidates(
         rows = cur.fetchall()
     candidates = [
         FundamentalRow(
-            symbol=r[0],
-            composite_score=float(r[1]),
-            sector=r[2],
-            industry=r[3],
-            valuation_label=r[4],
-            mispricing_score=float(r[5]) if r[5] is not None else None,
-            negative_earnings_flag=bool(r[6]),
-            high_leverage_flag=bool(r[7]),
-            market_cap_m=float(r[8]) if r[8] is not None else None,
+            isin=r[0],
+            symbol=r[1],
+            composite_score=float(r[2]),
+            sector=r[3],
+            industry=r[4],
+            valuation_label=r[5],
+            mispricing_score=float(r[6]) if r[6] is not None else None,
+            negative_earnings_flag=bool(r[7]),
+            high_leverage_flag=bool(r[8]),
+            market_cap_m=float(r[9]) if r[9] is not None else None,
         )
         for r in rows
     ]
@@ -361,9 +364,9 @@ def _ensure_symbol_bars_loaded(
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
-                    "SELECT symbol, ts, open, high, low, close, volume FROM {} "
-                    "WHERE symbol = ANY(%s) AND ts >= %s AND ts <= %s "
-                    "ORDER BY symbol, ts"
+                    "SELECT isin, ts, open, high, low, close, volume FROM {} "
+                    "WHERE isin = ANY(%s) AND ts >= %s AND ts <= %s "
+                    "ORDER BY isin, ts"
                 ).format(relation_identifier(SOURCE_1H)),
                 (batch, lower_bound, up_to_ts),
             )

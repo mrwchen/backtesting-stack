@@ -87,6 +87,7 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
     """Validate source tables/columns and basic date coverage before the run."""
     fundamental_required = {
         "time",
+        "isin",
         "symbol",
         "data_available_at",
         "fundamental_data_available_at",
@@ -107,7 +108,7 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "financial_currency",
         })
 
-    _require_columns(conn, SOURCE_1H, {"symbol", "ts", "open", "high", "low", "close", "volume"})
+    _require_columns(conn, SOURCE_1H, {"isin", "symbol", "ts", "open", "high", "low", "close", "volume"})
     _require_columns(conn, SOURCE_FUNDAMENTAL, fundamental_required)
     _require_columns(conn, SOURCE_WORLD_REGIME, {"day", "regime_label", "composite_score"})
 
@@ -136,7 +137,8 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "ps_share_cfd_short_borrow_rate_pct",
         "ps_share_cfd_overnight_day_count",
     })
-    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "entry_ts", "pnl_usd", "equity_after"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "isin", "entry_ts", "pnl_usd", "equity_after"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {"run_id", "isin", "symbol", "signal_date"})
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",
         "ts",

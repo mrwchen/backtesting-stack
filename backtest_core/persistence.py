@@ -117,6 +117,7 @@ def write_trades(
         rows.append((
             run_id,
             p.entry_date,
+            p.isin,
             p.symbol,
             p.direction,
             p.world_regime_label or None,
@@ -153,7 +154,7 @@ def write_trades(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, symbol, direction,
+            run_id, signal_date, isin, symbol, direction,
             world_regime_label, world_regime_score, valuation_label,
             fundamental_score, entry_score, combined_score,
             entry_price, stop_loss, take_profit_1, take_profit_2,
@@ -163,7 +164,8 @@ def write_trades(
             tp1_hit, return_pct, pnl_usd, equity_after,
             entry_ts, tp1_exit_ts, exit_ts
         ) VALUES %s
-        ON CONFLICT (run_id, signal_date, symbol) DO UPDATE SET
+        ON CONFLICT (run_id, signal_date, isin) DO UPDATE SET
+            symbol = EXCLUDED.symbol,
             world_regime_score = EXCLUDED.world_regime_score,
             outcome_status = EXCLUDED.outcome_status,
             outcome_price  = EXCLUDED.outcome_price,
@@ -252,6 +254,7 @@ def write_decision_events(
             e.run_id,
             e.signal_date,
             e.as_of_ts,
+            e.isin,
             e.symbol,
             e.direction,
             e.decision_stage,
@@ -301,7 +304,7 @@ def write_decision_events(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, as_of_ts, symbol, direction,
+            run_id, signal_date, as_of_ts, isin, symbol, direction,
             decision_stage, decision, reason_code, reason_text,
             signal_passed, opened, candidate_rank, signal_rank,
             world_regime_label, world_regime_score, valuation_label,

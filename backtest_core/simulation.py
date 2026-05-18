@@ -67,7 +67,7 @@ def simulate_outcome(
     across all daily calls rather than O(N²).
     """
     after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts
-    bars = get_bars_range(conn, pos.symbol, after_ts, as_of_date)
+    bars = get_bars_range(conn, pos.isin, after_ts, as_of_date)
     if not bars:
         return None
 
@@ -298,6 +298,7 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
+                isin=None,
                 symbol=None,
                 direction=None,
                 decision_stage="regime_filter",
@@ -325,6 +326,7 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
+                isin=None,
                 symbol=None,
                 direction=None,
                 decision_stage="regime_filter",
@@ -395,6 +397,7 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
+                isin=None,
                 symbol=None,
                 direction=direction,
                 decision_stage="candidate_filter",
@@ -414,11 +417,11 @@ def run_backtest(
                 )
             continue
 
-        candidate_symbols = [fundamental.symbol for fundamental in candidates]
+        candidate_isins = [fundamental.isin for fundamental in candidates]
         preload_started = _time.perf_counter()
         loaded_bar_rows = preload_symbol_bars(
             conn,
-            candidate_symbols,
+            candidate_isins,
             day_end_ts,
             batch_size=BAR_CACHE_BATCH_SIZE,
             log_batches=log_progress_today,
@@ -432,7 +435,7 @@ def run_backtest(
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 loaded_bar_rows,
-                len(candidate_symbols),
+                len(candidate_isins),
                 day_end_ts,
                 preload_elapsed,
             )
@@ -451,7 +454,7 @@ def run_backtest(
 
         for candidate_rank, fundamental in enumerate(candidates, start=1):
             bars = get_cached_bars(
-                conn, fundamental.symbol,
+                conn, fundamental.isin,
                 cfg.min_bars + cfg.price_lookback_bars,
                 up_to_ts=day_end_ts,
             )
@@ -461,6 +464,7 @@ def run_backtest(
                     run_id=run_id,
                     signal_date=day,
                     as_of_ts=day_end_ts,
+                    isin=fundamental.isin,
                     symbol=fundamental.symbol,
                     direction=direction,
                     decision_stage="bar_load",
@@ -505,12 +509,14 @@ def run_backtest(
                     reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
                 )
             if signal:
+                signal.isin = fundamental.isin
                 signal.entry_ts = bars[-1].ts
                 signals.append(signal)
             event = DecisionEvent(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
+                isin=fundamental.isin,
                 symbol=fundamental.symbol,
                 direction=direction,
                 decision_stage="signal_eval",
@@ -688,6 +694,7 @@ def run_backtest(
                     continue
 
             open_positions.append(OpenPosition(
+                isin=signal.isin,
                 symbol=signal.symbol,
                 direction=signal.direction,
                 entry_date=day,
@@ -757,7 +764,7 @@ def run_backtest(
     # ── 4. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
     for pos in list(open_positions):
-        bars = get_bars_range(conn, pos.symbol, pos.entry_ts, last_day)
+        bars = get_bars_range(conn, pos.isin, pos.entry_ts, last_day)
         last_price = float(bars[-1][4]) if bars else pos.entry_price
         if pos.direction == "LONG":
             if pos.tp1_hit:

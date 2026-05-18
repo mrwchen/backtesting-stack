@@ -8,6 +8,7 @@ from backtest_shared import Signal
 
 @dataclass
 class OpenPosition:
+    isin: str
     symbol: str
     direction: str
     entry_date: date
@@ -93,6 +94,7 @@ class DecisionEvent:
     run_id: int
     signal_date: date
     as_of_ts: Optional[datetime]
+    isin: Optional[str]
     symbol: Optional[str]
     direction: Optional[str]
     decision_stage: str

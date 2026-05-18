@@ -14,6 +14,7 @@ class WorldRegime:
 
 @dataclass(frozen=True)
 class FundamentalRow:
+    isin: str
     symbol: str
     composite_score: float
     sector: str
@@ -54,6 +55,7 @@ class Signal:
     sector: str = ""
     industry: str = ""
     entry_ts: Optional[datetime] = None
+    isin: str = ""
 
 
 @dataclass
