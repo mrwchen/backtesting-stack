@@ -100,7 +100,7 @@ def run_monte_carlo(
         )
     conn.commit()
     log.info(
-        "Monte Carlo — run_id=%d  n=%d  return_p50=%.1f%%  return_p05=%.1f%%  dd_p05=%.1f%%  ruin=%.1f%%  profitable=%.1f%%",
+        "Monte Carlo run %d simulations %d return p50 %.1f%% return p05 %.1f%% drawdown p05 %.1f%% ruin %.1f%% profitable %.1f%%",
         run_id, n_simulations,
         p(total_returns, 50), p(total_returns, 5), p(max_drawdowns, 5),
         float(np.mean(final_equities < initial_equity * 0.5) * 100),

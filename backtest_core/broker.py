@@ -13,7 +13,7 @@ from backtest_shared import Signal
 from .config import *
 from .entities import AccountMarginSnapshot, ClosedTrade, OpenPosition
 from .ibkr_margin import get_ibkr_margin_requirement
-from .market_data import _day_close_ts, _ensure_utc_ts, _load_symbol_bars_through
+from .market_data import _day_close_ts, _ensure_utc_ts, _load_identity_bars_through
 
 log = logging.getLogger(__name__)
 _PEPPERSTONE_ROLLOVER_ZONE = ZoneInfo("America/New_York")
@@ -120,7 +120,7 @@ def _latest_close_price(
     as_of_date: date,
 ) -> float:
     as_of_ts = _day_close_ts(as_of_date)
-    timestamps, bars = _load_symbol_bars_through(conn, pos.isin, as_of_ts)
+    timestamps, bars = _load_identity_bars_through(conn, pos.identity_key, as_of_ts)
     idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
@@ -133,7 +133,7 @@ def _latest_close_price_at(
     as_of_ts: datetime,
 ) -> float:
     as_of_ts = _ensure_utc_ts(as_of_ts)
-    timestamps, bars = _load_symbol_bars_through(conn, pos.isin, as_of_ts)
+    timestamps, bars = _load_identity_bars_through(conn, pos.identity_key, as_of_ts)
     idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
@@ -240,20 +240,20 @@ def _position_stop_out_rank(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
     as_of_ts: datetime,
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, str, int]:
     mark_price = _latest_close_price_at(conn, pos, as_of_ts)
     pnl = _open_position_mark_to_market_pnl_at(conn, pos, mark_price, as_of_ts)
-    return (pnl, -_active_margin_used(pos), pos.symbol)
+    return (pnl, -_active_margin_used(pos), pos.symbol, pos.exchange, pos.cik)
 
 
 def _position_ibkr_liquidation_rank(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
     as_of_ts: datetime,
-) -> tuple[float, float, str]:
+) -> tuple[float, float, str, str, int]:
     mark_price = _latest_close_price_at(conn, pos, as_of_ts)
     pnl = _open_position_mark_to_market_pnl_at(conn, pos, mark_price, as_of_ts)
-    return (pnl, -_active_maintenance_margin_used(pos), pos.symbol)
+    return (pnl, -_active_maintenance_margin_used(pos), pos.symbol, pos.exchange, pos.cik)
 
 
 def _enforce_pepperstone_margin_stop_out(
@@ -298,7 +298,7 @@ def _enforce_pepperstone_margin_stop_out(
         trade.equity_after = realized_equity
         stop_out_trades.append(trade)
         log.warning(
-            "Pepperstone margin stop-out — symbol=%s margin_level=%.2f%% threshold=%.2f%% pnl=%.2f balance=%.2f",
+            "Pepperstone margin stop-out %s margin level %.2f%% threshold %.2f%% pnl %.2f balance %.2f",
             position.symbol,
             margin_level,
             PS_MARGIN_STOP_OUT_LEVEL_PCT,
@@ -345,7 +345,7 @@ def _enforce_ibkr_excess_liquidity_liquidation(
         trade.equity_after = realized_equity
         liquidation_trades.append(trade)
         log.warning(
-            "IBKR margin liquidation — symbol=%s excess_liquidity=%.2f maintenance_margin=%.2f pnl=%.2f balance=%.2f",
+            "IBKR margin liquidation %s excess liquidity %.2f maintenance margin %.2f pnl %.2f balance %.2f",
             position.symbol,
             snapshot.excess_liquidity,
             snapshot.maintenance_margin,

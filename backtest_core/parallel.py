@@ -73,7 +73,7 @@ def run_parallel_parent() -> None:
     signal.signal(signal.SIGINT, _handle_shutdown)
 
     log.info(
-        "Parallel backtest orchestration starting — models=%d parallelism=%d failure_mode=%s files=%s",
+        "Parallel backtest orchestration starting models %d parallelism %d failure mode %s files %s",
         len(model_files),
         parallelism,
         MODEL_FAILURE_MODE,
@@ -121,7 +121,7 @@ def run_parallel_parent() -> None:
             signal.signal(sig, handler)
 
     log.info(
-        "Parallel backtest orchestration complete — succeeded=%d failed=%d",
+        "Parallel backtest orchestration complete succeeded %d failed %d",
         len(succeeded),
         len(failed),
     )

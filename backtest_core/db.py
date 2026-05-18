@@ -76,7 +76,7 @@ def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, r
             f"Required relation {relation_name} is missing columns: {', '.join(missing)}"
         )
     log.info(
-        "Validated relation schema — relation=%s required_columns=%d available_columns=%d",
+        "Validated relation schema %s required columns %d available columns %d",
         relation_name,
         len(required),
         len(columns),
@@ -87,8 +87,9 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
     """Validate source tables/columns and basic date coverage before the run."""
     fundamental_required = {
         "time",
-        "isin",
         "symbol",
+        "exchange",
+        "cik",
         "data_available_at",
         "fundamental_data_available_at",
         "composite_score",
@@ -108,7 +109,7 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "financial_currency",
         })
 
-    _require_columns(conn, SOURCE_1H, {"isin", "symbol", "ts", "open", "high", "low", "close", "volume"})
+    _require_columns(conn, SOURCE_1H, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
     _require_columns(conn, SOURCE_FUNDAMENTAL, fundamental_required)
     _require_columns(conn, SOURCE_WORLD_REGIME, {"day", "regime_label", "composite_score"})
 
@@ -137,8 +138,12 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "ps_share_cfd_short_borrow_rate_pct",
         "ps_share_cfd_overnight_day_count",
     })
-    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"run_id", "isin", "entry_ts", "pnl_usd", "equity_after"})
-    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {"run_id", "isin", "symbol", "signal_date"})
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
+        "run_id", "symbol", "exchange", "cik", "entry_ts", "pnl_usd", "equity_after"
+    })
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
+        "run_id", "symbol", "exchange", "cik", "signal_date"
+    })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",
         "ts",
@@ -174,7 +179,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
         raise RuntimeError(
             f"No 1h bars in {SOURCE_1H} for required window {start_ts} to {end_ts}"
         )
-    log.info("Source coverage — bars relation=%s min_ts=%s max_ts=%s", SOURCE_1H, bar_min_ts, bar_max_ts)
+    log.info("Source coverage bars %s min ts %s max ts %s", SOURCE_1H, bar_min_ts, bar_max_ts)
 
     fundamental_where = [
         sql.SQL("time <= %s"),
@@ -208,7 +213,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL} up to {end_ts}"
         )
     log.info(
-        "Source coverage — fundamentals relation=%s min_time=%s max_time=%s max_available_at=%s",
+        "Source coverage fundamentals %s min time %s max time %s max available at %s",
         SOURCE_FUNDAMENTAL,
         fund_min_ts,
         fund_max_ts,
@@ -229,7 +234,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             f"No world regime rows in {SOURCE_WORLD_REGIME} up to {END_DATE}"
         )
     log.info(
-        "Source coverage — world_regime relation=%s min_day=%s max_day=%s",
+        "Source coverage world regime %s min day %s max day %s",
         SOURCE_WORLD_REGIME,
         regime_min_day,
         regime_max_day,
@@ -249,7 +254,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                 f"Pepperstone account selected, but {PEPPERSTONE_TABLE}.symbol_ps has no tradable rows"
             )
         log.info(
-            "Source coverage — pepperstone relation=%s account_profile=%s tradable_symbols=%d",
+            "Source coverage pepperstone %s account profile %s tradable symbols %d",
             PEPPERSTONE_TABLE,
             ACCOUNT_PROFILE,
             tradable_symbols,

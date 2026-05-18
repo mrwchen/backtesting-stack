@@ -80,7 +80,7 @@ def load_model_module(model_file: str) -> ModuleType:
             f"Backtesting model {model_file} is missing required symbols: {', '.join(missing)}"
         )
 
-    log.info("Loaded backtesting model — file=%s path=%s", model_file, full_path)
+    log.info("Loaded backtesting model %s path %s", model_file, full_path)
     return module
 
 

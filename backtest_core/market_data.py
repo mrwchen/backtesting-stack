@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2 import sql
 
-from backtest_shared import Bar, FundamentalRow, WorldRegime
+from backtest_shared import Bar, FundamentalRow, InstrumentKey, WorldRegime, instrument_key
 from .config import *
 from .ibkr_margin import ibkr_action_for_direction
 from .sql_utils import relation_identifier
@@ -26,7 +26,7 @@ class _BarCacheEntry:
     loaded_until_ts: Optional[datetime]
 
 
-_BAR_CACHE: dict[str, _BarCacheEntry] = {}
+_BAR_CACHE: dict[InstrumentKey, _BarCacheEntry] = {}
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
@@ -122,7 +122,9 @@ def get_candidates(
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
     where_parts = [
         score_filter,
-        sql.SQL("isin IS NOT NULL"),
+        sql.SQL("symbol IS NOT NULL"),
+        sql.SQL("exchange IS NOT NULL"),
+        sql.SQL("cik IS NOT NULL"),
         sql.SQL("composite_score IS NOT NULL"),
         sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
         sql.SQL("high_leverage_flag IS NOT TRUE"),
@@ -170,9 +172,10 @@ def get_candidates(
     recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
 
     query = sql.SQL("""
-        SELECT DISTINCT ON (isin)
-            isin,
+        SELECT DISTINCT ON (symbol, exchange, cik)
             symbol,
+            exchange,
+            cik,
             composite_score,
             COALESCE(sector, ''),
             COALESCE(industry, ''),
@@ -184,7 +187,9 @@ def get_candidates(
         FROM {}
         WHERE {}
         ORDER BY
-            isin,
+            symbol,
+            exchange,
+            cik,
             {}
     """).format(
         relation_identifier(source_table),
@@ -196,16 +201,17 @@ def get_candidates(
         rows = cur.fetchall()
     candidates = [
         FundamentalRow(
-            isin=r[0],
-            symbol=r[1],
-            composite_score=float(r[2]),
-            sector=r[3],
-            industry=r[4],
-            valuation_label=r[5],
-            mispricing_score=float(r[6]) if r[6] is not None else None,
-            negative_earnings_flag=bool(r[7]),
-            high_leverage_flag=bool(r[8]),
-            market_cap_m=float(r[9]) if r[9] is not None else None,
+            symbol=r[0],
+            exchange=r[1],
+            cik=int(r[2]),
+            composite_score=float(r[3]),
+            sector=r[4],
+            industry=r[5],
+            valuation_label=r[6],
+            mispricing_score=float(r[7]) if r[7] is not None else None,
+            negative_earnings_flag=bool(r[8]),
+            high_leverage_flag=bool(r[9]),
+            market_cap_m=float(r[10]) if r[10] is not None else None,
         )
         for r in rows
     ]
@@ -307,7 +313,7 @@ def _bar_cache_start_ts() -> datetime:
     return datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
 
 
-def _chunked(values: list[str], size: int) -> list[list[str]]:
+def _chunked(values: list[InstrumentKey], size: int) -> list[list[InstrumentKey]]:
     return [values[idx:idx + size] for idx in range(0, len(values), size)]
 
 
@@ -315,36 +321,36 @@ def _bar_from_row(ts: datetime, open_: object, high: object, low: object, close:
     return Bar(ts=ts, open=float(open_), high=float(high), low=float(low), close=float(close), volume=int(volume))
 
 
-def _ensure_symbol_bars_loaded(
+def _ensure_identity_bars_loaded(
     conn: psycopg2.extensions.connection,
-    symbols: list[str],
+    identities: list[InstrumentKey],
     up_to_ts: datetime,
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
 ) -> int:
     up_to_ts = _ensure_utc_ts(up_to_ts)
-    unique_symbols = sorted({symbol for symbol in symbols if symbol})
-    if not unique_symbols:
+    unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
+    if not unique_identities:
         return 0
 
     to_load = [
-        symbol
-        for symbol in unique_symbols
-        if symbol not in _BAR_CACHE
-        or _BAR_CACHE[symbol].loaded_until_ts is None
-        or _BAR_CACHE[symbol].loaded_until_ts < up_to_ts
+        identity
+        for identity in unique_identities
+        if identity not in _BAR_CACHE
+        or _BAR_CACHE[identity].loaded_until_ts is None
+        or _BAR_CACHE[identity].loaded_until_ts < up_to_ts
     ]
     if not to_load:
         if log_batches:
-            log.info("Bar preload skipped %d symbols already cached through %s", len(unique_symbols), up_to_ts)
+            log.info("Bar preload skipped %d instruments already cached through %s", len(unique_identities), up_to_ts)
         return 0
 
     total_rows = 0
     batches = _chunked(to_load, batch_size)
     if log_batches:
         log.info(
-            "Bar preload starting %d symbols in %d batches of %d through %s",
+            "Bar preload starting %d instruments in %d batches of %d through %s",
             len(to_load),
             len(batches),
             batch_size,
@@ -353,25 +359,35 @@ def _ensure_symbol_bars_loaded(
 
     for batch_idx, batch in enumerate(batches, start=1):
         batch_started = _time.perf_counter()
-        for symbol in batch:
-            _BAR_CACHE.setdefault(symbol, _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=None))
+        for identity in batch:
+            _BAR_CACHE.setdefault(identity, _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=None))
 
         lower_bound = min(
-            _BAR_CACHE[symbol].loaded_until_ts or _bar_cache_start_ts()
-            for symbol in batch
+            _BAR_CACHE[identity].loaded_until_ts or _bar_cache_start_ts()
+            for identity in batch
         )
+        symbols = [identity[0] for identity in batch]
+        exchanges = [identity[1] for identity in batch]
+        ciks = [identity[2] for identity in batch]
         rows_loaded = 0
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
-                    "SELECT isin, ts, open, high, low, close, volume FROM {} "
-                    "WHERE isin = ANY(%s) AND ts >= %s AND ts <= %s "
-                    "ORDER BY isin, ts"
+                    "WITH requested AS ("
+                    "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[]) AS u(symbol, exchange, cik)"
+                    ") "
+                    "SELECT b.symbol, b.exchange, b.cik, b.ts, b.open, b.high, b.low, b.close, b.volume "
+                    "FROM {} b "
+                    "JOIN requested r "
+                    "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
+                    "WHERE b.ts >= %s AND b.ts <= %s "
+                    "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
                 ).format(relation_identifier(SOURCE_1H)),
-                (batch, lower_bound, up_to_ts),
+                (symbols, exchanges, ciks, lower_bound, up_to_ts),
             )
-            for symbol, ts, open_, high, low, close, volume in cur.fetchall():
-                entry = _BAR_CACHE[symbol]
+            for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
+                identity = instrument_key(symbol, exchange, cik)
+                entry = _BAR_CACHE[identity]
                 if entry.loaded_until_ts is not None and _ensure_utc_ts(ts) <= entry.loaded_until_ts:
                     continue
                 bar = _bar_from_row(ts, open_, high, low, close, volume)
@@ -379,8 +395,8 @@ def _ensure_symbol_bars_loaded(
                 entry.bars.append(bar)
                 rows_loaded += 1
 
-        for symbol in batch:
-            entry = _BAR_CACHE[symbol]
+        for identity in batch:
+            entry = _BAR_CACHE[identity]
             if entry.loaded_until_ts is None or entry.loaded_until_ts < up_to_ts:
                 entry.loaded_until_ts = up_to_ts
 
@@ -388,7 +404,7 @@ def _ensure_symbol_bars_loaded(
         if log_batches:
             elapsed = _time.perf_counter() - batch_started
             log.info(
-                "Bar preload batch %d/%d loaded %d symbols and %d rows in %.1f s",
+                "Bar preload batch %d/%d loaded %d instruments and %d rows in %.1f s",
                 batch_idx,
                 len(batches),
                 len(batch),
@@ -398,7 +414,7 @@ def _ensure_symbol_bars_loaded(
 
     if log_batches:
         log.info(
-            "Bar preload complete %d symbols and %d new rows through %s",
+            "Bar preload complete %d instruments and %d new rows through %s",
             len(to_load),
             total_rows,
             up_to_ts,
@@ -406,37 +422,38 @@ def _ensure_symbol_bars_loaded(
     return total_rows
 
 
-def _load_symbol_bars_through(
+def _load_identity_bars_through(
     conn: psycopg2.extensions.connection,
-    symbol: str,
+    identity: InstrumentKey,
     up_to_ts: datetime,
 ) -> tuple[list[datetime], list[Bar]]:
-    """Load and cache one symbol only through the requested point-in-time timestamp."""
+    """Load and cache one instrument only through the requested point-in-time timestamp."""
+    identity = instrument_key(*identity)
     up_to_ts = _ensure_utc_ts(up_to_ts)
-    cached = _BAR_CACHE.get(symbol)
+    cached = _BAR_CACHE.get(identity)
     if cached is not None and cached.loaded_until_ts is not None and cached.loaded_until_ts >= up_to_ts:
         return cached.timestamps, cached.bars
 
-    _ensure_symbol_bars_loaded(conn, [symbol], up_to_ts, batch_size=1, log_batches=False)
-    cached = _BAR_CACHE.get(symbol)
+    _ensure_identity_bars_loaded(conn, [identity], up_to_ts, batch_size=1, log_batches=False)
+    cached = _BAR_CACHE.get(identity)
     if cached is None:
         cached = _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=up_to_ts)
-        _BAR_CACHE[symbol] = cached
+        _BAR_CACHE[identity] = cached
     return cached.timestamps, cached.bars
 
 
-def preload_symbol_bars(
+def preload_identity_bars(
     conn: psycopg2.extensions.connection,
-    symbols: list[str],
+    identities: list[InstrumentKey],
     up_to_ts: datetime,
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
 ) -> int:
-    """Batch-load bars for candidate symbols only through the current simulated time."""
-    return _ensure_symbol_bars_loaded(
+    """Batch-load bars for candidate instruments only through the current simulated time."""
+    return _ensure_identity_bars_loaded(
         conn,
-        symbols,
+        identities,
         up_to_ts,
         batch_size=batch_size,
         log_batches=log_batches,
@@ -445,13 +462,13 @@ def preload_symbol_bars(
 
 def get_cached_bars(
     conn: psycopg2.extensions.connection,
-    symbol: str,
+    identity: InstrumentKey,
     limit: int,
     up_to_ts: datetime,
 ) -> list[Bar]:
-    """Return up to `limit` bars using the per-run symbol cache."""
+    """Return up to `limit` bars using the per-run instrument cache."""
     up_to_ts = _ensure_utc_ts(up_to_ts)
-    timestamps, bars = _load_symbol_bars_through(conn, symbol, up_to_ts)
+    timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
     end_idx = bisect_right(timestamps, up_to_ts)
     selected: list[Bar] = []
     bar_idx = end_idx - 1
@@ -468,7 +485,7 @@ def get_cached_bars(
 
 def get_bars_range(
     conn: psycopg2.extensions.connection,
-    symbol: str,
+    identity: InstrumentKey,
     after_ts: datetime,
     up_to_date: date,
 ) -> list:
@@ -478,7 +495,7 @@ def get_bars_range(
     """
     after_ts = _ensure_utc_ts(after_ts)
     up_to_ts = _day_close_ts(up_to_date)
-    timestamps, bars = _load_symbol_bars_through(conn, symbol, up_to_ts)
+    timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
     start_idx = bisect_right(timestamps, after_ts)
     end_idx = bisect_right(timestamps, up_to_ts)
     return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]

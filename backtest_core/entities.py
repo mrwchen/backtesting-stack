@@ -4,12 +4,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 
-from backtest_shared import Signal
+from backtest_shared import InstrumentKey, Signal, instrument_key
 
 @dataclass
 class OpenPosition:
-    isin: str
     symbol: str
+    exchange: str
+    cik: int
     direction: str
     entry_date: date
     entry_ts: datetime
@@ -35,6 +36,10 @@ class OpenPosition:
     tp1_exit_ts: Optional[datetime] = None
     last_bar_ts: Optional[datetime] = None
     bars_processed: int = 0
+
+    @property
+    def identity_key(self) -> InstrumentKey:
+        return instrument_key(self.symbol, self.exchange, self.cik)
 
 
 @dataclass
@@ -94,8 +99,9 @@ class DecisionEvent:
     run_id: int
     signal_date: date
     as_of_ts: Optional[datetime]
-    isin: Optional[str]
     symbol: Optional[str]
+    exchange: Optional[str]
+    cik: Optional[int]
     direction: Optional[str]
     decision_stage: str
     decision: str

@@ -30,7 +30,7 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
     ))
 
     total = len(grid_items)
-    log.info("Grid search — model=%s combinations=%d", runtime.CURRENT_MODEL_FILE, total)
+    log.info("Grid search model %s combinations %d", runtime.CURRENT_MODEL_FILE, total)
 
     results: list[dict] = []
     for i, item in enumerate(grid_items, 1):
@@ -75,7 +75,7 @@ def _print_grid_summary(results: list[dict]) -> None:
         log.info("Grid search results (generic summary, sorted by profit factor):")
         for r in ranked_generic:
             log.info(
-                "run_id=%d trades=%d win_rate=%.1f%% return=%.2f%% dd=%.2f%% profit_factor=%s",
+                "Run %d trades %d win rate %.1f%% return %.2f%% drawdown %.2f%% profit factor %s",
                 r["run_id"],
                 r["total_trades"],
                 r["win_rate_pct"],
@@ -114,8 +114,8 @@ def _print_grid_summary(results: list[dict]) -> None:
         )
     best = ranked[0]
     log.info(
-        "Best combination — run_id=%d  PF=%s  return=%.2f%%  dd=%.2f%%  "
-        "ltp1=%.3f  ltp2=%.3f  stp1=%.3f  stp2=%.3f  lmhd=%.1f  smhd=%.1f  tcr=%.2f",
+        "Best combination run %d PF %s return %.2f%% drawdown %.2f%% "
+        "long TP1 %.3f long TP2 %.3f short TP1 %.3f short TP2 %.3f long max hold %.1f short max hold %.1f TP1 close ratio %.2f",
         best["run_id"],
         f"{best['profit_factor']:.3f}" if best["profit_factor"] else "N/A",
         best["total_return_pct"], best["max_drawdown_pct"],

@@ -25,7 +25,7 @@ def _install_worker_shutdown_handler() -> None:
 
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
-        "Source tables — bars=%s  fundamentals=%s  world_regime=%s  account_profile=%s  pepperstone_table=%s",
+        "Source tables bars %s fundamentals %s world regime %s account profile %s pepperstone table %s",
         SOURCE_1H,
         SOURCE_FUNDAMENTAL,
         SOURCE_WORLD_REGIME,
@@ -38,17 +38,17 @@ def log_backtest_context(model_files: list[str]) -> None:
             PEPPERSTONE_TABLE,
         )
     log.info(
-        "Backtesting model selection — selection=%s  count=%d  files=%s  dir=%s  parallelism=%d",
+        "Backtesting model selection %s count %d files %s dir %s parallelism %d",
         MODEL_SELECTION,
         len(model_files),
         ",".join(model_files),
         MODEL_DIR,
         MODEL_PARALLELISM,
     )
-    log.info("Account profile — profile=%s", ACCOUNT_PROFILE)
+    log.info("Account profile %s", ACCOUNT_PROFILE)
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
-            "Pepperstone margin policy — margin_requirement_pct=%.2f  stop_out_margin_level_pct=%.2f  min_entry_margin_level_pct=%.2f",
+            "Pepperstone margin policy margin requirement %.2f stop-out margin level %.2f min entry margin level %.2f",
             MARGIN_REQUIREMENT_PCT,
             PS_MARGIN_STOP_OUT_LEVEL_PCT,
             PS_MIN_ENTRY_MARGIN_LEVEL_PCT,
@@ -59,7 +59,7 @@ def log_backtest_context(model_files: list[str]) -> None:
             IBKR_MARGIN_REQUIREMENTS_TABLE,
         )
     log.info(
-        "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f",
+        "Execution model fractional shares %s spread bps %.2f slippage bps %.2f commission per order %.2f commission per share %.4f commission min %.2f commission max pct %.2f commission bps %.2f",
         ALLOW_FRACTIONAL_SHARES,
         SPREAD_BPS,
         SLIPPAGE_BPS,
@@ -71,7 +71,7 @@ def log_backtest_context(model_files: list[str]) -> None:
     )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
-            "Pepperstone share CFD overnight model — rollover_tz=America/New_York rollover_time=17:00 arr_pct=%.2f admin_fee_pct=%.2f short_borrow_rate_pct=%.2f day_count=%.0f friday_multiplier=3",
+            "Pepperstone share CFD overnight model rollover tz America/New_York rollover time 17:00 ARR pct %.2f admin fee pct %.2f short borrow rate pct %.2f day count %.0f friday multiplier 3",
             PS_SHARE_CFD_ARR_PCT,
             PS_SHARE_CFD_ADMIN_FEE_PCT,
             PS_SHARE_CFD_SHORT_BORROW_RATE_PCT,
@@ -79,18 +79,18 @@ def log_backtest_context(model_files: list[str]) -> None:
         )
     else:
         log.info(
-            "Margin financing model — margin_financing_rate_pct=%.2f",
+            "Margin financing model rate pct %.2f",
             MARGIN_FINANCING_RATE_PCT,
         )
     log.info(
-        "Entry window — enabled=%s  tz=%s  start=%s  end=%s",
+        "Entry window enabled %s tz %s start %s end %s",
         ENTRY_WINDOW_ENABLED,
         ENTRY_WINDOW_TZ,
         ENTRY_WINDOW_START,
         ENTRY_WINDOW_END,
     )
     log.info(
-        "SL/TP window — tz=%s  start=%s  end=%s",
+        "SL/TP window tz %s start %s end %s",
         SL_TP_WINDOW_TZ,
         SL_TP_WINDOW_START,
         SL_TP_WINDOW_END,
@@ -103,7 +103,7 @@ def log_backtest_context(model_files: list[str]) -> None:
         STOP_LOSS_RTH_END,
     )
     log.info(
-        "Holding rule — long_max_hold_days=%.2f  short_max_hold_days=%.2f  sl_tp_active_from=next_1h_bar",
+        "Holding rule long max hold days %.2f short max hold days %.2f SL/TP active from next 1h bar",
         LONG_MAX_HOLD_DAYS,
         SHORT_MAX_HOLD_DAYS,
     )
@@ -114,8 +114,8 @@ def log_backtest_context(model_files: list[str]) -> None:
         FILTER_NEGATIVE_EARNINGS_LONG,
         FILTER_NEGATIVE_EARNINGS_SHORT,
     )
-    log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
-    log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
+    log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
+    log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(
         "Performance caches — trading days on, world regime on, candidates on, bars incremental PIT batches of %d symbols with %d warmup days",
         BAR_CACHE_BATCH_SIZE,
@@ -133,7 +133,7 @@ def run_single_model_worker() -> None:
     conn = connect_with_retry()
     try:
         log.info(
-            "Connected. Starting backtest model=%s %s → %s, equity=%.0f application_name=%s",
+            "Connected starting backtest model %s %s to %s equity %.0f application name %s",
             runtime.CURRENT_MODEL_FILE,
             START_DATE,
             END_DATE,
@@ -146,7 +146,7 @@ def run_single_model_worker() -> None:
         runtime.MODEL_MODULE = load_model_module(model_file)
         cfg = runtime.MODEL_MODULE.signal_config_from_env()
         log.info(
-            "Model worker — file=%s  grid_search=%s",
+            "Model worker file %s grid search %s",
             runtime.CURRENT_MODEL_FILE,
             GRID_SEARCH_ENABLED,
         )

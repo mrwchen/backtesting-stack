@@ -35,7 +35,7 @@ from .market_data import (
     _is_stop_loss_active,
     _is_in_sl_tp_window,
     log_cache_stats,
-    preload_symbol_bars,
+    preload_identity_bars,
 )
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
@@ -67,7 +67,7 @@ def simulate_outcome(
     across all daily calls rather than O(N²).
     """
     after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts
-    bars = get_bars_range(conn, pos.isin, after_ts, as_of_date)
+    bars = get_bars_range(conn, pos.identity_key, after_ts, as_of_date)
     if not bars:
         return None
 
@@ -298,8 +298,9 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
-                isin=None,
                 symbol=None,
+                exchange=None,
+                cik=None,
                 direction=None,
                 decision_stage="regime_filter",
                 decision="skipped_day",
@@ -326,8 +327,9 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
-                isin=None,
                 symbol=None,
+                exchange=None,
+                cik=None,
                 direction=None,
                 decision_stage="regime_filter",
                 decision="skipped_day",
@@ -397,8 +399,9 @@ def run_backtest(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
-                isin=None,
                 symbol=None,
+                exchange=None,
+                cik=None,
                 direction=direction,
                 decision_stage="candidate_filter",
                 decision="no_candidates",
@@ -417,11 +420,11 @@ def run_backtest(
                 )
             continue
 
-        candidate_isins = [fundamental.isin for fundamental in candidates]
+        candidate_identities = [fundamental.identity_key for fundamental in candidates]
         preload_started = _time.perf_counter()
-        loaded_bar_rows = preload_symbol_bars(
+        loaded_bar_rows = preload_identity_bars(
             conn,
-            candidate_isins,
+            candidate_identities,
             day_end_ts,
             batch_size=BAR_CACHE_BATCH_SIZE,
             log_batches=log_progress_today,
@@ -435,7 +438,7 @@ def run_backtest(
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 loaded_bar_rows,
-                len(candidate_isins),
+                len(candidate_identities),
                 day_end_ts,
                 preload_elapsed,
             )
@@ -449,12 +452,12 @@ def run_backtest(
         )
         signals: list[Signal] = []
         decision_events: list[DecisionEvent] = []
-        signal_events: dict[str, DecisionEvent] = {}
+        signal_events: dict[tuple[str, str, int], DecisionEvent] = {}
         skipped_no_bars = 0
 
         for candidate_rank, fundamental in enumerate(candidates, start=1):
             bars = get_cached_bars(
-                conn, fundamental.isin,
+                conn, fundamental.identity_key,
                 cfg.min_bars + cfg.price_lookback_bars,
                 up_to_ts=day_end_ts,
             )
@@ -464,8 +467,9 @@ def run_backtest(
                     run_id=run_id,
                     signal_date=day,
                     as_of_ts=day_end_ts,
-                    isin=fundamental.isin,
                     symbol=fundamental.symbol,
+                    exchange=fundamental.exchange,
+                    cik=fundamental.cik,
                     direction=direction,
                     decision_stage="bar_load",
                     decision="rejected",
@@ -509,15 +513,17 @@ def run_backtest(
                     reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
                 )
             if signal:
-                signal.isin = fundamental.isin
+                signal.exchange = fundamental.exchange
+                signal.cik = fundamental.cik
                 signal.entry_ts = bars[-1].ts
                 signals.append(signal)
             event = DecisionEvent(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
-                isin=fundamental.isin,
                 symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
                 direction=direction,
                 decision_stage="signal_eval",
                 decision="signal" if signal else "rejected",
@@ -551,11 +557,11 @@ def run_backtest(
             )
             decision_events.append(event)
             if signal:
-                signal_events[signal.symbol] = event
+                signal_events[signal.identity_key] = event
 
         signals.sort(key=lambda s: s.combined_score, reverse=True)
         for signal_rank, signal in enumerate(signals, start=1):
-            event = signal_events.get(signal.symbol)
+            event = signal_events.get(signal.identity_key)
             if event:
                 event.signal_rank = signal_rank
 
@@ -565,7 +571,7 @@ def run_backtest(
             days_no_signals += 1
 
         # ── 3. Open new positions ────────────────────────────────────────────
-        open_symbols = {p.symbol for p in open_positions}
+        open_identities = {p.identity_key for p in open_positions}
         if SECTOR_DIVERSIFICATION_ENABLED:
             open_sectors: set[str] = {p.signal.sector for p in open_positions if p.signal.sector}
             open_sector_industries: set[tuple[str, str]] = {
@@ -583,7 +589,7 @@ def run_backtest(
 
             signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
             for signal_rank, signal in enumerate(signals, start=1):
-                event = signal_events.get(signal.symbol)
+                event = signal_events.get(signal.identity_key)
                 if event:
                     event.signal_rank = signal_rank
         opened_today = 0
@@ -592,7 +598,7 @@ def run_backtest(
         maintenance_margin = sum(_active_maintenance_margin_used(p) for p in open_positions)
 
         for signal in signals:
-            event = signal_events.get(signal.symbol)
+            event = signal_events.get(signal.identity_key)
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:
@@ -611,12 +617,12 @@ def run_backtest(
                     event.reason_code = "max_open_positions_reached"
                     event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
                 continue
-            if signal.symbol in open_symbols:
+            if signal.identity_key in open_identities:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "symbol_already_open"
-                    event.reason_text = "Symbol already had an open position."
+                    event.reason_code = "instrument_already_open"
+                    event.reason_text = "Instrument already had an open position."
                 continue
 
             if account_equity_today <= 0:
@@ -694,8 +700,9 @@ def run_backtest(
                     continue
 
             open_positions.append(OpenPosition(
-                isin=signal.isin,
                 symbol=signal.symbol,
+                exchange=signal.exchange,
+                cik=signal.cik,
                 direction=signal.direction,
                 entry_date=day,
                 entry_ts=signal.entry_ts or day_end_ts,
@@ -718,7 +725,7 @@ def run_backtest(
                 world_regime_score=regime.score,
                 valuation_label=signal.valuation_label,
             ))
-            open_symbols.add(signal.symbol)
+            open_identities.add(signal.identity_key)
             initial_margin += initial_margin_used
             maintenance_margin += maintenance_margin_used
             opened_today += 1
@@ -764,7 +771,7 @@ def run_backtest(
     # ── 4. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
     for pos in list(open_positions):
-        bars = get_bars_range(conn, pos.isin, pos.entry_ts, last_day)
+        bars = get_bars_range(conn, pos.identity_key, pos.entry_ts, last_day)
         last_price = float(bars[-1][4]) if bars else pos.entry_price
         if pos.direction == "LONG":
             if pos.tp1_hit:
@@ -833,7 +840,7 @@ def run_backtest(
     }
 
     log.info(
-        "Run %d complete — trades=%d  wins=%d  final_equity=%.0f  return=%.1f%%",
+        "Run %d complete trades %d wins %d final equity %.0f return %.1f%%",
         run_id, n_trades, n_wins, equity, total_return,
     )
     return run_id, summary

@@ -111,8 +111,9 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     signal_date          DATE          NOT NULL,
     as_of_ts             TIMESTAMPTZ,
-    isin                 TEXT,
     symbol               TEXT,
+    exchange             TEXT,
+    cik                  BIGINT,
     direction            TEXT,
 
     -- Decision taxonomy
@@ -171,8 +172,8 @@ CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_run_day
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_symbol_day
     ON backtest_decision_events (run_id, symbol, signal_date);
 
-CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_isin_day
-    ON backtest_decision_events (run_id, isin, signal_date);
+CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_identity_day
+    ON backtest_decision_events (run_id, symbol, exchange, cik, signal_date);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_reason
     ON backtest_decision_events (run_id, reason_code, signal_date);
@@ -183,8 +184,9 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     id                   SERIAL        PRIMARY KEY,
     run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id),
     signal_date          DATE          NOT NULL,
-    isin                 TEXT          NOT NULL,
     symbol               TEXT          NOT NULL,
+    exchange             TEXT          NOT NULL,
+    cik                  BIGINT        NOT NULL,
     direction            TEXT          NOT NULL,   -- LONG | SHORT
 
     -- World regime at signal time
@@ -229,7 +231,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     tp1_exit_ts          TIMESTAMPTZ,
     exit_ts              TIMESTAMPTZ,
 
-    UNIQUE (run_id, signal_date, isin)
+    UNIQUE (run_id, signal_date, symbol, exchange, cik)
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
@@ -238,8 +240,8 @@ CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
     ON backtest_trades (symbol, signal_date);
 
-CREATE INDEX IF NOT EXISTS idx_backtest_trades_isin
-    ON backtest_trades (isin, signal_date);
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_identity
+    ON backtest_trades (symbol, exchange, cik, signal_date);
 
 -- ── Account curve snapshots ─────────────────────────────────────────────────
 

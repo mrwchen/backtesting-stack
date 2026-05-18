@@ -99,7 +99,7 @@ def create_run(
         )
         run_id = cur.fetchone()[0]
     conn.commit()
-    log.info("Created run_id=%d model_file=%s account_profile=%s", run_id, runtime.CURRENT_MODEL_FILE, ACCOUNT_PROFILE)
+    log.info("Created run %d model %s account profile %s", run_id, runtime.CURRENT_MODEL_FILE, ACCOUNT_PROFILE)
     return run_id
 
 
@@ -117,8 +117,9 @@ def write_trades(
         rows.append((
             run_id,
             p.entry_date,
-            p.isin,
             p.symbol,
+            p.exchange,
+            p.cik,
             p.direction,
             p.world_regime_label or None,
             Decimal(str(round(p.world_regime_score, 2))) if p.world_regime_score else None,
@@ -154,7 +155,7 @@ def write_trades(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, isin, symbol, direction,
+            run_id, signal_date, symbol, exchange, cik, direction,
             world_regime_label, world_regime_score, valuation_label,
             fundamental_score, entry_score, combined_score,
             entry_price, stop_loss, take_profit_1, take_profit_2,
@@ -164,8 +165,7 @@ def write_trades(
             tp1_hit, return_pct, pnl_usd, equity_after,
             entry_ts, tp1_exit_ts, exit_ts
         ) VALUES %s
-        ON CONFLICT (run_id, signal_date, isin) DO UPDATE SET
-            symbol = EXCLUDED.symbol,
+        ON CONFLICT (run_id, signal_date, symbol, exchange, cik) DO UPDATE SET
             world_regime_score = EXCLUDED.world_regime_score,
             outcome_status = EXCLUDED.outcome_status,
             outcome_price  = EXCLUDED.outcome_price,
@@ -231,7 +231,7 @@ def write_account_curve(
     with conn.cursor() as cur:
         execute_values(cur, query, rows, page_size=500)
     conn.commit()
-    log.info("Wrote %d account-curve snapshots for run_id=%d", len(points), run_id)
+    log.info("Wrote %d account-curve snapshots for run %d", len(points), run_id)
 
 
 def _decimal_or_none(value: Optional[float], digits: int) -> Optional[Decimal]:
@@ -254,8 +254,9 @@ def write_decision_events(
             e.run_id,
             e.signal_date,
             e.as_of_ts,
-            e.isin,
             e.symbol,
+            e.exchange,
+            e.cik,
             e.direction,
             e.decision_stage,
             e.decision,
@@ -304,7 +305,7 @@ def write_decision_events(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, as_of_ts, isin, symbol, direction,
+            run_id, signal_date, as_of_ts, symbol, exchange, cik, direction,
             decision_stage, decision, reason_code, reason_text,
             signal_passed, opened, candidate_rank, signal_rank,
             world_regime_label, world_regime_score, valuation_label,

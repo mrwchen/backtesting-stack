@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Optional
 
+InstrumentKey = tuple[str, str, int]
+
+
+def instrument_key(symbol: str, exchange: str, cik: int) -> InstrumentKey:
+    return (str(symbol).strip().upper(), str(exchange).strip().upper(), int(cik))
+
+
 @dataclass(frozen=True)
 class WorldRegime:
     day: object
@@ -14,8 +21,9 @@ class WorldRegime:
 
 @dataclass(frozen=True)
 class FundamentalRow:
-    isin: str
     symbol: str
+    exchange: str
+    cik: int
     composite_score: float
     sector: str
     industry: str
@@ -24,6 +32,10 @@ class FundamentalRow:
     negative_earnings_flag: bool = False
     high_leverage_flag: bool = False
     market_cap_m: float | None = None
+
+    @property
+    def identity_key(self) -> InstrumentKey:
+        return instrument_key(self.symbol, self.exchange, self.cik)
 
 
 @dataclass(frozen=True)
@@ -55,7 +67,12 @@ class Signal:
     sector: str = ""
     industry: str = ""
     entry_ts: Optional[datetime] = None
-    isin: str = ""
+    exchange: str = ""
+    cik: int = 0
+
+    @property
+    def identity_key(self) -> InstrumentKey:
+        return instrument_key(self.symbol, self.exchange, self.cik)
 
 
 @dataclass
