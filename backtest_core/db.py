@@ -13,10 +13,30 @@ from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
 
+
+def _configure_session(conn: psycopg2.extensions.connection) -> None:
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT set_config('statement_timeout', %s, false)", (f"{DB_STATEMENT_TIMEOUT_MS}ms",))
+        cur.execute("SELECT set_config('lock_timeout', %s, false)", (f"{DB_LOCK_TIMEOUT_MS}ms",))
+        cur.execute(
+            "SELECT set_config('idle_in_transaction_session_timeout', %s, false)",
+            (f"{DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS}ms",),
+        )
+    log.info(
+        "DB session configured statement timeout %d ms, lock timeout %d ms, idle transaction timeout %d ms",
+        DB_STATEMENT_TIMEOUT_MS,
+        DB_LOCK_TIMEOUT_MS,
+        DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    )
+
+
 def connect_with_retry() -> psycopg2.extensions.connection:
     for attempt in range(1, DB_CONNECT_RETRIES + 1):
         try:
-            return psycopg2.connect(**DB)
+            conn = psycopg2.connect(**DB)
+            _configure_session(conn)
+            return conn
         except psycopg2.OperationalError as exc:
             if attempt == DB_CONNECT_RETRIES:
                 raise

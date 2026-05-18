@@ -2,6 +2,7 @@
 
 import logging
 import math
+from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -11,7 +12,7 @@ import psycopg2
 from backtest_shared import Signal
 from .config import *
 from .entities import AccountMarginSnapshot, ClosedTrade, OpenPosition
-from .market_data import _day_close_ts, _ensure_utc_ts, _load_symbol_bars
+from .market_data import _day_close_ts, _ensure_utc_ts, _load_symbol_bars_through
 
 log = logging.getLogger(__name__)
 _PEPPERSTONE_ROLLOVER_ZONE = ZoneInfo("America/New_York")
@@ -121,8 +122,9 @@ def _latest_close_price(
     pos: OpenPosition,
     as_of_date: date,
 ) -> float:
-    timestamps, bars = _load_symbol_bars(conn, pos.symbol)
-    idx = bisect_right(timestamps, _day_close_ts(as_of_date)) - 1
+    as_of_ts = _day_close_ts(as_of_date)
+    timestamps, bars = _load_symbol_bars_through(conn, pos.symbol, as_of_ts)
+    idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
     return float(bars[idx].close)
@@ -133,8 +135,9 @@ def _latest_close_price_at(
     pos: OpenPosition,
     as_of_ts: datetime,
 ) -> float:
-    timestamps, bars = _load_symbol_bars(conn, pos.symbol)
-    idx = bisect_right(timestamps, _ensure_utc_ts(as_of_ts)) - 1
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    timestamps, bars = _load_symbol_bars_through(conn, pos.symbol, as_of_ts)
+    idx = bisect_right(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
     return float(bars[idx].close)

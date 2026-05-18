@@ -1,7 +1,9 @@
 """Point-in-time source queries, trading calendar, and bar cache."""
 
 import logging
+import time as _time
 from bisect import bisect_right
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -15,7 +17,15 @@ from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
 
-_BAR_CACHE: dict[str, tuple[list[datetime], list[Bar]]] = {}
+
+@dataclass
+class _BarCacheEntry:
+    timestamps: list[datetime]
+    bars: list[Bar]
+    loaded_until_ts: Optional[datetime]
+
+
+_BAR_CACHE: dict[str, _BarCacheEntry] = {}
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
@@ -280,69 +290,144 @@ def _day_signal_cutoff_ts(d: date) -> datetime:
     return _session_end_ts(d) if ENTRY_WINDOW_ENABLED else _day_close_ts(d)
 
 
-def _load_symbol_bars(
+def _bar_cache_start_ts() -> datetime:
+    return datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[idx:idx + size] for idx in range(0, len(values), size)]
+
+
+def _bar_from_row(ts: datetime, open_: object, high: object, low: object, close: object, volume: object) -> Bar:
+    return Bar(ts=ts, open=float(open_), high=float(high), low=float(low), close=float(close), volume=int(volume))
+
+
+def _ensure_symbol_bars_loaded(
+    conn: psycopg2.extensions.connection,
+    symbols: list[str],
+    up_to_ts: datetime,
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+    log_batches: bool = False,
+) -> int:
+    up_to_ts = _ensure_utc_ts(up_to_ts)
+    unique_symbols = sorted({symbol for symbol in symbols if symbol})
+    if not unique_symbols:
+        return 0
+
+    to_load = [
+        symbol
+        for symbol in unique_symbols
+        if symbol not in _BAR_CACHE
+        or _BAR_CACHE[symbol].loaded_until_ts is None
+        or _BAR_CACHE[symbol].loaded_until_ts < up_to_ts
+    ]
+    if not to_load:
+        if log_batches:
+            log.info("Bar preload skipped %d symbols already cached through %s", len(unique_symbols), up_to_ts)
+        return 0
+
+    total_rows = 0
+    batches = _chunked(to_load, batch_size)
+    if log_batches:
+        log.info(
+            "Bar preload starting %d symbols in %d batches of %d through %s",
+            len(to_load),
+            len(batches),
+            batch_size,
+            up_to_ts,
+        )
+
+    for batch_idx, batch in enumerate(batches, start=1):
+        batch_started = _time.perf_counter()
+        for symbol in batch:
+            _BAR_CACHE.setdefault(symbol, _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=None))
+
+        lower_bound = min(
+            _BAR_CACHE[symbol].loaded_until_ts or _bar_cache_start_ts()
+            for symbol in batch
+        )
+        rows_loaded = 0
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "SELECT symbol, ts, open, high, low, close, volume FROM {} "
+                    "WHERE symbol = ANY(%s) AND ts >= %s AND ts <= %s "
+                    "ORDER BY symbol, ts"
+                ).format(relation_identifier(SOURCE_1H)),
+                (batch, lower_bound, up_to_ts),
+            )
+            for symbol, ts, open_, high, low, close, volume in cur.fetchall():
+                entry = _BAR_CACHE[symbol]
+                if entry.loaded_until_ts is not None and _ensure_utc_ts(ts) <= entry.loaded_until_ts:
+                    continue
+                bar = _bar_from_row(ts, open_, high, low, close, volume)
+                entry.timestamps.append(bar.ts)
+                entry.bars.append(bar)
+                rows_loaded += 1
+
+        for symbol in batch:
+            entry = _BAR_CACHE[symbol]
+            if entry.loaded_until_ts is None or entry.loaded_until_ts < up_to_ts:
+                entry.loaded_until_ts = up_to_ts
+
+        total_rows += rows_loaded
+        if log_batches:
+            elapsed = _time.perf_counter() - batch_started
+            log.info(
+                "Bar preload batch %d/%d loaded %d symbols and %d rows in %.1f s",
+                batch_idx,
+                len(batches),
+                len(batch),
+                rows_loaded,
+                elapsed,
+            )
+
+    if log_batches:
+        log.info(
+            "Bar preload complete %d symbols and %d new rows through %s",
+            len(to_load),
+            total_rows,
+            up_to_ts,
+        )
+    return total_rows
+
+
+def _load_symbol_bars_through(
     conn: psycopg2.extensions.connection,
     symbol: str,
+    up_to_ts: datetime,
 ) -> tuple[list[datetime], list[Bar]]:
-    """Load and cache all bars needed for this backtest run for one symbol."""
+    """Load and cache one symbol only through the requested point-in-time timestamp."""
+    up_to_ts = _ensure_utc_ts(up_to_ts)
     cached = _BAR_CACHE.get(symbol)
-    if cached is not None:
-        return cached
+    if cached is not None and cached.loaded_until_ts is not None and cached.loaded_until_ts >= up_to_ts:
+        return cached.timestamps, cached.bars
 
-    start_ts = datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
-    end_ts = _day_close_ts(END_DATE)
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT ts, open, high, low, close, volume FROM {} "
-                "WHERE symbol = %s AND ts >= %s AND ts <= %s ORDER BY ts"
-            ).format(relation_identifier(SOURCE_1H)),
-            (symbol, start_ts, end_ts),
-        )
-        rows = cur.fetchall()
-
-    bars = [
-        Bar(ts=r[0], open=float(r[1]), high=float(r[2]), low=float(r[3]), close=float(r[4]), volume=int(r[5]))
-        for r in rows
-    ]
-    timestamps = [b.ts for b in bars]
-    cached = (timestamps, bars)
-    _BAR_CACHE[symbol] = cached
-    return cached
+    _ensure_symbol_bars_loaded(conn, [symbol], up_to_ts, batch_size=1, log_batches=False)
+    cached = _BAR_CACHE.get(symbol)
+    if cached is None:
+        cached = _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=up_to_ts)
+        _BAR_CACHE[symbol] = cached
+    return cached.timestamps, cached.bars
 
 
 def preload_symbol_bars(
     conn: psycopg2.extensions.connection,
     symbols: list[str],
-) -> None:
-    """Batch-load bars for candidate symbols that are not already cached."""
-    missing = sorted({s for s in symbols if s not in _BAR_CACHE})
-    if not missing:
-        return
-
-    start_ts = datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
-    end_ts = _day_close_ts(END_DATE)
-    grouped: dict[str, list[Bar]] = {symbol: [] for symbol in missing}
-
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT symbol, ts, open, high, low, close, volume FROM {} "
-                "WHERE symbol = ANY(%s) AND ts >= %s AND ts <= %s "
-                "ORDER BY symbol, ts"
-            ).format(relation_identifier(SOURCE_1H)),
-            (missing, start_ts, end_ts),
-        )
-        for symbol, ts, open_, high, low, close, volume in cur.fetchall():
-            grouped.setdefault(symbol, []).append(
-                Bar(ts=ts, open=float(open_), high=float(high), low=float(low), close=float(close), volume=int(volume))
-            )
-
-    for symbol in missing:
-        bars = grouped.get(symbol, [])
-        _BAR_CACHE[symbol] = ([b.ts for b in bars], bars)
-
-    log.info("Preloaded 1h bars — symbols=%d  bars=%d", len(missing), sum(len(v) for v in grouped.values()))
+    up_to_ts: datetime,
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+    log_batches: bool = False,
+) -> int:
+    """Batch-load bars for candidate symbols only through the current simulated time."""
+    return _ensure_symbol_bars_loaded(
+        conn,
+        symbols,
+        up_to_ts,
+        batch_size=batch_size,
+        log_batches=log_batches,
+    )
 
 
 def get_cached_bars(
@@ -352,7 +437,8 @@ def get_cached_bars(
     up_to_ts: datetime,
 ) -> list[Bar]:
     """Return up to `limit` bars using the per-run symbol cache."""
-    timestamps, bars = _load_symbol_bars(conn, symbol)
+    up_to_ts = _ensure_utc_ts(up_to_ts)
+    timestamps, bars = _load_symbol_bars_through(conn, symbol, up_to_ts)
     end_idx = bisect_right(timestamps, up_to_ts)
     selected: list[Bar] = []
     bar_idx = end_idx - 1
@@ -377,16 +463,18 @@ def get_bars_range(
 
     SL/TP simulation intentionally uses all available bars, not only entry-window bars.
     """
-    timestamps, bars = _load_symbol_bars(conn, symbol)
+    after_ts = _ensure_utc_ts(after_ts)
+    up_to_ts = _day_close_ts(up_to_date)
+    timestamps, bars = _load_symbol_bars_through(conn, symbol, up_to_ts)
     start_idx = bisect_right(timestamps, after_ts)
-    end_idx = bisect_right(timestamps, _day_close_ts(up_to_date))
+    end_idx = bisect_right(timestamps, up_to_ts)
     return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]
 
 
 def log_cache_stats() -> None:
-    cached_bars = sum(len(bars) for _, bars in _BAR_CACHE.values())
+    cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
     log.info(
-        "Cache stats — symbols_with_bars=%d  bars=%d  trading_day_sets=%d  regimes=%d  candidate_sets=%d",
+        "Cache stats — symbols %d bars %d trading day sets %d regimes %d candidate sets %d",
         len(_BAR_CACHE),
         cached_bars,
         len(_TRADING_DAYS_CACHE),

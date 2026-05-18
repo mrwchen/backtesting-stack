@@ -1,6 +1,7 @@
 """Single-model worker entry point and startup context logging."""
 
 import logging
+import signal
 from pathlib import Path
 
 from . import runtime
@@ -12,6 +13,15 @@ from .model_loader import _validate_model_filename, load_model_module
 from .simulation import run_backtest
 
 log = logging.getLogger(__name__)
+
+
+def _install_worker_shutdown_handler() -> None:
+    def _handle_shutdown(signum: int, _frame: object) -> None:
+        log.warning("Model worker shutdown requested signal %d model %s", signum, runtime.CURRENT_MODEL_FILE)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
 
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
@@ -110,7 +120,9 @@ def log_backtest_context(model_files: list[str]) -> None:
     log.info("Sector diversification — enabled=%s", SECTOR_DIVERSIFICATION_ENABLED)
     log.info("Grid search — enabled=%s", GRID_SEARCH_ENABLED)
     log.info(
-        "Performance caches — trading_days=on  world_regime=on  candidates=on  bars=on",
+        "Performance caches — trading days on, world regime on, candidates on, bars incremental PIT batches of %d symbols with %d warmup days",
+        BAR_CACHE_BATCH_SIZE,
+        BAR_CACHE_WARMUP_DAYS,
     )
 
 
@@ -120,6 +132,7 @@ def run_single_model_worker() -> None:
     model_files = [model_file]
     runtime.CURRENT_MODEL_FILE = model_file
     set_log_process_name(f"bt-{Path(model_file).stem}")
+    _install_worker_shutdown_handler()
     conn = connect_with_retry()
     try:
         log.info(

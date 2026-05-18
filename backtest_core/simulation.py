@@ -1,6 +1,7 @@
 """Core point-in-time portfolio simulation loop."""
 
 import logging
+import time as _time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -201,6 +202,16 @@ def run_backtest(
 
     for day_idx, day in enumerate(trading_days, start=1):
         log_progress_today = day_idx == 1 or day_idx == len(trading_days) or day_idx % PROGRESS_LOG_EVERY_DAYS == 0
+        if log_progress_today:
+            log.info(
+                "Day %d/%d %s starting model %s open positions %d closed trades %d",
+                day_idx,
+                len(trading_days),
+                day,
+                runtime.CURRENT_MODEL_FILE,
+                len(open_positions),
+                len(closed_trades),
+            )
 
         # ── 1. Apply open-position state changes for today ──────────────────
         portfolio_events: list[PortfolioEvent] = []
@@ -260,7 +271,7 @@ def run_backtest(
                 closed_trades.append(event.trade)
                 closed_today += 1
                 day_pnl += event.trade.pnl_usd
-                log.debug("Closed %-6s %s %s  pnl=%.0f  balance=%.0f",
+                log.debug("Closed %-6s %s %s pnl %.0f balance %.0f",
                           event.position.symbol, event.position.direction, event.trade.outcome_status,
                           event.trade.pnl_usd, equity)
                 record_account_curve(event.ts, active_positions)
@@ -299,7 +310,7 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s model=%s — no regime  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    "Progress %d/%d %s model %s no regime, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
                     day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
@@ -331,11 +342,22 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s model=%s — neutral regime %.1f  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    "Progress %d/%d %s model %s neutral regime %.1f, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
                     day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
+        if log_progress_today:
+            log.info(
+                "Candidate query starting day %d/%d %s model %s direction %s cutoff %s",
+                day_idx,
+                len(trading_days),
+                day,
+                runtime.CURRENT_MODEL_FILE,
+                direction,
+                day_end_ts,
+            )
+        candidate_started = _time.perf_counter()
         candidates = get_candidates(
             conn, direction,
             long_min_fundamental=cfg.long_min_fundamental,
@@ -353,6 +375,18 @@ def run_backtest(
                 FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
             ),
         )
+        candidate_elapsed = _time.perf_counter() - candidate_started
+        if log_progress_today or candidate_elapsed >= 5.0:
+            log.info(
+                "Candidate query complete day %d/%d %s model %s direction %s found %d candidates in %.1f s",
+                day_idx,
+                len(trading_days),
+                day,
+                runtime.CURRENT_MODEL_FILE,
+                direction,
+                len(candidates),
+                candidate_elapsed,
+            )
 
         if not candidates:
             days_no_candidates += 1
@@ -374,13 +408,33 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s model=%s — %s regime %.1f  no candidates  day_pnl=%.0f  equity=%.0f  open=%d  closed_today=%d  closed_total=%d",
+                    "Progress %d/%d %s model %s %s regime %.1f, no candidates, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
                     day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, direction, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
         candidate_symbols = [fundamental.symbol for fundamental in candidates]
-        preload_symbol_bars(conn, candidate_symbols)
+        preload_started = _time.perf_counter()
+        loaded_bar_rows = preload_symbol_bars(
+            conn,
+            candidate_symbols,
+            day_end_ts,
+            batch_size=BAR_CACHE_BATCH_SIZE,
+            log_batches=log_progress_today,
+        )
+        preload_elapsed = _time.perf_counter() - preload_started
+        if log_progress_today or preload_elapsed >= 5.0:
+            log.info(
+                "Bar preload complete day %d/%d %s model %s loaded %d new rows for %d candidates through %s in %.1f s",
+                day_idx,
+                len(trading_days),
+                day,
+                runtime.CURRENT_MODEL_FILE,
+                loaded_bar_rows,
+                len(candidate_symbols),
+                day_end_ts,
+                preload_elapsed,
+            )
 
         model = get_model_module()
         compute_fn = model.compute_long_signal if direction == "LONG" else model.compute_short_signal
@@ -667,7 +721,7 @@ def run_backtest(
                 event.reason_code = "opened"
                 event.reason_text = "Signal passed portfolio checks and a simulated position was opened."
                 event.opened = True
-            log.debug("Opened  %-6s %s  entry=%.2f  sl=%.2f  margin=%.0f  equity=%.0f",
+            log.debug("Opened %-6s %s entry %.2f stop %.2f margin %.0f equity %.0f",
                       signal.symbol, signal.direction, signal.entry_price,
                       signal.stop_loss, initial_margin_used, equity)
 
@@ -675,7 +729,7 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model=%s — %s regime %.1f  candidates=%d  signals=%d  skipped_no_bars=%d  opened=%d  closed_today=%d  day_pnl=%.0f  open=%d  equity=%.0f  closed_total=%d",
+                "Progress %d/%d %s model %s %s regime %.1f, candidates %d, signals %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
@@ -694,7 +748,7 @@ def run_backtest(
             )
 
     log.info(
-        "Day breakdown — no_regime=%d  neutral=%d  no_candidates=%d  no_signals=%d  with_signals=%d",
+        "Day breakdown no regime %d, neutral %d, no candidates %d, no signals %d, with signals %d",
         days_no_regime, days_neutral, days_no_candidates, days_no_signals, days_with_signals,
     )
     log_cache_stats()
@@ -734,7 +788,7 @@ def run_backtest(
         record_account_curve(trade.exit_ts or _day_close_ts(last_day), open_positions)
 
     # ── 5. Persist results ───────────────────────────────────────────────────
-    log.info("Writing %d trades and %d account snapshots for run_id=%d", len(closed_trades), len(account_curve), run_id)
+    log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)
 
     # Patch world_regime_label into rows (stored on signal, pass through)
     # (already embedded in entry_reason; trade write accesses signal directly)

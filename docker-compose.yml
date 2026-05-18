@@ -41,6 +41,10 @@ services:
       - RUN_LABEL_TZ=Europe/Berlin
       - PROGRESS_LOG_EVERY_DAYS=1
       - BAR_CACHE_WARMUP_DAYS=120
+      - BAR_CACHE_BATCH_SIZE=100
+      - DB_STATEMENT_TIMEOUT_MS=60000
+      - DB_LOCK_TIMEOUT_MS=5000
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000
       - RUN_NOTES_EXTRA=v1
 
       # ── Generic: model selection ───────────────────────────────────────────

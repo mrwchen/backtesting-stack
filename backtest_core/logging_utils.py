@@ -16,8 +16,8 @@ def configure_logging() -> None:
     logging.Formatter.converter = _time.gmtime
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)sZ  %(levelname)-8s  process=%(processName)-48s  thread=%(threadName)-16s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format="%(asctime)sZ %(levelname)s %(processName)s %(threadName)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
     _CONFIGURED = True
 

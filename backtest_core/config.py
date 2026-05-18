@@ -129,6 +129,7 @@ RUN_NOTES_EXTRA        = os.getenv("RUN_NOTES_EXTRA", "")
 RUN_LABEL_TZ           = os.getenv("RUN_LABEL_TZ", "Europe/Berlin")
 PROGRESS_LOG_EVERY_DAYS = max(1, int(os.getenv("PROGRESS_LOG_EVERY_DAYS", "25")))
 BAR_CACHE_WARMUP_DAYS = max(1, int(os.getenv("BAR_CACHE_WARMUP_DAYS", "120")))
+BAR_CACHE_BATCH_SIZE = max(1, int(os.getenv("BAR_CACHE_BATCH_SIZE", "100")))
 MONTE_CARLO_ENABLED       = os.getenv("MONTE_CARLO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 N_MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("N_MONTE_CARLO_SIMULATIONS", "2000")))
 MIN_MARKET_CAP_M = float(os.getenv("MIN_MARKET_CAP_M", "1000.0"))
@@ -201,6 +202,9 @@ REQUIRE_USD_FUNDAMENTALS = os.getenv("REQUIRE_USD_FUNDAMENTALS", "true").strip()
 
 DB_CONNECT_RETRIES       = int(os.getenv("DB_CONNECT_RETRIES", "5"))
 DB_CONNECT_RETRY_DELAY_S = float(os.getenv("DB_CONNECT_RETRY_DELAY_S", "5.0"))
+DB_STATEMENT_TIMEOUT_MS = max(0, int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "60000")))
+DB_LOCK_TIMEOUT_MS = max(0, int(os.getenv("DB_LOCK_TIMEOUT_MS", "5000")))
+DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = max(0, int(os.getenv("DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS", "60000")))
 
 DB = {
     "host":            os.getenv("PGHOST", "timescaledb"),
