@@ -113,6 +113,15 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
 
     if ACCOUNT_PROFILE == "ps_acc":
         _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
+    elif ACCOUNT_PROFILE == "ibkr_acc":
+        _require_columns(conn, IBKR_MARGIN_REQUIREMENTS_TABLE, {
+            "source_symbol",
+            "action",
+            "quantity",
+            "initial_margin",
+            "maintenance_margin",
+            "fetched_at",
+        })
 
     _validate_source_coverage(conn)
 
@@ -243,3 +252,50 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             ACCOUNT_PROFILE,
             tradable_symbols,
         )
+    elif ACCOUNT_PROFILE == "ibkr_acc":
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE quantity > 0
+                              AND initial_margin > 0
+                              AND maintenance_margin > 0
+                        ) AS usable_rows,
+                        COUNT(DISTINCT source_symbol) FILTER (
+                            WHERE quantity > 0
+                              AND initial_margin > 0
+                              AND maintenance_margin > 0
+                        ) AS usable_symbols,
+                        COUNT(DISTINCT source_symbol) FILTER (
+                            WHERE UPPER(TRIM(action)) = 'BUY'
+                              AND quantity > 0
+                              AND initial_margin > 0
+                              AND maintenance_margin > 0
+                        ) AS long_symbols,
+                        COUNT(DISTINCT source_symbol) FILTER (
+                            WHERE UPPER(TRIM(action)) = 'SELL'
+                              AND quantity > 0
+                              AND initial_margin > 0
+                              AND maintenance_margin > 0
+                        ) AS short_symbols
+                    FROM {}
+                    """
+                ).format(relation_identifier(IBKR_MARGIN_REQUIREMENTS_TABLE)),
+            )
+            usable_rows, usable_symbols, long_symbols, short_symbols = cur.fetchone()
+        if usable_rows <= 0:
+            log.warning(
+                "IBKR margin source %s has no usable rows; candidate selection will return no symbols",
+                IBKR_MARGIN_REQUIREMENTS_TABLE,
+            )
+        else:
+            log.info(
+                "IBKR margin source %s usable rows %d symbols %d long symbols %d short symbols %d",
+                IBKR_MARGIN_REQUIREMENTS_TABLE,
+                usable_rows,
+                usable_symbols,
+                long_symbols,
+                short_symbols,
+            )

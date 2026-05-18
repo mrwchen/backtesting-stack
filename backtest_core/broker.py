@@ -12,6 +12,7 @@ import psycopg2
 from backtest_shared import Signal
 from .config import *
 from .entities import AccountMarginSnapshot, ClosedTrade, OpenPosition
+from .ibkr_margin import get_ibkr_margin_requirement
 from .market_data import _day_close_ts, _ensure_utc_ts, _load_symbol_bars_through
 
 log = logging.getLogger(__name__)
@@ -97,17 +98,13 @@ def _active_maintenance_margin_used(pos: OpenPosition) -> float:
 
 def _initial_margin_pct(direction: str) -> float:
     if ACCOUNT_PROFILE == "ibkr_acc":
-        if direction == "SHORT":
-            return float(IBKR_SHORT_INITIAL_MARGIN_PCT)
-        return float(IBKR_LONG_INITIAL_MARGIN_PCT)
+        raise RuntimeError("IBKR margin must be read from symbol margin requirements")
     return float(MARGIN_REQUIREMENT_PCT)
 
 
 def _maintenance_margin_pct(direction: str) -> float:
     if ACCOUNT_PROFILE == "ibkr_acc":
-        if direction == "SHORT":
-            return float(IBKR_SHORT_MAINTENANCE_MARGIN_PCT)
-        return float(IBKR_LONG_MAINTENANCE_MARGIN_PCT)
+        raise RuntimeError("IBKR margin must be read from symbol margin requirements")
     return float(MARGIN_REQUIREMENT_PCT)
 
 
@@ -605,6 +602,7 @@ def _max_shares_for_stop_risk(
 
 
 def calc_position(
+    conn: psycopg2.extensions.connection,
     signal: Signal,
     equity: float,
 ) -> tuple[float, float, float, float]:
@@ -626,6 +624,11 @@ def calc_position(
     if shares <= 0.0 or (not ALLOW_FRACTIONAL_SHARES and shares < 1.0):
         return 0.0, 0.0, 0.0, 0.0
     position_size_usd = abs(shares * entry_fill)
-    initial_margin_used = position_size_usd * _initial_margin_pct(signal.direction) / 100.0
-    maintenance_margin_used = position_size_usd * _maintenance_margin_pct(signal.direction) / 100.0
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        margin_requirement = get_ibkr_margin_requirement(conn, signal.symbol, signal.direction)
+        initial_margin_used = shares * margin_requirement.initial_margin_per_share
+        maintenance_margin_used = shares * margin_requirement.maintenance_margin_per_share
+    else:
+        initial_margin_used = position_size_usd * _initial_margin_pct(signal.direction) / 100.0
+        maintenance_margin_used = position_size_usd * _maintenance_margin_pct(signal.direction) / 100.0
     return initial_margin_used, maintenance_margin_used, shares, position_size_usd

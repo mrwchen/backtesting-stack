@@ -65,6 +65,7 @@ services:
       - SOURCE_FUNDAMENTAL=stocks_analysis_fundamental_scores
       - SOURCE_WORLD_REGIME=world_regime_daily_scores_historical_mv
       - PEPPERSTONE_TABLE=public.pepperstone_data
+      - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       - REQUIRE_USD_FUNDAMENTALS=true
       - MIN_MARKET_CAP_M=2000.0
       # false = ignore negative_earnings_flag for that direction.
@@ -126,14 +127,10 @@ services:
       # Defaults when ACCOUNT_PROFILE=ibkr_acc:
       #   Available Funds = Equity with Loan Value - Initial Margin
       #   Excess Liquidity = Equity with Loan Value - Maintenance Margin
-      #   Long initial/maintenance=50%/25%; short initial/maintenance=50%/50%
+      #   Initial and maintenance margin come from IBKR_MARGIN_REQUIREMENTS_TABLE.
       #   Pro Tiered first tier: commission=0.0035 USD/share, min=0.35 USD, max=1%
       #   spread=0 bps, slippage=1 bps, configured first-tier USD margin rate=5.14%
       # Uncomment to override the ibkr_acc defaults.
-      - IBKR_LONG_INITIAL_MARGIN_PCT=50
-      - IBKR_LONG_MAINTENANCE_MARGIN_PCT=25
-      - IBKR_SHORT_INITIAL_MARGIN_PCT=50
-      - IBKR_SHORT_MAINTENANCE_MARGIN_PCT=50
       # - IBKR_ALLOW_FRACTIONAL_SHARES=true
       # - IBKR_COMMISSION_PER_ORDER_USD=0.0
       # - IBKR_COMMISSION_PER_SHARE_USD=0.0035

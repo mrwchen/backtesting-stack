@@ -55,11 +55,8 @@ def log_backtest_context(model_files: list[str]) -> None:
         )
     else:
         log.info(
-            "IBKR margin policy — long_initial=%.2f  long_maintenance=%.2f  short_initial=%.2f  short_maintenance=%.2f",
-            IBKR_LONG_INITIAL_MARGIN_PCT,
-            IBKR_LONG_MAINTENANCE_MARGIN_PCT,
-            IBKR_SHORT_INITIAL_MARGIN_PCT,
-            IBKR_SHORT_MAINTENANCE_MARGIN_PCT,
+            "IBKR margin policy reads symbol requirements from %s",
+            IBKR_MARGIN_REQUIREMENTS_TABLE,
         )
     log.info(
         "Execution model — fractional_shares=%s  spread_bps=%.2f  slippage_bps=%.2f  commission_per_order=%.2f  commission_per_share=%.4f  commission_min=%.2f  commission_max_pct=%.2f  commission_bps=%.2f",

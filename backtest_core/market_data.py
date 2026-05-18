@@ -13,6 +13,7 @@ from psycopg2 import sql
 
 from backtest_shared import Bar, FundamentalRow, WorldRegime
 from .config import *
+from .ibkr_margin import ibkr_action_for_direction
 from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ def get_candidates(
     required_currency: Optional[str] = "USD",
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_negative_earnings: bool = False,
+    ibkr_margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
 ) -> list[FundamentalRow]:
     if allow_rebuilt_historical_fundamentals:
         raise ValueError(
@@ -105,6 +107,7 @@ def get_candidates(
         required_currency,
         allow_rebuilt_historical_fundamentals,
         filter_negative_earnings,
+        ibkr_margin_table,
     )
     if cache_key in _CANDIDATE_CACHE:
         return _CANDIDATE_CACHE[cache_key]
@@ -155,6 +158,13 @@ def get_candidates(
             "symbol IN (SELECT symbol FROM {} "
             "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
         ).format(relation_identifier(pepperstone_table)))
+    elif ACCOUNT_PROFILE == "ibkr_acc":
+        params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+        where_parts.append(sql.SQL(
+            "UPPER(TRIM(symbol)) IN (SELECT UPPER(TRIM(source_symbol)) FROM {} "
+            "WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s "
+            "AND quantity > 0 AND initial_margin > 0 AND maintenance_margin > 0)"
+        ).format(relation_identifier(ibkr_margin_table)))
 
     recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
 

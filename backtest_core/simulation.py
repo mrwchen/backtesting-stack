@@ -374,6 +374,7 @@ def run_backtest(
             filter_negative_earnings=(
                 FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
             ),
+            ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
         )
         candidate_elapsed = _time.perf_counter() - candidate_started
         if log_progress_today or candidate_elapsed >= 5.0:
@@ -620,7 +621,7 @@ def run_backtest(
                     event.reason_text = "Account equity was not positive at decision time."
                 continue
 
-            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(signal, account_equity_today)
+            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(conn, signal, account_equity_today)
             if event:
                 event.required_initial_margin = initial_margin_used
                 event.required_maintenance_margin = maintenance_margin_used

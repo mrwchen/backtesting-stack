@@ -198,6 +198,7 @@ SOURCE_1H           = os.getenv("SOURCE_1H", "alpaca_market_data_1h")
 SOURCE_FUNDAMENTAL  = os.getenv("SOURCE_FUNDAMENTAL", "stocks_analysis_fundamental_scores")
 SOURCE_WORLD_REGIME = os.getenv("SOURCE_WORLD_REGIME", "world_regime_daily_scores_mv")
 PEPPERSTONE_TABLE   = os.getenv("PEPPERSTONE_TABLE", "public.pepperstone_data")
+IBKR_MARGIN_REQUIREMENTS_TABLE = os.getenv("IBKR_MARGIN_REQUIREMENTS_TABLE", "public.ibkr_symbol_margin_requirements")
 REQUIRE_USD_FUNDAMENTALS = os.getenv("REQUIRE_USD_FUNDAMENTALS", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 DB_CONNECT_RETRIES       = int(os.getenv("DB_CONNECT_RETRIES", "5"))
