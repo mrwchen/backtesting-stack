@@ -7,6 +7,7 @@ import psycopg2
 
 from . import runtime
 from .config import *
+from .market_data import clear_market_data_caches
 from .model_loader import get_model_module
 from .simulation import run_backtest
 
@@ -40,7 +41,10 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
         tcr = item.get("tp1_close_ratio", TP1_CLOSE_RATIO)
         run_notes = item.get("notes", f"grid model={runtime.CURRENT_MODEL_FILE} idx={i}")
         log.info("Grid %d/%d — %s", i, total, run_notes)
-        _, summary = run_backtest(conn, cfg, lmhd, smhd, tcr, notes=run_notes)
+        try:
+            _, summary = run_backtest(conn, cfg, lmhd, smhd, tcr, notes=run_notes)
+        finally:
+            clear_market_data_caches(f"grid {i}/{total}")
         summary.update(item.get("summary", {}))
         results.append(summary)
 

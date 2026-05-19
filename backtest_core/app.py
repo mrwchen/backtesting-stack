@@ -9,6 +9,7 @@ from .config import *
 from .db import connect_with_retry, validate_result_schema, validate_source_schema
 from .grid_search import _print_grid_summary, run_grid_search
 from .logging_utils import set_log_process_name
+from .market_data import clear_market_data_caches
 from .model_loader import _validate_model_filename, load_model_module
 from .simulation import run_backtest
 
@@ -154,6 +155,9 @@ def run_single_model_worker() -> None:
             results = run_grid_search(conn, cfg)
             _print_grid_summary(results)
         else:
-            run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
+            try:
+                run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
+            finally:
+                clear_market_data_caches("single_run")
     finally:
         conn.close()

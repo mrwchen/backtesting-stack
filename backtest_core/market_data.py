@@ -34,6 +34,17 @@ _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
 
+def _cache_counts() -> tuple[int, int, int, int, int]:
+    cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
+    return (
+        len(_BAR_CACHE),
+        cached_bars,
+        len(_TRADING_DAYS_CACHE),
+        len(_WORLD_REGIME_CACHE),
+        len(_CANDIDATE_CACHE),
+    )
+
+
 def _default_as_of_ts(as_of_date: date) -> datetime:
     return datetime.combine(as_of_date, time.max, tzinfo=timezone.utc)
 
@@ -501,13 +512,40 @@ def get_bars_range(
     return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]
 
 
-def log_cache_stats() -> None:
-    cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
+def log_cache_stats(context: str = "current") -> None:
+    symbols, cached_bars, trading_day_sets, regimes, candidate_sets = _cache_counts()
     log.info(
-        "Cache stats — symbols %d bars %d trading day sets %d regimes %d candidate sets %d",
-        len(_BAR_CACHE),
+        "Cache stats context %s symbols %d bars %d trading day sets %d regimes %d candidate sets %d",
+        context,
+        symbols,
         cached_bars,
-        len(_TRADING_DAYS_CACHE),
-        len(_WORLD_REGIME_CACHE),
-        len(_CANDIDATE_CACHE),
+        trading_day_sets,
+        regimes,
+        candidate_sets,
+    )
+
+
+def clear_market_data_caches(context: str = "after_run") -> None:
+    symbols, cached_bars, trading_day_sets, regimes, candidate_sets = _cache_counts()
+    log.info(
+        "Cache cleanup context %s clearing symbols %d bars %d trading day sets %d regimes %d candidate sets %d",
+        context,
+        symbols,
+        cached_bars,
+        trading_day_sets,
+        regimes,
+        candidate_sets,
+    )
+    _BAR_CACHE.clear()
+    _TRADING_DAYS_CACHE.clear()
+    _WORLD_REGIME_CACHE.clear()
+    _CANDIDATE_CACHE.clear()
+    log.info(
+        "Cache cleanup context %s complete symbols %d bars %d trading day sets %d regimes %d candidate sets %d",
+        context,
+        0,
+        0,
+        0,
+        0,
+        0,
     )

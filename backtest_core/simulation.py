@@ -213,6 +213,7 @@ def run_backtest(
                 len(open_positions),
                 len(closed_trades),
             )
+            log_cache_stats(f"day_start {day_idx}/{len(trading_days)} {day}")
 
         # ── 1. Apply open-position state changes for today ──────────────────
         portfolio_events: list[PortfolioEvent] = []
@@ -767,7 +768,7 @@ def run_backtest(
         "Day breakdown no regime %d, neutral %d, no candidates %d, no signals %d, with signals %d",
         days_no_regime, days_neutral, days_no_candidates, days_no_signals, days_with_signals,
     )
-    log_cache_stats()
+    log_cache_stats("before_force_close")
 
     # ── 4. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
