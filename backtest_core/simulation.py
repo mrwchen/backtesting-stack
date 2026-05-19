@@ -19,6 +19,7 @@ from .broker import (
     _margin_level_pct,
     _pnl_long,
     _pnl_short,
+    _remove_position_by_identity,
     calc_position,
 )
 from .config import *
