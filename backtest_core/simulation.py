@@ -29,14 +29,13 @@ from .market_data import (
     _day_signal_cutoff_ts,
     _ensure_utc_ts,
     get_bars_range,
-    get_cached_bars,
     get_candidates,
     get_trading_days,
     get_world_regime,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
+    load_recent_bars_for_identities,
     log_cache_stats,
-    preload_identity_bars,
 )
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
@@ -423,26 +422,30 @@ def run_backtest(
             continue
 
         candidate_identities = [fundamental.identity_key for fundamental in candidates]
-        preload_started = _time.perf_counter()
-        loaded_bar_rows = preload_identity_bars(
+        bar_lookback_limit = cfg.min_bars + cfg.price_lookback_bars
+        bar_load_started = _time.perf_counter()
+        recent_bars_by_identity = load_recent_bars_for_identities(
             conn,
             candidate_identities,
+            bar_lookback_limit,
             day_end_ts,
             batch_size=BAR_CACHE_BATCH_SIZE,
             log_batches=log_progress_today,
         )
-        preload_elapsed = _time.perf_counter() - preload_started
-        if log_progress_today or preload_elapsed >= 5.0:
+        loaded_bar_rows = sum(len(bars) for bars in recent_bars_by_identity.values())
+        bar_load_elapsed = _time.perf_counter() - bar_load_started
+        if log_progress_today or bar_load_elapsed >= 5.0:
             log.info(
-                "Bar preload complete day %d/%d %s model %s loaded %d new rows for %d candidates through %s in %.1f s",
+                "Recent bar load complete day %d/%d %s model %s loaded %d rows for %d candidates limit %d through %s in %.1f s",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 loaded_bar_rows,
                 len(candidate_identities),
+                bar_lookback_limit,
                 day_end_ts,
-                preload_elapsed,
+                bar_load_elapsed,
             )
 
         model = get_model_module()
@@ -458,11 +461,7 @@ def run_backtest(
         skipped_no_bars = 0
 
         for candidate_rank, fundamental in enumerate(candidates, start=1):
-            bars = get_cached_bars(
-                conn, fundamental.identity_key,
-                cfg.min_bars + cfg.price_lookback_bars,
-                up_to_ts=day_end_ts,
-            )
+            bars = recent_bars_by_identity.get(fundamental.identity_key, [])
             if len(bars) < cfg.min_bars:
                 skipped_no_bars += 1
                 decision_events.append(DecisionEvent(

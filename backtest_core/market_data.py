@@ -471,6 +471,119 @@ def preload_identity_bars(
     )
 
 
+def _entry_window_sql_filter() -> tuple[sql.SQL, list[object]]:
+    if not ENTRY_WINDOW_ENABLED:
+        return sql.SQL(""), []
+
+    start_h, start_m = _parse_hhmm(ENTRY_WINDOW_START)
+    end_h, end_m = _parse_hhmm(ENTRY_WINDOW_END)
+    start_time = time(start_h, start_m)
+    end_time = time(end_h, end_m)
+    local_time = sql.SQL("(b.ts AT TIME ZONE %s)::time")
+
+    if start_time <= end_time:
+        return (
+            sql.SQL("AND {} BETWEEN %s AND %s").format(local_time),
+            [ENTRY_WINDOW_TZ, start_time, end_time],
+        )
+    return (
+        sql.SQL("AND ({} >= %s OR {} <= %s)").format(local_time, local_time),
+        [ENTRY_WINDOW_TZ, start_time, ENTRY_WINDOW_TZ, end_time],
+    )
+
+
+def load_recent_bars_for_identities(
+    conn: psycopg2.extensions.connection,
+    identities: list[InstrumentKey],
+    limit: int,
+    up_to_ts: datetime,
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+    log_batches: bool = False,
+) -> dict[InstrumentKey, list[Bar]]:
+    """Load bounded recent entry-window bars for one signal-evaluation day.
+
+    This intentionally does not populate the long-lived bar cache. Candidate
+    signal evaluation only needs a fixed recent lookback; open-position outcome
+    simulation keeps using the incremental cache via get_bars_range().
+    """
+    up_to_ts = _ensure_utc_ts(up_to_ts)
+    unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
+    bars_by_identity: dict[InstrumentKey, list[Bar]] = {identity: [] for identity in unique_identities}
+    if not unique_identities or limit <= 0:
+        return bars_by_identity
+
+    total_rows = 0
+    batches = _chunked(unique_identities, batch_size)
+    if log_batches:
+        log.info(
+            "Recent bar load starting %d instruments in %d batches of %d limit %d through %s",
+            len(unique_identities),
+            len(batches),
+            batch_size,
+            limit,
+            up_to_ts,
+        )
+
+    entry_filter, entry_params = _entry_window_sql_filter()
+    for batch_idx, batch in enumerate(batches, start=1):
+        batch_started = _time.perf_counter()
+        symbols = [identity[0] for identity in batch]
+        exchanges = [identity[1] for identity in batch]
+        ciks = [identity[2] for identity in batch]
+        params: list[object] = [symbols, exchanges, ciks, up_to_ts, *entry_params, limit]
+        rows_loaded = 0
+
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "WITH requested AS ("
+                    "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[]) AS u(symbol, exchange, cik)"
+                    ") "
+                    "SELECT r.symbol, r.exchange, r.cik, b.ts, b.open, b.high, b.low, b.close, b.volume "
+                    "FROM requested r "
+                    "JOIN LATERAL ("
+                    "  SELECT b.ts, b.open, b.high, b.low, b.close, b.volume "
+                    "  FROM {} b "
+                    "  WHERE b.symbol = r.symbol "
+                    "    AND b.exchange = r.exchange "
+                    "    AND b.cik = r.cik "
+                    "    AND b.ts <= %s "
+                    "    {} "
+                    "  ORDER BY b.ts DESC "
+                    "  LIMIT %s"
+                    ") b ON TRUE "
+                    "ORDER BY r.symbol, r.exchange, r.cik, b.ts"
+                ).format(relation_identifier(SOURCE_1H), entry_filter),
+                params,
+            )
+            for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
+                identity = instrument_key(symbol, exchange, cik)
+                bars_by_identity[identity].append(_bar_from_row(ts, open_, high, low, close, volume))
+                rows_loaded += 1
+
+        total_rows += rows_loaded
+        if log_batches:
+            elapsed = _time.perf_counter() - batch_started
+            log.info(
+                "Recent bar load batch %d/%d loaded %d instruments and %d rows in %.1f s",
+                batch_idx,
+                len(batches),
+                len(batch),
+                rows_loaded,
+                elapsed,
+            )
+
+    if log_batches:
+        log.info(
+            "Recent bar load complete %d instruments and %d rows through %s",
+            len(unique_identities),
+            total_rows,
+            up_to_ts,
+        )
+    return bars_by_identity
+
+
 def get_cached_bars(
     conn: psycopg2.extensions.connection,
     identity: InstrumentKey,
