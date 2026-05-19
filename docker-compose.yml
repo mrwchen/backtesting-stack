@@ -67,7 +67,7 @@ services:
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       - REQUIRE_USD_FUNDAMENTALS=true
-      - MIN_MARKET_CAP_M=2000.0
+      - MIN_MARKET_CAP_M=1000.0
       # false = ignore negative_earnings_flag for that direction.
       - FILTER_NEGATIVE_EARNINGS_LONG=false
       - FILTER_NEGATIVE_EARNINGS_SHORT=false
