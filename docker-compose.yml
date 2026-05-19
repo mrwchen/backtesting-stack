@@ -57,7 +57,7 @@ services:
       - MODEL_SELECTION=all
       #- MODEL_FILE=statistical_regime_probability_v1.py
       #- MODEL_FILES=deep_pullback_quality_mean_reversion_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,regime_adaptive_swing_v1.py,sector_rotation_long_short_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
-      - MODEL_PARALLELISM=4
+      - MODEL_PARALLELISM=1
       - MODEL_FAILURE_MODE=fail_fast
 
       # ── Generic: source tables ─────────────────────────────────────────────
