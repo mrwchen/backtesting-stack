@@ -127,7 +127,7 @@ services:
       # Defaults when ACCOUNT_PROFILE=ibkr_acc:
       #   Available Funds = Equity with Loan Value - Initial Margin
       #   Excess Liquidity = Equity with Loan Value - Maintenance Margin
-      #   Initial and maintenance margin come from IBKR_MARGIN_REQUIREMENTS_TABLE.
+      #   Initial and maintenance margin percentages come from IBKR_MARGIN_REQUIREMENTS_TABLE.
       #   Pro Tiered first tier: commission=0.0035 USD/share, min=0.35 USD, max=1%
       #   spread=0 bps, slippage=1 bps, configured first-tier USD margin rate=5.14%
       # Uncomment to override the ibkr_acc defaults.

@@ -55,7 +55,7 @@ def log_backtest_context(model_files: list[str]) -> None:
         )
     else:
         log.info(
-            "IBKR margin policy reads symbol requirements from %s",
+            "IBKR margin policy reads symbol margin percentages from %s",
             IBKR_MARGIN_REQUIREMENTS_TABLE,
         )
     log.info(

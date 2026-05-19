@@ -120,8 +120,8 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "source_symbol",
             "action",
             "quantity",
-            "initial_margin",
-            "maintenance_margin",
+            "initial_margin_pct",
+            "maintenance_margin_pct",
             "fetched_at",
         })
 
@@ -267,25 +267,25 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                     SELECT
                         COUNT(*) FILTER (
                             WHERE quantity > 0
-                              AND initial_margin > 0
-                              AND maintenance_margin > 0
+                              AND initial_margin_pct > 0
+                              AND maintenance_margin_pct > 0
                         ) AS usable_rows,
                         COUNT(DISTINCT source_symbol) FILTER (
                             WHERE quantity > 0
-                              AND initial_margin > 0
-                              AND maintenance_margin > 0
+                              AND initial_margin_pct > 0
+                              AND maintenance_margin_pct > 0
                         ) AS usable_symbols,
                         COUNT(DISTINCT source_symbol) FILTER (
                             WHERE UPPER(TRIM(action)) = 'BUY'
                               AND quantity > 0
-                              AND initial_margin > 0
-                              AND maintenance_margin > 0
+                              AND initial_margin_pct > 0
+                              AND maintenance_margin_pct > 0
                         ) AS long_symbols,
                         COUNT(DISTINCT source_symbol) FILTER (
                             WHERE UPPER(TRIM(action)) = 'SELL'
                               AND quantity > 0
-                              AND initial_margin > 0
-                              AND maintenance_margin > 0
+                              AND initial_margin_pct > 0
+                              AND maintenance_margin_pct > 0
                         ) AS short_symbols
                     FROM {}
                     """
@@ -299,7 +299,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             )
         else:
             log.info(
-                "IBKR margin source %s usable rows %d symbols %d long symbols %d short symbols %d",
+                "IBKR margin percentage source %s usable rows %d symbols %d long symbols %d short symbols %d",
                 IBKR_MARGIN_REQUIREMENTS_TABLE,
                 usable_rows,
                 usable_symbols,

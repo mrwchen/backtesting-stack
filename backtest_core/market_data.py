@@ -166,7 +166,7 @@ def get_candidates(
         where_parts.append(sql.SQL(
             "UPPER(TRIM(symbol)) IN (SELECT UPPER(TRIM(source_symbol)) FROM {} "
             "WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s "
-            "AND quantity > 0 AND initial_margin > 0 AND maintenance_margin > 0)"
+            "AND quantity > 0 AND initial_margin_pct > 0 AND maintenance_margin_pct > 0)"
         ).format(relation_identifier(ibkr_margin_table)))
 
     recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")

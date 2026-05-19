@@ -626,8 +626,8 @@ def calc_position(
     position_size_usd = abs(shares * entry_fill)
     if ACCOUNT_PROFILE == "ibkr_acc":
         margin_requirement = get_ibkr_margin_requirement(conn, signal.symbol, signal.direction)
-        initial_margin_used = shares * margin_requirement.initial_margin_per_share
-        maintenance_margin_used = shares * margin_requirement.maintenance_margin_per_share
+        initial_margin_used = position_size_usd * margin_requirement.initial_margin_pct / 100.0
+        maintenance_margin_used = position_size_usd * margin_requirement.maintenance_margin_pct / 100.0
     else:
         initial_margin_used = position_size_usd * _initial_margin_pct(signal.direction) / 100.0
         maintenance_margin_used = position_size_usd * _maintenance_margin_pct(signal.direction) / 100.0

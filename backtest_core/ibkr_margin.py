@@ -15,8 +15,8 @@ class IbkrMarginRequirement:
     source_symbol: str
     action: str
     quantity: float
-    initial_margin_per_share: float
-    maintenance_margin_per_share: float
+    initial_margin_pct: float
+    maintenance_margin_pct: float
     fetched_at: datetime
 
 
@@ -52,15 +52,15 @@ def get_ibkr_margin_requirement(
                     source_symbol,
                     UPPER(TRIM(action)) AS action,
                     quantity,
-                    initial_margin,
-                    maintenance_margin,
+                    initial_margin_pct,
+                    maintenance_margin_pct,
                     fetched_at
                 FROM {}
                 WHERE UPPER(TRIM(source_symbol)) = UPPER(TRIM(%s))
                   AND UPPER(TRIM(action)) = %s
                   AND quantity > 0
-                  AND initial_margin > 0
-                  AND maintenance_margin > 0
+                  AND initial_margin_pct > 0
+                  AND maintenance_margin_pct > 0
                 ORDER BY fetched_at DESC, quantity ASC
                 LIMIT 1
                 """
@@ -71,7 +71,7 @@ def get_ibkr_margin_requirement(
 
     if row is None:
         raise RuntimeError(
-            f"Missing usable IBKR margin requirement for {symbol} {action} in {margin_table}"
+            f"Missing usable IBKR margin percentage requirement for {symbol} {action} in {margin_table}"
         )
 
     quantity = float(row[2])
@@ -79,8 +79,8 @@ def get_ibkr_margin_requirement(
         source_symbol=row[0],
         action=row[1],
         quantity=quantity,
-        initial_margin_per_share=float(row[3]) / quantity,
-        maintenance_margin_per_share=float(row[4]) / quantity,
+        initial_margin_pct=float(row[3]),
+        maintenance_margin_pct=float(row[4]),
         fetched_at=row[5],
     )
     _IBKR_MARGIN_CACHE[cache_key] = requirement
