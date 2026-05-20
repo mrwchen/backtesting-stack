@@ -518,6 +518,44 @@ def _financing_cost(
     return _generic_margin_financing_cost(pos, end_ts, tp1_exit_ts, tp1_hit)
 
 
+def _hours_between(start_ts: datetime, end_ts: datetime) -> float:
+    start_ts = _ensure_utc_ts(start_ts)
+    end_ts = _ensure_utc_ts(end_ts)
+    return max(0.0, (end_ts - start_ts).total_seconds() / 3600.0)
+
+
+def _margin_hours_usd(
+    pos: OpenPosition,
+    outcome_date: date,
+    exit_ts: Optional[datetime],
+    tp1_exit_ts: Optional[datetime],
+    tp1_hit: bool,
+) -> float:
+    margin_used = max(0.0, pos.margin_used)
+    if margin_used <= 0.0:
+        return 0.0
+
+    entry_ts = _ensure_utc_ts(pos.entry_ts)
+    end_ts = _ensure_utc_ts(exit_ts or _day_close_ts(outcome_date))
+    if end_ts <= entry_ts:
+        return 0.0
+
+    tp1_ts = tp1_exit_ts or pos.tp1_exit_ts
+    if not tp1_hit or tp1_ts is None:
+        return margin_used * _hours_between(entry_ts, end_ts)
+
+    split_ts = _ensure_utc_ts(tp1_ts)
+    if split_ts < entry_ts:
+        split_ts = entry_ts
+    elif split_ts > end_ts:
+        split_ts = end_ts
+
+    before_tp1_hours = _hours_between(entry_ts, split_ts)
+    after_tp1_hours = _hours_between(split_ts, end_ts)
+    remaining_ratio = _active_position_ratio(pos, tp1_hit=True)
+    return margin_used * before_tp1_hours + margin_used * remaining_ratio * after_tp1_hours
+
+
 def _make_trade(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -533,6 +571,8 @@ def _make_trade(
 ) -> ClosedTrade:
     pnl -= _financing_cost(conn, pos, outcome_date, exit_ts, tp1_exit_ts, tp1_hit)
     return_pct = pnl / pos.position_size_usd * 100.0 if pos.position_size_usd else 0.0
+    margin_hours_usd = _margin_hours_usd(pos, outcome_date, exit_ts, tp1_exit_ts, tp1_hit)
+    return_per_margin_hour_pct = pnl / margin_hours_usd * 100.0 if margin_hours_usd > 0.0 else None
     return ClosedTrade(
         position=pos,
         outcome_status=status,
@@ -541,6 +581,8 @@ def _make_trade(
         outcome_bars=outcome_bars,
         tp1_hit=tp1_hit,
         return_pct=round(return_pct, 4),
+        margin_hours_usd=round(margin_hours_usd, 4),
+        return_per_margin_hour_pct=round(return_per_margin_hour_pct, 8) if return_per_margin_hour_pct is not None else None,
         pnl_usd=round(pnl, 2),
         equity_after=round(equity + pnl, 2),
         exit_ts=exit_ts,

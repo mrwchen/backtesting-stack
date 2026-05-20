@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     expired_trades       INTEGER,
     win_rate_pct         NUMERIC(5,2),
     total_return_pct     NUMERIC(12,2),
+    margin_hours_usd     NUMERIC(20,4),
+    return_per_margin_hour_pct NUMERIC(18,8),
     max_drawdown_pct     NUMERIC(8,2),
     avg_return_pct       NUMERIC(12,4),
     avg_win_pct          NUMERIC(12,4),
@@ -225,6 +227,8 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     outcome_bars         INTEGER,       -- 1h bars from entry to close
     tp1_hit              BOOLEAN        NOT NULL DEFAULT FALSE,
     return_pct           NUMERIC(8,4),
+    margin_hours_usd     NUMERIC(20,4),
+    return_per_margin_hour_pct NUMERIC(18,8),
     pnl_usd              NUMERIC(15,2),
     equity_after         NUMERIC(15,2),
     entry_ts             TIMESTAMPTZ,

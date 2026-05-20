@@ -51,6 +51,8 @@ class ClosedTrade:
     outcome_bars: int
     tp1_hit: bool
     return_pct: float
+    margin_hours_usd: float
+    return_per_margin_hour_pct: Optional[float]
     pnl_usd: float
     equity_after: float
     exit_ts: datetime = None

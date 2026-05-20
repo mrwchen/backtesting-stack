@@ -820,6 +820,12 @@ def run_backtest(
     gross_profit = sum(t.pnl_usd for t in closed_trades if t.pnl_usd > 0)
     gross_loss = abs(sum(t.pnl_usd for t in closed_trades if t.pnl_usd < 0))
     total_return = (equity - INITIAL_EQUITY) / INITIAL_EQUITY * 100.0
+    margin_hours_usd = sum(t.margin_hours_usd for t in closed_trades)
+    return_per_margin_hour_pct = (
+        sum(t.pnl_usd for t in closed_trades) / margin_hours_usd * 100.0
+        if margin_hours_usd > 0.0
+        else None
+    )
 
     equity_series = [INITIAL_EQUITY] + [t.equity_after for t in closed_trades]
     peak = equity_series[0]
@@ -836,6 +842,8 @@ def run_backtest(
         "total_trades": n_trades,
         "win_rate_pct": n_wins / n_trades * 100.0 if n_trades else 0.0,
         "total_return_pct": total_return,
+        "margin_hours_usd": margin_hours_usd,
+        "return_per_margin_hour_pct": return_per_margin_hour_pct,
         "max_drawdown_pct": max_dd,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
     }

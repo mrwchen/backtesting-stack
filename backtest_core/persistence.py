@@ -146,6 +146,8 @@ def write_trades(
             t.outcome_bars,
             t.tp1_hit,
             Decimal(str(round(t.return_pct, 4))),
+            _decimal_or_none(t.margin_hours_usd, 4),
+            _decimal_or_none(t.return_per_margin_hour_pct, 8),
             Decimal(str(round(t.pnl_usd, 2))),
             Decimal(str(round(t.equity_after, 2))),
             p.entry_ts,
@@ -162,13 +164,17 @@ def write_trades(
             pullback_pct, rsi_1h, volume_ratio, entry_reason,
             position_size_usd, shares, margin_used, maintenance_margin_used, equity_before,
             outcome_status, outcome_price, outcome_date, outcome_bars,
-            tp1_hit, return_pct, pnl_usd, equity_after,
+            tp1_hit, return_pct, margin_hours_usd, return_per_margin_hour_pct,
+            pnl_usd, equity_after,
             entry_ts, tp1_exit_ts, exit_ts
         ) VALUES %s
         ON CONFLICT (run_id, signal_date, symbol, exchange, cik) DO UPDATE SET
             world_regime_score = EXCLUDED.world_regime_score,
             outcome_status = EXCLUDED.outcome_status,
             outcome_price  = EXCLUDED.outcome_price,
+            return_pct     = EXCLUDED.return_pct,
+            margin_hours_usd = EXCLUDED.margin_hours_usd,
+            return_per_margin_hour_pct = EXCLUDED.return_per_margin_hour_pct,
             pnl_usd        = EXCLUDED.pnl_usd,
             equity_after   = EXCLUDED.equity_after,
             entry_ts       = EXCLUDED.entry_ts,
@@ -344,6 +350,11 @@ def update_run_summary(
     avg_ret   = sum(t.return_pct for t in trades) / len(trades) if trades else 0.0
     avg_win   = sum(t.return_pct for t in wins)   / len(wins)   if wins   else 0.0
     avg_loss  = sum(t.return_pct for t in losses) / len(losses) if losses else 0.0
+    margin_hours_usd = sum(t.margin_hours_usd for t in trades if math.isfinite(t.margin_hours_usd))
+    total_pnl = sum(t.pnl_usd for t in trades)
+    return_per_margin_hour_pct = (
+        total_pnl / margin_hours_usd * 100.0 if margin_hours_usd > 0.0 else None
+    )
 
     gross_profit = sum(t.pnl_usd for t in wins)
     gross_loss   = abs(sum(t.pnl_usd for t in losses))
@@ -372,6 +383,8 @@ def update_run_summary(
                 expired_trades   = %s,
                 win_rate_pct     = %s,
                 total_return_pct = %s,
+                margin_hours_usd = %s,
+                return_per_margin_hour_pct = %s,
                 max_drawdown_pct = %s,
                 avg_return_pct   = %s,
                 avg_win_pct      = %s,
@@ -382,7 +395,10 @@ def update_run_summary(
             (
                 round(final_equity, 2),
                 len(trades), len(wins), len(losses), len(breakevens), len(expired),
-                round(win_rate, 2), round(total_ret, 2), round(max_dd, 2),
+                round(win_rate, 2), round(total_ret, 2),
+                round(margin_hours_usd, 4),
+                round(return_per_margin_hour_pct, 8) if return_per_margin_hour_pct is not None else None,
+                round(max_dd, 2),
                 round(avg_ret, 4), round(avg_win, 4), round(avg_loss, 4),
                 round(profit_factor, 4) if profit_factor else None,
                 run_id,
