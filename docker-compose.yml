@@ -6,7 +6,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_BACKTEST_TABLES_ON_START: "true"
+      DROP_BACKTEST_TABLES_ON_START: true
     command:
       - sh
       - -c
