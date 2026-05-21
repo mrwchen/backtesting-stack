@@ -70,6 +70,8 @@ services:
       - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       - REQUIRE_USD_FUNDAMENTALS=true
       - MIN_MARKET_CAP_M=1000.0
+      # false = ignore company fundamental high_leverage_flag.
+      - FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
       # false = ignore negative_earnings_flag for that direction.
       - FILTER_NEGATIVE_EARNINGS_LONG=false
       - FILTER_NEGATIVE_EARNINGS_SHORT=false

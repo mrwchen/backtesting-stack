@@ -160,8 +160,9 @@ def get_candidates(
         sql.SQL("cik IS NOT NULL"),
         sql.SQL("composite_score IS NOT NULL"),
         sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
-        sql.SQL("high_leverage_flag IS NOT TRUE"),
     ]
+    if FILTER_FUNDAMENTAL_HIGH_LEVERAGE:
+        where_parts.append(sql.SQL("high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
         where_parts.append(sql.SQL("negative_earnings_flag IS NOT TRUE"))
 
