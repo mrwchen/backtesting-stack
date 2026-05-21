@@ -190,46 +190,118 @@ def get_candidates(
             "%(required_currency)s) = %(required_currency)s"
         ))
 
-    if ACCOUNT_PROFILE == "ps_acc":
-        where_parts.append(sql.SQL(
-            "symbol IN (SELECT symbol FROM {} "
-            "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE)"
-        ).format(relation_identifier(pepperstone_table)))
-    elif ACCOUNT_PROFILE == "ibkr_acc":
-        params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
-        where_parts.append(sql.SQL(
-            "UPPER(TRIM(symbol)) IN (SELECT UPPER(TRIM(source_symbol)) FROM {} "
-            "WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s "
-            "AND quantity > 0 AND initial_margin_pct > 0 AND maintenance_margin_pct > 0)"
-        ).format(relation_identifier(ibkr_margin_table)))
-
     recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
 
-    query = sql.SQL("""
-        SELECT DISTINCT ON (symbol, exchange, cik)
-            symbol,
-            exchange,
-            cik,
-            composite_score,
-            COALESCE(sector, ''),
-            COALESCE(industry, ''),
-            COALESCE(valuation_label, ''),
-            mispricing_score,
-            COALESCE(negative_earnings_flag, false),
-            COALESCE(high_leverage_flag, false),
-            market_cap_m
-        FROM {}
-        WHERE {}
-        ORDER BY
-            symbol,
-            exchange,
-            cik,
-            {}
-    """).format(
-        relation_identifier(source_table),
-        sql.SQL("\n          AND ").join(where_parts),
-        recency_order,
-    )
+    select_columns = sql.SQL("""
+        symbol,
+        exchange,
+        cik,
+        composite_score,
+        COALESCE(sector, '') AS sector,
+        COALESCE(industry, '') AS industry,
+        COALESCE(valuation_label, '') AS valuation_label,
+        mispricing_score,
+        COALESCE(negative_earnings_flag, false) AS negative_earnings_flag,
+        COALESCE(high_leverage_flag, false) AS high_leverage_flag,
+        market_cap_m
+    """)
+    outer_select_columns = sql.SQL("""
+        candidates.symbol,
+        candidates.exchange,
+        candidates.cik,
+        candidates.composite_score,
+        candidates.sector,
+        candidates.industry,
+        candidates.valuation_label,
+        candidates.mispricing_score,
+        candidates.negative_earnings_flag,
+        candidates.high_leverage_flag,
+        candidates.market_cap_m
+    """)
+    source_relation = relation_identifier(source_table)
+
+    if ACCOUNT_PROFILE == "ps_acc":
+        query = sql.SQL("""
+            SELECT {}
+            FROM (
+                SELECT DISTINCT symbol
+                FROM {}
+                WHERE symbol_ps IS NOT NULL
+                  AND is_trading_enabled IS NOT FALSE
+                  AND symbol IS NOT NULL
+            ) broker
+            JOIN LATERAL (
+                SELECT DISTINCT ON (symbol, exchange, cik)
+                    {}
+                FROM {}
+                WHERE symbol = broker.symbol
+                  AND {}
+                ORDER BY
+                    symbol,
+                    exchange,
+                    cik,
+                    {}
+            ) candidates ON TRUE
+            ORDER BY candidates.symbol, candidates.exchange, candidates.cik
+        """).format(
+            outer_select_columns,
+            relation_identifier(pepperstone_table),
+            select_columns,
+            source_relation,
+            sql.SQL("\n                  AND ").join(where_parts),
+            recency_order,
+        )
+    elif ACCOUNT_PROFILE == "ibkr_acc":
+        params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+        query = sql.SQL("""
+            SELECT {}
+            FROM (
+                SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
+                FROM {}
+                WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s
+                  AND quantity > 0
+                  AND initial_margin_pct > 0
+                  AND maintenance_margin_pct > 0
+                  AND source_symbol IS NOT NULL
+            ) broker
+            JOIN LATERAL (
+                SELECT DISTINCT ON (symbol, exchange, cik)
+                    {}
+                FROM {}
+                WHERE UPPER(TRIM(symbol)) = broker.symbol_norm
+                  AND {}
+                ORDER BY
+                    symbol,
+                    exchange,
+                    cik,
+                    {}
+            ) candidates ON TRUE
+            ORDER BY candidates.symbol, candidates.exchange, candidates.cik
+        """).format(
+            outer_select_columns,
+            relation_identifier(ibkr_margin_table),
+            select_columns,
+            source_relation,
+            sql.SQL("\n                  AND ").join(where_parts),
+            recency_order,
+        )
+    else:
+        query = sql.SQL("""
+            SELECT DISTINCT ON (symbol, exchange, cik)
+                {}
+            FROM {}
+            WHERE {}
+            ORDER BY
+                symbol,
+                exchange,
+                cik,
+                {}
+        """).format(
+            select_columns,
+            source_relation,
+            sql.SQL("\n          AND ").join(where_parts),
+            recency_order,
+        )
     with conn.cursor() as cur:
         cur.execute(query, params)
         rows = cur.fetchall()

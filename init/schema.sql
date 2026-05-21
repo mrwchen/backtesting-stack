@@ -282,6 +282,43 @@ CREATE INDEX IF NOT EXISTS idx_backtest_account_curve_run_ts
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
     ON backtest_runs (model_file, created_at DESC, run_id DESC);
 
+-- ── Source lookup indexes for point-in-time candidate selection ──────────────
+
+DO $$
+BEGIN
+    IF to_regclass('public.stocks_analysis_fundamental_scores') IS NOT NULL THEN
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_pit_cover
+                ON public.stocks_analysis_fundamental_scores (
+                    symbol,
+                    exchange,
+                    cik,
+                    (COALESCE(data_available_at, fundamental_data_available_at)) DESC,
+                    "time" DESC
+                )
+                INCLUDE (
+                    composite_score,
+                    sector,
+                    industry,
+                    valuation_label,
+                    mispricing_score,
+                    negative_earnings_flag,
+                    high_leverage_flag,
+                    market_cap_m,
+                    current_price_currency,
+                    market_cap_currency,
+                    currency,
+                    financial_currency
+                )
+                WHERE symbol IS NOT NULL
+                  AND exchange IS NOT NULL
+                  AND cik IS NOT NULL
+                  AND composite_score IS NOT NULL
+        ';
+    END IF;
+END;
+$$;
+
 -- ── Monte Carlo results ───────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS backtest_monte_carlo (
