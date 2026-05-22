@@ -46,7 +46,7 @@ class _CandidateTimelineRow:
     symbol: str
     exchange: str
     cik: int
-    composite_score: float
+    composite_score: Optional[float]
     sector: str
     industry: str
     valuation_label: str
@@ -54,8 +54,14 @@ class _CandidateTimelineRow:
     negative_earnings_flag: bool
     high_leverage_flag: bool
     market_cap_m: Optional[float]
+    current_price_currency: str
+    market_cap_currency: str
+    currency: str
+    financial_currency: str
 
     def to_fundamental_row(self) -> FundamentalRow:
+        if self.composite_score is None:
+            raise ValueError("Cannot convert candidate timeline row without composite_score")
         return FundamentalRow(
             symbol=self.symbol,
             exchange=self.exchange,
@@ -161,6 +167,57 @@ def _candidate_text(value: object, default: str = "") -> str:
     if value is None:
         return default
     return _sys.intern(str(value))
+
+
+def _candidate_effective_currency(
+    current_price_currency: object,
+    market_cap_currency: object,
+    currency: object,
+    financial_currency: object,
+    required_currency: Optional[str],
+) -> str:
+    for value in (current_price_currency, market_cap_currency, currency, financial_currency):
+        text = str(value).strip().upper() if value is not None else ""
+        if text:
+            return text
+    return required_currency.upper() if required_currency else ""
+
+
+def _candidate_row_passes_filters(
+    row: _CandidateTimelineRow,
+    direction: str,
+    score_val: float,
+    min_market_cap_m: float,
+    required_currency: Optional[str],
+    filter_high_leverage: bool,
+    filter_negative_earnings: bool,
+    label_blocklist: Optional[list],
+) -> bool:
+    if row.composite_score is None:
+        return False
+    if direction == "LONG" and row.composite_score < score_val:
+        return False
+    if direction != "LONG" and row.composite_score > score_val:
+        return False
+    if (row.market_cap_m or 0.0) < min_market_cap_m:
+        return False
+    if filter_high_leverage and row.high_leverage_flag:
+        return False
+    if filter_negative_earnings and row.negative_earnings_flag:
+        return False
+    if label_blocklist and row.valuation_label in label_blocklist:
+        return False
+    if required_currency:
+        effective_currency = _candidate_effective_currency(
+            row.current_price_currency,
+            row.market_cap_currency,
+            row.currency,
+            row.financial_currency,
+            required_currency,
+        )
+        if effective_currency != required_currency.upper():
+            return False
+    return True
 
 
 def _candidate_as_of_ts(as_of_date: Optional[date], as_of_ts: Optional[object]) -> Optional[datetime]:
@@ -368,7 +425,7 @@ def _build_candidate_timeline(
                     symbol=symbol,
                     exchange=exchange,
                     cik=cik,
-                    composite_score=float(row[5]),
+                    composite_score=float(row[5]) if row[5] is not None else None,
                     sector=_candidate_text(row[6]),
                     industry=_candidate_text(row[7]),
                     valuation_label=_candidate_text(row[8]),
@@ -376,6 +433,10 @@ def _build_candidate_timeline(
                     negative_earnings_flag=bool(row[10]),
                     high_leverage_flag=bool(row[11]),
                     market_cap_m=float(row[12]) if row[12] is not None else None,
+                    current_price_currency=_candidate_text(row[13]),
+                    market_cap_currency=_candidate_text(row[14]),
+                    currency=_candidate_text(row[15]),
+                    financial_currency=_candidate_text(row[16]),
                 )
                 rows_by_identity.setdefault(identity, []).append(timeline_row)
                 available_by_identity.setdefault(identity, []).append(timeline_row.available_epoch_us)
@@ -451,6 +512,10 @@ def _get_candidates_from_timeline(
     select_columns: sql.SQL,
     where_parts: list[sql.SQL],
     params: dict,
+    long_label_blocklist: Optional[list],
+    short_label_blocklist: Optional[list],
+    filter_high_leverage: bool,
+    filter_negative_earnings: bool,
     pepperstone_table: str,
     ibkr_margin_table: str,
 ) -> Optional[list[FundamentalRow]]:
@@ -479,13 +544,25 @@ def _get_candidates_from_timeline(
         return None
 
     candidates: list[FundamentalRow] = []
+    score_val = params["score_val"]
+    label_blocklist = long_label_blocklist if direction == "LONG" else short_label_blocklist
     for identity, rows in timeline.rows_by_identity.items():
         available_epochs = timeline.available_by_identity[identity]
         row_idx = bisect_right(available_epochs, as_of_epoch_us) - 1
         while row_idx >= 0:
             row = rows[row_idx]
             if row.source_epoch_us <= as_of_epoch_us:
-                candidates.append(row.to_fundamental_row())
+                if _candidate_row_passes_filters(
+                    row,
+                    direction,
+                    score_val,
+                    params["min_market_cap_m"],
+                    params.get("required_currency"),
+                    filter_high_leverage,
+                    filter_negative_earnings,
+                    label_blocklist,
+                ):
+                    candidates.append(row.to_fundamental_row())
                 break
             row_idx -= 1
     candidates.sort(key=lambda r: (r.symbol, r.exchange, r.cik))
@@ -539,40 +616,42 @@ def get_candidates(
         return _CANDIDATE_CACHE[cache_key]
 
     if direction == "LONG":
-        score_filter = sql.SQL("f.composite_score >= %(score_val)s")
+        score_filter = sql.SQL("candidates.composite_score >= %(score_val)s")
         score_val = long_min_fundamental
     else:
-        score_filter = sql.SQL("f.composite_score <= %(score_val)s")
+        score_filter = sql.SQL("candidates.composite_score <= %(score_val)s")
         score_val = short_max_fundamental
 
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
     base_where_parts = [
-        score_filter,
         sql.SQL("f.symbol IS NOT NULL"),
         sql.SQL("f.exchange IS NOT NULL"),
         sql.SQL("f.cik IS NOT NULL"),
-        sql.SQL("f.composite_score IS NOT NULL"),
-        sql.SQL("COALESCE(f.market_cap_m, 0) >= %(min_market_cap_m)s"),
+    ]
+    eligibility_where_parts = [
+        score_filter,
+        sql.SQL("candidates.composite_score IS NOT NULL"),
+        sql.SQL("COALESCE(candidates.market_cap_m, 0) >= %(min_market_cap_m)s"),
     ]
     if filter_high_leverage:
-        base_where_parts.append(sql.SQL("f.high_leverage_flag IS NOT TRUE"))
+        eligibility_where_parts.append(sql.SQL("candidates.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
-        base_where_parts.append(sql.SQL("f.negative_earnings_flag IS NOT TRUE"))
+        eligibility_where_parts.append(sql.SQL("candidates.negative_earnings_flag IS NOT TRUE"))
 
     if direction == "LONG" and long_label_blocklist:
-        base_where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
+        eligibility_where_parts.append(sql.SQL("(candidates.valuation_label IS NULL OR candidates.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = long_label_blocklist
     elif direction == "SHORT" and short_label_blocklist:
-        base_where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
+        eligibility_where_parts.append(sql.SQL("(candidates.valuation_label IS NULL OR candidates.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = short_label_blocklist
 
     if required_currency:
         params["required_currency"] = required_currency.upper()
-        base_where_parts.append(sql.SQL(
-            "COALESCE(NULLIF(f.current_price_currency, ''), "
-            "NULLIF(f.market_cap_currency, ''), "
-            "NULLIF(f.currency, ''), "
-            "NULLIF(f.financial_currency, ''), "
+        eligibility_where_parts.append(sql.SQL(
+            "COALESCE(NULLIF(candidates.current_price_currency, ''), "
+            "NULLIF(candidates.market_cap_currency, ''), "
+            "NULLIF(candidates.currency, ''), "
+            "NULLIF(candidates.financial_currency, ''), "
             "%(required_currency)s) = %(required_currency)s"
         ))
 
@@ -589,7 +668,11 @@ def get_candidates(
         f.mispricing_score,
         COALESCE(f.negative_earnings_flag, false) AS negative_earnings_flag,
         COALESCE(f.high_leverage_flag, false) AS high_leverage_flag,
-        f.market_cap_m
+        f.market_cap_m,
+        f.current_price_currency,
+        f.market_cap_currency,
+        f.currency,
+        f.financial_currency
     """)
     outer_select_columns = sql.SQL("""
         candidates.symbol,
@@ -631,6 +714,10 @@ def get_candidates(
             select_columns,
             base_where_parts,
             params,
+            long_label_blocklist,
+            short_label_blocklist,
+            filter_high_leverage,
+            filter_negative_earnings,
             pepperstone_table,
             ibkr_margin_table,
         )
@@ -665,6 +752,7 @@ def get_candidates(
                     f.cik,
                     {}
             ) candidates
+            WHERE {}
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
             relation_identifier(pepperstone_table),
@@ -673,6 +761,7 @@ def get_candidates(
             source_relation,
             sql.SQL("\n                  AND ").join(where_parts),
             recency_order,
+            sql.SQL("\n              AND ").join(eligibility_where_parts),
         )
     elif ACCOUNT_PROFILE == "ibkr_acc":
         params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
@@ -699,6 +788,7 @@ def get_candidates(
                     f.cik,
                     {}
             ) candidates
+            WHERE {}
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
             relation_identifier(ibkr_margin_table),
@@ -707,23 +797,31 @@ def get_candidates(
             source_relation,
             sql.SQL("\n                  AND ").join(where_parts),
             recency_order,
+            sql.SQL("\n              AND ").join(eligibility_where_parts),
         )
     else:
         query = sql.SQL("""
-            SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
-                {}
-            FROM {} f
+            SELECT {}
+            FROM (
+                SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
+                    {}
+                FROM {} f
+                WHERE {}
+                ORDER BY
+                    f.symbol,
+                    f.exchange,
+                    f.cik,
+                    {}
+            ) candidates
             WHERE {}
-            ORDER BY
-                f.symbol,
-                f.exchange,
-                f.cik,
-                {}
+            ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
+            outer_select_columns,
             select_columns,
             source_relation,
             sql.SQL("\n          AND ").join(where_parts),
             recency_order,
+            sql.SQL("\n          AND ").join(eligibility_where_parts),
         )
     with conn.cursor() as cur:
         cur.execute(query, params)
