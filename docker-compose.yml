@@ -8,7 +8,7 @@ services:
       PGPASSWORD: postgres-ts-root-pw
       # Explicitly enabled for this refactor: existing backtest result tables
       # are dropped and recreated by init/schema.sql before the runner starts.
-      DROP_BACKTEST_TABLES_ON_START: true
+      DROP_BACKTEST_TABLES_ON_START: false
     command:
       - sh
       - -c
