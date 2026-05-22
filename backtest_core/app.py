@@ -116,6 +116,20 @@ def log_backtest_context(model_files: list[str]) -> None:
         FILTER_NEGATIVE_EARNINGS_SHORT,
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
+    log.info(
+        "Regime exposure bucket thresholds strong risk-on below %.2f strong risk-off from %.2f",
+        REGIME_STRONG_RISK_ON_MAX_SCORE,
+        REGIME_STRONG_RISK_OFF_MIN_SCORE,
+    )
+    for bucket_name, bucket in REGIME_EXPOSURE_BUCKETS.items():
+        log.info(
+            "Regime exposure bucket %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",
+            bucket_name,
+            bucket["long_risk_multiplier"],
+            bucket["short_risk_multiplier"],
+            bucket["max_long_positions"],
+            bucket["max_short_positions"],
+        )
     log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(
         "Performance caches — trading days on, world regime on, candidates on, bars incremental PIT batches of %d symbols with %d warmup days",

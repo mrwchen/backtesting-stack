@@ -21,6 +21,7 @@ from .broker import (
     _pnl_short,
     _remove_position_by_identity,
     calc_position,
+    initial_stop_cash_risk,
 )
 from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition, PortfolioEvent
@@ -48,6 +49,93 @@ from .persistence import (
 )
 
 log = logging.getLogger(__name__)
+
+DIRECTIONS = ("LONG", "SHORT")
+
+
+def _regime_exposure_for_score(score: float, cfg: Any) -> tuple[str, dict]:
+    strong_on_max = min(REGIME_STRONG_RISK_ON_MAX_SCORE, cfg.long_max_score)
+    strong_off_min = max(REGIME_STRONG_RISK_OFF_MIN_SCORE, cfg.short_min_score)
+
+    if score < strong_on_max:
+        bucket_name = "strong_risk_on"
+    elif score < cfg.long_max_score:
+        bucket_name = "risk_on"
+    elif score < cfg.short_min_score:
+        bucket_name = "neutral"
+    elif score < strong_off_min:
+        bucket_name = "risk_off"
+    else:
+        bucket_name = "strong_risk_off"
+    return bucket_name, REGIME_EXPOSURE_BUCKETS[bucket_name]
+
+
+def _direction_risk_multiplier(exposure: dict, direction: str) -> float:
+    return float(exposure[f"{direction.lower()}_risk_multiplier"])
+
+
+def _direction_max_positions(exposure: dict, direction: str) -> int:
+    return int(exposure[f"max_{direction.lower()}_positions"])
+
+
+def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
+    return sum(1 for pos in open_positions if pos.direction == direction)
+
+
+def _signal_event_key(signal: Signal) -> tuple[str, tuple[str, str, int]]:
+    return (signal.direction, signal.identity_key)
+
+
+def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
+    if not equity_values:
+        return 0.0
+    peak = equity_values[0]
+    max_dd = 0.0
+    for eq in equity_values:
+        if eq > peak:
+            peak = eq
+        if peak <= 0:
+            continue
+        dd = (peak - eq) / peak * 100.0
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd
+
+
+def _direction_report(trades: list[ClosedTrade], direction: str) -> dict:
+    direction_trades = [t for t in trades if t.position.direction == direction]
+    wins = [t for t in direction_trades if t.pnl_usd > 0]
+    losses = [t for t in direction_trades if t.pnl_usd < 0]
+    gross_profit = sum(t.pnl_usd for t in wins)
+    gross_loss = abs(sum(t.pnl_usd for t in losses))
+
+    cumulative = INITIAL_EQUITY
+    equity_values = [cumulative]
+    for trade in direction_trades:
+        cumulative += trade.pnl_usd
+        equity_values.append(cumulative)
+
+    r_values = []
+    for trade in direction_trades:
+        risk_usd = initial_stop_cash_risk(trade.position)
+        if risk_usd > 0.0:
+            r_values.append(trade.pnl_usd / risk_usd)
+
+    return {
+        "trades": len(direction_trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": len(wins) / len(direction_trades) * 100.0 if direction_trades else 0.0,
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
+        "max_drawdown_pct": _max_drawdown_pct_from_equity(equity_values),
+        "avg_r": sum(r_values) / len(r_values) if r_values else None,
+        "pnl_usd": sum(t.pnl_usd for t in direction_trades),
+    }
+
+
+def _format_optional(value: Optional[float], fmt: str) -> str:
+    return fmt % value if value is not None else "N/A"
+
 
 def simulate_outcome(
     conn: psycopg2.extensions.connection,
@@ -195,7 +283,7 @@ def run_backtest(
 
     # Diagnostic counters
     days_no_regime = 0
-    days_neutral   = 0
+    days_no_active_budget = 0
     days_no_candidates = 0
     days_no_signals    = 0
     days_with_signals  = 0
@@ -318,12 +406,28 @@ def run_backtest(
                 )
             continue
 
-        if regime.score < cfg.long_max_score:
-            direction = "LONG"
-        elif regime.score >= cfg.short_min_score:
-            direction = "SHORT"
-        else:
-            days_neutral += 1
+        regime_bucket, regime_exposure = _regime_exposure_for_score(regime.score, cfg)
+        if log_progress_today:
+            log.info(
+                "Regime exposure day %d/%d %s model %s bucket %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
+                day_idx,
+                len(trading_days),
+                day,
+                runtime.CURRENT_MODEL_FILE,
+                regime_bucket,
+                regime.score,
+                _direction_risk_multiplier(regime_exposure, "LONG"),
+                _direction_risk_multiplier(regime_exposure, "SHORT"),
+                _direction_max_positions(regime_exposure, "LONG"),
+                _direction_max_positions(regime_exposure, "SHORT"),
+            )
+
+        if all(
+            _direction_risk_multiplier(regime_exposure, direction) <= 0.0
+            and _direction_max_positions(regime_exposure, direction) <= 0
+            for direction in DIRECTIONS
+        ):
+            days_no_active_budget += 1
             write_decision_events(conn, [DecisionEvent(
                 run_id=run_id,
                 signal_date=day,
@@ -334,11 +438,8 @@ def run_backtest(
                 direction=None,
                 decision_stage="regime_filter",
                 decision="skipped_day",
-                reason_code="neutral_regime",
-                reason_text=(
-                    f"World-regime score {regime.score:.2f} is between long threshold "
-                    f"{cfg.long_max_score:.2f} and short threshold {cfg.short_min_score:.2f}."
-                ),
+                reason_code="no_regime_exposure_budget",
+                reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max positions to both directions.",
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
                 open_positions=len(open_positions),
@@ -347,124 +448,207 @@ def run_backtest(
             )])
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s model %s neutral regime %.1f, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
-                    day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
+                    "Progress %d/%d %s model %s regime bucket %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
+                    day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, regime_bucket, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
-
-        if log_progress_today:
-            log.info(
-                "Candidate query starting day %d/%d %s model %s direction %s cutoff %s",
-                day_idx,
-                len(trading_days),
-                day,
-                runtime.CURRENT_MODEL_FILE,
-                direction,
-                day_end_ts,
-            )
-        candidate_started = _time.perf_counter()
-        candidates = get_candidates(
-            conn, direction,
-            long_min_fundamental=cfg.long_min_fundamental,
-            short_max_fundamental=cfg.short_max_fundamental,
-            min_market_cap_m=MIN_MARKET_CAP_M,
-            source_table=SOURCE_FUNDAMENTAL,
-            as_of_date=day,
-            as_of_ts=day_end_ts,
-            long_label_blocklist=cfg.long_label_blocklist or None,
-            short_label_blocklist=cfg.short_label_blocklist or None,
-            pepperstone_table=PEPPERSTONE_TABLE,
-            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-            filter_negative_earnings=(
-                FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
-            ),
-            ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
-        )
-        candidate_elapsed = _time.perf_counter() - candidate_started
-        if log_progress_today or candidate_elapsed >= 5.0:
-            log.info(
-                "Candidate query complete day %d/%d %s model %s direction %s found %d candidates in %.1f s",
-                day_idx,
-                len(trading_days),
-                day,
-                runtime.CURRENT_MODEL_FILE,
-                direction,
-                len(candidates),
-                candidate_elapsed,
-            )
-
-        if not candidates:
-            days_no_candidates += 1
-            write_decision_events(conn, [DecisionEvent(
-                run_id=run_id,
-                signal_date=day,
-                as_of_ts=day_end_ts,
-                symbol=None,
-                exchange=None,
-                cik=None,
-                direction=direction,
-                decision_stage="candidate_filter",
-                decision="no_candidates",
-                reason_code="no_candidates_after_fundamental_filters",
-                reason_text="No symbols passed the point-in-time fundamental, currency, market-cap and broker filters.",
-                world_regime_label=regime.label,
-                world_regime_score=regime.score,
-                open_positions=len(open_positions),
-                max_open_positions=MAX_OPEN_POSITIONS,
-                account_equity=equity,
-            )])
-            if log_progress_today:
-                log.info(
-                    "Progress %d/%d %s model %s %s regime %.1f, no candidates, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
-                    day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, direction, regime.score, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
-                )
-            continue
-
-        candidate_identities = [fundamental.identity_key for fundamental in candidates]
-        bar_lookback_limit = cfg.min_bars + cfg.price_lookback_bars
-        bar_load_started = _time.perf_counter()
-        recent_bars_by_identity = load_recent_bars_for_identities(
-            conn,
-            candidate_identities,
-            bar_lookback_limit,
-            day_end_ts,
-            batch_size=BAR_CACHE_BATCH_SIZE,
-            log_batches=log_progress_today,
-        )
-        loaded_bar_rows = sum(len(bars) for bars in recent_bars_by_identity.values())
-        bar_load_elapsed = _time.perf_counter() - bar_load_started
-        if log_progress_today or bar_load_elapsed >= 5.0:
-            log.info(
-                "Recent bar load complete day %d/%d %s model %s loaded %d rows for %d candidates limit %d through %s in %.1f s",
-                day_idx,
-                len(trading_days),
-                day,
-                runtime.CURRENT_MODEL_FILE,
-                loaded_bar_rows,
-                len(candidate_identities),
-                bar_lookback_limit,
-                day_end_ts,
-                bar_load_elapsed,
-            )
 
         model = get_model_module()
-        compute_fn = model.compute_long_signal if direction == "LONG" else model.compute_short_signal
-        evaluate_fn = getattr(
-            model,
-            "evaluate_long_signal" if direction == "LONG" else "evaluate_short_signal",
-            None,
-        )
+        signals_by_direction: dict[str, list[Signal]] = {direction: [] for direction in DIRECTIONS}
         signals: list[Signal] = []
         decision_events: list[DecisionEvent] = []
-        signal_events: dict[tuple[str, str, int], DecisionEvent] = {}
+        signal_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent] = {}
         skipped_no_bars = 0
+        total_candidates = 0
+        candidate_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
+        signal_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
 
-        for candidate_rank, fundamental in enumerate(candidates, start=1):
-            bars = recent_bars_by_identity.get(fundamental.identity_key, [])
-            if len(bars) < cfg.min_bars:
-                skipped_no_bars += 1
+        for direction in DIRECTIONS:
+            direction_risk = _direction_risk_multiplier(regime_exposure, direction)
+            direction_cap = _direction_max_positions(regime_exposure, direction)
+            if direction_risk <= 0.0 and direction_cap <= 0:
                 decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    signal_date=day,
+                    as_of_ts=day_end_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=direction,
+                    decision_stage="regime_filter",
+                    decision="skipped_direction",
+                    reason_code="regime_direction_disabled",
+                    reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max {direction.lower()} positions.",
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
+                continue
+
+            if log_progress_today:
+                log.info(
+                    "Candidate query starting day %d/%d %s model %s direction %s bucket %s cutoff %s",
+                    day_idx,
+                    len(trading_days),
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    regime_bucket,
+                    day_end_ts,
+                )
+            candidate_started = _time.perf_counter()
+            candidates = get_candidates(
+                conn, direction,
+                long_min_fundamental=cfg.long_min_fundamental,
+                short_max_fundamental=cfg.short_max_fundamental,
+                min_market_cap_m=MIN_MARKET_CAP_M,
+                source_table=SOURCE_FUNDAMENTAL,
+                as_of_date=day,
+                as_of_ts=day_end_ts,
+                long_label_blocklist=cfg.long_label_blocklist or None,
+                short_label_blocklist=cfg.short_label_blocklist or None,
+                pepperstone_table=PEPPERSTONE_TABLE,
+                required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+                filter_negative_earnings=(
+                    FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
+                ),
+                ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
+            )
+            candidate_elapsed = _time.perf_counter() - candidate_started
+            candidate_counts[direction] = len(candidates)
+            total_candidates += len(candidates)
+            if log_progress_today or candidate_elapsed >= 5.0:
+                log.info(
+                    "Candidate query complete day %d/%d %s model %s direction %s bucket %s found %d candidates in %.1f s",
+                    day_idx,
+                    len(trading_days),
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    regime_bucket,
+                    len(candidates),
+                    candidate_elapsed,
+                )
+
+            if not candidates:
+                decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    signal_date=day,
+                    as_of_ts=day_end_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=direction,
+                    decision_stage="candidate_filter",
+                    decision="no_candidates",
+                    reason_code="no_candidates_after_fundamental_filters",
+                    reason_text="No symbols passed the point-in-time fundamental, currency, market-cap and broker filters.",
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
+                continue
+
+            candidate_identities = [fundamental.identity_key for fundamental in candidates]
+            bar_lookback_limit = cfg.min_bars + cfg.price_lookback_bars
+            bar_load_started = _time.perf_counter()
+            recent_bars_by_identity = load_recent_bars_for_identities(
+                conn,
+                candidate_identities,
+                bar_lookback_limit,
+                day_end_ts,
+                batch_size=BAR_CACHE_BATCH_SIZE,
+                log_batches=log_progress_today,
+            )
+            loaded_bar_rows = sum(len(bars) for bars in recent_bars_by_identity.values())
+            bar_load_elapsed = _time.perf_counter() - bar_load_started
+            if log_progress_today or bar_load_elapsed >= 5.0:
+                log.info(
+                    "Recent bar load complete day %d/%d %s model %s direction %s loaded %d rows for %d candidates limit %d through %s in %.1f s",
+                    day_idx,
+                    len(trading_days),
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    loaded_bar_rows,
+                    len(candidate_identities),
+                    bar_lookback_limit,
+                    day_end_ts,
+                    bar_load_elapsed,
+                )
+
+            compute_fn = model.compute_long_signal if direction == "LONG" else model.compute_short_signal
+            evaluate_fn = getattr(
+                model,
+                "evaluate_long_signal" if direction == "LONG" else "evaluate_short_signal",
+                None,
+            )
+
+            for candidate_rank, fundamental in enumerate(candidates, start=1):
+                bars = recent_bars_by_identity.get(fundamental.identity_key, [])
+                if len(bars) < cfg.min_bars:
+                    skipped_no_bars += 1
+                    decision_events.append(DecisionEvent(
+                        run_id=run_id,
+                        signal_date=day,
+                        as_of_ts=day_end_ts,
+                        symbol=fundamental.symbol,
+                        exchange=fundamental.exchange,
+                        cik=fundamental.cik,
+                        direction=direction,
+                        decision_stage="bar_load",
+                        decision="rejected",
+                        reason_code="insufficient_bars",
+                        reason_text=f"Only {len(bars)} cached 1h bars were available; model requires at least {cfg.min_bars}.",
+                        candidate_rank=candidate_rank,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        valuation_label=fundamental.valuation_label,
+                        sector=fundamental.sector,
+                        industry=fundamental.industry,
+                        fundamental_score=fundamental.composite_score,
+                        mispricing_score=fundamental.mispricing_score,
+                        market_cap_m=fundamental.market_cap_m,
+                        bar_count=len(bars),
+                        min_bars=cfg.min_bars,
+                        open_positions=len(open_positions),
+                        max_open_positions=MAX_OPEN_POSITIONS,
+                        account_equity=equity,
+                    ))
+                    continue
+                if evaluate_fn is not None:
+                    evaluation = evaluate_fn(
+                        bars,
+                        fundamental,
+                        datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                        cfg,
+                    )
+                    signal = evaluation.signal
+                else:
+                    signal = compute_fn(
+                        bars,
+                        fundamental,
+                        datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                        cfg,
+                    )
+                    evaluation = SignalEvaluation(
+                        signal=signal,
+                        decision="signal" if signal else "rejected",
+                        reason_code="signal_passed" if signal else "no_signal",
+                        reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
+                    )
+                if signal:
+                    signal.exchange = fundamental.exchange
+                    signal.cik = fundamental.cik
+                    signal.entry_ts = bars[-1].ts
+                    signals.append(signal)
+                    signals_by_direction[direction].append(signal)
+                event = DecisionEvent(
                     run_id=run_id,
                     signal_date=day,
                     as_of_ts=day_end_ts,
@@ -472,10 +656,11 @@ def run_backtest(
                     exchange=fundamental.exchange,
                     cik=fundamental.cik,
                     direction=direction,
-                    decision_stage="bar_load",
-                    decision="rejected",
-                    reason_code="insufficient_bars",
-                    reason_text=f"Only {len(bars)} cached 1h bars were available; model requires at least {cfg.min_bars}.",
+                    decision_stage="signal_eval",
+                    decision="signal" if signal else "rejected",
+                    reason_code=evaluation.reason_code,
+                    reason_text=evaluation.reason_text,
+                    signal_passed=bool(signal),
                     candidate_rank=candidate_rank,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
@@ -487,85 +672,34 @@ def run_backtest(
                     market_cap_m=fundamental.market_cap_m,
                     bar_count=len(bars),
                     min_bars=cfg.min_bars,
+                    entry_ts=signal.entry_ts if signal else None,
+                    entry_price=evaluation.entry_price if evaluation.entry_price is not None else (signal.entry_price if signal else None),
+                    stop_loss=evaluation.stop_loss if evaluation.stop_loss is not None else (signal.stop_loss if signal else None),
+                    take_profit_1=evaluation.take_profit_1 if evaluation.take_profit_1 is not None else (signal.take_profit_1 if signal else None),
+                    take_profit_2=evaluation.take_profit_2 if evaluation.take_profit_2 is not None else (signal.take_profit_2 if signal else None),
+                    pullback_pct=evaluation.pullback_pct if evaluation.pullback_pct is not None else (signal.pullback_pct if signal else None),
+                    rsi_1h=evaluation.rsi_1h if evaluation.rsi_1h is not None else (signal.rsi_1h if signal else None),
+                    volume_ratio=evaluation.volume_ratio if evaluation.volume_ratio is not None else (signal.volume_ratio if signal else None),
+                    entry_score=evaluation.entry_score if evaluation.entry_score is not None else (signal.entry_score if signal else None),
+                    combined_score=evaluation.combined_score if evaluation.combined_score is not None else (signal.combined_score if signal else None),
                     open_positions=len(open_positions),
                     max_open_positions=MAX_OPEN_POSITIONS,
                     account_equity=equity,
-                ))
-                continue
-            if evaluate_fn is not None:
-                evaluation = evaluate_fn(
-                    bars,
-                    fundamental,
-                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
-                    cfg,
                 )
-                signal = evaluation.signal
-            else:
-                signal = compute_fn(
-                    bars,
-                    fundamental,
-                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
-                    cfg,
-                )
-                evaluation = SignalEvaluation(
-                    signal=signal,
-                    decision="signal" if signal else "rejected",
-                    reason_code="signal_passed" if signal else "no_signal",
-                    reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
-                )
-            if signal:
-                signal.exchange = fundamental.exchange
-                signal.cik = fundamental.cik
-                signal.entry_ts = bars[-1].ts
-                signals.append(signal)
-            event = DecisionEvent(
-                run_id=run_id,
-                signal_date=day,
-                as_of_ts=day_end_ts,
-                symbol=fundamental.symbol,
-                exchange=fundamental.exchange,
-                cik=fundamental.cik,
-                direction=direction,
-                decision_stage="signal_eval",
-                decision="signal" if signal else "rejected",
-                reason_code=evaluation.reason_code,
-                reason_text=evaluation.reason_text,
-                signal_passed=bool(signal),
-                candidate_rank=candidate_rank,
-                world_regime_label=regime.label,
-                world_regime_score=regime.score,
-                valuation_label=fundamental.valuation_label,
-                sector=fundamental.sector,
-                industry=fundamental.industry,
-                fundamental_score=fundamental.composite_score,
-                mispricing_score=fundamental.mispricing_score,
-                market_cap_m=fundamental.market_cap_m,
-                bar_count=len(bars),
-                min_bars=cfg.min_bars,
-                entry_ts=signal.entry_ts if signal else None,
-                entry_price=evaluation.entry_price if evaluation.entry_price is not None else (signal.entry_price if signal else None),
-                stop_loss=evaluation.stop_loss if evaluation.stop_loss is not None else (signal.stop_loss if signal else None),
-                take_profit_1=evaluation.take_profit_1 if evaluation.take_profit_1 is not None else (signal.take_profit_1 if signal else None),
-                take_profit_2=evaluation.take_profit_2 if evaluation.take_profit_2 is not None else (signal.take_profit_2 if signal else None),
-                pullback_pct=evaluation.pullback_pct if evaluation.pullback_pct is not None else (signal.pullback_pct if signal else None),
-                rsi_1h=evaluation.rsi_1h if evaluation.rsi_1h is not None else (signal.rsi_1h if signal else None),
-                volume_ratio=evaluation.volume_ratio if evaluation.volume_ratio is not None else (signal.volume_ratio if signal else None),
-                entry_score=evaluation.entry_score if evaluation.entry_score is not None else (signal.entry_score if signal else None),
-                combined_score=evaluation.combined_score if evaluation.combined_score is not None else (signal.combined_score if signal else None),
-                open_positions=len(open_positions),
-                max_open_positions=MAX_OPEN_POSITIONS,
-                account_equity=equity,
-            )
-            decision_events.append(event)
-            if signal:
-                signal_events[signal.identity_key] = event
+                decision_events.append(event)
+                if signal:
+                    signal_events[_signal_event_key(signal)] = event
 
-        signals.sort(key=lambda s: s.combined_score, reverse=True)
-        for signal_rank, signal in enumerate(signals, start=1):
-            event = signal_events.get(signal.identity_key)
-            if event:
-                event.signal_rank = signal_rank
+        for direction, direction_signals in signals_by_direction.items():
+            direction_signals.sort(key=lambda s: s.combined_score, reverse=True)
+            signal_counts[direction] = len(direction_signals)
+            for signal_rank, signal in enumerate(direction_signals, start=1):
+                event = signal_events.get(_signal_event_key(signal))
+                if event:
+                    event.signal_rank = signal_rank
 
+        if total_candidates == 0:
+            days_no_candidates += 1
         if signals:
             days_with_signals += 1
         else:
@@ -588,18 +722,38 @@ def run_backtest(
                     return 1  # same sector, different industry
                 return 2      # same sector and industry
 
-            signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
-            for signal_rank, signal in enumerate(signals, start=1):
-                event = signal_events.get(signal.identity_key)
-                if event:
-                    event.signal_rank = signal_rank
+            for direction, direction_signals in signals_by_direction.items():
+                direction_signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
+                for signal_rank, signal in enumerate(direction_signals, start=1):
+                    event = signal_events.get(_signal_event_key(signal))
+                    if event:
+                        event.signal_rank = signal_rank
+
+        direction_order = sorted(
+            DIRECTIONS,
+            key=lambda d: (
+                _direction_risk_multiplier(regime_exposure, d),
+                _direction_max_positions(regime_exposure, d),
+            ),
+            reverse=True,
+        )
+        signals_to_open: list[Signal] = []
+        for direction in direction_order:
+            signals_to_open.extend(signals_by_direction[direction])
+
         opened_today = 0
         account_equity_today = _account_equity(conn, open_positions, equity, day)
         initial_margin = sum(_active_margin_used(p) for p in open_positions)
         maintenance_margin = sum(_active_maintenance_margin_used(p) for p in open_positions)
+        direction_open_counts = {
+            direction: _direction_open_count(open_positions, direction)
+            for direction in DIRECTIONS
+        }
 
-        for signal in signals:
-            event = signal_events.get(signal.identity_key)
+        for signal in signals_to_open:
+            event = signal_events.get(_signal_event_key(signal))
+            direction_risk = _direction_risk_multiplier(regime_exposure, signal.direction)
+            direction_cap = _direction_max_positions(regime_exposure, signal.direction)
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:
@@ -611,6 +765,25 @@ def run_backtest(
                 event.available_funds = available_funds
                 event.excess_liquidity = excess_liquidity
 
+            if direction_risk <= 0.0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "regime_direction_risk_zero"
+                    event.reason_text = (
+                        f"Regime bucket {regime_bucket} assigned zero {signal.direction.lower()} risk."
+                    )
+                continue
+            if direction_open_counts[signal.direction] >= direction_cap:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "max_direction_positions_reached"
+                    event.reason_text = (
+                        f"Regime bucket {regime_bucket} allows {direction_cap} open "
+                        f"{signal.direction.lower()} positions; this limit was already reached."
+                    )
+                continue
             if len(open_positions) >= MAX_OPEN_POSITIONS:
                 if event:
                     event.decision_stage = "portfolio_filter"
@@ -634,7 +807,12 @@ def run_backtest(
                     event.reason_text = "Account equity was not positive at decision time."
                 continue
 
-            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(conn, signal, account_equity_today)
+            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(
+                conn,
+                signal,
+                account_equity_today,
+                direction_risk,
+            )
             if event:
                 event.required_initial_margin = initial_margin_used
                 event.required_maintenance_margin = maintenance_margin_used
@@ -729,6 +907,7 @@ def run_backtest(
             open_identities.add(signal.identity_key)
             initial_margin += initial_margin_used
             maintenance_margin += maintenance_margin_used
+            direction_open_counts[signal.direction] += 1
             opened_today += 1
             record_account_curve(signal.entry_ts or day_end_ts, open_positions)
             if event:
@@ -745,15 +924,17 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model %s %s regime %.1f, candidates %d, signals %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
+                "Progress %d/%d %s model %s bucket %s regime %.1f, candidates long %d short %d, signals long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
-                direction,
+                regime_bucket,
                 regime.score,
-                len(candidates),
-                len(signals),
+                candidate_counts["LONG"],
+                candidate_counts["SHORT"],
+                signal_counts["LONG"],
+                signal_counts["SHORT"],
                 skipped_no_bars,
                 opened_today,
                 closed_today,
@@ -764,8 +945,8 @@ def run_backtest(
             )
 
     log.info(
-        "Day breakdown no regime %d, neutral %d, no candidates %d, no signals %d, with signals %d",
-        days_no_regime, days_neutral, days_no_candidates, days_no_signals, days_with_signals,
+        "Day breakdown no regime %d, no active budget %d, no candidates %d, no signals %d, with signals %d",
+        days_no_regime, days_no_active_budget, days_no_candidates, days_no_signals, days_with_signals,
     )
     log_cache_stats("before_force_close")
 
@@ -828,14 +1009,11 @@ def run_backtest(
     )
 
     equity_series = [INITIAL_EQUITY] + [t.equity_after for t in closed_trades]
-    peak = equity_series[0]
-    max_dd = 0.0
-    for eq in equity_series:
-        if eq > peak:
-            peak = eq
-        dd = (peak - eq) / peak * 100.0
-        if dd > max_dd:
-            max_dd = dd
+    max_dd = _max_drawdown_pct_from_equity(equity_series)
+    direction_reports = {
+        direction: _direction_report(closed_trades, direction)
+        for direction in DIRECTIONS
+    }
 
     summary = {
         "run_id": run_id,
@@ -847,9 +1025,32 @@ def run_backtest(
         "max_drawdown_pct": max_dd,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
     }
+    for direction, report in direction_reports.items():
+        prefix = direction.lower()
+        summary[f"{prefix}_trades"] = report["trades"]
+        summary[f"{prefix}_win_rate_pct"] = report["win_rate_pct"]
+        summary[f"{prefix}_profit_factor"] = report["profit_factor"]
+        summary[f"{prefix}_max_drawdown_pct"] = report["max_drawdown_pct"]
+        summary[f"{prefix}_avg_r"] = report["avg_r"]
+        summary[f"{prefix}_pnl_usd"] = report["pnl_usd"]
 
     log.info(
         "Run %d complete trades %d wins %d final equity %.0f return %.1f%%",
         run_id, n_trades, n_wins, equity, total_return,
     )
+    for direction in DIRECTIONS:
+        report = direction_reports[direction]
+        log.info(
+            "Run %d direction %s trades %d wins %d losses %d win rate %.1f%% profit factor %s max drawdown %.2f%% avg R %s pnl %.0f",
+            run_id,
+            direction,
+            report["trades"],
+            report["wins"],
+            report["losses"],
+            report["win_rate_pct"],
+            _format_optional(report["profit_factor"], "%.3f"),
+            report["max_drawdown_pct"],
+            _format_optional(report["avg_r"], "%.3f"),
+            report["pnl_usd"],
+        )
     return run_id, summary

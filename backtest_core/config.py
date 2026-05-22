@@ -24,6 +24,64 @@ INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
 
+
+def _default_position_cap(ratio: float) -> int:
+    return max(0, min(MAX_OPEN_POSITIONS, int(round(MAX_OPEN_POSITIONS * ratio))))
+
+
+REGIME_STRONG_RISK_ON_MAX_SCORE = env_float("REGIME_STRONG_RISK_ON_MAX_SCORE", 45.0)
+REGIME_STRONG_RISK_OFF_MIN_SCORE = env_float("REGIME_STRONG_RISK_OFF_MIN_SCORE", 70.0)
+if REGIME_STRONG_RISK_ON_MAX_SCORE > REGIME_STRONG_RISK_OFF_MIN_SCORE:
+    raise ValueError("REGIME_STRONG_RISK_ON_MAX_SCORE must be <= REGIME_STRONG_RISK_OFF_MIN_SCORE")
+
+
+def _regime_risk_multiplier(env_key: str, default: float) -> float:
+    value = env_float(env_key, default)
+    if value < 0.0:
+        raise ValueError(f"{env_key} must be >= 0")
+    return value
+
+
+def _regime_position_cap(env_key: str, default: int) -> int:
+    value = env_int(env_key, default)
+    if value < 0:
+        raise ValueError(f"{env_key} must be >= 0")
+    return value
+
+
+REGIME_EXPOSURE_BUCKETS = {
+    "strong_risk_on": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_ON_LONG_RISK_MULTIPLIER", 1.0),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_ON_SHORT_RISK_MULTIPLIER", 0.0),
+        "max_long_positions": _regime_position_cap("REGIME_STRONG_RISK_ON_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS),
+        "max_short_positions": _regime_position_cap("REGIME_STRONG_RISK_ON_MAX_SHORT_POSITIONS", 0),
+    },
+    "risk_on": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_LONG_RISK_MULTIPLIER", 0.75),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_SHORT_RISK_MULTIPLIER", 0.25),
+        "max_long_positions": _regime_position_cap("REGIME_RISK_ON_MAX_LONG_POSITIONS", _default_position_cap(0.8)),
+        "max_short_positions": _regime_position_cap("REGIME_RISK_ON_MAX_SHORT_POSITIONS", MAX_OPEN_POSITIONS - _default_position_cap(0.8)),
+    },
+    "neutral": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_LONG_RISK_MULTIPLIER", 0.35),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER", 0.35),
+        "max_long_positions": _regime_position_cap("REGIME_NEUTRAL_MAX_LONG_POSITIONS", _default_position_cap(0.3)),
+        "max_short_positions": _regime_position_cap("REGIME_NEUTRAL_MAX_SHORT_POSITIONS", _default_position_cap(0.3)),
+    },
+    "risk_off": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_LONG_RISK_MULTIPLIER", 0.25),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER", 0.75),
+        "max_long_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS - _default_position_cap(0.8)),
+        "max_short_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_SHORT_POSITIONS", _default_position_cap(0.8)),
+    },
+    "strong_risk_off": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_OFF_LONG_RISK_MULTIPLIER", 0.0),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_OFF_SHORT_RISK_MULTIPLIER", 1.0),
+        "max_long_positions": _regime_position_cap("REGIME_STRONG_RISK_OFF_MAX_LONG_POSITIONS", 0),
+        "max_short_positions": _regime_position_cap("REGIME_STRONG_RISK_OFF_MAX_SHORT_POSITIONS", MAX_OPEN_POSITIONS),
+    },
+}
+
 ACCOUNT_PROFILE_DEFAULTS = {
     # Pepperstone EU retail US Share/ETF CFDs:
     # 5:1 share leverage => 20% margin; 0.02 USD/share per side, 0.02 USD minimum;

@@ -607,6 +607,16 @@ def _stop_loss_cash_risk(
     return gross_loss + _entry_cost(shares, entry_fill) + _exit_cost(shares, stop_fill)
 
 
+def initial_stop_cash_risk(pos: OpenPosition) -> float:
+    if pos.direction == "LONG":
+        entry_fill = _buy_fill(pos.entry_price)
+        stop_fill = _sell_fill(pos.stop_loss)
+    else:
+        entry_fill = _sell_fill(pos.entry_price)
+        stop_fill = _buy_fill(pos.stop_loss)
+    return _stop_loss_cash_risk(pos.shares, entry_fill, stop_fill, pos.direction)
+
+
 def _max_shares_for_stop_risk(
     risk_usd: float,
     entry_fill: float,
@@ -647,9 +657,10 @@ def calc_position(
     conn: psycopg2.extensions.connection,
     signal: Signal,
     equity: float,
+    risk_multiplier: float,
 ) -> tuple[float, float, float, float]:
     """Return (initial_margin_used, maintenance_margin_used, shares, position_size_usd)."""
-    risk_usd = equity * RISK_PER_TRADE_PCT / 100.0
+    risk_usd = equity * RISK_PER_TRADE_PCT * max(0.0, risk_multiplier) / 100.0
     if signal.direction == "LONG":
         entry_fill = _buy_fill(signal.entry_price)
         stop_fill = _sell_fill(signal.stop_loss)
