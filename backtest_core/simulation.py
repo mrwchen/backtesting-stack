@@ -10,7 +10,6 @@ import psycopg2
 from backtest_shared import Signal, SignalEvaluation
 from . import runtime
 from .broker import (
-    _account_equity,
     _account_snapshot_values,
     _active_maintenance_margin_used,
     _active_margin_used,
@@ -30,6 +29,7 @@ from .market_data import (
     _day_signal_cutoff_ts,
     _ensure_utc_ts,
     get_bars_range,
+    get_bars_range_through,
     get_candidates,
     get_trading_days,
     get_world_regime,
@@ -122,11 +122,11 @@ def _format_optional(value: Optional[float], fmt: str) -> str:
 def simulate_outcome(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
-    as_of_date: date,
+    up_to_ts: datetime,
     equity: float,
 ) -> Optional[ClosedTrade]:
     """
-    Check whether pos has closed by as_of_date.
+    Check whether pos has closed by up_to_ts.
     Returns ClosedTrade if closed, None if still open.
 
     TP logic: position is split 50/50 between TP1 and TP2.
@@ -136,8 +136,9 @@ def simulate_outcome(
     resumes from the TP1/SL state stored on pos, making the loop O(N total)
     across all daily calls rather than O(N²).
     """
+    up_to_ts = _ensure_utc_ts(up_to_ts)
     after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts
-    bars = get_bars_range(conn, pos.identity_key, after_ts, as_of_date)
+    bars = get_bars_range_through(conn, pos.identity_key, after_ts, up_to_ts)
     if not bars:
         return None
 
@@ -256,6 +257,89 @@ def run_backtest(
             closed_trades=len(closed_trades),
         ))
 
+    def apply_position_events_through(
+        positions: list[OpenPosition],
+        end_ts: datetime,
+    ) -> tuple[list[OpenPosition], int, float]:
+        nonlocal equity
+        end_ts = _ensure_utc_ts(end_ts)
+        portfolio_events: list[PortfolioEvent] = []
+        closed_count = 0
+        realized_pnl = 0.0
+
+        for pos in positions:
+            before_tp1_hit = pos.tp1_hit
+            before_tp1_price = pos.tp1_price
+            before_tp1_exit_ts = pos.tp1_exit_ts
+            before_effective_sl = pos.effective_sl
+            trade = simulate_outcome(conn, pos, end_ts, equity)
+            if trade is not None:
+                close_ts = trade.exit_ts or end_ts
+                if not before_tp1_hit and trade.tp1_hit and trade.tp1_exit_ts and trade.tp1_exit_ts < close_ts:
+                    portfolio_events.append(PortfolioEvent(
+                        ts=trade.tp1_exit_ts,
+                        priority=0,
+                        kind="tp1",
+                        position=pos,
+                    ))
+                portfolio_events.append(PortfolioEvent(
+                    ts=close_ts,
+                    priority=1,
+                    kind="close",
+                    position=pos,
+                    trade=trade,
+                ))
+                continue
+
+            if not before_tp1_hit and pos.tp1_hit:
+                tp1_event_ts = pos.tp1_exit_ts or end_ts
+                pos.tp1_hit = before_tp1_hit
+                pos.tp1_price = before_tp1_price
+                pos.tp1_exit_ts = before_tp1_exit_ts
+                pos.effective_sl = before_effective_sl
+                portfolio_events.append(PortfolioEvent(
+                    ts=tp1_event_ts,
+                    priority=0,
+                    kind="tp1",
+                    position=pos,
+                ))
+
+        active_positions = list(positions)
+        for event in sorted(portfolio_events, key=lambda e: (_ensure_utc_ts(e.ts), e.priority)):
+            if event.kind == "tp1":
+                event.position.tp1_hit = True
+                event.position.tp1_price = event.position.take_profit_1
+                event.position.tp1_exit_ts = _ensure_utc_ts(event.ts)
+                event.position.effective_sl = event.position.entry_price
+                record_account_curve(event.ts, active_positions)
+                continue
+
+            if event.kind == "close" and event.trade is not None:
+                _remove_position_by_identity(active_positions, event.position)
+                event.trade.equity_after = round(equity + event.trade.pnl_usd, 2)
+                equity = event.trade.equity_after
+                closed_trades.append(event.trade)
+                closed_count += 1
+                realized_pnl += event.trade.pnl_usd
+                log.debug("Closed %-6s %s %s pnl %.0f balance %.0f",
+                          event.position.symbol, event.position.direction, event.trade.outcome_status,
+                          event.trade.pnl_usd, equity)
+                record_account_curve(event.ts, active_positions)
+
+        liquidation_trades, equity = _enforce_account_margin_liquidation(
+            conn,
+            active_positions,
+            equity,
+            end_ts,
+        )
+        if liquidation_trades:
+            closed_trades.extend(liquidation_trades)
+            closed_count += len(liquidation_trades)
+            realized_pnl += sum(t.pnl_usd for t in liquidation_trades)
+            record_account_curve(end_ts, active_positions)
+
+        return active_positions, closed_count, realized_pnl
+
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
     record_account_curve(datetime.combine(START_DATE, datetime.min.time(), tzinfo=timezone.utc), open_positions)
@@ -281,84 +365,16 @@ def run_backtest(
             )
             log_cache_stats(f"day_start {day_idx}/{len(trading_days)} {day}")
 
-        # ── 1. Apply open-position state changes for today ──────────────────
-        portfolio_events: list[PortfolioEvent] = []
+        # ── 1. Apply open-position state changes up to entry decision time ──
         closed_today = 0
         day_pnl = 0.0
-        for pos in open_positions:
-            before_tp1_hit = pos.tp1_hit
-            before_tp1_price = pos.tp1_price
-            before_tp1_exit_ts = pos.tp1_exit_ts
-            before_effective_sl = pos.effective_sl
-            trade = simulate_outcome(conn, pos, day, equity)
-            if trade is not None:
-                close_ts = trade.exit_ts or _day_close_ts(trade.outcome_date)
-                if not before_tp1_hit and trade.tp1_hit and trade.tp1_exit_ts and trade.tp1_exit_ts < close_ts:
-                    portfolio_events.append(PortfolioEvent(
-                        ts=trade.tp1_exit_ts,
-                        priority=0,
-                        kind="tp1",
-                        position=pos,
-                    ))
-                portfolio_events.append(PortfolioEvent(
-                    ts=close_ts,
-                    priority=1,
-                    kind="close",
-                    position=pos,
-                    trade=trade,
-                ))
-                continue
-
-            if not before_tp1_hit and pos.tp1_hit:
-                tp1_event_ts = pos.tp1_exit_ts or _day_close_ts(day)
-                pos.tp1_hit = before_tp1_hit
-                pos.tp1_price = before_tp1_price
-                pos.tp1_exit_ts = before_tp1_exit_ts
-                pos.effective_sl = before_effective_sl
-                portfolio_events.append(PortfolioEvent(
-                    ts=tp1_event_ts,
-                    priority=0,
-                    kind="tp1",
-                    position=pos,
-                ))
-
-        active_positions = list(open_positions)
-        for event in sorted(portfolio_events, key=lambda e: (_ensure_utc_ts(e.ts), e.priority)):
-            if event.kind == "tp1":
-                event.position.tp1_hit = True
-                event.position.tp1_price = event.position.take_profit_1
-                event.position.tp1_exit_ts = _ensure_utc_ts(event.ts)
-                event.position.effective_sl = event.position.entry_price
-                record_account_curve(event.ts, active_positions)
-                continue
-
-            if event.kind == "close" and event.trade is not None:
-                _remove_position_by_identity(active_positions, event.position)
-                event.trade.equity_after = round(equity + event.trade.pnl_usd, 2)
-                equity = event.trade.equity_after
-                closed_trades.append(event.trade)
-                closed_today += 1
-                day_pnl += event.trade.pnl_usd
-                log.debug("Closed %-6s %s %s pnl %.0f balance %.0f",
-                          event.position.symbol, event.position.direction, event.trade.outcome_status,
-                          event.trade.pnl_usd, equity)
-                record_account_curve(event.ts, active_positions)
-        open_positions = active_positions
-        stop_out_ts = _day_close_ts(day)
-        liquidation_trades, equity = _enforce_account_margin_liquidation(
-            conn,
-            open_positions,
-            equity,
-            stop_out_ts,
-        )
-        if liquidation_trades:
-            closed_trades.extend(liquidation_trades)
-            closed_today += len(liquidation_trades)
-            day_pnl += sum(t.pnl_usd for t in liquidation_trades)
-            record_account_curve(stop_out_ts, open_positions)
+        day_end_ts = _day_signal_cutoff_ts(day)
+        day_close_ts = _day_close_ts(day)
+        open_positions, closed_before_entry, pnl_before_entry = apply_position_events_through(open_positions, day_end_ts)
+        closed_today += closed_before_entry
+        day_pnl += pnl_before_entry
 
         # ── 2. Generate signals for today ───────────────────────────────────
-        day_end_ts = _day_signal_cutoff_ts(day)
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME, as_of_date=day)
         if not regime:
             days_no_regime += 1
@@ -378,6 +394,9 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
+            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+            closed_today += closed_after_entry
+            day_pnl += pnl_after_entry
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s no regime, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -425,6 +444,9 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
+            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+            closed_today += closed_after_entry
+            day_pnl += pnl_after_entry
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s regime bucket %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -619,7 +641,7 @@ def run_backtest(
                 if signal:
                     signal.exchange = fundamental.exchange
                     signal.cik = fundamental.cik
-                    signal.entry_ts = bars[-1].ts
+                    signal.entry_ts = day_end_ts
                     signals.append(signal)
                     signals_by_direction[direction].append(signal)
                 event = DecisionEvent(
@@ -716,7 +738,8 @@ def run_backtest(
             signals_to_open.extend(signals_by_direction[direction])
 
         opened_today = 0
-        account_equity_today = _account_equity(conn, open_positions, equity, day)
+        account_snapshot_today = _account_snapshot_values(conn, open_positions, equity, day_end_ts)
+        account_equity_today = account_snapshot_today.equity_with_loan_value
         initial_margin = sum(_active_margin_used(p) for p in open_positions)
         maintenance_margin = sum(_active_maintenance_margin_used(p) for p in open_positions)
         direction_open_counts = {
@@ -894,6 +917,11 @@ def run_backtest(
                       signal.symbol, signal.direction, signal.entry_price,
                       signal.stop_loss, initial_margin_used, equity)
 
+        # ── 4. Apply post-entry position state changes through day close ────
+        open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+        closed_today += closed_after_entry
+        day_pnl += pnl_after_entry
+
         write_decision_events(conn, decision_events)
 
         if log_progress_today or opened_today > 0:
@@ -924,7 +952,7 @@ def run_backtest(
     )
     log_cache_stats("before_force_close")
 
-    # ── 4. Force-close remaining open positions at last available price ──────
+    # ── 5. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
     for pos in list(open_positions):
         bars = get_bars_range(conn, pos.identity_key, pos.entry_ts, last_day)
@@ -958,7 +986,7 @@ def run_backtest(
         closed_trades.append(trade)
         record_account_curve(trade.exit_ts or _day_close_ts(last_day), open_positions)
 
-    # ── 5. Persist results ───────────────────────────────────────────────────
+    # ── 6. Persist results ───────────────────────────────────────────────────
     log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)
 
     # Patch world_regime_label into rows (stored on signal, pass through)

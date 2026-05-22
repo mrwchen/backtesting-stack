@@ -1543,8 +1543,18 @@ def get_bars_range(
 
     SL/TP simulation intentionally uses all available bars, not only entry-window bars.
     """
+    return get_bars_range_through(conn, identity, after_ts, _day_close_ts(up_to_date))
+
+
+def get_bars_range_through(
+    conn: psycopg2.extensions.connection,
+    identity: InstrumentKey,
+    after_ts: datetime,
+    up_to_ts: datetime,
+) -> list:
+    """Return cached 1h bars strictly after after_ts and up to up_to_ts."""
     after_ts = _ensure_utc_ts(after_ts)
-    up_to_ts = _day_close_ts(up_to_date)
+    up_to_ts = _ensure_utc_ts(up_to_ts)
     timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
     start_idx = bisect_right(timestamps, after_ts)
     end_idx = bisect_right(timestamps, up_to_ts)
