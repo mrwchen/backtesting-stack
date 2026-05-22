@@ -91,12 +91,6 @@ def _direction_report(trades: list[ClosedTrade], direction: str) -> dict:
     gross_profit = sum(t.pnl_usd for t in wins)
     gross_loss = abs(sum(t.pnl_usd for t in losses))
 
-    cumulative = INITIAL_EQUITY
-    equity_values = [cumulative]
-    for trade in direction_trades:
-        cumulative += trade.pnl_usd
-        equity_values.append(cumulative)
-
     r_values = []
     for trade in direction_trades:
         risk_usd = initial_stop_cash_risk(trade.position)
@@ -109,7 +103,6 @@ def _direction_report(trades: list[ClosedTrade], direction: str) -> dict:
         "losses": len(losses),
         "win_rate_pct": len(wins) / len(direction_trades) * 100.0 if direction_trades else 0.0,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
-        "max_drawdown_pct": _max_drawdown_pct_from_equity(equity_values),
         "avg_r": sum(r_values) / len(r_values) if r_values else None,
         "pnl_usd": sum(t.pnl_usd for t in direction_trades),
     }
@@ -1040,7 +1033,6 @@ def run_backtest(
         summary[f"{prefix}_trades"] = report["trades"]
         summary[f"{prefix}_win_rate_pct"] = report["win_rate_pct"]
         summary[f"{prefix}_profit_factor"] = report["profit_factor"]
-        summary[f"{prefix}_max_drawdown_pct"] = report["max_drawdown_pct"]
         summary[f"{prefix}_avg_r"] = report["avg_r"]
         summary[f"{prefix}_pnl_usd"] = report["pnl_usd"]
 
@@ -1051,7 +1043,7 @@ def run_backtest(
     for direction in DIRECTIONS:
         report = direction_reports[direction]
         log.info(
-            "Run %d direction %s trades %d wins %d losses %d win rate %.1f%% profit factor %s max drawdown %.2f%% avg R %s pnl %.0f",
+            "Run %d direction %s trades %d wins %d losses %d win rate %.1f%% profit factor %s avg R %s pnl %.0f",
             run_id,
             direction,
             report["trades"],
@@ -1059,7 +1051,6 @@ def run_backtest(
             report["losses"],
             report["win_rate_pct"],
             _format_optional(report["profit_factor"], "%.3f"),
-            report["max_drawdown_pct"],
             _format_optional(report["avg_r"], "%.3f"),
             report["pnl_usd"],
         )
