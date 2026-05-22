@@ -148,64 +148,64 @@ def get_candidates(
         return _CANDIDATE_CACHE[cache_key]
 
     if direction == "LONG":
-        score_filter = sql.SQL("composite_score >= %(score_val)s")
+        score_filter = sql.SQL("f.composite_score >= %(score_val)s")
         score_val = long_min_fundamental
     else:
-        score_filter = sql.SQL("composite_score <= %(score_val)s")
+        score_filter = sql.SQL("f.composite_score <= %(score_val)s")
         score_val = short_max_fundamental
 
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
     where_parts = [
         score_filter,
-        sql.SQL("symbol IS NOT NULL"),
-        sql.SQL("exchange IS NOT NULL"),
-        sql.SQL("cik IS NOT NULL"),
-        sql.SQL("composite_score IS NOT NULL"),
-        sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
+        sql.SQL("f.symbol IS NOT NULL"),
+        sql.SQL("f.exchange IS NOT NULL"),
+        sql.SQL("f.cik IS NOT NULL"),
+        sql.SQL("f.composite_score IS NOT NULL"),
+        sql.SQL("COALESCE(f.market_cap_m, 0) >= %(min_market_cap_m)s"),
     ]
     if filter_high_leverage:
-        where_parts.append(sql.SQL("high_leverage_flag IS NOT TRUE"))
+        where_parts.append(sql.SQL("f.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
-        where_parts.append(sql.SQL("negative_earnings_flag IS NOT TRUE"))
+        where_parts.append(sql.SQL("f.negative_earnings_flag IS NOT TRUE"))
 
     if as_of_ts is None and as_of_date:
         as_of_ts = _default_as_of_ts(as_of_date)
     if as_of_ts is not None:
         params["as_of_ts"] = as_of_ts
-        where_parts.append(sql.SQL("time <= %(as_of_ts)s"))
-        where_parts.append(sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %(as_of_ts)s"))
+        where_parts.append(sql.SQL("f.time <= %(as_of_ts)s"))
+        where_parts.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(as_of_ts)s"))
 
     if direction == "LONG" and long_label_blocklist:
-        where_parts.append(sql.SQL("(valuation_label IS NULL OR valuation_label != ALL(%(label_list)s))"))
+        where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = long_label_blocklist
     elif direction == "SHORT" and short_label_blocklist:
-        where_parts.append(sql.SQL("(valuation_label IS NULL OR valuation_label != ALL(%(label_list)s))"))
+        where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = short_label_blocklist
 
     if required_currency:
         params["required_currency"] = required_currency.upper()
         where_parts.append(sql.SQL(
-            "COALESCE(NULLIF(current_price_currency, ''), "
-            "NULLIF(market_cap_currency, ''), "
-            "NULLIF(currency, ''), "
-            "NULLIF(financial_currency, ''), "
+            "COALESCE(NULLIF(f.current_price_currency, ''), "
+            "NULLIF(f.market_cap_currency, ''), "
+            "NULLIF(f.currency, ''), "
+            "NULLIF(f.financial_currency, ''), "
             "%(required_currency)s) = %(required_currency)s"
         ))
 
-    recency_order = sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) DESC NULLS LAST, time DESC")
+    recency_order = sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) DESC NULLS LAST, f.time DESC")
 
     select_columns = sql.SQL("""
-        symbol,
-        exchange,
-        cik,
-        composite_score,
-        COALESCE(sector, '') AS sector,
-        COALESCE(industry, '') AS industry,
-        COALESCE(valuation_label, '') AS valuation_label,
-        mispricing_score,
-        COALESCE(negative_earnings_flag, false) AS negative_earnings_flag,
-        COALESCE(high_leverage_flag, false) AS high_leverage_flag,
-        market_cap_m
+        f.symbol,
+        f.exchange,
+        f.cik,
+        f.composite_score,
+        COALESCE(f.sector, '') AS sector,
+        COALESCE(f.industry, '') AS industry,
+        COALESCE(f.valuation_label, '') AS valuation_label,
+        f.mispricing_score,
+        COALESCE(f.negative_earnings_flag, false) AS negative_earnings_flag,
+        COALESCE(f.high_leverage_flag, false) AS high_leverage_flag,
+        f.market_cap_m
     """)
     outer_select_columns = sql.SQL("""
         candidates.symbol,
@@ -224,30 +224,30 @@ def get_candidates(
 
     if ACCOUNT_PROFILE == "ps_acc":
         query = sql.SQL("""
-            SELECT {}
-            FROM (
-                SELECT DISTINCT symbol
+            WITH broker AS (
+                SELECT DISTINCT symbol::text AS symbol
                 FROM {}
                 WHERE symbol_ps IS NOT NULL
                   AND is_trading_enabled IS NOT FALSE
                   AND symbol IS NOT NULL
-            ) broker
-            JOIN LATERAL (
-                SELECT DISTINCT ON (symbol, exchange, cik)
+            )
+            SELECT {}
+            FROM (
+                SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
                     {}
-                FROM {}
-                WHERE symbol = broker.symbol
-                  AND {}
+                FROM {} f
+                JOIN broker ON broker.symbol = f.symbol
+                WHERE {}
                 ORDER BY
-                    symbol,
-                    exchange,
-                    cik,
+                    f.symbol,
+                    f.exchange,
+                    f.cik,
                     {}
-            ) candidates ON TRUE
+            ) candidates
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
-            outer_select_columns,
             relation_identifier(pepperstone_table),
+            outer_select_columns,
             select_columns,
             source_relation,
             sql.SQL("\n                  AND ").join(where_parts),
@@ -256,8 +256,7 @@ def get_candidates(
     elif ACCOUNT_PROFILE == "ibkr_acc":
         params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
         query = sql.SQL("""
-            SELECT {}
-            FROM (
+            WITH broker AS (
                 SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
                 FROM {}
                 WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s
@@ -265,23 +264,24 @@ def get_candidates(
                   AND initial_margin_pct > 0
                   AND maintenance_margin_pct > 0
                   AND source_symbol IS NOT NULL
-            ) broker
-            JOIN LATERAL (
-                SELECT DISTINCT ON (symbol, exchange, cik)
+            )
+            SELECT {}
+            FROM (
+                SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
                     {}
-                FROM {}
-                WHERE UPPER(TRIM(symbol)) = broker.symbol_norm
-                  AND {}
+                FROM {} f
+                JOIN broker ON broker.symbol_norm = UPPER(TRIM(f.symbol))
+                WHERE {}
                 ORDER BY
-                    symbol,
-                    exchange,
-                    cik,
+                    f.symbol,
+                    f.exchange,
+                    f.cik,
                     {}
-            ) candidates ON TRUE
+            ) candidates
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
-            outer_select_columns,
             relation_identifier(ibkr_margin_table),
+            outer_select_columns,
             select_columns,
             source_relation,
             sql.SQL("\n                  AND ").join(where_parts),
@@ -289,14 +289,14 @@ def get_candidates(
         )
     else:
         query = sql.SQL("""
-            SELECT DISTINCT ON (symbol, exchange, cik)
+            SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
                 {}
-            FROM {}
+            FROM {} f
             WHERE {}
             ORDER BY
-                symbol,
-                exchange,
-                cik,
+                f.symbol,
+                f.exchange,
+                f.cik,
                 {}
         """).format(
             select_columns,
