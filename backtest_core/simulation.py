@@ -119,6 +119,14 @@ def _format_optional(value: Optional[float], fmt: str) -> str:
     return fmt % value if value is not None else "N/A"
 
 
+def _long_stop_fill_price(stop_price: float, bar_open: object) -> float:
+    return min(stop_price, float(bar_open))
+
+
+def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
+    return max(stop_price, float(bar_open))
+
+
 def simulate_outcome(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -148,7 +156,7 @@ def simulate_outcome(
     effective_sl = pos.effective_sl
     is_long = pos.direction == "LONG"
 
-    for bar_idx, (ts, _, high, low, close) in enumerate(bars):
+    for bar_idx, (ts, open_, high, low, close) in enumerate(bars):
         bar_date = ts.date() if hasattr(ts, "date") else ts
         total_bars = pos.bars_processed + bar_idx + 1
         sl_tp_active = _is_in_sl_tp_window(ts)
@@ -157,7 +165,7 @@ def simulate_outcome(
         if is_long:
             # SL check first (conservative — if same bar hits both, SL wins)
             if stop_loss_active and low <= effective_sl:
-                price = effective_sl
+                price = _long_stop_fill_price(effective_sl, open_)
                 if tp1_hit:
                     pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
                     status = "HIT_TP1_THEN_BE"
@@ -179,7 +187,7 @@ def simulate_outcome(
 
         else:  # SHORT
             if stop_loss_active and high >= effective_sl:
-                price = effective_sl
+                price = _short_stop_fill_price(effective_sl, open_)
                 if tp1_hit:
                     pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
                     status = "HIT_TP1_THEN_BE"
