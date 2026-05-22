@@ -28,15 +28,15 @@ class BacktestJob:
 
 
 def _selected_jobs(model_files: list[str]) -> list[BacktestJob]:
-    if MODEL_SELECTION == "all":
-        return [
-            BacktestJob(model_file=model_file, account_profile=account_profile)
-            for model_file in model_files
-            for account_profile in ACCOUNT_PROFILE_DEFAULTS
-        ]
+    account_profiles = (
+        list(ACCOUNT_PROFILE_DEFAULTS)
+        if ACCOUNT_PROFILE_REQUEST == "all"
+        else [ACCOUNT_PROFILE]
+    )
     return [
-        BacktestJob(model_file=model_file, account_profile=ACCOUNT_PROFILE)
+        BacktestJob(model_file=model_file, account_profile=account_profile)
         for model_file in model_files
+        for account_profile in account_profiles
     ]
 
 

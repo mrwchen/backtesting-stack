@@ -19,7 +19,8 @@ if env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False):
         "ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=true is disabled; backtests must use point-in-time data_available_at guards."
     )
 ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = False
-ACCOUNT_PROFILE        = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
+ACCOUNT_PROFILE_REQUEST = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
+ACCOUNT_PROFILE        = ACCOUNT_PROFILE_REQUEST
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
@@ -134,8 +135,10 @@ ACCOUNT_PROFILE_DEFAULTS = {
         "allow_fractional_shares": True,
     },
 }
-if ACCOUNT_PROFILE not in ACCOUNT_PROFILE_DEFAULTS:
-    raise ValueError("ACCOUNT_PROFILE must be one of: ps_acc, ibkr_acc")
+if ACCOUNT_PROFILE_REQUEST == "all":
+    ACCOUNT_PROFILE = "ps_acc"
+elif ACCOUNT_PROFILE_REQUEST not in ACCOUNT_PROFILE_DEFAULTS:
+    raise ValueError("ACCOUNT_PROFILE must be one of: ps_acc, ibkr_acc, all")
 _ACC = ACCOUNT_PROFILE_DEFAULTS[ACCOUNT_PROFILE]
 _ACC_ENV_PREFIX = {
     "ps_acc": "PS",

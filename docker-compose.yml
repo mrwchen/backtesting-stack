@@ -66,7 +66,6 @@ services:
       # single = run MODEL_FILE only
       # multi  = run comma-separated MODEL_FILES
       # all    = run every *.py model in ./backtest_models except helpers
-      #          once for ps_acc and once for ibkr_acc
       # Model-specific parameters live in ./backtest_model_configs/<model_stem>.env.
       # ---------------------------------------------------------------------
       - MODEL_SELECTION=all
@@ -145,9 +144,7 @@ services:
       # ACCOUNT_PROFILE selects the broker/account rules used by the backtest:
       # ps_acc   = Pepperstone EU retail US Share CFD profile
       # ibkr_acc = Interactive Brokers margin account profile
-      # For MODEL_SELECTION=single/multi, this value selects the account profile.
-      # For MODEL_SELECTION=all, the parent runner ignores this value and runs
-      # every selected model once with ps_acc and once with ibkr_acc.
+      # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY=5000
       - RISK_PER_TRADE_PCT=2
