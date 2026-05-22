@@ -73,7 +73,7 @@ services:
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
       - MODEL_CONFIG_REQUIRED=true
       - MODEL_PARALLELISM=2
-      - MODEL_FAILURE_MODE=fail_fast
+      - MODEL_FAILURE_MODE=continue
 
       # ---------------------------------------------------------------------
       # Source tables and point-in-time data safety
