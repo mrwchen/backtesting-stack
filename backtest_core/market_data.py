@@ -1,6 +1,7 @@
 """Point-in-time source queries, trading calendar, and bar cache."""
 
 import logging
+import sys as _sys
 import time as _time
 from array import array
 from bisect import bisect_right
@@ -38,17 +39,62 @@ class _SignalBarCacheEntry:
     loaded_until_ts: Optional[datetime]
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateTimelineRow:
+    available_epoch_us: int
+    source_epoch_us: int
+    symbol: str
+    exchange: str
+    cik: int
+    composite_score: float
+    sector: str
+    industry: str
+    valuation_label: str
+    mispricing_score: Optional[float]
+    negative_earnings_flag: bool
+    high_leverage_flag: bool
+    market_cap_m: Optional[float]
+
+    def to_fundamental_row(self) -> FundamentalRow:
+        return FundamentalRow(
+            symbol=self.symbol,
+            exchange=self.exchange,
+            cik=self.cik,
+            composite_score=self.composite_score,
+            sector=self.sector,
+            industry=self.industry,
+            valuation_label=self.valuation_label,
+            mispricing_score=self.mispricing_score,
+            negative_earnings_flag=self.negative_earnings_flag,
+            high_leverage_flag=self.high_leverage_flag,
+            market_cap_m=self.market_cap_m,
+        )
+
+
+@dataclass
+class _CandidateTimeline:
+    rows_by_identity: dict[InstrumentKey, list[_CandidateTimelineRow]]
+    available_by_identity: dict[InstrumentKey, list[int]]
+    loaded_through_ts: datetime
+    loaded_through_epoch_us: int
+    rows: int
+    estimated_mib: float
+
+
 _BAR_CACHE: dict[InstrumentKey, _BarCacheEntry] = {}
 _SIGNAL_BAR_CACHE: dict[InstrumentKey, _SignalBarCacheEntry] = {}
 _SIGNAL_BAR_CACHE_DISABLED = False
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
+_CANDIDATE_TIMELINE_CACHE: dict[tuple, _CandidateTimeline] = {}
+_CANDIDATE_TIMELINE_CACHE_DISABLED = False
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
+_CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 512
 
 def _cache_counts() -> tuple[int, int, int, int, int]:
     cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
@@ -65,6 +111,13 @@ def _signal_cache_counts() -> tuple[int, int, float]:
     signal_bars = sum(len(entry.ts_epoch_us) for entry in _SIGNAL_BAR_CACHE.values())
     estimated_mib = signal_bars * _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
     return len(_SIGNAL_BAR_CACHE), signal_bars, estimated_mib
+
+
+def _candidate_timeline_cache_counts() -> tuple[int, int, int, float]:
+    rows = sum(timeline.rows for timeline in _CANDIDATE_TIMELINE_CACHE.values())
+    identities = sum(len(timeline.rows_by_identity) for timeline in _CANDIDATE_TIMELINE_CACHE.values())
+    estimated_mib = sum(timeline.estimated_mib for timeline in _CANDIDATE_TIMELINE_CACHE.values())
+    return len(_CANDIDATE_TIMELINE_CACHE), rows, identities, estimated_mib
 
 
 def _default_as_of_ts(as_of_date: date) -> datetime:
@@ -104,6 +157,341 @@ def get_world_regime(
     return regime
 
 
+def _candidate_text(value: object, default: str = "") -> str:
+    if value is None:
+        return default
+    return _sys.intern(str(value))
+
+
+def _candidate_as_of_ts(as_of_date: Optional[date], as_of_ts: Optional[object]) -> Optional[datetime]:
+    if as_of_ts is None:
+        return _default_as_of_ts(as_of_date) if as_of_date else None
+    if isinstance(as_of_ts, datetime):
+        return _ensure_utc_ts(as_of_ts)
+    if isinstance(as_of_ts, date):
+        return datetime.combine(as_of_ts, time.max, tzinfo=timezone.utc)
+    return None
+
+
+def _candidate_timeline_key(
+    direction: str,
+    long_min_fundamental: float,
+    short_max_fundamental: float,
+    min_market_cap_m: float,
+    source_table: str,
+    long_label_blocklist: Optional[list],
+    short_label_blocklist: Optional[list],
+    pepperstone_table: str,
+    required_currency: Optional[str],
+    allow_rebuilt_historical_fundamentals: bool,
+    filter_high_leverage: bool,
+    filter_negative_earnings: bool,
+    ibkr_margin_table: str,
+) -> tuple:
+    return (
+        direction,
+        long_min_fundamental,
+        short_max_fundamental,
+        min_market_cap_m,
+        source_table,
+        tuple(long_label_blocklist or ()),
+        tuple(short_label_blocklist or ()),
+        ACCOUNT_PROFILE,
+        pepperstone_table,
+        required_currency,
+        allow_rebuilt_historical_fundamentals,
+        filter_high_leverage,
+        filter_negative_earnings,
+        ibkr_margin_table,
+        END_DATE,
+        ENTRY_WINDOW_ENABLED,
+        ENTRY_WINDOW_TZ,
+        ENTRY_WINDOW_START,
+        ENTRY_WINDOW_END,
+    )
+
+
+def _timeline_query(
+    account_profile: str,
+    source_relation: sql.Composed,
+    select_columns: sql.SQL,
+    where_parts: list[sql.SQL],
+    pepperstone_table: str,
+    ibkr_margin_table: str,
+) -> sql.Composed:
+    timeline_where = list(where_parts)
+    timeline_where.append(sql.SQL("f.time <= %(timeline_end_ts)s"))
+    timeline_where.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(timeline_end_ts)s"))
+    timeline_select_columns = sql.SQL("""
+        COALESCE(f.data_available_at, f.fundamental_data_available_at) AS available_at,
+        f.time AS source_time,
+        {}
+    """).format(select_columns)
+    recency_order = sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) DESC NULLS LAST, f.time DESC")
+
+    if account_profile == "ps_acc":
+        return sql.SQL("""
+            WITH broker AS (
+                SELECT DISTINCT symbol::text AS symbol
+                FROM {}
+                WHERE symbol_ps IS NOT NULL
+                  AND is_trading_enabled IS NOT FALSE
+                  AND symbol IS NOT NULL
+            )
+            SELECT {}
+            FROM {} f
+            JOIN broker ON broker.symbol = f.symbol
+            WHERE {}
+            ORDER BY
+                f.symbol,
+                f.exchange,
+                f.cik,
+                {}
+        """).format(
+            relation_identifier(pepperstone_table),
+            timeline_select_columns,
+            source_relation,
+            sql.SQL("\n              AND ").join(timeline_where),
+            recency_order,
+        )
+    if account_profile == "ibkr_acc":
+        return sql.SQL("""
+            WITH broker AS (
+                SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
+                FROM {}
+                WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s
+                  AND quantity > 0
+                  AND initial_margin_pct > 0
+                  AND maintenance_margin_pct > 0
+                  AND source_symbol IS NOT NULL
+            )
+            SELECT {}
+            FROM {} f
+            JOIN broker ON broker.symbol_norm = UPPER(TRIM(f.symbol))
+            WHERE {}
+            ORDER BY
+                f.symbol,
+                f.exchange,
+                f.cik,
+                {}
+        """).format(
+            relation_identifier(ibkr_margin_table),
+            timeline_select_columns,
+            source_relation,
+            sql.SQL("\n              AND ").join(timeline_where),
+            recency_order,
+        )
+    return sql.SQL("""
+        SELECT {}
+        FROM {} f
+        WHERE {}
+        ORDER BY
+            f.symbol,
+            f.exchange,
+            f.cik,
+            {}
+    """).format(
+        timeline_select_columns,
+        source_relation,
+        sql.SQL("\n          AND ").join(timeline_where),
+        recency_order,
+    )
+
+
+def _build_candidate_timeline(
+    conn: psycopg2.extensions.connection,
+    timeline_key: tuple,
+    direction: str,
+    source_relation: sql.Composed,
+    select_columns: sql.SQL,
+    where_parts: list[sql.SQL],
+    params: dict,
+    pepperstone_table: str,
+    ibkr_margin_table: str,
+) -> Optional[_CandidateTimeline]:
+    global _CANDIDATE_TIMELINE_CACHE_DISABLED
+    if _CANDIDATE_TIMELINE_CACHE_DISABLED or not CANDIDATE_TIMELINE_CACHE_ENABLED:
+        return None
+    if timeline_key in _CANDIDATE_TIMELINE_CACHE:
+        return _CANDIDATE_TIMELINE_CACHE[timeline_key]
+
+    loaded_through_ts = _day_signal_cutoff_ts(END_DATE)
+    loaded_through_epoch_us = _ts_to_epoch_us(loaded_through_ts)
+    query_params = dict(params)
+    query_params["timeline_end_ts"] = loaded_through_ts
+    query = _timeline_query(
+        ACCOUNT_PROFILE,
+        source_relation,
+        select_columns,
+        where_parts,
+        pepperstone_table,
+        ibkr_margin_table,
+    )
+    if ACCOUNT_PROFILE == "ibkr_acc" and "ibkr_margin_action" not in query_params:
+        query_params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+
+    rows_by_identity: dict[InstrumentKey, list[_CandidateTimelineRow]] = {}
+    available_by_identity: dict[InstrumentKey, list[int]] = {}
+    rows_loaded = 0
+    started = _time.perf_counter()
+    previous_autocommit = conn.autocommit
+    transaction_started = False
+    overflow = False
+    existing_timeline_mib = _candidate_timeline_cache_counts()[3]
+    cursor_name = f"candidate_timeline_{abs(hash(timeline_key)) % 10_000_000_000}"
+
+    log.info(
+        "Candidate timeline cache build starting direction %s through %s current %.0f MiB max %.0f MiB",
+        direction,
+        loaded_through_ts,
+        existing_timeline_mib,
+        CANDIDATE_TIMELINE_CACHE_MAX_MIB,
+    )
+    try:
+        if previous_autocommit:
+            conn.autocommit = False
+            transaction_started = True
+        with conn.cursor(name=cursor_name) as cur:
+            cur.itersize = CANDIDATE_TIMELINE_CURSOR_ITERSIZE
+            cur.execute(query, query_params)
+            for row in cur:
+                available_at, source_time = row[0], row[1]
+                if available_at is None or source_time is None:
+                    continue
+                symbol = _candidate_text(row[2])
+                exchange = _candidate_text(row[3])
+                cik = int(row[4])
+                identity = instrument_key(symbol, exchange, cik)
+                timeline_row = _CandidateTimelineRow(
+                    available_epoch_us=_ts_to_epoch_us(available_at),
+                    source_epoch_us=_ts_to_epoch_us(source_time),
+                    symbol=symbol,
+                    exchange=exchange,
+                    cik=cik,
+                    composite_score=float(row[5]),
+                    sector=_candidate_text(row[6]),
+                    industry=_candidate_text(row[7]),
+                    valuation_label=_candidate_text(row[8]),
+                    mispricing_score=float(row[9]) if row[9] is not None else None,
+                    negative_earnings_flag=bool(row[10]),
+                    high_leverage_flag=bool(row[11]),
+                    market_cap_m=float(row[12]) if row[12] is not None else None,
+                )
+                rows_by_identity.setdefault(identity, []).append(timeline_row)
+                available_by_identity.setdefault(identity, []).append(timeline_row.available_epoch_us)
+                rows_loaded += 1
+                total_estimated_mib = existing_timeline_mib + rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
+                if total_estimated_mib > CANDIDATE_TIMELINE_CACHE_MAX_MIB:
+                    rows_by_identity.clear()
+                    available_by_identity.clear()
+                    _CANDIDATE_TIMELINE_CACHE_DISABLED = True
+                    overflow = True
+                    log.warning(
+                        "Candidate timeline cache disabled direction %s total estimated %.0f MiB exceeds max %.0f MiB after %d rows",
+                        direction,
+                        total_estimated_mib,
+                        CANDIDATE_TIMELINE_CACHE_MAX_MIB,
+                        rows_loaded,
+                    )
+                    break
+        if overflow:
+            if transaction_started:
+                conn.rollback()
+            return None
+        if transaction_started:
+            conn.commit()
+    except Exception as exc:
+        if transaction_started:
+            conn.rollback()
+        _CANDIDATE_TIMELINE_CACHE_DISABLED = True
+        log.warning(
+            "Candidate timeline cache disabled direction %s build failed after %d rows: %s",
+            direction,
+            rows_loaded,
+            exc,
+        )
+        return None
+    finally:
+        if previous_autocommit and not conn.autocommit:
+            conn.autocommit = True
+
+    for identity in list(rows_by_identity):
+        rows_by_identity[identity].reverse()
+        available_by_identity[identity].reverse()
+
+    estimated_mib = rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
+    timeline = _CandidateTimeline(
+        rows_by_identity=rows_by_identity,
+        available_by_identity=available_by_identity,
+        loaded_through_ts=loaded_through_ts,
+        loaded_through_epoch_us=loaded_through_epoch_us,
+        rows=rows_loaded,
+        estimated_mib=estimated_mib,
+    )
+    _CANDIDATE_TIMELINE_CACHE[timeline_key] = timeline
+    elapsed = _time.perf_counter() - started
+    log.info(
+        "Candidate timeline cache build complete direction %s rows %d identities %d estimated %.0f MiB through %s in %.1f s",
+        direction,
+        rows_loaded,
+        len(rows_by_identity),
+        estimated_mib,
+        loaded_through_ts,
+        elapsed,
+    )
+    return timeline
+
+
+def _get_candidates_from_timeline(
+    conn: psycopg2.extensions.connection,
+    timeline_key: tuple,
+    direction: str,
+    as_of_ts: datetime,
+    source_relation: sql.Composed,
+    select_columns: sql.SQL,
+    where_parts: list[sql.SQL],
+    params: dict,
+    pepperstone_table: str,
+    ibkr_margin_table: str,
+) -> Optional[list[FundamentalRow]]:
+    timeline = _build_candidate_timeline(
+        conn,
+        timeline_key,
+        direction,
+        source_relation,
+        select_columns,
+        where_parts,
+        params,
+        pepperstone_table,
+        ibkr_margin_table,
+    )
+    if timeline is None:
+        return None
+
+    as_of_epoch_us = _ts_to_epoch_us(as_of_ts)
+    if as_of_epoch_us > timeline.loaded_through_epoch_us:
+        log.warning(
+            "Candidate timeline cache skipped direction %s requested %s beyond loaded through %s",
+            direction,
+            as_of_ts,
+            timeline.loaded_through_ts,
+        )
+        return None
+
+    candidates: list[FundamentalRow] = []
+    for identity, rows in timeline.rows_by_identity.items():
+        available_epochs = timeline.available_by_identity[identity]
+        row_idx = bisect_right(available_epochs, as_of_epoch_us) - 1
+        while row_idx >= 0:
+            row = rows[row_idx]
+            if row.source_epoch_us <= as_of_epoch_us:
+                candidates.append(row.to_fundamental_row())
+                break
+            row_idx -= 1
+    candidates.sort(key=lambda r: (r.symbol, r.exchange, r.cik))
+    return candidates
+
+
 def get_candidates(
     conn: psycopg2.extensions.connection,
     direction: str,
@@ -126,6 +514,9 @@ def get_candidates(
         raise ValueError(
             "allow_rebuilt_historical_fundamentals=True is disabled; candidate queries must stay point-in-time safe."
         )
+    resolved_as_of_ts = _candidate_as_of_ts(as_of_date, as_of_ts)
+    if resolved_as_of_ts is not None:
+        as_of_ts = resolved_as_of_ts
     cache_key = (
         direction,
         long_min_fundamental,
@@ -155,7 +546,7 @@ def get_candidates(
         score_val = short_max_fundamental
 
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
-    where_parts = [
+    base_where_parts = [
         score_filter,
         sql.SQL("f.symbol IS NOT NULL"),
         sql.SQL("f.exchange IS NOT NULL"),
@@ -164,27 +555,20 @@ def get_candidates(
         sql.SQL("COALESCE(f.market_cap_m, 0) >= %(min_market_cap_m)s"),
     ]
     if filter_high_leverage:
-        where_parts.append(sql.SQL("f.high_leverage_flag IS NOT TRUE"))
+        base_where_parts.append(sql.SQL("f.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
-        where_parts.append(sql.SQL("f.negative_earnings_flag IS NOT TRUE"))
-
-    if as_of_ts is None and as_of_date:
-        as_of_ts = _default_as_of_ts(as_of_date)
-    if as_of_ts is not None:
-        params["as_of_ts"] = as_of_ts
-        where_parts.append(sql.SQL("f.time <= %(as_of_ts)s"))
-        where_parts.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(as_of_ts)s"))
+        base_where_parts.append(sql.SQL("f.negative_earnings_flag IS NOT TRUE"))
 
     if direction == "LONG" and long_label_blocklist:
-        where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
+        base_where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = long_label_blocklist
     elif direction == "SHORT" and short_label_blocklist:
-        where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
+        base_where_parts.append(sql.SQL("(f.valuation_label IS NULL OR f.valuation_label != ALL(%(label_list)s))"))
         params["label_list"] = short_label_blocklist
 
     if required_currency:
         params["required_currency"] = required_currency.upper()
-        where_parts.append(sql.SQL(
+        base_where_parts.append(sql.SQL(
             "COALESCE(NULLIF(f.current_price_currency, ''), "
             "NULLIF(f.market_cap_currency, ''), "
             "NULLIF(f.currency, ''), "
@@ -221,6 +605,43 @@ def get_candidates(
         candidates.market_cap_m
     """)
     source_relation = relation_identifier(source_table)
+
+    if resolved_as_of_ts is not None:
+        timeline_key = _candidate_timeline_key(
+            direction,
+            long_min_fundamental,
+            short_max_fundamental,
+            min_market_cap_m,
+            source_table,
+            long_label_blocklist,
+            short_label_blocklist,
+            pepperstone_table,
+            required_currency,
+            allow_rebuilt_historical_fundamentals,
+            filter_high_leverage,
+            filter_negative_earnings,
+            ibkr_margin_table,
+        )
+        timeline_candidates = _get_candidates_from_timeline(
+            conn,
+            timeline_key,
+            direction,
+            resolved_as_of_ts,
+            source_relation,
+            select_columns,
+            base_where_parts,
+            params,
+            pepperstone_table,
+            ibkr_margin_table,
+        )
+        if timeline_candidates is not None:
+            return timeline_candidates
+
+    where_parts = list(base_where_parts)
+    if as_of_ts is not None:
+        params["as_of_ts"] = as_of_ts
+        where_parts.append(sql.SQL("f.time <= %(as_of_ts)s"))
+        where_parts.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(as_of_ts)s"))
 
     if ACCOUNT_PROFILE == "ps_acc":
         query = sql.SQL("""
@@ -1035,14 +1456,19 @@ def get_bars_range(
 def log_cache_stats(context: str = "current") -> None:
     symbols, cached_bars, trading_day_sets, regimes, candidate_sets = _cache_counts()
     signal_symbols, signal_bars, signal_mib = _signal_cache_counts()
+    timeline_sets, timeline_rows, timeline_identities, timeline_mib = _candidate_timeline_cache_counts()
     log.info(
-        "Cache stats context %s symbols %d bars %d signal symbols %d signal bars %d signal estimated %.0f MiB trading day sets %d regimes %d candidate sets %d",
+        "Cache stats context %s symbols %d bars %d signal symbols %d signal bars %d signal estimated %.0f MiB candidate timeline sets %d rows %d identities %d estimated %.0f MiB trading day sets %d regimes %d candidate sets %d",
         context,
         symbols,
         cached_bars,
         signal_symbols,
         signal_bars,
         signal_mib,
+        timeline_sets,
+        timeline_rows,
+        timeline_identities,
+        timeline_mib,
         trading_day_sets,
         regimes,
         candidate_sets,
@@ -1050,17 +1476,22 @@ def log_cache_stats(context: str = "current") -> None:
 
 
 def clear_market_data_caches(context: str = "after_run") -> None:
-    global _SIGNAL_BAR_CACHE_DISABLED
+    global _SIGNAL_BAR_CACHE_DISABLED, _CANDIDATE_TIMELINE_CACHE_DISABLED
     symbols, cached_bars, trading_day_sets, regimes, candidate_sets = _cache_counts()
     signal_symbols, signal_bars, signal_mib = _signal_cache_counts()
+    timeline_sets, timeline_rows, timeline_identities, timeline_mib = _candidate_timeline_cache_counts()
     log.info(
-        "Cache cleanup context %s clearing symbols %d bars %d signal symbols %d signal bars %d signal estimated %.0f MiB trading day sets %d regimes %d candidate sets %d",
+        "Cache cleanup context %s clearing symbols %d bars %d signal symbols %d signal bars %d signal estimated %.0f MiB candidate timeline sets %d rows %d identities %d estimated %.0f MiB trading day sets %d regimes %d candidate sets %d",
         context,
         symbols,
         cached_bars,
         signal_symbols,
         signal_bars,
         signal_mib,
+        timeline_sets,
+        timeline_rows,
+        timeline_identities,
+        timeline_mib,
         trading_day_sets,
         regimes,
         candidate_sets,
@@ -1068,12 +1499,18 @@ def clear_market_data_caches(context: str = "after_run") -> None:
     _BAR_CACHE.clear()
     _SIGNAL_BAR_CACHE.clear()
     _SIGNAL_BAR_CACHE_DISABLED = False
+    _CANDIDATE_TIMELINE_CACHE.clear()
+    _CANDIDATE_TIMELINE_CACHE_DISABLED = False
     _TRADING_DAYS_CACHE.clear()
     _WORLD_REGIME_CACHE.clear()
     _CANDIDATE_CACHE.clear()
     log.info(
-        "Cache cleanup context %s complete symbols %d bars %d signal symbols %d signal bars %d signal estimated %d MiB trading day sets %d regimes %d candidate sets %d",
+        "Cache cleanup context %s complete symbols %d bars %d signal symbols %d signal bars %d signal estimated %d MiB candidate timeline sets %d rows %d identities %d estimated %d MiB trading day sets %d regimes %d candidate sets %d",
         context,
+        0,
+        0,
+        0,
+        0,
         0,
         0,
         0,
