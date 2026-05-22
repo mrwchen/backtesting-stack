@@ -40,6 +40,13 @@ from .market_data import (
 )
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
+from .policy import (
+    candidate_policy_kwargs,
+    direction_filter_negative_earnings,
+    direction_max_positions,
+    direction_risk_multiplier,
+    regime_exposure_for_score,
+)
 from .persistence import (
     create_run,
     update_run_summary,
@@ -51,31 +58,6 @@ from .persistence import (
 log = logging.getLogger(__name__)
 
 DIRECTIONS = ("LONG", "SHORT")
-
-
-def _regime_exposure_for_score(score: float, cfg: Any) -> tuple[str, dict]:
-    strong_on_max = min(REGIME_STRONG_RISK_ON_MAX_SCORE, cfg.long_max_score)
-    strong_off_min = max(REGIME_STRONG_RISK_OFF_MIN_SCORE, cfg.short_min_score)
-
-    if score < strong_on_max:
-        bucket_name = "strong_risk_on"
-    elif score < cfg.long_max_score:
-        bucket_name = "risk_on"
-    elif score < cfg.short_min_score:
-        bucket_name = "neutral"
-    elif score < strong_off_min:
-        bucket_name = "risk_off"
-    else:
-        bucket_name = "strong_risk_off"
-    return bucket_name, REGIME_EXPOSURE_BUCKETS[bucket_name]
-
-
-def _direction_risk_multiplier(exposure: dict, direction: str) -> float:
-    return float(exposure[f"{direction.lower()}_risk_multiplier"])
-
-
-def _direction_max_positions(exposure: dict, direction: str) -> int:
-    return int(exposure[f"max_{direction.lower()}_positions"])
 
 
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
@@ -237,12 +219,9 @@ def simulate_outcome(
 def run_backtest(
     conn: psycopg2.extensions.connection,
     cfg: Any,
-    long_max_hold_days: float = LONG_MAX_HOLD_DAYS,
-    short_max_hold_days: float = SHORT_MAX_HOLD_DAYS,
-    tp1_close_ratio: float = TP1_CLOSE_RATIO,
     notes: Optional[str] = None,
 ) -> tuple[int, dict]:
-    run_id = create_run(conn, cfg, long_max_hold_days, short_max_hold_days, tp1_close_ratio, notes)
+    run_id = create_run(conn, cfg, notes)
 
     equity: float = INITIAL_EQUITY
     open_positions: list[OpenPosition] = []
@@ -406,7 +385,7 @@ def run_backtest(
                 )
             continue
 
-        regime_bucket, regime_exposure = _regime_exposure_for_score(regime.score, cfg)
+        regime_bucket, regime_exposure = regime_exposure_for_score(regime.score)
         if log_progress_today:
             log.info(
                 "Regime exposure day %d/%d %s model %s bucket %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
@@ -416,15 +395,15 @@ def run_backtest(
                 runtime.CURRENT_MODEL_FILE,
                 regime_bucket,
                 regime.score,
-                _direction_risk_multiplier(regime_exposure, "LONG"),
-                _direction_risk_multiplier(regime_exposure, "SHORT"),
-                _direction_max_positions(regime_exposure, "LONG"),
-                _direction_max_positions(regime_exposure, "SHORT"),
+                direction_risk_multiplier(regime_exposure, "LONG"),
+                direction_risk_multiplier(regime_exposure, "SHORT"),
+                direction_max_positions(regime_exposure, "LONG"),
+                direction_max_positions(regime_exposure, "SHORT"),
             )
 
         if all(
-            _direction_risk_multiplier(regime_exposure, direction) <= 0.0
-            and _direction_max_positions(regime_exposure, direction) <= 0
+            direction_risk_multiplier(regime_exposure, direction) <= 0.0
+            and direction_max_positions(regime_exposure, direction) <= 0
             for direction in DIRECTIONS
         ):
             days_no_active_budget += 1
@@ -464,8 +443,8 @@ def run_backtest(
         signal_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
 
         for direction in DIRECTIONS:
-            direction_risk = _direction_risk_multiplier(regime_exposure, direction)
-            direction_cap = _direction_max_positions(regime_exposure, direction)
+            direction_risk = direction_risk_multiplier(regime_exposure, direction)
+            direction_cap = direction_max_positions(regime_exposure, direction)
             if direction_risk <= 0.0 and direction_cap <= 0:
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
@@ -500,21 +479,16 @@ def run_backtest(
                 )
             candidate_started = _time.perf_counter()
             candidates = get_candidates(
-                conn, direction,
-                long_min_fundamental=cfg.long_min_fundamental,
-                short_max_fundamental=cfg.short_max_fundamental,
-                min_market_cap_m=MIN_MARKET_CAP_M,
+                conn,
+                direction,
+                **candidate_policy_kwargs(),
                 source_table=SOURCE_FUNDAMENTAL,
                 as_of_date=day,
                 as_of_ts=day_end_ts,
-                long_label_blocklist=cfg.long_label_blocklist or None,
-                short_label_blocklist=cfg.short_label_blocklist or None,
                 pepperstone_table=PEPPERSTONE_TABLE,
                 required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
                 allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-                filter_negative_earnings=(
-                    FILTER_NEGATIVE_EARNINGS_LONG if direction == "LONG" else FILTER_NEGATIVE_EARNINGS_SHORT
-                ),
+                filter_negative_earnings=direction_filter_negative_earnings(direction),
                 ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
             )
             candidate_elapsed = _time.perf_counter() - candidate_started
@@ -732,8 +706,8 @@ def run_backtest(
         direction_order = sorted(
             DIRECTIONS,
             key=lambda d: (
-                _direction_risk_multiplier(regime_exposure, d),
-                _direction_max_positions(regime_exposure, d),
+                direction_risk_multiplier(regime_exposure, d),
+                direction_max_positions(regime_exposure, d),
             ),
             reverse=True,
         )
@@ -752,8 +726,8 @@ def run_backtest(
 
         for signal in signals_to_open:
             event = signal_events.get(_signal_event_key(signal))
-            direction_risk = _direction_risk_multiplier(regime_exposure, signal.direction)
-            direction_cap = _direction_max_positions(regime_exposure, signal.direction)
+            direction_risk = direction_risk_multiplier(regime_exposure, signal.direction)
+            direction_cap = direction_max_positions(regime_exposure, signal.direction)
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:
@@ -891,9 +865,9 @@ def run_backtest(
                 take_profit_1=signal.take_profit_1,
                 take_profit_2=signal.take_profit_2,
                 valid_until=(signal.entry_ts or day_end_ts) + timedelta(
-                    days=long_max_hold_days if signal.direction == "LONG" else short_max_hold_days
+                    days=cfg.long_max_hold_days if signal.direction == "LONG" else cfg.short_max_hold_days
                 ),
-                tp1_close_ratio=tp1_close_ratio,
+                tp1_close_ratio=cfg.tp1_close_ratio,
                 shares=shares,
                 position_size_usd=position_size_usd,
                 margin_used=initial_margin_used,

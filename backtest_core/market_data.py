@@ -118,6 +118,7 @@ def get_candidates(
     pepperstone_table: str = "public.pepperstone_data",
     required_currency: Optional[str] = "USD",
     allow_rebuilt_historical_fundamentals: bool = False,
+    filter_high_leverage: bool = False,
     filter_negative_earnings: bool = False,
     ibkr_margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
 ) -> list[FundamentalRow]:
@@ -139,6 +140,7 @@ def get_candidates(
         pepperstone_table,
         required_currency,
         allow_rebuilt_historical_fundamentals,
+        filter_high_leverage,
         filter_negative_earnings,
         ibkr_margin_table,
     )
@@ -161,7 +163,7 @@ def get_candidates(
         sql.SQL("composite_score IS NOT NULL"),
         sql.SQL("COALESCE(market_cap_m, 0) >= %(min_market_cap_m)s"),
     ]
-    if FILTER_FUNDAMENTAL_HIGH_LEVERAGE:
+    if filter_high_leverage:
         where_parts.append(sql.SQL("high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
         where_parts.append(sql.SQL("negative_earnings_flag IS NOT TRUE"))

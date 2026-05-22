@@ -7,22 +7,18 @@ Model idea:
 """
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from backtest_shared import Bar, FundamentalRow, Signal, SignalEvaluation
-from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, env_list, mean
+from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, mean
 
 
 @dataclass
 class SignalConfig:
     """Parameters for quality_breakout_fundamental_v1."""
 
-    long_max_score: float = 58.0
-    short_min_score: float = 62.0
-    long_min_fundamental: float = 68.0
-    short_max_fundamental: float = 35.0
     min_bars: int = 180
 
     long_min_pullback: float = 0.0
@@ -41,9 +37,9 @@ class SignalConfig:
     long_tp2_pct: float = 0.11
     short_tp1_pct: float = 0.05
     short_tp2_pct: float = 0.10
-
-    long_label_blocklist: list = field(default_factory=lambda: ["value_trap", "overvalued_weak"])
-    short_label_blocklist: list = field(default_factory=lambda: ["deep_value", "quality_value", "compounder"])
+    long_max_hold_days: float = 12.0
+    short_max_hold_days: float = 5.0
+    tp1_close_ratio: float = 0.6
     use_mispricing_score: bool = True
     mispricing_weight: float = 0.25
 
@@ -60,10 +56,6 @@ class SignalConfig:
 def signal_config_from_env() -> SignalConfig:
     defaults = SignalConfig()
     return SignalConfig(
-        long_max_score=env_float("LONG_MAX_SCORE", defaults.long_max_score),
-        short_min_score=env_float("SHORT_MIN_SCORE", defaults.short_min_score),
-        long_min_fundamental=env_float("LONG_MIN_FUNDAMENTAL", defaults.long_min_fundamental),
-        short_max_fundamental=env_float("SHORT_MAX_FUNDAMENTAL", defaults.short_max_fundamental),
         min_bars=env_int("MIN_BARS", defaults.min_bars),
         long_min_pullback=env_float("LONG_MIN_PULLBACK", defaults.long_min_pullback),
         long_max_pullback=env_float("LONG_MAX_PULLBACK", defaults.long_max_pullback),
@@ -80,8 +72,9 @@ def signal_config_from_env() -> SignalConfig:
         long_tp2_pct=env_float("LONG_TP2_PCT", defaults.long_tp2_pct),
         short_tp1_pct=env_float("SHORT_TP1_PCT", defaults.short_tp1_pct),
         short_tp2_pct=env_float("SHORT_TP2_PCT", defaults.short_tp2_pct),
-        long_label_blocklist=env_list("LONG_LABEL_BLOCKLIST", defaults.long_label_blocklist),
-        short_label_blocklist=env_list("SHORT_LABEL_BLOCKLIST", defaults.short_label_blocklist),
+        long_max_hold_days=env_float("LONG_MAX_HOLD_DAYS", defaults.long_max_hold_days),
+        short_max_hold_days=env_float("SHORT_MAX_HOLD_DAYS", defaults.short_max_hold_days),
+        tp1_close_ratio=env_float("TP1_CLOSE_RATIO", defaults.tp1_close_ratio),
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", defaults.use_mispricing_score),
         mispricing_weight=env_float("MISPRICING_WEIGHT", defaults.mispricing_weight),
         price_lookback_bars=env_int("PRICE_LOOKBACK_BARS", defaults.price_lookback_bars),
@@ -95,12 +88,9 @@ def signal_config_from_env() -> SignalConfig:
     )
 
 
-def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals, long_max_hold_days, short_max_hold_days, tp1_close_ratio):
+def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals):
     yield {
         "config": dataclasses.replace(base_cfg),
-        "long_max_hold_days": long_max_hold_days,
-        "short_max_hold_days": short_max_hold_days,
-        "tp1_close_ratio": tp1_close_ratio,
         "notes": "grid model=quality_breakout_fundamental_v1",
         "summary": {},
     }

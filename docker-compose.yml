@@ -6,7 +6,9 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_BACKTEST_TABLES_ON_START: false
+      # Explicitly enabled for this refactor: existing backtest result tables
+      # are dropped and recreated by init/schema.sql before the runner starts.
+      DROP_BACKTEST_TABLES_ON_START: true
     command:
       - sh
       - -c
@@ -26,72 +28,77 @@ services:
       init-backtest-schema:
         condition: service_completed_successfully
     environment:
-      # ── Generic: database / runtime ────────────────────────────────────────
+      # ---------------------------------------------------------------------
+      # Runtime and database
+      # ---------------------------------------------------------------------
       - PGHOST=timescaledb
       - PGPORT=5432
       - PGDATABASE=postgres
       - PGUSER=market-data-account
       - PGPASSWORD=market-data-account-pw
+      - PGAPPNAME=backtest_runner
+      - PGOPTIONS=-c search_path=public
       - RESULT_SCHEMA=public
       - CONNECT_TIMEOUT_SECONDS=10
-      - PGOPTIONS=-c search_path=public
       - DB_CONNECT_RETRIES=5
       - DB_CONNECT_RETRY_DELAY_S=5.0
+      - DB_STATEMENT_TIMEOUT_MS=60000
+      - DB_LOCK_TIMEOUT_MS=5000
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
+      - RUN_NOTES_EXTRA=common_policy_split_v1
+
+      # ---------------------------------------------------------------------
+      # Backtest runtime performance
+      # ---------------------------------------------------------------------
       - PROGRESS_LOG_EVERY_DAYS=1
       - BAR_CACHE_WARMUP_DAYS=120
       - BAR_CACHE_BATCH_SIZE=100
       - SIGNAL_BAR_CACHE_ENABLED=true
       - SIGNAL_BAR_CACHE_MAX_MIB=2048
-      - DB_STATEMENT_TIMEOUT_MS=60000
-      - DB_LOCK_TIMEOUT_MS=5000
-      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000
-      - RUN_NOTES_EXTRA=v1
 
-      # ── Generic: model selection ───────────────────────────────────────────
-      # MODEL_SELECTION:
-      #   single = run MODEL_FILE only
-      #   multi  = run comma-separated MODEL_FILES
-      #   all    = run every *.py model in ./backtest_models except helper files starting with "_"
-      #- MODEL_SELECTION=single
-      #- MODEL_SELECTION=multi
+      # ---------------------------------------------------------------------
+      # Model selection
+      # single = run MODEL_FILE only
+      # multi  = run comma-separated MODEL_FILES
+      # all    = run every *.py model in ./backtest_models except helpers
+      # Model-specific parameters live in ./backtest_model_configs/<model_stem>.env.
+      # ---------------------------------------------------------------------
       - MODEL_SELECTION=all
-      #- MODEL_FILE=statistical_regime_probability_v1.py
-      #- MODEL_FILES=deep_pullback_quality_mean_reversion_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,regime_adaptive_swing_v1.py,sector_rotation_long_short_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
+      # - MODEL_SELECTION=single
+      # - MODEL_FILE=statistical_regime_probability_v1.py
+      # - MODEL_SELECTION=multi
+      # - MODEL_FILES=deep_pullback_quality_mean_reversion_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,regime_adaptive_swing_v1.py,sector_rotation_long_short_v1.py,weak_fundamental_breakdown_v1.py,statistical_regime_probability_v1.py
+      - MODEL_CONFIG_DIR=/app/backtest_model_configs
+      - MODEL_CONFIG_REQUIRED=true
       - MODEL_PARALLELISM=2
       - MODEL_FAILURE_MODE=fail_fast
 
-      # ── Generic: source tables ─────────────────────────────────────────────
+      # ---------------------------------------------------------------------
+      # Source tables and point-in-time data safety
+      # ---------------------------------------------------------------------
       - SOURCE_1H=alpaca_market_data_1h
       - SOURCE_FUNDAMENTAL=stocks_analysis_fundamental_scores
       - SOURCE_WORLD_REGIME=world_regime_daily_scores_historical_mv
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       - REQUIRE_USD_FUNDAMENTALS=true
-      - MIN_MARKET_CAP_M=1000.0
-      # false = ignore company fundamental high_leverage_flag.
-      - FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
-      # false = ignore negative_earnings_flag for that direction.
-      - FILTER_NEGATIVE_EARNINGS_LONG=false
-      - FILTER_NEGATIVE_EARNINGS_SHORT=false
-      # Must stay false: candidate selection always requires point-in-time fundamental availability.
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
-      # ── Generic: time range ────────────────────────────────────────────────
+      # ---------------------------------------------------------------------
+      # Backtest date range
+      # ---------------------------------------------------------------------
       - START_DATE=2024-01-01
       - END_DATE=2026-05-06
 
-      # ── Account 1/3: generic account selection / risk ──────────────────────
-      # ACCOUNT_PROFILE selects which profile defaults the runner uses.
-      #   ps_acc   = Pepperstone EU retail share CFD / PS24 approximation
-      #   ibkr_acc = Interactive Brokers margin account approximation for US stocks
-      - ACCOUNT_PROFILE=ps_acc
-      - INITIAL_EQUITY=5000
-      - RISK_PER_TRADE_PCT=2
-      - MAX_OPEN_POSITIONS=10
-      - SECTOR_DIVERSIFICATION_ENABLED=false
+      # ---------------------------------------------------------------------
+      # Common policy: world-regime direction budget
+      # This is model-independent portfolio policy, not entry logic.
+      # ---------------------------------------------------------------------
       - REGIME_STRONG_RISK_ON_MAX_SCORE=45.0
+      - REGIME_LONG_MAX_SCORE=55.0
+      - REGIME_SHORT_MIN_SCORE=60.0
       - REGIME_STRONG_RISK_OFF_MIN_SCORE=70.0
       - REGIME_STRONG_RISK_ON_LONG_RISK_MULTIPLIER=1.0
       - REGIME_STRONG_RISK_ON_SHORT_RISK_MULTIPLIER=0.0
@@ -113,6 +120,29 @@ services:
       - REGIME_STRONG_RISK_OFF_SHORT_RISK_MULTIPLIER=1.0
       - REGIME_STRONG_RISK_OFF_MAX_LONG_POSITIONS=0
       - REGIME_STRONG_RISK_OFF_MAX_SHORT_POSITIONS=10
+
+      # ---------------------------------------------------------------------
+      # Common policy: fundamental eligibility
+      # This pre-filter is model-independent. Price action, RSI, volume, stops,
+      # take profit and hold duration remain in the model files.
+      # ---------------------------------------------------------------------
+      - COMMON_LONG_MIN_FUNDAMENTAL=62.0
+      - COMMON_SHORT_MAX_FUNDAMENTAL=42.0
+      - COMMON_LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
+      - COMMON_SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
+      - COMMON_MIN_MARKET_CAP_M=1000.0
+      - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
+      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
+      - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
+
+      # ---------------------------------------------------------------------
+      # Portfolio risk and common execution policy
+      # ---------------------------------------------------------------------
+      - ACCOUNT_PROFILE=ps_acc
+      - INITIAL_EQUITY=5000
+      - RISK_PER_TRADE_PCT=2
+      - MAX_OPEN_POSITIONS=10
+      - SECTOR_DIVERSIFICATION_ENABLED=false
       - ENTRY_WINDOW_ENABLED=true
       - ENTRY_WINDOW_TZ=America/New_York
       - ENTRY_WINDOW_START=10:30
@@ -125,14 +155,11 @@ services:
       - STOP_LOSS_RTH_START=09:30
       - STOP_LOSS_RTH_END=16:00
 
-      # ── Account 2/3: ps_acc / Pepperstone EU retail US Share CFD overrides ─
-      # Defaults when ACCOUNT_PROFILE=ps_acc:
-      #   Pepperstone EU retail shares leverage=5:1 => margin=20%, fractional=false
-      #   commission=0.02 USD/share, min=0.02 USD, max cap disabled
-      #   no extra Pepperstone spread markup, slippage=1 bps
-      #   share CFD overnight funding at 17:00 New York on full active notional
-      #   stop-out at margin level <=50%; new entries require margin level >=100%
-      # Uncomment to override the ps_acc defaults.
+      # ---------------------------------------------------------------------
+      # Pepperstone EU retail US Share CFD account profile
+      # Defaults: 20% margin, 0.02 USD/share commission, min 0.02 USD,
+      # no extra spread markup, 1 bps slippage, Friday overnight x3.
+      # ---------------------------------------------------------------------
       - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
       - PS_MIN_ENTRY_MARGIN_LEVEL_PCT=100
       # - PS_MARGIN_REQUIREMENT_PCT=20
@@ -149,14 +176,10 @@ services:
       # - PS_SHARE_CFD_SHORT_BORROW_RATE_PCT=0.0
       # - PS_SHARE_CFD_OVERNIGHT_DAY_COUNT=360.0
 
-      # ── Account 3/3: ibkr_acc / Interactive Brokers Pro Tiered overrides ───
-      # Defaults when ACCOUNT_PROFILE=ibkr_acc:
-      #   Available Funds = Equity with Loan Value - Initial Margin
-      #   Excess Liquidity = Equity with Loan Value - Maintenance Margin
-      #   Initial and maintenance margin percentages come from IBKR_MARGIN_REQUIREMENTS_TABLE.
-      #   Pro Tiered first tier: commission=0.0035 USD/share, min=0.35 USD, max=1%
-      #   spread=0 bps, slippage=1 bps, configured first-tier USD margin rate=5.14%
-      # Uncomment to override the ibkr_acc defaults.
+      # ---------------------------------------------------------------------
+      # Interactive Brokers margin account profile
+      # Used only when ACCOUNT_PROFILE=ibkr_acc.
+      # ---------------------------------------------------------------------
       # - IBKR_ALLOW_FRACTIONAL_SHARES=true
       # - IBKR_COMMISSION_PER_ORDER_USD=0.0
       # - IBKR_COMMISSION_PER_SHARE_USD=0.0035
@@ -167,76 +190,12 @@ services:
       # - IBKR_SLIPPAGE_BPS=1.0
       # - IBKR_MARGIN_FINANCING_RATE_PCT=5.14
 
-      # ── Generic: Monte Carlo ───────────────────────────────────────────────
+      # ---------------------------------------------------------------------
+      # Monte Carlo and grid search
+      # ---------------------------------------------------------------------
       - MONTE_CARLO_ENABLED=false
       - N_MONTE_CARLO_SIMULATIONS=2000
-
-      # ── Generic: grid search runner ────────────────────────────────────────
       - GRID_SEARCH_ENABLED=false
-
-      # ── Shared model parameters ────────────────────────────────────────────
-      # These parameters are read by all current strategy models. In multi/all
-      # mode the same values are applied to every selected model unless a model
-      # has its own default for an unset parameter.
-      - LONG_MAX_SCORE=55.0
-      - SHORT_MIN_SCORE=60.0
-      - LONG_MIN_FUNDAMENTAL=62.0
-      - SHORT_MAX_FUNDAMENTAL=42.0
-      - LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
-      - SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
-      - USE_MISPRICING_SCORE=true
-      - MISPRICING_WEIGHT=0.3
-      - MIN_BARS=150
-      - PRICE_LOOKBACK_BARS=320
-      - VOL_SHORT_BARS=5
-      - VOL_LONG_BARS=25
-      - LONG_MIN_PULLBACK=5.0
-      - LONG_MAX_PULLBACK=25.0
-      - LONG_IDEAL_PULLBACK=12.5
-      - LONG_MAX_RSI=50.0
-      - SHORT_MIN_BOUNCE=3.0
-      - SHORT_MAX_BOUNCE=20.0
-      - SHORT_IDEAL_BOUNCE=8.5
-      - SHORT_MIN_RSI=35.0
-      - SHORT_MAX_RSI=65.0
-      - LONG_SL_BUFFER=0.008
-      - SHORT_SL_BUFFER=0.008
-      - LONG_TP1_PCT=0.05
-      - LONG_TP2_PCT=0.10
-      - SHORT_TP1_PCT=0.06
-      - SHORT_TP2_PCT=0.08
-      - SL_LOOKBACK_BARS=12
-      - LONG_MAX_HOLD_DAYS=12.0
-      - SHORT_MAX_HOLD_DAYS=5.0
-      - TP1_CLOSE_RATIO=0.6
-
-      # ── Statistical probability model parameters ──────────────────────────
-      # Used by statistical_regime_probability_v1.py. It remains purely
-      # statistical: same-symbol event study, Beta-smoothed probabilities,
-      # realized volatility for stop distance, no RSI/EMA/TA inputs.
-      - PROBABILITY_HISTORY_BARS=2200
-      - PROBABILITY_MIN_BARS=650
-      - PROBABILITY_SESSION_TZ=America/New_York
-      - EVENT_LOOKBACK_DAYS=5
-      - MIN_EVENT_DROP_PCT=2.0
-      - MIN_CONSECUTIVE_DOWN_DAYS=2
-      - MIN_DAILY_OBSERVATIONS=90
-      - MIN_ANALOG_EVENTS=25
-      - MAX_ANALOG_EVENTS=120
-      - LONG_MIN_PROBABILITY=0.56
-      - SHORT_MIN_PROBABILITY=0.56
-      - MIN_EDGE_PCT_POINTS=2.0
-
-      # ── Shared/simple model grid parameters ────────────────────────────────
-      # The original pullback model uses these for TP/holding-period grid search.
-      # The newer strategy files currently expose a single-config grid stub.
-      - GRID_LONG_TP1_PCT=0.03
-      - GRID_LONG_TP2_PCT=0.07
-      - GRID_SHORT_TP1_PCT=0.05
-      - GRID_SHORT_TP2_PCT=0.10
-      - GRID_LONG_MAX_HOLD_DAYS=4,6
-      - GRID_SHORT_MAX_HOLD_DAYS=2,3,4
-      - GRID_TP1_CLOSE_RATIO=0.6,1
     networks:
       - shared_net
 

@@ -16,27 +16,18 @@ today's recent drawdown event.
 import dataclasses
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from backtest_shared import Bar, FundamentalRow, Signal, SignalEvaluation
-from backtest_shared import clamp, env_bool, env_float, env_int, env_list, mean
+from backtest_shared import clamp, env_bool, env_float, env_int, mean
 
 
 @dataclass
 class SignalConfig:
     """Parameters for statistical_regime_probability_v1."""
-
-    # Runner direction thresholds:
-    #   regime.score < long_max_score  -> LONG
-    #   regime.score >= short_min_score -> SHORT
-    long_max_score: float = 55.0
-    short_min_score: float = 60.0
-
-    long_min_fundamental: float = 65.0
-    short_max_fundamental: float = 40.0
 
     # Keep enough 1h history so the model can build daily event samples.
     min_bars: int = 650
@@ -59,9 +50,9 @@ class SignalConfig:
     long_tp2_pct: float = 0.075
     short_tp1_pct: float = 0.035
     short_tp2_pct: float = 0.075
-
-    long_label_blocklist: list = field(default_factory=lambda: ["value_trap", "overvalued_weak"])
-    short_label_blocklist: list = field(default_factory=lambda: ["deep_value", "quality_value", "compounder"])
+    long_max_hold_days: float = 12.0
+    short_max_hold_days: float = 5.0
+    tp1_close_ratio: float = 0.6
     use_mispricing_score: bool = True
     mispricing_weight: float = 0.30
 
@@ -97,10 +88,6 @@ def signal_config_from_env() -> SignalConfig:
     shared_min_bars = env_int("MIN_BARS", d.min_bars)
     shared_lookback_bars = env_int("PRICE_LOOKBACK_BARS", d.price_lookback_bars)
     return SignalConfig(
-        long_max_score=env_float("LONG_MAX_SCORE", d.long_max_score),
-        short_min_score=env_float("SHORT_MIN_SCORE", d.short_min_score),
-        long_min_fundamental=env_float("LONG_MIN_FUNDAMENTAL", d.long_min_fundamental),
-        short_max_fundamental=env_float("SHORT_MAX_FUNDAMENTAL", d.short_max_fundamental),
         min_bars=env_int("PROBABILITY_MIN_BARS", max(d.min_bars, shared_min_bars)),
         price_lookback_bars=env_int("PROBABILITY_HISTORY_BARS", max(d.price_lookback_bars, shared_lookback_bars)),
         long_min_pullback=d.long_min_pullback,
@@ -118,8 +105,9 @@ def signal_config_from_env() -> SignalConfig:
         long_tp2_pct=env_float("LONG_TP2_PCT", d.long_tp2_pct),
         short_tp1_pct=env_float("SHORT_TP1_PCT", d.short_tp1_pct),
         short_tp2_pct=env_float("SHORT_TP2_PCT", d.short_tp2_pct),
-        long_label_blocklist=env_list("LONG_LABEL_BLOCKLIST", d.long_label_blocklist),
-        short_label_blocklist=env_list("SHORT_LABEL_BLOCKLIST", d.short_label_blocklist),
+        long_max_hold_days=env_float("LONG_MAX_HOLD_DAYS", d.long_max_hold_days),
+        short_max_hold_days=env_float("SHORT_MAX_HOLD_DAYS", d.short_max_hold_days),
+        tp1_close_ratio=env_float("TP1_CLOSE_RATIO", d.tp1_close_ratio),
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", d.use_mispricing_score),
         mispricing_weight=env_float("MISPRICING_WEIGHT", d.mispricing_weight),
         session_tz=os.getenv("PROBABILITY_SESSION_TZ", d.session_tz).strip() or d.session_tz,
@@ -147,12 +135,9 @@ def signal_config_from_env() -> SignalConfig:
     )
 
 
-def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals, long_max_hold_days, short_max_hold_days, tp1_close_ratio):
+def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals):
     yield {
         "config": dataclasses.replace(base_cfg),
-        "long_max_hold_days": long_max_hold_days,
-        "short_max_hold_days": short_max_hold_days,
-        "tp1_close_ratio": tp1_close_ratio,
         "notes": "grid model=statistical_regime_probability_v1",
         "summary": {},
     }

@@ -13,15 +13,13 @@ from psycopg2.extras import execute_values
 from . import runtime
 from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent
+from .policy import COMMON_POLICY
 
 log = logging.getLogger(__name__)
 
 def create_run(
     conn: psycopg2.extensions.connection,
     cfg: Any,
-    long_max_hold_days: float,
-    short_max_hold_days: float,
-    tp1_close_ratio: float,
     notes: Optional[str] = None,
 ) -> int:
     run_notes = _build_run_notes(notes)
@@ -87,14 +85,14 @@ def create_run(
                 PS_SHARE_CFD_SHORT_BORROW_RATE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
                 PS_SHARE_CFD_OVERNIGHT_DAY_COUNT if ACCOUNT_PROFILE == "ps_acc" else None,
                 ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
-                cfg.long_max_score, cfg.short_min_score,
-                cfg.long_min_fundamental, cfg.short_max_fundamental, MIN_MARKET_CAP_M,
+                COMMON_POLICY.regime_long_max_score, COMMON_POLICY.regime_short_min_score,
+                COMMON_POLICY.long_min_fundamental, COMMON_POLICY.short_max_fundamental, COMMON_POLICY.min_market_cap_m,
                 cfg.long_min_pullback, cfg.long_max_pullback, cfg.long_ideal_pullback, cfg.long_max_rsi,
                 cfg.short_min_bounce, cfg.short_max_bounce, cfg.short_ideal_bounce, cfg.short_min_rsi, cfg.short_max_rsi,
                 cfg.long_sl_buffer, cfg.short_sl_buffer,
                 cfg.long_tp1_pct, cfg.long_tp2_pct, cfg.short_tp1_pct, cfg.short_tp2_pct,
-                long_max_hold_days, short_max_hold_days,
-                tp1_close_ratio,
+                cfg.long_max_hold_days, cfg.short_max_hold_days,
+                cfg.tp1_close_ratio,
             ),
         )
         run_id = cur.fetchone()[0]

@@ -10,7 +10,8 @@ from .db import connect_with_retry, validate_result_schema, validate_source_sche
 from .grid_search import _print_grid_summary, run_grid_search
 from .logging_utils import set_log_process_name
 from .market_data import clear_market_data_caches
-from .model_loader import _validate_model_filename, load_model_module
+from .model_loader import _validate_model_filename, load_model_config_env, load_model_module
+from .policy import COMMON_POLICY
 from .simulation import run_backtest
 
 log = logging.getLogger(__name__)
@@ -39,11 +40,13 @@ def log_backtest_context(model_files: list[str]) -> None:
             PEPPERSTONE_TABLE,
         )
     log.info(
-        "Backtesting model selection %s count %d files %s dir %s parallelism %d",
+        "Backtesting model selection %s count %d files %s dir %s config dir %s config required %s parallelism %d",
         MODEL_SELECTION,
         len(model_files),
         ",".join(model_files),
         MODEL_DIR,
+        MODEL_CONFIG_DIR,
+        MODEL_CONFIG_REQUIRED,
         MODEL_PARALLELISM,
     )
     log.info("Account profile %s", ACCOUNT_PROFILE)
@@ -104,22 +107,30 @@ def log_backtest_context(model_files: list[str]) -> None:
         STOP_LOSS_RTH_END,
     )
     log.info(
-        "Holding rule long max hold days %.2f short max hold days %.2f SL/TP active from next 1h bar",
-        LONG_MAX_HOLD_DAYS,
-        SHORT_MAX_HOLD_DAYS,
+        "Common eligibility min market cap %.0f require USD fundamentals %s high leverage filter %s negative earnings long filter %s short filter %s",
+        COMMON_POLICY.min_market_cap_m,
+        REQUIRE_USD_FUNDAMENTALS,
+        COMMON_POLICY.filter_high_leverage,
+        COMMON_POLICY.filter_negative_earnings_long,
+        COMMON_POLICY.filter_negative_earnings_short,
     )
     log.info(
-        "Candidate filter %.0f %s strict negative_earnings_long_filter %s negative_earnings_short_filter %s",
-        MIN_MARKET_CAP_M,
-        REQUIRE_USD_FUNDAMENTALS,
-        FILTER_NEGATIVE_EARNINGS_LONG,
-        FILTER_NEGATIVE_EARNINGS_SHORT,
+        "Common eligibility long min fundamental %.2f short max fundamental %.2f long blocklist %s short blocklist %s",
+        COMMON_POLICY.long_min_fundamental,
+        COMMON_POLICY.short_max_fundamental,
+        ",".join(COMMON_POLICY.long_label_blocklist) or "-",
+        ",".join(COMMON_POLICY.short_label_blocklist) or "-",
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
     log.info(
         "Regime exposure bucket thresholds strong risk-on below %.2f strong risk-off from %.2f",
-        REGIME_STRONG_RISK_ON_MAX_SCORE,
-        REGIME_STRONG_RISK_OFF_MIN_SCORE,
+        COMMON_POLICY.regime_strong_risk_on_max_score,
+        COMMON_POLICY.regime_strong_risk_off_min_score,
+    )
+    log.info(
+        "Regime direction thresholds long below %.2f short from %.2f",
+        COMMON_POLICY.regime_long_max_score,
+        COMMON_POLICY.regime_short_min_score,
     )
     for bucket_name, bucket in REGIME_EXPOSURE_BUCKETS.items():
         log.info(
@@ -159,18 +170,23 @@ def run_single_model_worker() -> None:
         validate_result_schema(conn)
         log_backtest_context(model_files)
         runtime.MODEL_MODULE = load_model_module(model_file)
+        load_model_config_env(model_file)
         cfg = runtime.MODEL_MODULE.signal_config_from_env()
         log.info(
-            "Model worker file %s grid search %s",
+            "Model worker file %s grid search %s model max hold long %.2f short %.2f tp1 close ratio %.2f min bars %d",
             runtime.CURRENT_MODEL_FILE,
             GRID_SEARCH_ENABLED,
+            cfg.long_max_hold_days,
+            cfg.short_max_hold_days,
+            cfg.tp1_close_ratio,
+            cfg.min_bars,
         )
         if GRID_SEARCH_ENABLED:
             results = run_grid_search(conn, cfg)
             _print_grid_summary(results)
         else:
             try:
-                run_backtest(conn, cfg, LONG_MAX_HOLD_DAYS, SHORT_MAX_HOLD_DAYS, TP1_CLOSE_RATIO)
+                run_backtest(conn, cfg)
             finally:
                 clear_market_data_caches("single_run")
     finally:

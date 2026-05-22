@@ -25,9 +25,6 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
         base_cfg=base_cfg,
         parse_grid_vals=_parse_grid_vals,
         parse_hold_grid_vals=_parse_hold_grid_vals,
-        long_max_hold_days=LONG_MAX_HOLD_DAYS,
-        short_max_hold_days=SHORT_MAX_HOLD_DAYS,
-        tp1_close_ratio=TP1_CLOSE_RATIO,
     ))
 
     total = len(grid_items)
@@ -36,13 +33,10 @@ def run_grid_search(conn: psycopg2.extensions.connection, base_cfg: Any) -> list
     results: list[dict] = []
     for i, item in enumerate(grid_items, 1):
         cfg = item["config"]
-        lmhd = item.get("long_max_hold_days", LONG_MAX_HOLD_DAYS)
-        smhd = item.get("short_max_hold_days", SHORT_MAX_HOLD_DAYS)
-        tcr = item.get("tp1_close_ratio", TP1_CLOSE_RATIO)
         run_notes = item.get("notes", f"grid model={runtime.CURRENT_MODEL_FILE} idx={i}")
         log.info("Grid %d/%d — %s", i, total, run_notes)
         try:
-            _, summary = run_backtest(conn, cfg, lmhd, smhd, tcr, notes=run_notes)
+            _, summary = run_backtest(conn, cfg, notes=run_notes)
         finally:
             clear_market_data_caches(f"grid {i}/{total}")
         summary.update(item.get("summary", {}))

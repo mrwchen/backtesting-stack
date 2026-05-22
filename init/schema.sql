@@ -62,12 +62,14 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     entry_window_start   TEXT,
     entry_window_end     TEXT,
 
-    -- Signal parameters (snapshot of what was used)
+    -- Common policy snapshot
     long_max_score       NUMERIC(5,2)  NOT NULL,
     short_min_score      NUMERIC(5,2)  NOT NULL,
     long_min_fundamental NUMERIC(5,2)  NOT NULL,
     short_max_fundamental NUMERIC(5,2) NOT NULL,
     min_market_cap_m     NUMERIC(10,2),
+
+    -- Model parameter snapshot
     long_min_pullback    NUMERIC(5,2)  NOT NULL,
     long_max_pullback    NUMERIC(5,2),
     long_ideal_pullback  NUMERIC(5,2),

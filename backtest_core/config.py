@@ -30,9 +30,20 @@ def _default_position_cap(ratio: float) -> int:
 
 
 REGIME_STRONG_RISK_ON_MAX_SCORE = env_float("REGIME_STRONG_RISK_ON_MAX_SCORE", 45.0)
+REGIME_LONG_MAX_SCORE = env_float("REGIME_LONG_MAX_SCORE", 55.0)
+REGIME_SHORT_MIN_SCORE = env_float("REGIME_SHORT_MIN_SCORE", 60.0)
 REGIME_STRONG_RISK_OFF_MIN_SCORE = env_float("REGIME_STRONG_RISK_OFF_MIN_SCORE", 70.0)
-if REGIME_STRONG_RISK_ON_MAX_SCORE > REGIME_STRONG_RISK_OFF_MIN_SCORE:
-    raise ValueError("REGIME_STRONG_RISK_ON_MAX_SCORE must be <= REGIME_STRONG_RISK_OFF_MIN_SCORE")
+if not (
+    REGIME_STRONG_RISK_ON_MAX_SCORE
+    <= REGIME_LONG_MAX_SCORE
+    <= REGIME_SHORT_MIN_SCORE
+    <= REGIME_STRONG_RISK_OFF_MIN_SCORE
+):
+    raise ValueError(
+        "Regime policy thresholds must satisfy "
+        "REGIME_STRONG_RISK_ON_MAX_SCORE <= REGIME_LONG_MAX_SCORE "
+        "<= REGIME_SHORT_MIN_SCORE <= REGIME_STRONG_RISK_OFF_MIN_SCORE"
+    )
 
 
 def _regime_risk_multiplier(env_key: str, default: float) -> float:
@@ -192,13 +203,22 @@ SIGNAL_BAR_CACHE_ENABLED = env_bool("SIGNAL_BAR_CACHE_ENABLED", True)
 SIGNAL_BAR_CACHE_MAX_MIB = max(128, env_int("SIGNAL_BAR_CACHE_MAX_MIB", 2048))
 MONTE_CARLO_ENABLED       = os.getenv("MONTE_CARLO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 N_MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("N_MONTE_CARLO_SIMULATIONS", "2000")))
-MIN_MARKET_CAP_M = float(os.getenv("MIN_MARKET_CAP_M", "1000.0"))
-FILTER_FUNDAMENTAL_HIGH_LEVERAGE = env_bool("FILTER_FUNDAMENTAL_HIGH_LEVERAGE", True)
-FILTER_NEGATIVE_EARNINGS_LONG = env_bool("FILTER_NEGATIVE_EARNINGS_LONG", False)
-FILTER_NEGATIVE_EARNINGS_SHORT = env_bool("FILTER_NEGATIVE_EARNINGS_SHORT", False)
-LONG_MAX_HOLD_DAYS = max(0.0, float(os.getenv("LONG_MAX_HOLD_DAYS", "5.0")))
-SHORT_MAX_HOLD_DAYS = max(0.0, float(os.getenv("SHORT_MAX_HOLD_DAYS", "5.0")))
-TP1_CLOSE_RATIO = max(0.0, min(1.0, float(os.getenv("TP1_CLOSE_RATIO", "0.5"))))
+COMMON_LONG_MIN_FUNDAMENTAL = env_float("COMMON_LONG_MIN_FUNDAMENTAL", 62.0)
+COMMON_SHORT_MAX_FUNDAMENTAL = env_float("COMMON_SHORT_MAX_FUNDAMENTAL", 42.0)
+COMMON_LONG_LABEL_BLOCKLIST = env_list("COMMON_LONG_LABEL_BLOCKLIST", ["value_trap", "overvalued", "overvalued_weak"])
+COMMON_SHORT_LABEL_BLOCKLIST = env_list("COMMON_SHORT_LABEL_BLOCKLIST", ["deep_value", "quality_value", "compounder"])
+COMMON_MIN_MARKET_CAP_M = float(os.getenv("COMMON_MIN_MARKET_CAP_M", "1000.0"))
+COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE = env_bool("COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE", True)
+COMMON_FILTER_NEGATIVE_EARNINGS_LONG = env_bool("COMMON_FILTER_NEGATIVE_EARNINGS_LONG", False)
+COMMON_FILTER_NEGATIVE_EARNINGS_SHORT = env_bool("COMMON_FILTER_NEGATIVE_EARNINGS_SHORT", False)
+for _name, _value in {
+    "COMMON_LONG_MIN_FUNDAMENTAL": COMMON_LONG_MIN_FUNDAMENTAL,
+    "COMMON_SHORT_MAX_FUNDAMENTAL": COMMON_SHORT_MAX_FUNDAMENTAL,
+}.items():
+    if _value < 0.0 or _value > 100.0:
+        raise ValueError(f"{_name} must be between 0 and 100")
+if COMMON_MIN_MARKET_CAP_M < 0.0:
+    raise ValueError("COMMON_MIN_MARKET_CAP_M must be >= 0")
 SECTOR_DIVERSIFICATION_ENABLED = env_bool("SECTOR_DIVERSIFICATION_ENABLED", False)
 
 GRID_SEARCH_ENABLED = os.getenv("GRID_SEARCH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -207,6 +227,8 @@ MODEL_FILE = os.getenv("MODEL_FILE", "pullback_bounce_fundamental_v1.py").strip(
 runtime.CURRENT_MODEL_FILE = MODEL_FILE
 MODEL_FILES = env_list("MODEL_FILES", [])
 MODEL_DIR = os.getenv("MODEL_DIR", str(PROJECT_ROOT / "backtest_models")).strip()
+MODEL_CONFIG_DIR = os.getenv("MODEL_CONFIG_DIR", str(PROJECT_ROOT / "backtest_model_configs")).strip()
+MODEL_CONFIG_REQUIRED = env_bool("MODEL_CONFIG_REQUIRED", True)
 MODEL_PARALLELISM = max(1, env_int("MODEL_PARALLELISM", 2))
 MODEL_FAILURE_MODE = os.getenv("MODEL_FAILURE_MODE", "fail_fast").strip().lower()
 BACKTEST_PARALLEL_CHILD = env_bool("BACKTEST_PARALLEL_CHILD", False)

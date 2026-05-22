@@ -2,12 +2,13 @@
 
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
 
 from . import runtime
-from .config import MODEL_DIR, MODEL_FILE, MODEL_FILES, MODEL_SELECTION
+from .config import MODEL_CONFIG_DIR, MODEL_CONFIG_REQUIRED, MODEL_DIR, MODEL_FILE, MODEL_FILES, MODEL_SELECTION
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,43 @@ def load_model_module(model_file: str) -> ModuleType:
 
     log.info("Loaded backtesting model %s path %s", model_file, full_path)
     return module
+
+
+def _parse_env_value(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def load_model_config_env(model_file: str) -> Path | None:
+    """Load backtest_model_configs/<model_stem>.env into this worker process."""
+    _validate_model_filename(model_file)
+    config_path = Path(MODEL_CONFIG_DIR) / f"{Path(model_file).stem}.env"
+    if not config_path.is_file():
+        if MODEL_CONFIG_REQUIRED:
+            raise FileNotFoundError(f"Model config file not found: {config_path}")
+        log.info("No model config file found model %s path %s", model_file, config_path)
+        return None
+
+    loaded = 0
+    for line_no, raw_line in enumerate(config_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            raise ValueError(f"Invalid model config line {config_path}:{line_no}: expected KEY=VALUE")
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "A").isalnum() or key[0].isdigit():
+            raise ValueError(f"Invalid model config key {config_path}:{line_no}: {key!r}")
+        os.environ[key] = _parse_env_value(raw_value)
+        loaded += 1
+
+    log.info("Loaded model config model %s path %s variables %d", model_file, config_path, loaded)
+    return config_path
 
 
 def get_model_module() -> ModuleType:
