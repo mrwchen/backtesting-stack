@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time as _time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import *
@@ -15,34 +16,63 @@ from .model_loader import select_model_files
 
 log = logging.getLogger(__name__)
 
-def _pg_application_name_for_model(model_file: str) -> str:
-    model_stem = Path(model_file).stem
+
+@dataclass(frozen=True)
+class BacktestJob:
+    model_file: str
+    account_profile: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.model_file}:{self.account_profile}"
+
+
+def _selected_jobs(model_files: list[str]) -> list[BacktestJob]:
+    if MODEL_SELECTION == "all":
+        return [
+            BacktestJob(model_file=model_file, account_profile=account_profile)
+            for model_file in model_files
+            for account_profile in ACCOUNT_PROFILE_DEFAULTS
+        ]
+    return [
+        BacktestJob(model_file=model_file, account_profile=ACCOUNT_PROFILE)
+        for model_file in model_files
+    ]
+
+
+def _pg_application_name_for_job(job: BacktestJob) -> str:
+    model_stem = Path(job.model_file).stem
     safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", model_stem)
-    return f"backtest_runner:{safe_stem}"[:63]
+    safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "_", job.account_profile)
+    prefix = "backtest_runner:"
+    suffix = f":{safe_profile}"
+    max_stem_len = max(1, 63 - len(prefix) - len(suffix))
+    return f"{prefix}{safe_stem[:max_stem_len]}{suffix}"
 
 
-def _child_env(model_file: str) -> dict[str, str]:
+def _child_env(job: BacktestJob) -> dict[str, str]:
     env = os.environ.copy()
     env["BACKTEST_PARALLEL_CHILD"] = "1"
     env["MODEL_SELECTION"] = "single"
-    env["MODEL_FILE"] = model_file
-    env["PGAPPNAME"] = _pg_application_name_for_model(model_file)
+    env["MODEL_FILE"] = job.model_file
+    env["ACCOUNT_PROFILE"] = job.account_profile
+    env["PGAPPNAME"] = _pg_application_name_for_job(job)
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
 
-def _terminate_running_workers(running: dict[subprocess.Popen, str]) -> None:
-    for process, model_file in running.items():
+def _terminate_running_workers(running: dict[subprocess.Popen, BacktestJob]) -> None:
+    for process, job in running.items():
         if process.poll() is None:
-            log.warning("Terminating model worker pid %d model %s", process.pid, model_file)
+            log.warning("Terminating model worker pid %d job %s", process.pid, job.label)
             process.terminate()
-    for process, model_file in running.items():
+    for process, job in running.items():
         if process.poll() is not None:
             continue
         try:
             process.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            log.error("Killing model worker pid %d model %s", process.pid, model_file)
+            log.error("Killing model worker pid %d job %s", process.pid, job.label)
             process.kill()
             process.wait(timeout=30)
 
@@ -53,12 +83,13 @@ def run_parallel_parent() -> None:
         raise ValueError("MODEL_FAILURE_MODE must be one of: fail_fast, continue")
 
     model_files = select_model_files()
-    parallelism = min(MODEL_PARALLELISM, len(model_files))
+    jobs = _selected_jobs(model_files)
+    parallelism = min(MODEL_PARALLELISM, len(jobs))
     script_path = PROJECT_ROOT / "backtest_runner.py"
-    pending = list(model_files)
-    running: dict[subprocess.Popen, str] = {}
-    succeeded: list[str] = []
-    failed: list[tuple[str, int]] = []
+    pending = list(jobs)
+    running: dict[subprocess.Popen, BacktestJob] = {}
+    succeeded: list[BacktestJob] = []
+    failed: list[tuple[BacktestJob, int]] = []
 
     def _handle_shutdown(signum: int, _frame: object) -> None:
         log.warning("Parallel parent shutdown requested signal %d with %d workers running", signum, len(running))
@@ -73,24 +104,27 @@ def run_parallel_parent() -> None:
     signal.signal(signal.SIGINT, _handle_shutdown)
 
     log.info(
-        "Parallel backtest orchestration starting models %d parallelism %d failure mode %s files %s",
+        "Parallel backtest orchestration starting models %d jobs %d parallelism %d failure mode %s files %s profiles %s",
         len(model_files),
+        len(jobs),
         parallelism,
         MODEL_FAILURE_MODE,
         ",".join(model_files),
+        ",".join(sorted({job.account_profile for job in jobs})),
     )
 
     try:
         while pending or running:
             while pending and len(running) < parallelism:
-                model_file = pending.pop(0)
+                job = pending.pop(0)
                 command = [sys.executable, str(script_path)]
-                process = subprocess.Popen(command, env=_child_env(model_file))
-                running[process] = model_file
+                process = subprocess.Popen(command, env=_child_env(job))
+                running[process] = job
                 log.info(
-                    "Started model worker pid %d model %s slot %d/%d",
+                    "Started model worker pid %d model %s account profile %s slot %d/%d",
                     process.pid,
-                    model_file,
+                    job.model_file,
+                    job.account_profile,
                     len(running),
                     parallelism,
                 )
@@ -104,15 +138,15 @@ def run_parallel_parent() -> None:
                 if finished is None:
                     _time.sleep(1.0)
 
-            model_file = running.pop(finished)
+            job = running.pop(finished)
             exit_code = int(finished.returncode or 0)
             if exit_code == 0:
-                succeeded.append(model_file)
-                log.info("Model worker finished model %s exit code 0", model_file)
+                succeeded.append(job)
+                log.info("Model worker finished model %s account profile %s exit code 0", job.model_file, job.account_profile)
                 continue
 
-            failed.append((model_file, exit_code))
-            log.error("Model worker failed model %s exit code %d", model_file, exit_code)
+            failed.append((job, exit_code))
+            log.error("Model worker failed model %s account profile %s exit code %d", job.model_file, job.account_profile, exit_code)
             if MODEL_FAILURE_MODE == "fail_fast":
                 _terminate_running_workers(running)
                 raise SystemExit(exit_code if exit_code > 0 else 1)
@@ -128,6 +162,6 @@ def run_parallel_parent() -> None:
     if failed:
         log.error(
             "Parallel backtest failures — %s",
-            ", ".join(f"{model}:{code}" for model, code in failed),
+            ", ".join(f"{job.label}:{code}" for job, code in failed),
         )
         raise SystemExit(1)

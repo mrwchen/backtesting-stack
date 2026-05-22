@@ -156,7 +156,7 @@ def run_single_model_worker() -> None:
     _validate_model_filename(model_file)
     model_files = [model_file]
     runtime.CURRENT_MODEL_FILE = model_file
-    set_log_process_name(f"bt-{Path(model_file).stem}")
+    set_log_process_name(f"bt-{Path(model_file).stem}-{ACCOUNT_PROFILE}")
     _install_worker_shutdown_handler()
     conn = connect_with_retry()
     try:
