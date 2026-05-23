@@ -15,7 +15,7 @@ from psycopg2 import sql
 
 from backtest_shared import Bar, FundamentalRow, InstrumentKey, WorldRegime, instrument_key
 from .config import *
-from .ibkr_margin import ibkr_action_for_direction
+from .ibkr_margin import get_ibkr_margin_symbols, ibkr_action_for_direction
 from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
@@ -95,6 +95,7 @@ _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _CANDIDATE_TIMELINE_CACHE: dict[tuple, _CandidateTimeline] = {}
 _CANDIDATE_TIMELINE_CACHE_DISABLED = False
+_PEPPERSTONE_SYMBOL_CACHE: dict[str, tuple[str, ...]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
@@ -124,6 +125,38 @@ def _candidate_timeline_cache_counts() -> tuple[int, int, int, float]:
     identities = sum(len(timeline.rows_by_identity) for timeline in _CANDIDATE_TIMELINE_CACHE.values())
     estimated_mib = sum(timeline.estimated_mib for timeline in _CANDIDATE_TIMELINE_CACHE.values())
     return len(_CANDIDATE_TIMELINE_CACHE), rows, identities, estimated_mib
+
+
+def _get_pepperstone_symbols(
+    conn: psycopg2.extensions.connection,
+    pepperstone_table: str,
+) -> tuple[str, ...]:
+    cached = _PEPPERSTONE_SYMBOL_CACHE.get(pepperstone_table)
+    if cached is not None:
+        return cached
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT DISTINCT symbol::text AS symbol
+                FROM {}
+                WHERE symbol_ps IS NOT NULL
+                  AND is_trading_enabled IS NOT FALSE
+                  AND symbol IS NOT NULL
+                ORDER BY symbol
+                """
+            ).format(relation_identifier(pepperstone_table)),
+        )
+        symbols = tuple(row[0] for row in cur.fetchall() if row[0])
+
+    _PEPPERSTONE_SYMBOL_CACHE[pepperstone_table] = symbols
+    log.info(
+        "Loaded Pepperstone tradable symbols table %s count %d",
+        pepperstone_table,
+        len(symbols),
+    )
+    return symbols
 
 
 def _default_as_of_ts(as_of_date: date) -> datetime:
@@ -288,24 +321,16 @@ def _timeline_query(
 
     if account_profile == "ps_acc":
         return sql.SQL("""
-            WITH broker AS (
-                SELECT DISTINCT symbol::text AS symbol
-                FROM {}
-                WHERE symbol_ps IS NOT NULL
-                  AND is_trading_enabled IS NOT FALSE
-                  AND symbol IS NOT NULL
-            )
             SELECT {}
             FROM {} f
-            JOIN broker ON broker.symbol = f.symbol
             WHERE {}
+              AND f.symbol = ANY(%(pepperstone_symbols)s::text[])
             ORDER BY
                 f.symbol,
                 f.exchange,
                 f.cik,
                 {}
         """).format(
-            relation_identifier(pepperstone_table),
             timeline_select_columns,
             source_relation,
             sql.SQL("\n              AND ").join(timeline_where),
@@ -313,26 +338,16 @@ def _timeline_query(
         )
     if account_profile == "ibkr_acc":
         return sql.SQL("""
-            WITH broker AS (
-                SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
-                FROM {}
-                WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s
-                  AND quantity > 0
-                  AND initial_margin_pct > 0
-                  AND maintenance_margin_pct > 0
-                  AND source_symbol IS NOT NULL
-            )
             SELECT {}
             FROM {} f
-            JOIN broker ON broker.symbol_norm = UPPER(TRIM(f.symbol))
             WHERE {}
+              AND f.symbol = ANY(%(ibkr_margin_symbols)s::text[])
             ORDER BY
                 f.symbol,
                 f.exchange,
                 f.cik,
                 {}
         """).format(
-            relation_identifier(ibkr_margin_table),
             timeline_select_columns,
             source_relation,
             sql.SQL("\n              AND ").join(timeline_where),
@@ -384,8 +399,14 @@ def _build_candidate_timeline(
         pepperstone_table,
         ibkr_margin_table,
     )
+    if ACCOUNT_PROFILE == "ps_acc" and "pepperstone_symbols" not in query_params:
+        query_params["pepperstone_symbols"] = list(_get_pepperstone_symbols(conn, pepperstone_table))
     if ACCOUNT_PROFILE == "ibkr_acc" and "ibkr_margin_action" not in query_params:
         query_params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+    if ACCOUNT_PROFILE == "ibkr_acc" and "ibkr_margin_symbols" not in query_params:
+        query_params["ibkr_margin_symbols"] = list(
+            get_ibkr_margin_symbols(conn, query_params["ibkr_margin_action"], ibkr_margin_table)
+        )
 
     rows_by_identity: dict[InstrumentKey, list[_CandidateTimelineRow]] = {}
     available_by_identity: dict[InstrumentKey, list[int]] = {}
@@ -731,21 +752,18 @@ def get_candidates(
         where_parts.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(as_of_ts)s"))
 
     if ACCOUNT_PROFILE == "ps_acc":
+        params["pepperstone_symbols"] = list(_get_pepperstone_symbols(conn, pepperstone_table))
+        if not params["pepperstone_symbols"]:
+            _CANDIDATE_CACHE[cache_key] = []
+            return []
         query = sql.SQL("""
-            WITH broker AS (
-                SELECT DISTINCT symbol::text AS symbol
-                FROM {}
-                WHERE symbol_ps IS NOT NULL
-                  AND is_trading_enabled IS NOT FALSE
-                  AND symbol IS NOT NULL
-            )
             SELECT {}
             FROM (
                 SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
                     {}
                 FROM {} f
-                JOIN broker ON broker.symbol = f.symbol
                 WHERE {}
+                  AND f.symbol = ANY(%(pepperstone_symbols)s::text[])
                 ORDER BY
                     f.symbol,
                     f.exchange,
@@ -755,7 +773,6 @@ def get_candidates(
             WHERE {}
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
-            relation_identifier(pepperstone_table),
             outer_select_columns,
             select_columns,
             source_relation,
@@ -765,23 +782,20 @@ def get_candidates(
         )
     elif ACCOUNT_PROFILE == "ibkr_acc":
         params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+        params["ibkr_margin_symbols"] = list(
+            get_ibkr_margin_symbols(conn, params["ibkr_margin_action"], ibkr_margin_table)
+        )
+        if not params["ibkr_margin_symbols"]:
+            _CANDIDATE_CACHE[cache_key] = []
+            return []
         query = sql.SQL("""
-            WITH broker AS (
-                SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
-                FROM {}
-                WHERE UPPER(TRIM(action)) = %(ibkr_margin_action)s
-                  AND quantity > 0
-                  AND initial_margin_pct > 0
-                  AND maintenance_margin_pct > 0
-                  AND source_symbol IS NOT NULL
-            )
             SELECT {}
             FROM (
                 SELECT DISTINCT ON (f.symbol, f.exchange, f.cik)
                     {}
                 FROM {} f
-                JOIN broker ON broker.symbol_norm = UPPER(TRIM(f.symbol))
                 WHERE {}
+                  AND f.symbol = ANY(%(ibkr_margin_symbols)s::text[])
                 ORDER BY
                     f.symbol,
                     f.exchange,
@@ -791,7 +805,6 @@ def get_candidates(
             WHERE {}
             ORDER BY candidates.symbol, candidates.exchange, candidates.cik
         """).format(
-            relation_identifier(ibkr_margin_table),
             outer_select_columns,
             select_columns,
             source_relation,
@@ -1609,6 +1622,7 @@ def clear_market_data_caches(context: str = "after_run") -> None:
     _SIGNAL_BAR_CACHE_DISABLED = False
     _CANDIDATE_TIMELINE_CACHE.clear()
     _CANDIDATE_TIMELINE_CACHE_DISABLED = False
+    _PEPPERSTONE_SYMBOL_CACHE.clear()
     _TRADING_DAYS_CACHE.clear()
     _WORLD_REGIME_CACHE.clear()
     _CANDIDATE_CACHE.clear()

@@ -321,6 +321,24 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+    IF to_regclass('public.ibkr_symbol_margin_requirements') IS NOT NULL THEN
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_ibkr_margin_action_symbol_usable
+                ON public.ibkr_symbol_margin_requirements (
+                    (UPPER(TRIM(action))),
+                    (UPPER(TRIM(source_symbol)))
+                )
+                WHERE quantity > 0
+                  AND initial_margin_pct > 0
+                  AND maintenance_margin_pct > 0
+                  AND source_symbol IS NOT NULL
+        ';
+    END IF;
+END;
+$$;
+
 -- ── Monte Carlo results ───────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS backtest_monte_carlo (

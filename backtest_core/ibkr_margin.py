@@ -1,5 +1,6 @@
 """IBKR symbol margin lookup backed by TimescaleDB source data."""
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -8,6 +9,8 @@ from psycopg2 import sql
 
 from .config import IBKR_MARGIN_REQUIREMENTS_TABLE
 from .sql_utils import relation_identifier
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class IbkrMarginRequirement:
 
 
 _IBKR_MARGIN_CACHE: dict[tuple[str, str, str], IbkrMarginRequirement] = {}
+_IBKR_MARGIN_SYMBOL_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
 def ibkr_action_for_direction(direction: str) -> str:
@@ -30,6 +34,45 @@ def ibkr_action_for_direction(direction: str) -> str:
     if normalized == "SHORT":
         return "SELL"
     raise ValueError(f"Unsupported direction for IBKR margin lookup: {direction!r}")
+
+
+def get_ibkr_margin_symbols(
+    conn: psycopg2.extensions.connection,
+    action: str,
+    margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
+) -> tuple[str, ...]:
+    normalized_action = action.strip().upper()
+    cache_key = (margin_table, normalized_action)
+    cached = _IBKR_MARGIN_SYMBOL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
+                FROM {}
+                WHERE UPPER(TRIM(action)) = %s
+                  AND quantity > 0
+                  AND initial_margin_pct > 0
+                  AND maintenance_margin_pct > 0
+                  AND source_symbol IS NOT NULL
+                ORDER BY symbol_norm
+                """
+            ).format(relation_identifier(margin_table)),
+            (normalized_action,),
+        )
+        symbols = tuple(row[0] for row in cur.fetchall() if row[0])
+
+    _IBKR_MARGIN_SYMBOL_CACHE[cache_key] = symbols
+    log.info(
+        "Loaded IBKR margin eligible symbols table %s action %s count %d",
+        margin_table,
+        normalized_action,
+        len(symbols),
+    )
+    return symbols
 
 
 def get_ibkr_margin_requirement(
