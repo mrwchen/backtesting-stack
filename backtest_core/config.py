@@ -229,6 +229,24 @@ if COMMON_MIN_MARKET_CAP_M < 0.0:
     raise ValueError("COMMON_MIN_MARKET_CAP_M must be >= 0")
 SECTOR_DIVERSIFICATION_ENABLED = env_bool("SECTOR_DIVERSIFICATION_ENABLED", False)
 
+COMMON_STOP_LOSS_ENABLED = env_bool("COMMON_STOP_LOSS_ENABLED", True)
+COMMON_STOP_LOOKBACK_BARS = max(1, env_int("COMMON_STOP_LOOKBACK_BARS", 14))
+COMMON_STOP_BUFFER = env_float("COMMON_STOP_BUFFER", 0.007)
+COMMON_STOP_ATR_LOOKBACK_BARS = max(1, env_int("COMMON_STOP_ATR_LOOKBACK_BARS", 14))
+COMMON_STOP_ATR_MULT = env_float("COMMON_STOP_ATR_MULT", 1.5)
+COMMON_MIN_STOP_PCT = env_float("COMMON_MIN_STOP_PCT", 2.5)
+COMMON_MAX_STOP_PCT = env_float("COMMON_MAX_STOP_PCT", 11.0)
+for _name, _value in {
+    "COMMON_STOP_BUFFER": COMMON_STOP_BUFFER,
+    "COMMON_STOP_ATR_MULT": COMMON_STOP_ATR_MULT,
+    "COMMON_MIN_STOP_PCT": COMMON_MIN_STOP_PCT,
+    "COMMON_MAX_STOP_PCT": COMMON_MAX_STOP_PCT,
+}.items():
+    if _value < 0.0:
+        raise ValueError(f"{_name} must be >= 0")
+if COMMON_MAX_STOP_PCT > 0.0 and COMMON_MIN_STOP_PCT > COMMON_MAX_STOP_PCT:
+    raise ValueError("COMMON_MIN_STOP_PCT must be <= COMMON_MAX_STOP_PCT")
+
 GRID_SEARCH_ENABLED = os.getenv("GRID_SEARCH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
 MODEL_SELECTION = os.getenv("MODEL_SELECTION", "single").strip().lower()
 MODEL_FILE = os.getenv("MODEL_FILE", "pullback_bounce_fundamental_v1.py").strip()

@@ -140,6 +140,19 @@ services:
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
 
       # ---------------------------------------------------------------------
+      # Common policy: stop loss and take profit placement
+      # Strategy models provide entry candidates by default. The common stop
+      # policy is ignored only by models with explicit model-owned stop params.
+      # ---------------------------------------------------------------------
+      - COMMON_STOP_LOSS_ENABLED=true
+      - COMMON_STOP_LOOKBACK_BARS=24
+      - COMMON_STOP_BUFFER=0.007
+      - COMMON_STOP_ATR_LOOKBACK_BARS=14
+      - COMMON_STOP_ATR_MULT=1.5
+      - COMMON_MIN_STOP_PCT=2.5
+      - COMMON_MAX_STOP_PCT=8.0
+
+      # ---------------------------------------------------------------------
       # Portfolio risk and common execution policy
       # ---------------------------------------------------------------------
       # ACCOUNT_PROFILE selects the broker/account rules used by the backtest:

@@ -13,6 +13,7 @@ from .market_data import clear_market_data_caches
 from .model_loader import _validate_model_filename, load_model_config_env, load_model_module
 from .policy import COMMON_POLICY
 from .simulation import run_backtest
+from .trade_levels import model_uses_own_stop_loss
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ def log_backtest_context(model_files: list[str]) -> None:
         STOP_LOSS_RTH_END,
     )
     log.info(
+        "Common stop loss policy enabled %s lookback bars %d buffer %.4f ATR lookback bars %d ATR multiplier %.2f min stop pct %.2f max stop pct %.2f",
+        COMMON_STOP_LOSS_ENABLED,
+        COMMON_STOP_LOOKBACK_BARS,
+        COMMON_STOP_BUFFER,
+        COMMON_STOP_ATR_LOOKBACK_BARS,
+        COMMON_STOP_ATR_MULT,
+        COMMON_MIN_STOP_PCT,
+        COMMON_MAX_STOP_PCT,
+    )
+    log.info(
         "Common eligibility min market cap %.0f require USD fundamentals %s high leverage filter %s negative earnings long filter %s short filter %s",
         COMMON_POLICY.min_market_cap_m,
         REQUIRE_USD_FUNDAMENTALS,
@@ -182,6 +193,11 @@ def run_single_model_worker() -> None:
             cfg.short_max_hold_days,
             cfg.tp1_close_ratio,
             cfg.min_bars,
+        )
+        log.info(
+            "Trade level policy model %s stop loss source %s take profit source common",
+            runtime.CURRENT_MODEL_FILE,
+            "model" if model_uses_own_stop_loss(cfg) else "common",
         )
         if GRID_SEARCH_ENABLED:
             results = run_grid_search(conn, cfg)

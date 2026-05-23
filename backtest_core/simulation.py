@@ -58,6 +58,7 @@ from .persistence import (
     write_decision_events,
     write_trades,
 )
+from .trade_levels import apply_trade_levels, common_stop_required_lookback
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +67,10 @@ DIRECTIONS = ("LONG", "SHORT")
 
 def _bar_lookback_limit(model: Any, cfg: Any) -> int:
     required_bar_lookback = getattr(model, "required_bar_lookback", None)
+    common_stop_lookback = common_stop_required_lookback()
     if callable(required_bar_lookback):
-        return max(1, int(cfg.min_bars), int(required_bar_lookback(cfg)))
-    return max(1, int(cfg.min_bars) + int(cfg.price_lookback_bars))
+        return max(1, int(cfg.min_bars), int(required_bar_lookback(cfg)), common_stop_lookback)
+    return max(1, int(cfg.min_bars) + int(cfg.price_lookback_bars), common_stop_lookback)
 
 
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
@@ -129,17 +131,6 @@ def _long_stop_fill_price(stop_price: float, bar_open: object) -> float:
 
 def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
     return max(stop_price, float(bar_open))
-
-
-def _apply_next_bar_open_entry(signal: Signal, cfg: Any, entry_ts: datetime, entry_open: float) -> None:
-    signal.entry_ts = _ensure_utc_ts(entry_ts)
-    signal.entry_price = float(entry_open)
-    if signal.direction == "LONG":
-        signal.take_profit_1 = signal.entry_price * (1.0 + cfg.long_tp1_pct)
-        signal.take_profit_2 = signal.entry_price * (1.0 + cfg.long_tp2_pct)
-    else:
-        signal.take_profit_1 = signal.entry_price * (1.0 - cfg.short_tp1_pct)
-        signal.take_profit_2 = signal.entry_price * (1.0 - cfg.short_tp2_pct)
 
 
 def simulate_outcome(
@@ -723,12 +714,30 @@ def run_backtest(
                         evaluation.take_profit_2 = None
                     else:
                         entry_ts, entry_open = next_entry
-                        _apply_next_bar_open_entry(signal, cfg, entry_ts, entry_open)
-                        evaluation.entry_price = signal.entry_price
-                        evaluation.take_profit_1 = signal.take_profit_1
-                        evaluation.take_profit_2 = signal.take_profit_2
-                        signals.append(signal)
-                        signals_by_direction[direction].append(signal)
+                        trade_levels = apply_trade_levels(
+                            signal,
+                            bars,
+                            cfg,
+                            _ensure_utc_ts(entry_ts),
+                            entry_open,
+                        )
+                        if not trade_levels.accepted:
+                            signal = None
+                            evaluation.signal = None
+                            evaluation.decision = "rejected"
+                            evaluation.reason_code = trade_levels.reason_code
+                            evaluation.reason_text = trade_levels.reason_text
+                            evaluation.entry_price = None
+                            evaluation.stop_loss = None
+                            evaluation.take_profit_1 = None
+                            evaluation.take_profit_2 = None
+                        else:
+                            evaluation.entry_price = signal.entry_price
+                            evaluation.stop_loss = signal.stop_loss
+                            evaluation.take_profit_1 = signal.take_profit_1
+                            evaluation.take_profit_2 = signal.take_profit_2
+                            signals.append(signal)
+                            signals_by_direction[direction].append(signal)
                 event = DecisionEvent(
                     run_id=run_id,
                     signal_date=day,
