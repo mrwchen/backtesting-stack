@@ -37,6 +37,8 @@ from .market_data import (
     _is_in_sl_tp_window,
     load_recent_bars_for_identities,
     log_cache_stats,
+    preload_identity_bars,
+    preload_candidate_timelines,
 )
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
@@ -232,6 +234,22 @@ def run_backtest(
     closed_trades: list[ClosedTrade] = []
     account_curve: list[AccountCurvePoint] = []
     account_curve_seq = 0
+    decision_event_buffer: list[DecisionEvent] = []
+
+    def flush_decision_events(force: bool = False) -> None:
+        if not decision_event_buffer:
+            return
+        if not force and len(decision_event_buffer) < DECISION_EVENT_FLUSH_BATCH_SIZE:
+            return
+        events_to_write = list(decision_event_buffer)
+        decision_event_buffer.clear()
+        write_decision_events(conn, events_to_write)
+
+    def buffer_decision_events(events: list[DecisionEvent]) -> None:
+        if not events:
+            return
+        decision_event_buffer.extend(events)
+        flush_decision_events()
 
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
@@ -269,6 +287,14 @@ def run_backtest(
         portfolio_events: list[PortfolioEvent] = []
         closed_count = 0
         realized_pnl = 0.0
+        if positions:
+            preload_identity_bars(
+                conn,
+                [pos.identity_key for pos in positions],
+                end_ts,
+                batch_size=BAR_CACHE_BATCH_SIZE,
+                log_batches=False,
+            )
 
         for pos in positions:
             before_tp1_hit = pos.tp1_hit
@@ -345,6 +371,23 @@ def run_backtest(
 
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
+    if trading_days:
+        preload_candidate_timelines(
+            conn,
+            DIRECTIONS,
+            **candidate_policy_kwargs(),
+            source_table=SOURCE_FUNDAMENTAL,
+            as_of_date=trading_days[0],
+            as_of_ts=_day_signal_cutoff_ts(trading_days[0]),
+            pepperstone_table=PEPPERSTONE_TABLE,
+            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+            filter_negative_earnings_by_direction={
+                direction: direction_filter_negative_earnings(direction)
+                for direction in DIRECTIONS
+            },
+            ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
+        )
     record_account_curve(datetime.combine(START_DATE, datetime.min.time(), tzinfo=timezone.utc), open_positions)
 
     # Diagnostic counters
@@ -381,7 +424,7 @@ def run_backtest(
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME, as_of_date=day)
         if not regime:
             days_no_regime += 1
-            write_decision_events(conn, [DecisionEvent(
+            buffer_decision_events([DecisionEvent(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
@@ -429,7 +472,7 @@ def run_backtest(
             for direction in DIRECTIONS
         ):
             days_no_active_budget += 1
-            write_decision_events(conn, [DecisionEvent(
+            buffer_decision_events([DecisionEvent(
                 run_id=run_id,
                 signal_date=day,
                 as_of_ts=day_end_ts,
@@ -925,7 +968,7 @@ def run_backtest(
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
 
-        write_decision_events(conn, decision_events)
+        buffer_decision_events(decision_events)
 
         if log_progress_today or opened_today > 0:
             log.info(
@@ -957,6 +1000,14 @@ def run_backtest(
 
     # ── 5. Force-close remaining open positions at last available price ──────
     last_day = trading_days[-1] if trading_days else END_DATE
+    if open_positions:
+        preload_identity_bars(
+            conn,
+            [pos.identity_key for pos in open_positions],
+            _day_close_ts(last_day),
+            batch_size=BAR_CACHE_BATCH_SIZE,
+            log_batches=True,
+        )
     for pos in list(open_positions):
         bars = get_bars_range(conn, pos.identity_key, pos.entry_ts, last_day)
         last_price = float(bars[-1][4]) if bars else pos.entry_price
@@ -991,6 +1042,8 @@ def run_backtest(
 
     # ── 6. Persist results ───────────────────────────────────────────────────
     log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)
+
+    flush_decision_events(force=True)
 
     # Patch world_regime_label into rows (stored on signal, pass through)
     # (already embedded in entry_reason; trade write accesses signal directly)
