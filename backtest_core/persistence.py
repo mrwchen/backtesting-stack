@@ -405,3 +405,24 @@ def update_run_summary(
             ),
         )
     conn.commit()
+
+
+def update_run_duration(
+    conn: psycopg2.extensions.connection,
+    run_id: int,
+    duration_seconds: float,
+) -> None:
+    if not math.isfinite(duration_seconds) or duration_seconds < 0:
+        raise ValueError(f"Invalid run duration seconds: {duration_seconds!r}")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {_result_table("backtest_runs")} SET
+                run_duration_seconds = %s
+            WHERE run_id = %s
+            """,
+            (round(duration_seconds, 3), run_id),
+        )
+    conn.commit()
+    log.info("Updated run %d duration %.3f seconds", run_id, duration_seconds)

@@ -133,6 +133,7 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_runs", {
         "run_id",
         "initial_equity",
+        "run_duration_seconds",
         "margin_hours_usd",
         "return_per_margin_hour_pct",
         "ps_share_cfd_arr_pct",

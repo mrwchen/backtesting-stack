@@ -49,6 +49,7 @@ from .policy import (
 )
 from .persistence import (
     create_run,
+    update_run_duration,
     update_run_summary,
     write_account_curve,
     write_decision_events,
@@ -223,6 +224,7 @@ def run_backtest(
     cfg: Any,
     notes: Optional[str] = None,
 ) -> tuple[int, dict]:
+    run_started = _time.perf_counter()
     run_id = create_run(conn, cfg, notes)
 
     equity: float = INITIAL_EQUITY
@@ -998,6 +1000,9 @@ def run_backtest(
     if MONTE_CARLO_ENABLED:
         run_monte_carlo(conn, run_id, closed_trades, INITIAL_EQUITY, N_MONTE_CARLO_SIMULATIONS)
 
+    run_duration_seconds = _time.perf_counter() - run_started
+    update_run_duration(conn, run_id, run_duration_seconds)
+
     n_trades = len(closed_trades)
     n_wins = sum(1 for t in closed_trades if t.pnl_usd > 0)
     n_losses = sum(1 for t in closed_trades if t.pnl_usd < 0)
@@ -1027,6 +1032,7 @@ def run_backtest(
         "return_per_margin_hour_pct": return_per_margin_hour_pct,
         "max_drawdown_pct": max_dd,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
+        "run_duration_seconds": run_duration_seconds,
     }
     for direction, report in direction_reports.items():
         prefix = direction.lower()
@@ -1037,8 +1043,8 @@ def run_backtest(
         summary[f"{prefix}_pnl_usd"] = report["pnl_usd"]
 
     log.info(
-        "Run %d complete trades %d wins %d final equity %.0f return %.1f%%",
-        run_id, n_trades, n_wins, equity, total_return,
+        "Run %d complete trades %d wins %d final equity %.0f return %.1f%% duration %.1f seconds",
+        run_id, n_trades, n_wins, equity, total_return, run_duration_seconds,
     )
     for direction in DIRECTIONS:
         report = direction_reports[direction]

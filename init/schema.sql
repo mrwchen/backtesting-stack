@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     tp1_close_ratio      NUMERIC(4,3),
 
     -- Results summary (filled after run completes)
+    run_duration_seconds NUMERIC(12,3),
     final_equity         NUMERIC(15,2),
     total_trades         INTEGER,
     winning_trades       INTEGER,
