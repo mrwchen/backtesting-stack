@@ -2,7 +2,7 @@
 
 import logging
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -133,8 +133,10 @@ def _latest_close_price_at(
     as_of_ts: datetime,
 ) -> float:
     as_of_ts = _ensure_utc_ts(as_of_ts)
+    if as_of_ts <= _ensure_utc_ts(pos.entry_ts):
+        return pos.entry_price
     timestamps, bars = _load_identity_bars_through(conn, pos.identity_key, as_of_ts)
-    idx = bisect_right(timestamps, as_of_ts) - 1
+    idx = bisect_left(timestamps, as_of_ts) - 1
     if idx < 0:
         return pos.entry_price
     return float(bars[idx].close)

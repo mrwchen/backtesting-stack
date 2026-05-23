@@ -4,7 +4,7 @@ import logging
 import sys as _sys
 import time as _time
 from array import array
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
@@ -1500,7 +1500,7 @@ def _ensure_signal_bars_loaded(
                         "  WHERE b.symbol = r.symbol "
                         "    AND b.exchange = r.exchange "
                         "    AND b.cik = r.cik "
-                        "    AND b.ts <= %s "
+                        "    AND b.ts < %s "
                         "    {} "
                         "  ORDER BY b.ts DESC "
                         "  LIMIT %s"
@@ -1535,8 +1535,8 @@ def _ensure_signal_bars_loaded(
                         "FROM {} b "
                         "JOIN requested r "
                         "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
-                        "WHERE b.ts > %s "
-                        "  AND b.ts <= %s "
+                        "WHERE b.ts >= %s "
+                        "  AND b.ts < %s "
                         "  {} "
                         "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
                     ).format(relation_identifier(SOURCE_1H), entry_filter),
@@ -1546,7 +1546,7 @@ def _ensure_signal_bars_loaded(
                     identity = instrument_key(symbol, exchange, cik)
                     entry = _SIGNAL_BAR_CACHE[identity]
                     ts_utc = _ensure_utc_ts(ts)
-                    if entry.loaded_until_ts is not None and ts_utc <= entry.loaded_until_ts:
+                    if entry.loaded_until_ts is not None and ts_utc < entry.loaded_until_ts:
                         continue
                     _append_signal_bar(entry, ts_utc, open_, high, low, close, volume)
                     rows_loaded += 1
@@ -1603,7 +1603,7 @@ def _recent_bars_from_signal_cache(
         entry = _SIGNAL_BAR_CACHE.get(identity)
         if entry is None:
             continue
-        end_idx = bisect_right(entry.ts_epoch_us, up_to_epoch_us)
+        end_idx = bisect_left(entry.ts_epoch_us, up_to_epoch_us)
         start_idx = max(0, end_idx - limit)
         ts_epoch_us = entry.ts_epoch_us
         opens = entry.opens
@@ -1675,7 +1675,7 @@ def _load_recent_bars_for_identities_direct(
                     "  WHERE b.symbol = r.symbol "
                     "    AND b.exchange = r.exchange "
                     "    AND b.cik = r.cik "
-                    "    AND b.ts <= %s "
+                    "    AND b.ts < %s "
                     "    {} "
                     "  ORDER BY b.ts DESC "
                     "  LIMIT %s"
@@ -1774,7 +1774,7 @@ def get_cached_bars(
     """Return up to `limit` bars using the per-run instrument cache."""
     up_to_ts = _ensure_utc_ts(up_to_ts)
     timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
-    end_idx = bisect_right(timestamps, up_to_ts)
+    end_idx = bisect_left(timestamps, up_to_ts)
     selected: list[Bar] = []
     bar_idx = end_idx - 1
     while bar_idx >= 0 and len(selected) < limit:
@@ -1812,8 +1812,34 @@ def get_bars_range_through(
     up_to_ts = _ensure_utc_ts(up_to_ts)
     timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
     start_idx = bisect_right(timestamps, after_ts)
-    end_idx = bisect_right(timestamps, up_to_ts)
+    end_idx = bisect_left(timestamps, up_to_ts)
     return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]
+
+
+def get_next_bar_open(
+    conn: psycopg2.extensions.connection,
+    identity: InstrumentKey,
+    after_ts: datetime,
+) -> Optional[tuple[datetime, float]]:
+    """Return the next available 1h bar open after a completed signal bar."""
+    identity = instrument_key(*identity)
+    after_ts = _ensure_utc_ts(after_ts)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT ts, open "
+                "FROM {} "
+                "WHERE symbol = %s AND exchange = %s AND cik = %s "
+                "  AND ts > %s "
+                "ORDER BY ts "
+                "LIMIT 1"
+            ).format(relation_identifier(SOURCE_1H)),
+            (identity[0], identity[1], identity[2], after_ts),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return _ensure_utc_ts(row[0]), float(row[1])
 
 
 def log_cache_stats(context: str = "current") -> None:

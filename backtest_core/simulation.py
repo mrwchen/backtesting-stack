@@ -31,6 +31,7 @@ from .market_data import (
     get_bars_range,
     get_bars_range_through,
     get_candidates,
+    get_next_bar_open,
     get_trading_days,
     get_world_regime,
     _is_stop_loss_active,
@@ -130,6 +131,17 @@ def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
     return max(stop_price, float(bar_open))
 
 
+def _apply_next_bar_open_entry(signal: Signal, cfg: Any, entry_ts: datetime, entry_open: float) -> None:
+    signal.entry_ts = _ensure_utc_ts(entry_ts)
+    signal.entry_price = float(entry_open)
+    if signal.direction == "LONG":
+        signal.take_profit_1 = signal.entry_price * (1.0 + cfg.long_tp1_pct)
+        signal.take_profit_2 = signal.entry_price * (1.0 + cfg.long_tp2_pct)
+    else:
+        signal.take_profit_1 = signal.entry_price * (1.0 - cfg.short_tp1_pct)
+        signal.take_profit_2 = signal.entry_price * (1.0 - cfg.short_tp2_pct)
+
+
 def simulate_outcome(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -148,7 +160,7 @@ def simulate_outcome(
     across all daily calls rather than O(N²).
     """
     up_to_ts = _ensure_utc_ts(up_to_ts)
-    after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts
+    after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts - timedelta(microseconds=1)
     bars = get_bars_range_through(conn, pos.identity_key, after_ts, up_to_ts)
     if not bars:
         return None
@@ -450,6 +462,7 @@ def run_backtest(
             open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
+            record_account_curve(day_close_ts, open_positions)
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s no regime, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -500,6 +513,7 @@ def run_backtest(
             open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
+            record_account_curve(day_close_ts, open_positions)
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s regime bucket %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -694,9 +708,27 @@ def run_backtest(
                 if signal:
                     signal.exchange = fundamental.exchange
                     signal.cik = fundamental.cik
-                    signal.entry_ts = day_end_ts
-                    signals.append(signal)
-                    signals_by_direction[direction].append(signal)
+                    next_entry = get_next_bar_open(conn, fundamental.identity_key, bars[-1].ts)
+                    if next_entry is None:
+                        signal = None
+                        evaluation.signal = None
+                        evaluation.decision = "rejected"
+                        evaluation.reason_code = "next_entry_bar_missing"
+                        evaluation.reason_text = (
+                            f"No 1h bar after signal bar {bars[-1].ts} was available for next-bar-open entry."
+                        )
+                        evaluation.entry_price = None
+                        evaluation.stop_loss = None
+                        evaluation.take_profit_1 = None
+                        evaluation.take_profit_2 = None
+                    else:
+                        entry_ts, entry_open = next_entry
+                        _apply_next_bar_open_entry(signal, cfg, entry_ts, entry_open)
+                        evaluation.entry_price = signal.entry_price
+                        evaluation.take_profit_1 = signal.take_profit_1
+                        evaluation.take_profit_2 = signal.take_profit_2
+                        signals.append(signal)
+                        signals_by_direction[direction].append(signal)
                 event = DecisionEvent(
                     run_id=run_id,
                     signal_date=day,
@@ -974,6 +1006,7 @@ def run_backtest(
         open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
+        record_account_curve(day_close_ts, open_positions)
 
         buffer_decision_events(decision_events)
 
@@ -1051,12 +1084,13 @@ def run_backtest(
     log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)
 
     flush_decision_events(force=True)
+    max_dd = _max_drawdown_pct_from_equity([point.equity_usd for point in account_curve])
 
     # Patch world_regime_label into rows (stored on signal, pass through)
     # (already embedded in entry_reason; trade write accesses signal directly)
     write_account_curve(conn, run_id, account_curve)
     write_trades(conn, run_id, closed_trades)
-    update_run_summary(conn, run_id, closed_trades, equity)
+    update_run_summary(conn, run_id, closed_trades, equity, max_drawdown_pct=max_dd)
     if MONTE_CARLO_ENABLED:
         run_monte_carlo(conn, run_id, closed_trades, INITIAL_EQUITY, N_MONTE_CARLO_SIMULATIONS)
 
@@ -1076,8 +1110,6 @@ def run_backtest(
         else None
     )
 
-    equity_series = [INITIAL_EQUITY] + [t.equity_after for t in closed_trades]
-    max_dd = _max_drawdown_pct_from_equity(equity_series)
     direction_reports = {
         direction: _direction_report(closed_trades, direction)
         for direction in DIRECTIONS

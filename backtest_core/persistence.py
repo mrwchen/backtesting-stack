@@ -336,6 +336,7 @@ def update_run_summary(
     run_id: int,
     trades: list[ClosedTrade],
     final_equity: float,
+    max_drawdown_pct: Optional[float] = None,
 ) -> None:
     if not trades:
         return
@@ -360,16 +361,18 @@ def update_run_summary(
     gross_loss   = abs(sum(t.pnl_usd for t in losses))
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
 
-    # Max drawdown (peak-to-trough on equity_after series)
-    equity_series = [INITIAL_EQUITY] + [t.equity_after for t in trades]
-    peak = equity_series[0]
-    max_dd = 0.0
-    for eq in equity_series:
-        if eq > peak:
-            peak = eq
-        dd = (peak - eq) / peak * 100.0
-        if dd > max_dd:
-            max_dd = dd
+    if max_drawdown_pct is None:
+        equity_series = [INITIAL_EQUITY] + [t.equity_after for t in trades]
+        peak = equity_series[0]
+        max_dd = 0.0
+        for eq in equity_series:
+            if eq > peak:
+                peak = eq
+            dd = (peak - eq) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+    else:
+        max_dd = max_drawdown_pct
 
     with conn.cursor() as cur:
         cur.execute(
