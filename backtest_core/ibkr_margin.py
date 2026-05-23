@@ -25,6 +25,8 @@ class IbkrMarginRequirement:
 
 _IBKR_MARGIN_CACHE: dict[tuple[str, str, str], IbkrMarginRequirement] = {}
 _IBKR_MARGIN_SYMBOL_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
+_IBKR_MARGIN_UNIVERSE_CACHE: dict[tuple[str, str], tuple[tuple[object, ...], tuple[str, ...]]] = {}
+_IBKR_MARGIN_UNIVERSE_LOGGED: set[str] = set()
 
 
 def ibkr_action_for_direction(direction: str) -> str:
@@ -73,6 +75,54 @@ def get_ibkr_margin_symbols(
         len(symbols),
     )
     return symbols
+
+
+def get_ibkr_margin_universe(
+    conn: psycopg2.extensions.connection,
+    action: str,
+    margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
+) -> tuple[tuple[object, ...], tuple[str, ...]]:
+    normalized_action = action.strip().upper()
+    cache_key = (margin_table, normalized_action)
+    cached = _IBKR_MARGIN_UNIVERSE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if normalized_action not in {"BUY", "SELL"}:
+        symbols = get_ibkr_margin_symbols(conn, normalized_action, margin_table)
+        universe_key = ("ibkr_acc", margin_table, normalized_action, len(symbols))
+        result = (universe_key, symbols)
+        _IBKR_MARGIN_UNIVERSE_CACHE[cache_key] = result
+        return result
+
+    buy_symbols = get_ibkr_margin_symbols(conn, "BUY", margin_table)
+    sell_symbols = get_ibkr_margin_symbols(conn, "SELL", margin_table)
+    if buy_symbols == sell_symbols:
+        universe_key = ("ibkr_acc", margin_table, "BUY_SELL_SHARED", len(buy_symbols))
+        _IBKR_MARGIN_UNIVERSE_CACHE[(margin_table, "BUY")] = (universe_key, buy_symbols)
+        _IBKR_MARGIN_UNIVERSE_CACHE[(margin_table, "SELL")] = (universe_key, sell_symbols)
+        if margin_table not in _IBKR_MARGIN_UNIVERSE_LOGGED:
+            log.info(
+                "IBKR margin BUY and SELL symbol universes identical table %s symbols %d; sharing candidate timeline cache",
+                margin_table,
+                len(buy_symbols),
+            )
+            _IBKR_MARGIN_UNIVERSE_LOGGED.add(margin_table)
+        return _IBKR_MARGIN_UNIVERSE_CACHE[cache_key]
+
+    buy_key = ("ibkr_acc", margin_table, "BUY", len(buy_symbols))
+    sell_key = ("ibkr_acc", margin_table, "SELL", len(sell_symbols))
+    _IBKR_MARGIN_UNIVERSE_CACHE[(margin_table, "BUY")] = (buy_key, buy_symbols)
+    _IBKR_MARGIN_UNIVERSE_CACHE[(margin_table, "SELL")] = (sell_key, sell_symbols)
+    if margin_table not in _IBKR_MARGIN_UNIVERSE_LOGGED:
+        log.info(
+            "IBKR margin BUY and SELL symbol universes differ table %s buy symbols %d sell symbols %d; keeping candidate timeline caches separate",
+            margin_table,
+            len(buy_symbols),
+            len(sell_symbols),
+        )
+        _IBKR_MARGIN_UNIVERSE_LOGGED.add(margin_table)
+    return _IBKR_MARGIN_UNIVERSE_CACHE[cache_key]
 
 
 def get_ibkr_margin_requirement(

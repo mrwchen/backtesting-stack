@@ -15,7 +15,7 @@ from psycopg2 import sql
 
 from backtest_shared import Bar, FundamentalRow, InstrumentKey, WorldRegime, instrument_key
 from .config import *
-from .ibkr_margin import get_ibkr_margin_symbols, ibkr_action_for_direction
+from .ibkr_margin import get_ibkr_margin_symbols, get_ibkr_margin_universe, ibkr_action_for_direction
 from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
@@ -300,11 +300,16 @@ def _candidate_timeline_key(
     filter_high_leverage: bool,
     filter_negative_earnings: bool,
     ibkr_margin_table: str,
+    broker_universe_key_override: Optional[tuple] = None,
 ) -> tuple:
     if ACCOUNT_PROFILE == "ps_acc":
         broker_universe_key = ("ps_acc", pepperstone_table)
     elif ACCOUNT_PROFILE == "ibkr_acc":
-        broker_universe_key = ("ibkr_acc", ibkr_margin_table, ibkr_action_for_direction(direction))
+        broker_universe_key = broker_universe_key_override or (
+            "ibkr_acc",
+            ibkr_margin_table,
+            ibkr_action_for_direction(direction),
+        )
     else:
         broker_universe_key = (ACCOUNT_PROFILE,)
     return (
@@ -740,6 +745,7 @@ def get_candidates(
         score_val = short_max_fundamental
 
     params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
+    broker_universe_key_override: Optional[tuple] = None
     base_where_parts = [
         sql.SQL("f.symbol IS NOT NULL"),
         sql.SQL("f.exchange IS NOT NULL"),
@@ -771,6 +777,19 @@ def get_candidates(
             "NULLIF(candidates.financial_currency, ''), "
             "%(required_currency)s) = %(required_currency)s"
         ))
+
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
+        broker_universe_key_override, ibkr_margin_symbols = get_ibkr_margin_universe(
+            conn,
+            params["ibkr_margin_action"],
+            ibkr_margin_table,
+        )
+        params["ibkr_margin_symbols"] = list(ibkr_margin_symbols)
+        if not ibkr_margin_symbols:
+            if cacheable_result:
+                _CANDIDATE_CACHE[cache_key] = []
+            return []
 
     recency_order = sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) DESC NULLS LAST, f.time DESC")
 
@@ -821,6 +840,7 @@ def get_candidates(
             filter_high_leverage,
             filter_negative_earnings,
             ibkr_margin_table,
+            broker_universe_key_override,
         )
         timeline_candidates = _get_candidates_from_timeline(
             conn,
@@ -878,10 +898,6 @@ def get_candidates(
             sql.SQL("\n              AND ").join(eligibility_where_parts),
         )
     elif ACCOUNT_PROFILE == "ibkr_acc":
-        params["ibkr_margin_action"] = ibkr_action_for_direction(direction)
-        params["ibkr_margin_symbols"] = list(
-            get_ibkr_margin_symbols(conn, params["ibkr_margin_action"], ibkr_margin_table)
-        )
         if not params["ibkr_margin_symbols"]:
             if cacheable_result:
                 _CANDIDATE_CACHE[cache_key] = []

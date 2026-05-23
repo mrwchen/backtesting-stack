@@ -59,7 +59,7 @@ services:
       - SIGNAL_BAR_CACHE_ENABLED=true
       - SIGNAL_BAR_CACHE_MAX_MIB=2048
       - CANDIDATE_TIMELINE_CACHE_ENABLED=true
-      - CANDIDATE_TIMELINE_CACHE_MAX_MIB=1024
+      - CANDIDATE_TIMELINE_CACHE_MAX_MIB=3072
       - CANDIDATE_TIMELINE_CURSOR_ITERSIZE=10000
 
       # ---------------------------------------------------------------------
