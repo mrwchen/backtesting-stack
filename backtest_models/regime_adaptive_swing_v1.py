@@ -82,6 +82,18 @@ def signal_config_from_env() -> SignalConfig:
     )
 
 
+def required_bar_lookback(cfg: SignalConfig) -> int:
+    return max(
+        cfg.min_bars,
+        cfg.price_lookback_bars,
+        cfg.momentum_lookback_bars,
+        cfg.sl_lookback_bars,
+        cfg.vol_long_bars,
+        cfg.vol_short_bars,
+        50,
+    )
+
+
 def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals):
     yield {"config": dataclasses.replace(base_cfg), "notes": "grid model=regime_adaptive_swing_v1", "summary": {}}
 

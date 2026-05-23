@@ -63,6 +63,13 @@ log = logging.getLogger(__name__)
 DIRECTIONS = ("LONG", "SHORT")
 
 
+def _bar_lookback_limit(model: Any, cfg: Any) -> int:
+    required_bar_lookback = getattr(model, "required_bar_lookback", None)
+    if callable(required_bar_lookback):
+        return max(1, int(cfg.min_bars), int(required_bar_lookback(cfg)))
+    return max(1, int(cfg.min_bars) + int(cfg.price_lookback_bars))
+
+
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
     return sum(1 for pos in open_positions if pos.direction == direction)
 
@@ -597,7 +604,7 @@ def run_backtest(
                 continue
 
             candidate_identities = [fundamental.identity_key for fundamental in candidates]
-            bar_lookback_limit = cfg.min_bars + cfg.price_lookback_bars
+            bar_lookback_limit = _bar_lookback_limit(model, cfg)
             bar_load_started = _time.perf_counter()
             recent_bars_by_identity = load_recent_bars_for_identities(
                 conn,
