@@ -133,6 +133,241 @@ def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
     return max(stop_price, float(bar_open))
 
 
+def _middle_low_reaches(open_: float, close: float, low: float, level: float) -> bool:
+    return low <= level and low < min(open_, close)
+
+
+def _middle_high_reaches(open_: float, close: float, high: float, level: float) -> bool:
+    return high >= level and high > max(open_, close)
+
+
+def _long_stop_trade(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    price: float,
+    bar_date: date,
+    total_bars: int,
+    tp1_hit: bool,
+    tp1_price: Optional[float],
+    equity: float,
+    ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+) -> ClosedTrade:
+    if tp1_hit:
+        pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
+        status = "HIT_TP1_THEN_BE"
+    else:
+        pnl = _pnl_long(pos, price, price, split_exits=False)
+        status = "HIT_SL"
+    return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
+
+
+def _short_stop_trade(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    price: float,
+    bar_date: date,
+    total_bars: int,
+    tp1_hit: bool,
+    tp1_price: Optional[float],
+    equity: float,
+    ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+) -> ClosedTrade:
+    if tp1_hit:
+        pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
+        status = "HIT_TP1_THEN_BE"
+    else:
+        pnl = _pnl_short(pos, price, price, split_exits=False)
+        status = "HIT_SL"
+    return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
+
+
+def _long_tp2_trade(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    bar_date: date,
+    total_bars: int,
+    tp1_price: Optional[float],
+    equity: float,
+    ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+) -> ClosedTrade:
+    price = pos.take_profit_2
+    pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
+    return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
+
+
+def _short_tp2_trade(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    bar_date: date,
+    total_bars: int,
+    tp1_price: Optional[float],
+    equity: float,
+    ts: datetime,
+    tp1_exit_ts: Optional[datetime],
+) -> ClosedTrade:
+    price = pos.take_profit_2
+    pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
+    return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
+
+
+def _simulate_long_intrabar(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    ts: datetime,
+    bar_date: date,
+    total_bars: int,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    stop_loss_active: bool,
+    sl_tp_active: bool,
+    tp1_hit: bool,
+    tp1_price: Optional[float],
+    tp1_exit_ts: Optional[datetime],
+    effective_sl: float,
+    equity: float,
+) -> tuple[Optional[ClosedTrade], bool, Optional[float], Optional[datetime], float]:
+    # Open is known to be first. Favourable gaps can reach TP before any unknown low.
+    if stop_loss_active and open_ <= effective_sl:
+        price = _long_stop_fill_price(effective_sl, open_)
+        return _long_stop_trade(conn, pos, price, bar_date, total_bars, tp1_hit, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if sl_tp_active:
+        if tp1_hit:
+            if open_ >= pos.take_profit_2:
+                return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        elif open_ >= pos.take_profit_1:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            if open_ >= pos.take_profit_2:
+                return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    # High/low ordering between open and close is unknown. Resolve conflicts with SL first.
+    if tp1_hit:
+        stop_mid = stop_loss_active and _middle_low_reaches(open_, close, low, effective_sl)
+        tp2_mid = sl_tp_active and _middle_high_reaches(open_, close, high, pos.take_profit_2)
+        if stop_mid:
+            return _long_stop_trade(conn, pos, effective_sl, bar_date, total_bars, True, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        if tp2_mid:
+            return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+    else:
+        stop_mid = stop_loss_active and _middle_low_reaches(open_, close, low, effective_sl)
+        tp1_mid = sl_tp_active and _middle_high_reaches(open_, close, high, pos.take_profit_1)
+        if stop_mid:
+            return _long_stop_trade(conn, pos, effective_sl, bar_date, total_bars, False, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        if tp1_mid:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            be_mid = stop_loss_active and _middle_low_reaches(open_, close, low, effective_sl)
+            tp2_mid = sl_tp_active and _middle_high_reaches(open_, close, high, pos.take_profit_2)
+            if be_mid:
+                return _long_stop_trade(conn, pos, effective_sl, bar_date, total_bars, True, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+            if tp2_mid:
+                return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    # Close is known to be last.
+    if stop_loss_active and close <= effective_sl:
+        return _long_stop_trade(conn, pos, effective_sl, bar_date, total_bars, tp1_hit, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if sl_tp_active:
+        if tp1_hit:
+            if close >= pos.take_profit_2:
+                return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        elif close >= pos.take_profit_1:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            if close >= pos.take_profit_2:
+                return _long_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    return None, tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+
+def _simulate_short_intrabar(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    ts: datetime,
+    bar_date: date,
+    total_bars: int,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    stop_loss_active: bool,
+    sl_tp_active: bool,
+    tp1_hit: bool,
+    tp1_price: Optional[float],
+    tp1_exit_ts: Optional[datetime],
+    effective_sl: float,
+    equity: float,
+) -> tuple[Optional[ClosedTrade], bool, Optional[float], Optional[datetime], float]:
+    if stop_loss_active and open_ >= effective_sl:
+        price = _short_stop_fill_price(effective_sl, open_)
+        return _short_stop_trade(conn, pos, price, bar_date, total_bars, tp1_hit, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if sl_tp_active:
+        if tp1_hit:
+            if open_ <= pos.take_profit_2:
+                return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        elif open_ <= pos.take_profit_1:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            if open_ <= pos.take_profit_2:
+                return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if tp1_hit:
+        stop_mid = stop_loss_active and _middle_high_reaches(open_, close, high, effective_sl)
+        tp2_mid = sl_tp_active and _middle_low_reaches(open_, close, low, pos.take_profit_2)
+        if stop_mid:
+            return _short_stop_trade(conn, pos, effective_sl, bar_date, total_bars, True, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        if tp2_mid:
+            return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+    else:
+        stop_mid = stop_loss_active and _middle_high_reaches(open_, close, high, effective_sl)
+        tp1_mid = sl_tp_active and _middle_low_reaches(open_, close, low, pos.take_profit_1)
+        if stop_mid:
+            return _short_stop_trade(conn, pos, effective_sl, bar_date, total_bars, False, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        if tp1_mid:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            be_mid = stop_loss_active and _middle_high_reaches(open_, close, high, effective_sl)
+            tp2_mid = sl_tp_active and _middle_low_reaches(open_, close, low, pos.take_profit_2)
+            if be_mid:
+                return _short_stop_trade(conn, pos, effective_sl, bar_date, total_bars, True, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+            if tp2_mid:
+                return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if stop_loss_active and close >= effective_sl:
+        return _short_stop_trade(conn, pos, effective_sl, bar_date, total_bars, tp1_hit, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    if sl_tp_active:
+        if tp1_hit:
+            if close <= pos.take_profit_2:
+                return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+        elif close <= pos.take_profit_1:
+            tp1_hit = True
+            tp1_price = pos.take_profit_1
+            tp1_exit_ts = ts
+            effective_sl = pos.entry_price
+            if close <= pos.take_profit_2:
+                return _short_tp2_trade(conn, pos, bar_date, total_bars, tp1_price, equity, ts, tp1_exit_ts), tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+    return None, tp1_hit, tp1_price, tp1_exit_ts, effective_sl
+
+
 def simulate_outcome(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -169,49 +404,45 @@ def simulate_outcome(
         stop_loss_active = _is_stop_loss_active(ts)
 
         if is_long:
-            # SL check first (conservative — if same bar hits both, SL wins)
-            if stop_loss_active and low <= effective_sl:
-                price = _long_stop_fill_price(effective_sl, open_)
-                if tp1_hit:
-                    pnl = _pnl_long(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
-                    status = "HIT_TP1_THEN_BE"
-                else:
-                    pnl = _pnl_long(pos, price, price, split_exits=False)
-                    status = "HIT_SL"
-                return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
-
-            if sl_tp_active and not tp1_hit and high >= pos.take_profit_1:
-                tp1_hit = True
-                tp1_price = pos.take_profit_1
-                tp1_exit_ts = ts
-                effective_sl = pos.entry_price  # move SL to breakeven
-
-            if sl_tp_active and tp1_hit and high >= pos.take_profit_2:
-                price = pos.take_profit_2
-                pnl = _pnl_long(pos, tp1_price, price)
-                return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
-
-        else:  # SHORT
-            if stop_loss_active and high >= effective_sl:
-                price = _short_stop_fill_price(effective_sl, open_)
-                if tp1_hit:
-                    pnl = _pnl_short(pos, tp1_price if tp1_price is not None else pos.take_profit_1, price)
-                    status = "HIT_TP1_THEN_BE"
-                else:
-                    pnl = _pnl_short(pos, price, price, split_exits=False)
-                    status = "HIT_SL"
-                return _make_trade(conn, pos, status, price, bar_date, total_bars, tp1_hit, pnl, equity, ts, tp1_exit_ts)
-
-            if sl_tp_active and not tp1_hit and low <= pos.take_profit_1:
-                tp1_hit = True
-                tp1_price = pos.take_profit_1
-                tp1_exit_ts = ts
-                effective_sl = pos.entry_price
-
-            if sl_tp_active and tp1_hit and low <= pos.take_profit_2:
-                price = pos.take_profit_2
-                pnl = _pnl_short(pos, tp1_price, price)
-                return _make_trade(conn, pos, "HIT_TP2", price, bar_date, total_bars, True, pnl, equity, ts, tp1_exit_ts)
+            trade, tp1_hit, tp1_price, tp1_exit_ts, effective_sl = _simulate_long_intrabar(
+                conn,
+                pos,
+                ts,
+                bar_date,
+                total_bars,
+                float(open_),
+                float(high),
+                float(low),
+                float(close),
+                stop_loss_active,
+                sl_tp_active,
+                tp1_hit,
+                tp1_price,
+                tp1_exit_ts,
+                effective_sl,
+                equity,
+            )
+        else:
+            trade, tp1_hit, tp1_price, tp1_exit_ts, effective_sl = _simulate_short_intrabar(
+                conn,
+                pos,
+                ts,
+                bar_date,
+                total_bars,
+                float(open_),
+                float(high),
+                float(low),
+                float(close),
+                stop_loss_active,
+                sl_tp_active,
+                tp1_hit,
+                tp1_price,
+                tp1_exit_ts,
+                effective_sl,
+                equity,
+            )
+        if trade is not None:
+            return trade
 
         if ts >= pos.valid_until:
             price = float(close)
