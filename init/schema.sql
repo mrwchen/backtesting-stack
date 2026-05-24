@@ -70,24 +70,31 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     min_market_cap_m     NUMERIC(10,2),
 
     -- Model parameter snapshot
-    long_min_pullback    NUMERIC(5,2)  NOT NULL,
+    long_min_pullback    NUMERIC(5,2),
     long_max_pullback    NUMERIC(5,2),
     long_ideal_pullback  NUMERIC(5,2),
-    long_max_rsi         NUMERIC(5,2)  NOT NULL,
-    short_min_bounce     NUMERIC(5,2)  NOT NULL,
+    long_max_rsi         NUMERIC(5,2),
+    short_min_bounce     NUMERIC(5,2),
     short_max_bounce     NUMERIC(5,2),
     short_ideal_bounce   NUMERIC(5,2),
     short_min_rsi        NUMERIC(5,2),
-    short_max_rsi        NUMERIC(5,2)  NOT NULL,
-    long_sl_buffer       NUMERIC(8,4),
-    short_sl_buffer      NUMERIC(8,4),
-    long_tp1_pct         NUMERIC(6,4)  NOT NULL,
-    long_tp2_pct         NUMERIC(6,4)  NOT NULL,
-    short_tp1_pct        NUMERIC(6,4)  NOT NULL,
-    short_tp2_pct        NUMERIC(6,4)  NOT NULL,
-    long_max_hold_days   NUMERIC(6,2),
-    short_max_hold_days  NUMERIC(6,2),
-    tp1_close_ratio      NUMERIC(4,3),
+    short_max_rsi        NUMERIC(5,2),
+
+    -- Central execution/risk policy snapshot
+    execution_long_tp1_pct NUMERIC(6,4)  NOT NULL,
+    execution_long_tp2_pct NUMERIC(6,4)  NOT NULL,
+    execution_short_tp1_pct NUMERIC(6,4) NOT NULL,
+    execution_short_tp2_pct NUMERIC(6,4) NOT NULL,
+    execution_long_max_hold_days NUMERIC(6,2) NOT NULL,
+    execution_short_max_hold_days NUMERIC(6,2) NOT NULL,
+    execution_tp1_close_ratio NUMERIC(4,3) NOT NULL,
+    common_stop_loss_enabled BOOLEAN NOT NULL,
+    common_stop_lookback_bars INTEGER NOT NULL,
+    common_stop_buffer NUMERIC(8,4) NOT NULL,
+    common_stop_atr_lookback_bars INTEGER NOT NULL,
+    common_stop_atr_mult NUMERIC(8,4) NOT NULL,
+    common_min_stop_pct NUMERIC(6,3) NOT NULL,
+    common_max_stop_pct NUMERIC(6,3) NOT NULL,
 
     -- Results summary (filled after run completes)
     run_duration_seconds NUMERIC(12,3),
@@ -114,7 +121,7 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     id                   BIGSERIAL     PRIMARY KEY,
     run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    signal_date          DATE          NOT NULL,
+    intent_date          DATE          NOT NULL,
     as_of_ts             TIMESTAMPTZ,
     symbol               TEXT,
     exchange             TEXT,
@@ -122,14 +129,14 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     direction            TEXT,
 
     -- Decision taxonomy
-    decision_stage       TEXT          NOT NULL, -- regime_filter | candidate_filter | bar_load | signal_eval | portfolio_filter | order_open
-    decision             TEXT          NOT NULL, -- skipped_day | no_candidates | rejected | signal | blocked | opened
+    decision_stage       TEXT          NOT NULL, -- regime_filter | candidate_filter | bar_load | intent_eval | portfolio_filter | order_open
+    decision             TEXT          NOT NULL, -- skipped_day | no_candidates | rejected | intent | blocked | opened
     reason_code          TEXT          NOT NULL,
     reason_text          TEXT,
-    signal_passed        BOOLEAN       NOT NULL DEFAULT FALSE,
+    intent_passed        BOOLEAN       NOT NULL DEFAULT FALSE,
     opened               BOOLEAN       NOT NULL DEFAULT FALSE,
     candidate_rank       INTEGER,
-    signal_rank          INTEGER,
+    intent_rank          INTEGER,
 
     -- Market and fundamental context
     world_regime_label   TEXT,
@@ -141,19 +148,16 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     mispricing_score     NUMERIC(8,4),
     market_cap_m         NUMERIC(18,2),
 
-    -- Bar and signal context
+    -- Bar, intent, and execution context
     bar_count            INTEGER,
     min_bars             INTEGER,
+    intent_score         NUMERIC(8,4),
+    intent_reason        TEXT,
     entry_ts             TIMESTAMPTZ,
     entry_price          NUMERIC(15,4),
     stop_loss            NUMERIC(15,4),
     take_profit_1        NUMERIC(15,4),
     take_profit_2        NUMERIC(15,4),
-    pullback_pct         NUMERIC(6,2),
-    rsi_1h               NUMERIC(5,2),
-    volume_ratio         NUMERIC(6,3),
-    entry_score          NUMERIC(8,4),
-    combined_score       NUMERIC(8,4),
 
     -- Portfolio context at decision time
     open_positions       INTEGER,
@@ -172,49 +176,45 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_run_day
-    ON backtest_decision_events (run_id, signal_date, decision_stage, decision);
+    ON backtest_decision_events (run_id, intent_date, decision_stage, decision);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_symbol_day
-    ON backtest_decision_events (run_id, symbol, signal_date);
+    ON backtest_decision_events (run_id, symbol, intent_date);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_identity_day
-    ON backtest_decision_events (run_id, symbol, exchange, cik, signal_date);
+    ON backtest_decision_events (run_id, symbol, exchange, cik, intent_date);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_reason
-    ON backtest_decision_events (run_id, reason_code, signal_date);
+    ON backtest_decision_events (run_id, reason_code, intent_date);
 
 -- ── Individual trades ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS backtest_trades (
     id                   SERIAL        PRIMARY KEY,
     run_id               INTEGER       NOT NULL REFERENCES backtest_runs(run_id),
-    signal_date          DATE          NOT NULL,
+    intent_date          DATE          NOT NULL,
     symbol               TEXT          NOT NULL,
     exchange             TEXT          NOT NULL,
     cik                  BIGINT        NOT NULL,
     direction            TEXT          NOT NULL,   -- LONG | SHORT
 
-    -- World regime at signal time
+    -- World regime at intent time
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
 
-    -- Fundamental label at signal time
+    -- Fundamental label at intent time
     valuation_label      TEXT,
 
-    -- Signal scores
+    -- Intent scores
     fundamental_score    NUMERIC(5,2),
-    entry_score          NUMERIC(5,2),
-    combined_score       NUMERIC(5,2),
+    intent_score         NUMERIC(8,4),
+    intent_reason        TEXT,
 
-    -- Entry
+    -- Execution levels
     entry_price          NUMERIC(15,4) NOT NULL,
     stop_loss            NUMERIC(15,4) NOT NULL,
     take_profit_1        NUMERIC(15,4) NOT NULL,
     take_profit_2        NUMERIC(15,4) NOT NULL,
-    pullback_pct         NUMERIC(6,2),
-    rsi_1h               NUMERIC(5,2),
-    volume_ratio         NUMERIC(6,3),
-    entry_reason         TEXT,
 
     -- Position sizing
     position_size_usd    NUMERIC(15,2),
@@ -238,17 +238,17 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     tp1_exit_ts          TIMESTAMPTZ,
     exit_ts              TIMESTAMPTZ,
 
-    UNIQUE (run_id, signal_date, symbol, exchange, cik)
+    UNIQUE (run_id, intent_date, symbol, exchange, cik)
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
-    ON backtest_trades (run_id, signal_date);
+    ON backtest_trades (run_id, intent_date);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
-    ON backtest_trades (symbol, signal_date);
+    ON backtest_trades (symbol, intent_date);
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_identity
-    ON backtest_trades (symbol, exchange, cik, signal_date);
+    ON backtest_trades (symbol, exchange, cik, intent_date);
 
 -- ── Account curve snapshots ─────────────────────────────────────────────────
 

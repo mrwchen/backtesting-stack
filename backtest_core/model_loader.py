@@ -70,10 +70,10 @@ def load_model_module(model_file: str) -> ModuleType:
     spec.loader.exec_module(module)
 
     required_attrs = [
-        "SignalConfig",
-        "signal_config_from_env",
-        "compute_long_signal",
-        "compute_short_signal",
+        "IntentConfig",
+        "intent_config_from_env",
+        "evaluate_long_intent",
+        "evaluate_short_intent",
     ]
     missing = [name for name in required_attrs if not hasattr(module, name)]
     if missing:

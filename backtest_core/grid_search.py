@@ -55,69 +55,26 @@ def _print_grid_summary(results: list[dict]) -> None:
         model.log_grid_summary(log, results)
         return
 
-    required_keys = {
-        "long_tp1_pct",
-        "long_tp2_pct",
-        "short_tp1_pct",
-        "short_tp2_pct",
-        "long_max_hold_days",
-        "short_max_hold_days",
-        "tp1_close_ratio",
-    }
-    if any(required_keys - set(result.keys()) for result in results):
-        ranked_generic = sorted(
-            results,
-            key=lambda r: (r["profit_factor"] or 0.0, r["total_return_pct"]),
-            reverse=True,
-        )
-        log.info("Grid search results (generic summary, sorted by profit factor):")
-        for r in ranked_generic:
-            log.info(
-                "Run %d trades %d win rate %.1f%% return %.2f%% drawdown %.2f%% profit factor %s",
-                r["run_id"],
-                r["total_trades"],
-                r["win_rate_pct"],
-                r["total_return_pct"],
-                r["max_drawdown_pct"],
-                f"{r['profit_factor']:.3f}" if r["profit_factor"] is not None else "N/A",
-            )
-        return
-
     ranked = sorted(
         results,
         key=lambda r: (r["profit_factor"] or 0.0, r["total_return_pct"]),
         reverse=True,
     )
-
-    header = (
-        f"{'run_id':>7}  {'ltp1':>5}  {'ltp2':>5}  {'stp1':>5}  {'stp2':>5}  "
-        f"{'lmhd':>4}  {'smhd':>4}  {'tcr':>4}  {'trades':>6}  {'wr%':>5}  "
-        f"{'ret%':>7}  {'dd%':>6}  {'PF':>5}"
-    )
-    sep = "-" * len(header)
-    log.info("Grid search results (sorted by profit factor):\n%s\n%s", header, sep)
+    log.info("Grid search results sorted by profit factor")
     for r in ranked:
-        pf = f"{r['profit_factor']:.3f}" if r["profit_factor"] is not None else "  N/A"
         log.info(
-            "%7d  %5.3f  %5.3f  %5.3f  %5.3f  %4.1f  %4.1f  %4.2f  %6d  %5.1f  %7.2f  %6.2f  %5s",
+            "Run %d trades %d win rate %.1f%% return %.2f%% drawdown %.2f%% profit factor %s",
             r["run_id"],
-            r["long_tp1_pct"], r["long_tp2_pct"],
-            r["short_tp1_pct"], r["short_tp2_pct"],
-            r["long_max_hold_days"], r["short_max_hold_days"], r["tp1_close_ratio"],
             r["total_trades"],
             r["win_rate_pct"],
             r["total_return_pct"],
             r["max_drawdown_pct"],
-            pf,
+            f"{r['profit_factor']:.3f}" if r["profit_factor"] is not None else "N/A",
         )
     best = ranked[0]
     log.info(
-        "Best combination run %d PF %s return %.2f%% drawdown %.2f%% "
-        "long TP1 %.3f long TP2 %.3f short TP1 %.3f short TP2 %.3f long max hold %.1f short max hold %.1f TP1 close ratio %.2f",
+        "Best combination run %d PF %s return %.2f%% drawdown %.2f%%",
         best["run_id"],
         f"{best['profit_factor']:.3f}" if best["profit_factor"] else "N/A",
         best["total_return_pct"], best["max_drawdown_pct"],
-        best["long_tp1_pct"], best["long_tp2_pct"],
-        best["short_tp1_pct"], best["short_tp2_pct"],
-        best["long_max_hold_days"], best["short_max_hold_days"], best["tp1_close_ratio"],
     )

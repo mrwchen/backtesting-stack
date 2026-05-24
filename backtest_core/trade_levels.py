@@ -1,10 +1,9 @@
-"""Common stop-loss and take-profit policy for accepted model entries."""
+"""Central execution levels for accepted model intents."""
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from backtest_shared import Bar, Signal
+from backtest_shared import Bar, FundamentalRow, TradeIntent, TradePlan
 
 from .config import (
     COMMON_MAX_STOP_PCT,
@@ -14,101 +13,115 @@ from .config import (
     COMMON_STOP_BUFFER,
     COMMON_STOP_LOOKBACK_BARS,
     COMMON_STOP_LOSS_ENABLED,
-)
-
-MODEL_STOP_LOSS_PARAM_NAMES = (
-    "long_stop_vol_mult",
-    "short_stop_vol_mult",
-    "min_stop_pct",
-    "max_stop_pct",
+    EXECUTION_LONG_MAX_HOLD_DAYS,
+    EXECUTION_LONG_TP1_PCT,
+    EXECUTION_LONG_TP2_PCT,
+    EXECUTION_SHORT_MAX_HOLD_DAYS,
+    EXECUTION_SHORT_TP1_PCT,
+    EXECUTION_SHORT_TP2_PCT,
+    EXECUTION_TP1_CLOSE_RATIO,
 )
 
 
 @dataclass(frozen=True)
-class TradeLevelResult:
+class TradePlanResult:
     accepted: bool
     source: str
     reason_code: str
     reason_text: str
-
-
-def model_uses_own_stop_loss(cfg: Any) -> bool:
-    """Return true when a strategy config carries an explicit SL concept."""
-    explicit_flag = getattr(cfg, "model_stop_loss_enabled", None)
-    if explicit_flag is not None:
-        return bool(explicit_flag)
-    return all(hasattr(cfg, name) for name in MODEL_STOP_LOSS_PARAM_NAMES)
+    plan: TradePlan | None = None
 
 
 def common_stop_required_lookback() -> int:
     return max(COMMON_STOP_LOOKBACK_BARS, COMMON_STOP_ATR_LOOKBACK_BARS + 1)
 
 
-def apply_trade_levels(
-    signal: Signal,
+def build_trade_plan(
+    intent: TradeIntent,
+    fundamental: FundamentalRow,
     bars: list[Bar],
-    cfg: Any,
     entry_ts: datetime,
     entry_open: float,
-) -> TradeLevelResult:
-    signal.entry_ts = entry_ts
-    signal.entry_price = float(entry_open)
-    _apply_common_take_profits(signal, cfg)
-
-    if model_uses_own_stop_loss(cfg):
-        return _validate_model_stop_loss(signal)
-
+) -> TradePlanResult:
+    entry_price = float(entry_open)
     if not COMMON_STOP_LOSS_ENABLED:
-        return _validate_model_stop_loss(signal)
+        return TradePlanResult(
+            False,
+            "execution",
+            "common_stop_loss_disabled",
+            "Central stop-loss policy is disabled; execution risk engine cannot size this trade.",
+        )
 
-    stop_loss = _common_stop_loss(signal.direction, signal.entry_price, bars)
+    stop_loss = _common_stop_loss(intent.direction, entry_price, bars)
     if stop_loss is None:
-        return TradeLevelResult(
+        return TradePlanResult(
             False,
-            "common",
+            "execution",
             "common_stop_loss_unavailable",
-            "Common stop-loss policy could not calculate a valid stop from recent bars.",
+            "Central stop-loss policy could not calculate a valid stop from recent bars.",
         )
 
-    signal.stop_loss = stop_loss
-    return TradeLevelResult(True, "common", "common_stop_loss_applied", "Common stop-loss policy applied.")
-
-
-def _apply_common_take_profits(signal: Signal, cfg: Any) -> None:
-    if signal.direction == "LONG":
-        signal.take_profit_1 = signal.entry_price * (1.0 + cfg.long_tp1_pct)
-        signal.take_profit_2 = signal.entry_price * (1.0 + cfg.long_tp2_pct)
+    if intent.direction == "LONG":
+        take_profit_1 = entry_price * (1.0 + EXECUTION_LONG_TP1_PCT)
+        take_profit_2 = entry_price * (1.0 + EXECUTION_LONG_TP2_PCT)
     else:
-        signal.take_profit_1 = signal.entry_price * (1.0 - cfg.short_tp1_pct)
-        signal.take_profit_2 = signal.entry_price * (1.0 - cfg.short_tp2_pct)
+        take_profit_1 = entry_price * (1.0 - EXECUTION_SHORT_TP1_PCT)
+        take_profit_2 = entry_price * (1.0 - EXECUTION_SHORT_TP2_PCT)
+
+    plan = TradePlan(
+        symbol=fundamental.symbol,
+        direction=intent.direction,
+        fundamental_score=fundamental.composite_score,
+        intent_score=intent.score,
+        intent_reason=intent.reason,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit_1=take_profit_1,
+        take_profit_2=take_profit_2,
+        valuation_label=fundamental.valuation_label,
+        sector=fundamental.sector,
+        industry=fundamental.industry,
+        entry_ts=entry_ts,
+        exchange=fundamental.exchange,
+        cik=fundamental.cik,
+    )
+    return TradePlanResult(
+        True,
+        "execution",
+        "execution_levels_applied",
+        "Central execution risk engine applied entry, stop-loss, and take-profit levels.",
+        plan,
+    )
 
 
-def _validate_model_stop_loss(signal: Signal) -> TradeLevelResult:
-    try:
-        stop_loss = float(signal.stop_loss)
-    except (TypeError, ValueError):
-        return TradeLevelResult(
-            False,
-            "model",
-            "model_stop_loss_missing",
-            "Model-owned stop-loss policy did not provide a numeric stop.",
-        )
+def execution_max_hold_days(direction: str) -> float:
+    if direction == "LONG":
+        return EXECUTION_LONG_MAX_HOLD_DAYS
+    if direction == "SHORT":
+        return EXECUTION_SHORT_MAX_HOLD_DAYS
+    raise ValueError(f"Unknown direction: {direction!r}")
 
-    if signal.direction == "LONG" and stop_loss >= signal.entry_price:
-        return TradeLevelResult(
+
+def execution_take_profit_close_ratio() -> float:
+    return EXECUTION_TP1_CLOSE_RATIO
+
+
+def validate_intent_for_candidate(intent: TradeIntent, fundamental: FundamentalRow, direction: str) -> TradePlanResult:
+    if intent.direction != direction:
+        return TradePlanResult(
             False,
-            "model",
-            "model_stop_loss_invalid",
-            "Model-owned long stop-loss was not below entry.",
+            "intent",
+            "intent_direction_mismatch",
+            f"Model returned {intent.direction} while runner was evaluating {direction}.",
         )
-    if signal.direction == "SHORT" and stop_loss <= signal.entry_price:
-        return TradeLevelResult(
+    if intent.symbol != fundamental.symbol.strip().upper():
+        return TradePlanResult(
             False,
-            "model",
-            "model_stop_loss_invalid",
-            "Model-owned short stop-loss was not above entry.",
+            "intent",
+            "intent_symbol_mismatch",
+            f"Model returned symbol {intent.symbol} for candidate {fundamental.symbol}.",
         )
-    return TradeLevelResult(True, "model", "model_stop_loss_applied", "Model-owned stop-loss policy applied.")
+    return TradePlanResult(True, "intent", "intent_valid", "Model intent matched the evaluated candidate and direction.")
 
 
 def _common_stop_loss(direction: str, entry_price: float, bars: list[Bar]) -> float | None:

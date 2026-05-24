@@ -1,5 +1,6 @@
 """Public API exposed to pluggable backtest model files."""
 
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,21 +55,43 @@ class Bar:
     volume: int
 
 
+@dataclass(frozen=True)
+class TradeIntent:
+    symbol: str
+    direction: str
+    score: float
+    reason: str
+
+    def __post_init__(self) -> None:
+        symbol = str(self.symbol).strip().upper()
+        direction = str(self.direction).strip().upper()
+        reason = str(self.reason).strip()
+        score = float(self.score)
+        if not symbol:
+            raise ValueError("TradeIntent.symbol is required")
+        if direction not in {"LONG", "SHORT"}:
+            raise ValueError("TradeIntent.direction must be LONG or SHORT")
+        if not math.isfinite(score):
+            raise ValueError("TradeIntent.score must be finite")
+        if not reason:
+            raise ValueError("TradeIntent.reason is required")
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "direction", direction)
+        object.__setattr__(self, "score", score)
+        object.__setattr__(self, "reason", reason)
+
+
 @dataclass
-class Signal:
+class TradePlan:
     symbol: str
     direction: str
     fundamental_score: float
-    entry_score: float
-    combined_score: float
+    intent_score: float
+    intent_reason: str
     entry_price: float
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
-    pullback_pct: float
-    rsi_1h: float
-    volume_ratio: float
-    entry_reason: str
     valuation_label: str = ""
     sector: str = ""
     industry: str = ""
@@ -82,20 +105,11 @@ class Signal:
 
 
 @dataclass
-class SignalEvaluation:
-    signal: Optional[Signal]
+class IntentEvaluation:
+    intent: Optional[TradeIntent]
     decision: str
     reason_code: str
     reason_text: str
-    entry_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit_1: Optional[float] = None
-    take_profit_2: Optional[float] = None
-    pullback_pct: Optional[float] = None
-    rsi_1h: Optional[float] = None
-    volume_ratio: Optional[float] = None
-    entry_score: Optional[float] = None
-    combined_score: Optional[float] = None
 
 
 def env_bool(name: str, default: bool) -> bool:

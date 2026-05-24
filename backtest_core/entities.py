@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 
-from backtest_shared import InstrumentKey, Signal, instrument_key
+from backtest_shared import InstrumentKey, TradePlan, instrument_key
 
 @dataclass
 class OpenPosition:
@@ -25,7 +25,7 @@ class OpenPosition:
     margin_used: float
     maintenance_margin_used: float
     equity_before: float
-    signal: Signal
+    plan: TradePlan
     world_regime_label: str = ""
     world_regime_score: float = 0.0
     valuation_label: str = ""
@@ -99,7 +99,7 @@ class PortfolioEvent:
 @dataclass
 class DecisionEvent:
     run_id: int
-    signal_date: date
+    intent_date: date
     as_of_ts: Optional[datetime]
     symbol: Optional[str]
     exchange: Optional[str]
@@ -109,10 +109,10 @@ class DecisionEvent:
     decision: str
     reason_code: str
     reason_text: str = ""
-    signal_passed: bool = False
+    intent_passed: bool = False
     opened: bool = False
     candidate_rank: Optional[int] = None
-    signal_rank: Optional[int] = None
+    intent_rank: Optional[int] = None
     world_regime_label: str = ""
     world_regime_score: Optional[float] = None
     valuation_label: str = ""
@@ -123,16 +123,13 @@ class DecisionEvent:
     market_cap_m: Optional[float] = None
     bar_count: Optional[int] = None
     min_bars: Optional[int] = None
+    intent_score: Optional[float] = None
+    intent_reason: str = ""
     entry_ts: Optional[datetime] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit_1: Optional[float] = None
     take_profit_2: Optional[float] = None
-    pullback_pct: Optional[float] = None
-    rsi_1h: Optional[float] = None
-    volume_ratio: Optional[float] = None
-    entry_score: Optional[float] = None
-    combined_score: Optional[float] = None
     open_positions: Optional[int] = None
     max_open_positions: Optional[int] = None
     account_equity: Optional[float] = None

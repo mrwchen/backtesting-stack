@@ -14,9 +14,12 @@ from . import runtime
 from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent
 from .policy import COMMON_POLICY
-from .trade_levels import model_uses_own_stop_loss
 
 log = logging.getLogger(__name__)
+
+
+def _cfg_or_none(cfg: Any, name: str) -> Any:
+    return getattr(cfg, name, None)
 
 def create_run(
     conn: psycopg2.extensions.connection,
@@ -24,9 +27,6 @@ def create_run(
     notes: Optional[str] = None,
 ) -> int:
     run_notes = _build_run_notes(notes)
-    model_stop_source = model_uses_own_stop_loss(cfg)
-    long_sl_buffer = cfg.long_sl_buffer if model_stop_source else COMMON_STOP_BUFFER
-    short_sl_buffer = cfg.short_sl_buffer if model_stop_source else COMMON_STOP_BUFFER
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -48,10 +48,13 @@ def create_run(
                 long_min_fundamental, short_max_fundamental, min_market_cap_m,
                 long_min_pullback, long_max_pullback, long_ideal_pullback, long_max_rsi,
                 short_min_bounce, short_max_bounce, short_ideal_bounce, short_min_rsi, short_max_rsi,
-                long_sl_buffer, short_sl_buffer,
-                long_tp1_pct, long_tp2_pct, short_tp1_pct, short_tp2_pct,
-                long_max_hold_days, short_max_hold_days,
-                tp1_close_ratio
+                execution_long_tp1_pct, execution_long_tp2_pct,
+                execution_short_tp1_pct, execution_short_tp2_pct,
+                execution_long_max_hold_days, execution_short_max_hold_days,
+                execution_tp1_close_ratio,
+                common_stop_loss_enabled, common_stop_lookback_bars, common_stop_buffer,
+                common_stop_atr_lookback_bars, common_stop_atr_mult,
+                common_min_stop_pct, common_max_stop_pct
             ) VALUES (
                 %s, %s, %s, to_char(NOW() AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI'), %s,
                 %s,
@@ -68,9 +71,10 @@ def create_run(
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s,
                 %s, %s,
-                %s
+                %s, %s
             ) RETURNING run_id
             """,
             (
@@ -93,12 +97,29 @@ def create_run(
                 ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
                 COMMON_POLICY.regime_long_max_score, COMMON_POLICY.regime_short_min_score,
                 COMMON_POLICY.long_min_fundamental, COMMON_POLICY.short_max_fundamental, COMMON_POLICY.min_market_cap_m,
-                cfg.long_min_pullback, cfg.long_max_pullback, cfg.long_ideal_pullback, cfg.long_max_rsi,
-                cfg.short_min_bounce, cfg.short_max_bounce, cfg.short_ideal_bounce, cfg.short_min_rsi, cfg.short_max_rsi,
-                long_sl_buffer, short_sl_buffer,
-                cfg.long_tp1_pct, cfg.long_tp2_pct, cfg.short_tp1_pct, cfg.short_tp2_pct,
-                cfg.long_max_hold_days, cfg.short_max_hold_days,
-                cfg.tp1_close_ratio,
+                _cfg_or_none(cfg, "long_min_pullback"),
+                _cfg_or_none(cfg, "long_max_pullback"),
+                _cfg_or_none(cfg, "long_ideal_pullback"),
+                _cfg_or_none(cfg, "long_max_rsi"),
+                _cfg_or_none(cfg, "short_min_bounce"),
+                _cfg_or_none(cfg, "short_max_bounce"),
+                _cfg_or_none(cfg, "short_ideal_bounce"),
+                _cfg_or_none(cfg, "short_min_rsi"),
+                _cfg_or_none(cfg, "short_max_rsi"),
+                EXECUTION_LONG_TP1_PCT,
+                EXECUTION_LONG_TP2_PCT,
+                EXECUTION_SHORT_TP1_PCT,
+                EXECUTION_SHORT_TP2_PCT,
+                EXECUTION_LONG_MAX_HOLD_DAYS,
+                EXECUTION_SHORT_MAX_HOLD_DAYS,
+                EXECUTION_TP1_CLOSE_RATIO,
+                COMMON_STOP_LOSS_ENABLED,
+                COMMON_STOP_LOOKBACK_BARS,
+                COMMON_STOP_BUFFER,
+                COMMON_STOP_ATR_LOOKBACK_BARS,
+                COMMON_STOP_ATR_MULT,
+                COMMON_MIN_STOP_PCT,
+                COMMON_MAX_STOP_PCT,
             ),
         )
         run_id = cur.fetchone()[0]
@@ -117,7 +138,7 @@ def write_trades(
     rows = []
     for t in trades:
         p = t.position
-        s = p.signal
+        plan = p.plan
         rows.append((
             run_id,
             p.entry_date,
@@ -128,17 +149,13 @@ def write_trades(
             p.world_regime_label or None,
             Decimal(str(round(p.world_regime_score, 2))) if p.world_regime_score else None,
             p.valuation_label or None,
-            Decimal(str(round(s.fundamental_score, 2))),
-            Decimal(str(round(s.entry_score, 4))),
-            Decimal(str(round(s.combined_score, 4))),
+            Decimal(str(round(plan.fundamental_score, 2))),
+            Decimal(str(round(plan.intent_score, 4))),
+            plan.intent_reason,
             Decimal(str(round(p.entry_price, 4))),
             Decimal(str(round(p.stop_loss, 4))),
             Decimal(str(round(p.take_profit_1, 4))),
             Decimal(str(round(p.take_profit_2, 4))),
-            Decimal(str(round(s.pullback_pct, 2))),
-            Decimal(str(round(s.rsi_1h, 2))),
-            Decimal(str(round(s.volume_ratio, 3))),
-            s.entry_reason,
             Decimal(str(round(p.position_size_usd, 2))),
             Decimal(str(round(p.shares, 6))),
             Decimal(str(round(p.margin_used, 2))),
@@ -161,18 +178,17 @@ def write_trades(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, symbol, exchange, cik, direction,
+            run_id, intent_date, symbol, exchange, cik, direction,
             world_regime_label, world_regime_score, valuation_label,
-            fundamental_score, entry_score, combined_score,
+            fundamental_score, intent_score, intent_reason,
             entry_price, stop_loss, take_profit_1, take_profit_2,
-            pullback_pct, rsi_1h, volume_ratio, entry_reason,
             position_size_usd, shares, margin_used, maintenance_margin_used, equity_before,
             outcome_status, outcome_price, outcome_date, outcome_bars,
             tp1_hit, return_pct, margin_hours_usd, return_per_margin_hour_pct,
             pnl_usd, equity_after,
             entry_ts, tp1_exit_ts, exit_ts
         ) VALUES %s
-        ON CONFLICT (run_id, signal_date, symbol, exchange, cik) DO UPDATE SET
+        ON CONFLICT (run_id, intent_date, symbol, exchange, cik) DO UPDATE SET
             world_regime_score = EXCLUDED.world_regime_score,
             outcome_status = EXCLUDED.outcome_status,
             outcome_price  = EXCLUDED.outcome_price,
@@ -262,7 +278,7 @@ def write_decision_events(
     rows = [
         (
             e.run_id,
-            e.signal_date,
+            e.intent_date,
             e.as_of_ts,
             e.symbol,
             e.exchange,
@@ -272,10 +288,10 @@ def write_decision_events(
             e.decision,
             e.reason_code,
             e.reason_text or None,
-            e.signal_passed,
+            e.intent_passed,
             e.opened,
             e.candidate_rank,
-            e.signal_rank,
+            e.intent_rank,
             e.world_regime_label or None,
             _decimal_or_none(e.world_regime_score, 2),
             e.valuation_label or None,
@@ -286,16 +302,13 @@ def write_decision_events(
             _decimal_or_none(e.market_cap_m, 2),
             e.bar_count,
             e.min_bars,
+            _decimal_or_none(e.intent_score, 4),
+            e.intent_reason or None,
             e.entry_ts,
             _decimal_or_none(e.entry_price, 4),
             _decimal_or_none(e.stop_loss, 4),
             _decimal_or_none(e.take_profit_1, 4),
             _decimal_or_none(e.take_profit_2, 4),
-            _decimal_or_none(e.pullback_pct, 2),
-            _decimal_or_none(e.rsi_1h, 2),
-            _decimal_or_none(e.volume_ratio, 3),
-            _decimal_or_none(e.entry_score, 4),
-            _decimal_or_none(e.combined_score, 4),
             e.open_positions,
             e.max_open_positions,
             _decimal_or_none(e.account_equity, 2),
@@ -315,14 +328,14 @@ def write_decision_events(
 
     query = """
         INSERT INTO {table} (
-            run_id, signal_date, as_of_ts, symbol, exchange, cik, direction,
+            run_id, intent_date, as_of_ts, symbol, exchange, cik, direction,
             decision_stage, decision, reason_code, reason_text,
-            signal_passed, opened, candidate_rank, signal_rank,
+            intent_passed, opened, candidate_rank, intent_rank,
             world_regime_label, world_regime_score, valuation_label,
             sector, industry, fundamental_score, mispricing_score, market_cap_m,
-            bar_count, min_bars, entry_ts, entry_price, stop_loss,
-            take_profit_1, take_profit_2, pullback_pct, rsi_1h, volume_ratio,
-            entry_score, combined_score, open_positions, max_open_positions,
+            bar_count, min_bars, intent_score, intent_reason,
+            entry_ts, entry_price, stop_loss, take_profit_1, take_profit_2,
+            open_positions, max_open_positions,
             account_equity, initial_margin, maintenance_margin,
             available_funds, excess_liquidity,
             required_initial_margin, required_maintenance_margin,

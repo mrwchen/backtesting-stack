@@ -136,6 +136,10 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "run_duration_seconds",
         "margin_hours_usd",
         "return_per_margin_hour_pct",
+        "execution_long_tp1_pct",
+        "execution_short_tp1_pct",
+        "execution_tp1_close_ratio",
+        "common_stop_buffer",
         "ps_share_cfd_arr_pct",
         "ps_share_cfd_admin_fee_pct",
         "ps_share_cfd_short_borrow_rate_pct",
@@ -143,10 +147,10 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
         "run_id", "symbol", "exchange", "cik", "entry_ts", "margin_hours_usd",
-        "return_per_margin_hour_pct", "pnl_usd", "equity_after"
+        "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason"
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
-        "run_id", "symbol", "exchange", "cik", "signal_date"
+        "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score"
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",

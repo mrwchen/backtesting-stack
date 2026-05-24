@@ -155,9 +155,8 @@ services:
 
       # ---------------------------------------------------------------------
       # Common policy: fundamental eligibility
-      # This pre-filter is model-independent. Price action, RSI, volume, stops,
-      # model-specific take-profit overrides and hold duration remain in the
-      # model files.
+      # This pre-filter is model-independent. Models only emit symbol,
+      # direction, score, and reason.
       # ---------------------------------------------------------------------
       - COMMON_LONG_MIN_FUNDAMENTAL=62.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=42.0
@@ -169,17 +168,16 @@ services:
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
 
       # ---------------------------------------------------------------------
-      # Default model trade management and common stop policy
-      # Strategy models provide entry candidates by default. Common stop policy
-      # is ignored only by models with explicit model-owned stop params.
+      # Central execution/risk policy
+      # The engine owns entry levels, stops, take profits, and hold duration.
       # ---------------------------------------------------------------------
-      - LONG_TP1_PCT=0.055
-      - LONG_TP2_PCT=0.12
-      - SHORT_TP1_PCT=0.06
-      - SHORT_TP2_PCT=0.11
-      - TP1_CLOSE_RATIO=0.6
-      - LONG_MAX_HOLD_DAYS=12.0
-      - SHORT_MAX_HOLD_DAYS=5.0
+      - EXECUTION_LONG_TP1_PCT=0.055
+      - EXECUTION_LONG_TP2_PCT=0.12
+      - EXECUTION_SHORT_TP1_PCT=0.06
+      - EXECUTION_SHORT_TP2_PCT=0.11
+      - EXECUTION_TP1_CLOSE_RATIO=0.6
+      - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
+      - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
       - COMMON_STOP_LOSS_ENABLED=true
       - COMMON_STOP_LOOKBACK_BARS=24
       - COMMON_STOP_BUFFER_RATIO=0.007

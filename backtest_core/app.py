@@ -13,7 +13,6 @@ from .market_data import clear_market_data_caches
 from .model_loader import _validate_model_filename, load_model_config_env, load_model_module
 from .policy import COMMON_POLICY
 from .simulation import run_backtest
-from .trade_levels import model_uses_own_stop_loss
 
 log = logging.getLogger(__name__)
 
@@ -184,20 +183,23 @@ def run_single_model_worker() -> None:
         log_backtest_context(model_files)
         runtime.MODEL_MODULE = load_model_module(model_file)
         load_model_config_env(model_file)
-        cfg = runtime.MODEL_MODULE.signal_config_from_env()
+        cfg = runtime.MODEL_MODULE.intent_config_from_env()
         log.info(
-            "Model worker file %s grid search %s model max hold long %.2f short %.2f tp1 close ratio %.2f min bars %d",
+            "Model worker file %s grid search %s min bars %d",
             runtime.CURRENT_MODEL_FILE,
             GRID_SEARCH_ENABLED,
-            cfg.long_max_hold_days,
-            cfg.short_max_hold_days,
-            cfg.tp1_close_ratio,
             cfg.min_bars,
         )
         log.info(
-            "Trade level policy model %s stop loss source %s take profit source common",
+            "Execution policy model %s long tp1 %.4f long tp2 %.4f short tp1 %.4f short tp2 %.4f long max hold %.2f short max hold %.2f tp1 close ratio %.2f stop source common",
             runtime.CURRENT_MODEL_FILE,
-            "model" if model_uses_own_stop_loss(cfg) else "common",
+            EXECUTION_LONG_TP1_PCT,
+            EXECUTION_LONG_TP2_PCT,
+            EXECUTION_SHORT_TP1_PCT,
+            EXECUTION_SHORT_TP2_PCT,
+            EXECUTION_LONG_MAX_HOLD_DAYS,
+            EXECUTION_SHORT_MAX_HOLD_DAYS,
+            EXECUTION_TP1_CLOSE_RATIO,
         )
         if GRID_SEARCH_ENABLED:
             results = run_grid_search(conn, cfg)

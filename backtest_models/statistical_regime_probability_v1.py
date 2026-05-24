@@ -21,12 +21,12 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from backtest_shared import Bar, FundamentalRow, Signal, SignalEvaluation
+from backtest_shared import Bar, FundamentalRow, TradeIntent, IntentEvaluation
 from backtest_shared import clamp, env_bool, env_float, env_int, mean
 
 
 @dataclass
-class SignalConfig:
+class IntentConfig:
     """Parameters for statistical_regime_probability_v1."""
 
     # Keep enough 1h history so the model can build daily event samples.
@@ -44,15 +44,6 @@ class SignalConfig:
     short_min_rsi: float = 0.0
     short_max_rsi: float = 100.0
 
-    long_sl_buffer: float = 0.0
-    short_sl_buffer: float = 0.0
-    long_tp1_pct: float = 0.035
-    long_tp2_pct: float = 0.075
-    short_tp1_pct: float = 0.035
-    short_tp2_pct: float = 0.075
-    long_max_hold_days: float = 12.0
-    short_max_hold_days: float = 5.0
-    tp1_close_ratio: float = 0.6
     use_mispricing_score: bool = True
     mispricing_weight: float = 0.30
 
@@ -77,17 +68,12 @@ class SignalConfig:
     min_edge_pct_points: float = 2.0
     edge_score_scale_pct_points: float = 12.0
 
-    long_stop_vol_mult: float = 1.8
-    short_stop_vol_mult: float = 1.8
-    min_stop_pct: float = 2.5
-    max_stop_pct: float = 11.0
 
-
-def signal_config_from_env() -> SignalConfig:
-    d = SignalConfig()
+def intent_config_from_env() -> IntentConfig:
+    d = IntentConfig()
     shared_min_bars = env_int("MIN_BARS", d.min_bars)
     shared_lookback_bars = env_int("PRICE_LOOKBACK_BARS", d.price_lookback_bars)
-    return SignalConfig(
+    return IntentConfig(
         min_bars=env_int("PROBABILITY_MIN_BARS", max(d.min_bars, shared_min_bars)),
         price_lookback_bars=env_int("PROBABILITY_HISTORY_BARS", max(d.price_lookback_bars, shared_lookback_bars)),
         long_min_pullback=d.long_min_pullback,
@@ -99,15 +85,6 @@ def signal_config_from_env() -> SignalConfig:
         short_ideal_bounce=d.short_ideal_bounce,
         short_min_rsi=d.short_min_rsi,
         short_max_rsi=d.short_max_rsi,
-        long_sl_buffer=env_float("LONG_SL_BUFFER", d.long_sl_buffer),
-        short_sl_buffer=env_float("SHORT_SL_BUFFER", d.short_sl_buffer),
-        long_tp1_pct=env_float("LONG_TP1_PCT", d.long_tp1_pct),
-        long_tp2_pct=env_float("LONG_TP2_PCT", d.long_tp2_pct),
-        short_tp1_pct=env_float("SHORT_TP1_PCT", d.short_tp1_pct),
-        short_tp2_pct=env_float("SHORT_TP2_PCT", d.short_tp2_pct),
-        long_max_hold_days=env_float("LONG_MAX_HOLD_DAYS", d.long_max_hold_days),
-        short_max_hold_days=env_float("SHORT_MAX_HOLD_DAYS", d.short_max_hold_days),
-        tp1_close_ratio=env_float("TP1_CLOSE_RATIO", d.tp1_close_ratio),
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", d.use_mispricing_score),
         mispricing_weight=env_float("MISPRICING_WEIGHT", d.mispricing_weight),
         session_tz=os.getenv("PROBABILITY_SESSION_TZ", d.session_tz).strip() or d.session_tz,
@@ -128,14 +105,10 @@ def signal_config_from_env() -> SignalConfig:
         short_min_probability=env_float("SHORT_MIN_PROBABILITY", d.short_min_probability),
         min_edge_pct_points=env_float("MIN_EDGE_PCT_POINTS", d.min_edge_pct_points),
         edge_score_scale_pct_points=env_float("EDGE_SCORE_SCALE_PCT_POINTS", d.edge_score_scale_pct_points),
-        long_stop_vol_mult=env_float("LONG_STOP_VOL_MULT", d.long_stop_vol_mult),
-        short_stop_vol_mult=env_float("SHORT_STOP_VOL_MULT", d.short_stop_vol_mult),
-        min_stop_pct=env_float("MIN_STOP_PCT", d.min_stop_pct),
-        max_stop_pct=env_float("MAX_STOP_PCT", d.max_stop_pct),
     )
 
 
-def required_bar_lookback(cfg: SignalConfig) -> int:
+def required_bar_lookback(cfg: IntentConfig) -> int:
     return max(cfg.min_bars, cfg.price_lookback_bars)
 
 
@@ -162,7 +135,7 @@ class ProbabilityEstimate:
     realized_vol_pct: float
 
 
-def _daily_closes(bars: list[Bar], cfg: SignalConfig) -> list[tuple[object, float]]:
+def _daily_closes(bars: list[Bar], cfg: IntentConfig) -> list[tuple[object, float]]:
     zone = ZoneInfo(cfg.session_tz)
     latest_by_day: dict[object, tuple[datetime, float]] = {}
     for bar in bars:
@@ -208,7 +181,7 @@ def _stddev(values: list[float]) -> float:
     return math.sqrt(max(variance, 0.0))
 
 
-def _event_features(closes: list[float], returns_pct: list[float], close_idx: int, cfg: SignalConfig) -> tuple[float, float, int, int, float]:
+def _event_features(closes: list[float], returns_pct: list[float], close_idx: int, cfg: IntentConfig) -> tuple[float, float, int, int, float]:
     lookback = cfg.event_lookback_days
     event_return = _pct_return(closes[close_idx], closes[close_idx - lookback])
     last_return = returns_pct[close_idx - 1] if close_idx > 0 else 0.0
@@ -219,17 +192,17 @@ def _event_features(closes: list[float], returns_pct: list[float], close_idx: in
     return event_return, last_return, down_streak, up_streak, realized_vol
 
 
-def _posterior_rate(successes: int, count: int, cfg: SignalConfig) -> float:
+def _posterior_rate(successes: int, count: int, cfg: IntentConfig) -> float:
     return (successes + cfg.prior_alpha) / (count + cfg.prior_alpha + cfg.prior_beta)
 
 
-def _blend_rate(analog_rate: float, baseline_rate: float, analog_count: int, cfg: SignalConfig) -> float:
+def _blend_rate(analog_rate: float, baseline_rate: float, analog_count: int, cfg: IntentConfig) -> float:
     full_weight = max(cfg.full_weight_analog_events, 1)
     weight = clamp(analog_count / full_weight, 0.0, 1.0)
     return analog_rate * weight + baseline_rate * (1.0 - weight)
 
 
-def _estimate_probability(bars: list[Bar], cfg: SignalConfig) -> Optional[ProbabilityEstimate]:
+def _estimate_probability(bars: list[Bar], cfg: IntentConfig) -> Optional[ProbabilityEstimate]:
     daily = _daily_closes(bars, cfg)
     if len(daily) < max(cfg.min_daily_observations, cfg.event_lookback_days + 3):
         return None
@@ -349,46 +322,30 @@ def _estimate_probability(bars: list[Bar], cfg: SignalConfig) -> Optional[Probab
     )
 
 
-def _fundamental_score(fundamental: FundamentalRow, cfg: SignalConfig, short: bool) -> float:
+def _fundamental_score(fundamental: FundamentalRow, cfg: IntentConfig, short: bool) -> float:
     score = fundamental.composite_score
     if cfg.use_mispricing_score and fundamental.mispricing_score is not None:
         score = score * (1.0 - cfg.mispricing_weight) + fundamental.mispricing_score * cfg.mispricing_weight
     return clamp((100.0 - score if short else score) / 100.0, 0.0, 1.0)
 
 
-def _stop_pct(prob: ProbabilityEstimate, cfg: SignalConfig, short: bool) -> float:
-    multiplier = cfg.short_stop_vol_mult if short else cfg.long_stop_vol_mult
-    return clamp(prob.realized_vol_pct * multiplier, cfg.min_stop_pct, cfg.max_stop_pct) / 100.0
-
-
-def _build_signal(
-    bars: list[Bar],
+def _build_intent(
     fundamental: FundamentalRow,
-    cfg: SignalConfig,
+    cfg: IntentConfig,
     prob: ProbabilityEstimate,
     short: bool,
-) -> Signal:
-    entry = bars[-1].close
+) -> TradeIntent:
     success_prob = prob.p_down if short else prob.p_up
     baseline_prob = prob.baseline_down if short else prob.baseline_up
     edge_pct_points = (success_prob - baseline_prob) * 100.0
     edge_score = clamp(edge_pct_points / max(cfg.edge_score_scale_pct_points, 0.01), 0.0, 1.0)
     fund_score = _fundamental_score(fundamental, cfg, short)
-    entry_score = success_prob
     combined = (success_prob * 0.60 + edge_score * 0.20 + fund_score * 0.20) * 10.0
-
-    stop_pct = _stop_pct(prob, cfg, short)
     if short:
         direction = "SHORT"
-        stop_loss = entry * (1.0 + stop_pct)
-        take_profit_1 = entry * (1.0 - cfg.short_tp1_pct)
-        take_profit_2 = entry * (1.0 - cfg.short_tp2_pct)
         reason_code = "p_down"
     else:
         direction = "LONG"
-        stop_loss = entry * (1.0 - stop_pct)
-        take_profit_1 = entry * (1.0 + cfg.long_tp1_pct)
-        take_profit_2 = entry * (1.0 + cfg.long_tp2_pct)
         reason_code = "p_up"
 
     reason = (
@@ -399,46 +356,25 @@ def _build_signal(
         f"down_streak={prob.down_streak} "
         f"analogs={prob.analog_count}"
     )
-    return Signal(
-        fundamental.symbol,
-        direction,
-        fundamental.composite_score,
-        round(entry_score, 4),
-        round(combined, 4),
-        entry,
-        stop_loss,
-        take_profit_1,
-        take_profit_2,
-        round(prob.event_return_pct, 2),
-        50.0,
-        1.0,
-        reason,
-        fundamental.valuation_label,
-        fundamental.sector,
-        fundamental.industry,
-    )
+    return TradeIntent(fundamental.symbol, direction, round(combined, 4), reason)
 
 
 def _evaluate(
     bars: list[Bar],
     fundamental: FundamentalRow,
-    cfg: SignalConfig,
+    cfg: IntentConfig,
     short: bool,
-) -> SignalEvaluation:
+) -> IntentEvaluation:
     prob = _estimate_probability(bars, cfg)
-    entry = bars[-1].close if bars else None
     if prob is None:
-        return SignalEvaluation(
+        return IntentEvaluation(
             None,
             "rejected",
             "insufficient_probability_history",
             "Not enough point-in-time daily history was available to estimate a next-day probability.",
-            entry_price=entry,
-            rsi_1h=50.0,
-            volume_ratio=1.0,
         )
     if prob.baseline_count == 0:
-        return SignalEvaluation(
+        return IntentEvaluation(
             None,
             "rejected",
             "recent_drop_event_missing",
@@ -447,21 +383,13 @@ def _evaluate(
                 f"did not meet drop filters: <= -{cfg.min_event_drop_pct:.2f}% over "
                 f"{cfg.event_lookback_days}d and at least {cfg.min_consecutive_down_days} consecutive down days."
             ),
-            entry_price=entry,
-            pullback_pct=round(prob.event_return_pct, 2),
-            rsi_1h=50.0,
-            volume_ratio=1.0,
         )
     if prob.analog_count < cfg.min_analog_events:
-        return SignalEvaluation(
+        return IntentEvaluation(
             None,
             "rejected",
             "too_few_similar_events",
             f"Only {prob.analog_count} similar historical events were available; minimum is {cfg.min_analog_events}.",
-            entry_price=entry,
-            pullback_pct=round(prob.event_return_pct, 2),
-            rsi_1h=50.0,
-            volume_ratio=1.0,
         )
 
     success_prob = prob.p_down if short else prob.p_up
@@ -471,7 +399,7 @@ def _evaluate(
     direction_name = "down" if short else "up"
 
     if success_prob < min_probability:
-        return SignalEvaluation(
+        return IntentEvaluation(
             None,
             "rejected",
             f"{direction_name}_probability_below_min",
@@ -479,14 +407,9 @@ def _evaluate(
                 f"Estimated P(next-day {direction_name}) {success_prob * 100.0:.2f}% "
                 f"is below minimum {min_probability * 100.0:.2f}%."
             ),
-            entry_price=entry,
-            pullback_pct=round(prob.event_return_pct, 2),
-            rsi_1h=50.0,
-            volume_ratio=1.0,
-            entry_score=round(success_prob, 4),
         )
     if edge_pct_points < cfg.min_edge_pct_points:
-        return SignalEvaluation(
+        return IntentEvaluation(
             None,
             "rejected",
             "probability_edge_below_min",
@@ -494,43 +417,29 @@ def _evaluate(
                 f"Estimated edge {edge_pct_points:.2f} percentage points over same-symbol baseline "
                 f"is below minimum {cfg.min_edge_pct_points:.2f}."
             ),
-            entry_price=entry,
-            pullback_pct=round(prob.event_return_pct, 2),
-            rsi_1h=50.0,
-            volume_ratio=1.0,
-            entry_score=round(success_prob, 4),
         )
 
-    signal = _build_signal(bars, fundamental, cfg, prob, short)
+    intent = _build_intent(fundamental, cfg, prob, short)
     reason_code = "statistical_short_probability_passed" if short else "statistical_long_probability_passed"
-    return SignalEvaluation(
-        signal,
-        "signal",
+    return IntentEvaluation(
+        intent,
+        "intent",
         reason_code,
-        signal.entry_reason,
-        signal.entry_price,
-        signal.stop_loss,
-        signal.take_profit_1,
-        signal.take_profit_2,
-        signal.pullback_pct,
-        signal.rsi_1h,
-        signal.volume_ratio,
-        signal.entry_score,
-        signal.combined_score,
+        intent.reason,
     )
 
 
-def compute_long_signal(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: SignalConfig) -> Optional[Signal]:
-    return evaluate_long_signal(bars, fundamental, now, cfg).signal
+def compute_long_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> Optional[TradeIntent]:
+    return evaluate_long_intent(bars, fundamental, now, cfg).intent
 
 
-def evaluate_long_signal(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: SignalConfig) -> SignalEvaluation:
+def evaluate_long_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> IntentEvaluation:
     return _evaluate(bars, fundamental, cfg, short=False)
 
 
-def compute_short_signal(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: SignalConfig) -> Optional[Signal]:
-    return evaluate_short_signal(bars, fundamental, now, cfg).signal
+def compute_short_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> Optional[TradeIntent]:
+    return evaluate_short_intent(bars, fundamental, now, cfg).intent
 
 
-def evaluate_short_signal(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: SignalConfig) -> SignalEvaluation:
+def evaluate_short_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> IntentEvaluation:
     return _evaluate(bars, fundamental, cfg, short=True)

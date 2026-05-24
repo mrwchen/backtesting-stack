@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import psycopg2
 
-from backtest_shared import Signal, SignalEvaluation
+from backtest_shared import IntentEvaluation, TradeIntent, TradePlan
 from . import runtime
 from .broker import (
     _account_snapshot_values,
@@ -58,7 +58,13 @@ from .persistence import (
     write_decision_events,
     write_trades,
 )
-from .trade_levels import apply_trade_levels, common_stop_required_lookback
+from .trade_levels import (
+    build_trade_plan,
+    common_stop_required_lookback,
+    execution_max_hold_days,
+    execution_take_profit_close_ratio,
+    validate_intent_for_candidate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,8 +83,8 @@ def _direction_open_count(open_positions: list[OpenPosition], direction: str) ->
     return sum(1 for pos in open_positions if pos.direction == direction)
 
 
-def _signal_event_key(signal: Signal) -> tuple[str, tuple[str, str, int]]:
-    return (signal.direction, signal.identity_key)
+def _plan_event_key(plan: TradePlan) -> tuple[str, tuple[str, str, int]]:
+    return (plan.direction, plan.identity_key)
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -635,8 +641,8 @@ def run_backtest(
     days_no_regime = 0
     days_no_active_budget = 0
     days_no_candidates = 0
-    days_no_signals    = 0
-    days_with_signals  = 0
+    days_no_intents    = 0
+    days_with_intents  = 0
 
     for day_idx, day in enumerate(trading_days, start=1):
         log_progress_today = day_idx == 1 or day_idx == len(trading_days) or day_idx % PROGRESS_LOG_EVERY_DAYS == 0
@@ -661,13 +667,13 @@ def run_backtest(
         closed_today += closed_before_entry
         day_pnl += pnl_before_entry
 
-        # ── 2. Generate signals for today ───────────────────────────────────
+        # ── 2. Generate model intents and central execution plans ───────────
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=day)
         if not regime:
             days_no_regime += 1
             buffer_decision_events([DecisionEvent(
                 run_id=run_id,
-                signal_date=day,
+                intent_date=day,
                 as_of_ts=day_end_ts,
                 symbol=None,
                 exchange=None,
@@ -716,7 +722,7 @@ def run_backtest(
             days_no_active_budget += 1
             buffer_decision_events([DecisionEvent(
                 run_id=run_id,
-                signal_date=day,
+                intent_date=day,
                 as_of_ts=day_end_ts,
                 symbol=None,
                 exchange=None,
@@ -744,14 +750,14 @@ def run_backtest(
             continue
 
         model = get_model_module()
-        signals_by_direction: dict[str, list[Signal]] = {direction: [] for direction in DIRECTIONS}
-        signals: list[Signal] = []
+        plans_by_direction: dict[str, list[TradePlan]] = {direction: [] for direction in DIRECTIONS}
+        plans: list[TradePlan] = []
         decision_events: list[DecisionEvent] = []
-        signal_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent] = {}
+        plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent] = {}
         skipped_no_bars = 0
         total_candidates = 0
         candidate_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
-        signal_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
+        intent_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
@@ -759,7 +765,7 @@ def run_backtest(
             if direction_risk <= 0.0 and direction_cap <= 0:
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
-                    signal_date=day,
+                    intent_date=day,
                     as_of_ts=day_end_ts,
                     symbol=None,
                     exchange=None,
@@ -821,7 +827,7 @@ def run_backtest(
             if not candidates:
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
-                    signal_date=day,
+                    intent_date=day,
                     as_of_ts=day_end_ts,
                     symbol=None,
                     exchange=None,
@@ -867,12 +873,7 @@ def run_backtest(
                     bar_load_elapsed,
                 )
 
-            compute_fn = model.compute_long_signal if direction == "LONG" else model.compute_short_signal
-            evaluate_fn = getattr(
-                model,
-                "evaluate_long_signal" if direction == "LONG" else "evaluate_short_signal",
-                None,
-            )
+            evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
 
             for candidate_rank, fundamental in enumerate(candidates, start=1):
                 bars = recent_bars_by_identity.get(fundamental.identity_key, [])
@@ -880,7 +881,7 @@ def run_backtest(
                     skipped_no_bars += 1
                     decision_events.append(DecisionEvent(
                         run_id=run_id,
-                        signal_date=day,
+                        intent_date=day,
                         as_of_ts=day_end_ts,
                         symbol=fundamental.symbol,
                         exchange=fundamental.exchange,
@@ -906,82 +907,84 @@ def run_backtest(
                         account_equity=equity,
                     ))
                     continue
-                if evaluate_fn is not None:
-                    evaluation = evaluate_fn(
-                        bars,
-                        fundamental,
-                        datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
-                        cfg,
+                evaluation = evaluate_fn(
+                    bars,
+                    fundamental,
+                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                    cfg,
+                )
+                if not isinstance(evaluation, IntentEvaluation):
+                    evaluation = IntentEvaluation(
+                        intent=None,
+                        decision="rejected",
+                        reason_code="invalid_model_evaluation",
+                        reason_text="Model did not return an IntentEvaluation.",
                     )
-                    signal = evaluation.signal
-                else:
-                    signal = compute_fn(
-                        bars,
-                        fundamental,
-                        datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
-                        cfg,
-                    )
-                    evaluation = SignalEvaluation(
-                        signal=signal,
-                        decision="signal" if signal else "rejected",
-                        reason_code="signal_passed" if signal else "no_signal",
-                        reason_text=signal.entry_reason if signal else "Model returned no signal without a detailed reason.",
-                    )
-                if signal:
-                    signal.exchange = fundamental.exchange
-                    signal.cik = fundamental.cik
+                intent = evaluation.intent
+                plan: TradePlan | None = None
+                if intent and not isinstance(intent, TradeIntent):
+                    intent = None
+                    evaluation.intent = None
+                    evaluation.decision = "rejected"
+                    evaluation.reason_code = "invalid_model_intent"
+                    evaluation.reason_text = "Model did not return a TradeIntent."
+                if intent:
+                    intent_check = validate_intent_for_candidate(intent, fundamental, direction)
+                    if not intent_check.accepted:
+                        intent = None
+                        evaluation.intent = None
+                        evaluation.decision = "rejected"
+                        evaluation.reason_code = intent_check.reason_code
+                        evaluation.reason_text = intent_check.reason_text
+                if intent:
                     next_entry = get_next_bar_open(conn, fundamental.identity_key, bars[-1].ts)
                     if next_entry is None:
-                        signal = None
-                        evaluation.signal = None
+                        intent = None
+                        evaluation.intent = None
                         evaluation.decision = "rejected"
                         evaluation.reason_code = "next_entry_bar_missing"
                         evaluation.reason_text = (
-                            f"No 1h bar after signal bar {bars[-1].ts} was available for next-bar-open entry."
+                            f"No 1h bar after intent bar {bars[-1].ts} was available for next-bar-open entry."
                         )
-                        evaluation.entry_price = None
-                        evaluation.stop_loss = None
-                        evaluation.take_profit_1 = None
-                        evaluation.take_profit_2 = None
                     else:
                         entry_ts, entry_open = next_entry
-                        trade_levels = apply_trade_levels(
-                            signal,
+                        trade_plan_result = build_trade_plan(
+                            intent,
+                            fundamental,
                             bars,
-                            cfg,
                             _ensure_utc_ts(entry_ts),
                             entry_open,
                         )
-                        if not trade_levels.accepted:
-                            signal = None
-                            evaluation.signal = None
+                        if not trade_plan_result.accepted:
+                            intent = None
+                            evaluation.intent = None
                             evaluation.decision = "rejected"
-                            evaluation.reason_code = trade_levels.reason_code
-                            evaluation.reason_text = trade_levels.reason_text
-                            evaluation.entry_price = None
-                            evaluation.stop_loss = None
-                            evaluation.take_profit_1 = None
-                            evaluation.take_profit_2 = None
+                            evaluation.reason_code = trade_plan_result.reason_code
+                            evaluation.reason_text = trade_plan_result.reason_text
                         else:
-                            evaluation.entry_price = signal.entry_price
-                            evaluation.stop_loss = signal.stop_loss
-                            evaluation.take_profit_1 = signal.take_profit_1
-                            evaluation.take_profit_2 = signal.take_profit_2
-                            signals.append(signal)
-                            signals_by_direction[direction].append(signal)
+                            plan = trade_plan_result.plan
+                            if plan is None:
+                                intent = None
+                                evaluation.intent = None
+                                evaluation.decision = "rejected"
+                                evaluation.reason_code = "execution_plan_missing"
+                                evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
+                            else:
+                                plans.append(plan)
+                                plans_by_direction[direction].append(plan)
                 event = DecisionEvent(
                     run_id=run_id,
-                    signal_date=day,
+                    intent_date=day,
                     as_of_ts=day_end_ts,
                     symbol=fundamental.symbol,
                     exchange=fundamental.exchange,
                     cik=fundamental.cik,
                     direction=direction,
-                    decision_stage="signal_eval",
-                    decision="signal" if signal else "rejected",
+                    decision_stage="intent_eval",
+                    decision="intent" if plan else "rejected",
                     reason_code=evaluation.reason_code,
                     reason_text=evaluation.reason_text,
-                    signal_passed=bool(signal),
+                    intent_passed=bool(plan),
                     candidate_rank=candidate_rank,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
@@ -993,62 +996,59 @@ def run_backtest(
                     market_cap_m=fundamental.market_cap_m,
                     bar_count=len(bars),
                     min_bars=cfg.min_bars,
-                    entry_ts=signal.entry_ts if signal else None,
-                    entry_price=evaluation.entry_price if evaluation.entry_price is not None else (signal.entry_price if signal else None),
-                    stop_loss=evaluation.stop_loss if evaluation.stop_loss is not None else (signal.stop_loss if signal else None),
-                    take_profit_1=evaluation.take_profit_1 if evaluation.take_profit_1 is not None else (signal.take_profit_1 if signal else None),
-                    take_profit_2=evaluation.take_profit_2 if evaluation.take_profit_2 is not None else (signal.take_profit_2 if signal else None),
-                    pullback_pct=evaluation.pullback_pct if evaluation.pullback_pct is not None else (signal.pullback_pct if signal else None),
-                    rsi_1h=evaluation.rsi_1h if evaluation.rsi_1h is not None else (signal.rsi_1h if signal else None),
-                    volume_ratio=evaluation.volume_ratio if evaluation.volume_ratio is not None else (signal.volume_ratio if signal else None),
-                    entry_score=evaluation.entry_score if evaluation.entry_score is not None else (signal.entry_score if signal else None),
-                    combined_score=evaluation.combined_score if evaluation.combined_score is not None else (signal.combined_score if signal else None),
+                    intent_score=plan.intent_score if plan else (intent.score if intent else None),
+                    intent_reason=plan.intent_reason if plan else (intent.reason if intent else ""),
+                    entry_ts=plan.entry_ts if plan else None,
+                    entry_price=plan.entry_price if plan else None,
+                    stop_loss=plan.stop_loss if plan else None,
+                    take_profit_1=plan.take_profit_1 if plan else None,
+                    take_profit_2=plan.take_profit_2 if plan else None,
                     open_positions=len(open_positions),
                     max_open_positions=MAX_OPEN_POSITIONS,
                     account_equity=equity,
                 )
                 decision_events.append(event)
-                if signal:
-                    signal_events[_signal_event_key(signal)] = event
+                if plan:
+                    plan_events[_plan_event_key(plan)] = event
 
-        for direction, direction_signals in signals_by_direction.items():
-            direction_signals.sort(key=lambda s: s.combined_score, reverse=True)
-            signal_counts[direction] = len(direction_signals)
-            for signal_rank, signal in enumerate(direction_signals, start=1):
-                event = signal_events.get(_signal_event_key(signal))
+        for direction, direction_plans in plans_by_direction.items():
+            direction_plans.sort(key=lambda plan: plan.intent_score, reverse=True)
+            intent_counts[direction] = len(direction_plans)
+            for intent_rank, plan in enumerate(direction_plans, start=1):
+                event = plan_events.get(_plan_event_key(plan))
                 if event:
-                    event.signal_rank = signal_rank
+                    event.intent_rank = intent_rank
 
         if total_candidates == 0:
             days_no_candidates += 1
-        if signals:
-            days_with_signals += 1
+        if plans:
+            days_with_intents += 1
         else:
-            days_no_signals += 1
+            days_no_intents += 1
 
         # ── 3. Open new positions ────────────────────────────────────────────
         open_identities = {p.identity_key for p in open_positions}
         if SECTOR_DIVERSIFICATION_ENABLED:
-            open_sectors: set[str] = {p.signal.sector for p in open_positions if p.signal.sector}
+            open_sectors: set[str] = {p.plan.sector for p in open_positions if p.plan.sector}
             open_sector_industries: set[tuple[str, str]] = {
-                (p.signal.sector, p.signal.industry)
+                (p.plan.sector, p.plan.industry)
                 for p in open_positions
-                if p.signal.sector
+                if p.plan.sector
             }
 
-            def _sector_tier(s: Signal) -> int:
-                if not s.sector or s.sector not in open_sectors:
+            def _sector_tier(plan: TradePlan) -> int:
+                if not plan.sector or plan.sector not in open_sectors:
                     return 0  # new sector preferred
-                if (s.sector, s.industry) not in open_sector_industries:
+                if (plan.sector, plan.industry) not in open_sector_industries:
                     return 1  # same sector, different industry
                 return 2      # same sector and industry
 
-            for direction, direction_signals in signals_by_direction.items():
-                direction_signals.sort(key=lambda s: (_sector_tier(s), -s.combined_score))
-                for signal_rank, signal in enumerate(direction_signals, start=1):
-                    event = signal_events.get(_signal_event_key(signal))
+            for direction, direction_plans in plans_by_direction.items():
+                direction_plans.sort(key=lambda plan: (_sector_tier(plan), -plan.intent_score))
+                for intent_rank, plan in enumerate(direction_plans, start=1):
+                    event = plan_events.get(_plan_event_key(plan))
                     if event:
-                        event.signal_rank = signal_rank
+                        event.intent_rank = intent_rank
 
         direction_order = sorted(
             DIRECTIONS,
@@ -1058,9 +1058,9 @@ def run_backtest(
             ),
             reverse=True,
         )
-        signals_to_open: list[Signal] = []
+        plans_to_open: list[TradePlan] = []
         for direction in direction_order:
-            signals_to_open.extend(signals_by_direction[direction])
+            plans_to_open.extend(plans_by_direction[direction])
 
         opened_today = 0
         account_snapshot_today = _account_snapshot_values(conn, open_positions, equity, day_end_ts)
@@ -1072,10 +1072,10 @@ def run_backtest(
             for direction in DIRECTIONS
         }
 
-        for signal in signals_to_open:
-            event = signal_events.get(_signal_event_key(signal))
-            direction_risk = direction_risk_multiplier(regime_exposure, signal.direction)
-            direction_cap = direction_max_positions(regime_exposure, signal.direction)
+        for plan in plans_to_open:
+            event = plan_events.get(_plan_event_key(plan))
+            direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
+            direction_cap = direction_max_positions(regime_exposure, plan.direction)
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:
@@ -1093,17 +1093,17 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "regime_direction_risk_zero"
                     event.reason_text = (
-                        f"Regime bucket {regime_bucket} assigned zero {signal.direction.lower()} risk."
-                    )
+                            f"Regime bucket {regime_bucket} assigned zero {plan.direction.lower()} risk."
+                        )
                 continue
-            if direction_open_counts[signal.direction] >= direction_cap:
+            if direction_open_counts[plan.direction] >= direction_cap:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
                     event.reason_code = "max_direction_positions_reached"
                     event.reason_text = (
                         f"Regime bucket {regime_bucket} allows {direction_cap} open "
-                        f"{signal.direction.lower()} positions; this limit was already reached."
+                        f"{plan.direction.lower()} positions; this limit was already reached."
                     )
                 continue
             if len(open_positions) >= MAX_OPEN_POSITIONS:
@@ -1113,7 +1113,7 @@ def run_backtest(
                     event.reason_code = "max_open_positions_reached"
                     event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
                 continue
-            if signal.identity_key in open_identities:
+            if plan.identity_key in open_identities:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
@@ -1131,7 +1131,7 @@ def run_backtest(
 
             initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(
                 conn,
-                signal,
+                plan,
                 account_equity_today,
                 direction_risk,
             )
@@ -1201,46 +1201,46 @@ def run_backtest(
                     continue
 
             open_positions.append(OpenPosition(
-                symbol=signal.symbol,
-                exchange=signal.exchange,
-                cik=signal.cik,
-                direction=signal.direction,
+                symbol=plan.symbol,
+                exchange=plan.exchange,
+                cik=plan.cik,
+                direction=plan.direction,
                 entry_date=day,
-                entry_ts=signal.entry_ts or day_end_ts,
-                entry_price=signal.entry_price,
-                stop_loss=signal.stop_loss,
-                effective_sl=signal.stop_loss,
-                take_profit_1=signal.take_profit_1,
-                take_profit_2=signal.take_profit_2,
-                valid_until=(signal.entry_ts or day_end_ts) + timedelta(
-                    days=cfg.long_max_hold_days if signal.direction == "LONG" else cfg.short_max_hold_days
+                entry_ts=plan.entry_ts or day_end_ts,
+                entry_price=plan.entry_price,
+                stop_loss=plan.stop_loss,
+                effective_sl=plan.stop_loss,
+                take_profit_1=plan.take_profit_1,
+                take_profit_2=plan.take_profit_2,
+                valid_until=(plan.entry_ts or day_end_ts) + timedelta(
+                    days=execution_max_hold_days(plan.direction)
                 ),
-                tp1_close_ratio=cfg.tp1_close_ratio,
+                tp1_close_ratio=execution_take_profit_close_ratio(),
                 shares=shares,
                 position_size_usd=position_size_usd,
                 margin_used=initial_margin_used,
                 maintenance_margin_used=maintenance_margin_used,
                 equity_before=account_equity_today,
-                signal=signal,
+                plan=plan,
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
-                valuation_label=signal.valuation_label,
+                valuation_label=plan.valuation_label,
             ))
-            open_identities.add(signal.identity_key)
+            open_identities.add(plan.identity_key)
             initial_margin += initial_margin_used
             maintenance_margin += maintenance_margin_used
-            direction_open_counts[signal.direction] += 1
+            direction_open_counts[plan.direction] += 1
             opened_today += 1
-            record_account_curve(signal.entry_ts or day_end_ts, open_positions)
+            record_account_curve(plan.entry_ts or day_end_ts, open_positions)
             if event:
                 event.decision_stage = "order_open"
                 event.decision = "opened"
                 event.reason_code = "opened"
-                event.reason_text = "Signal passed portfolio checks and a simulated position was opened."
+                event.reason_text = "Intent passed portfolio checks and a simulated position was opened."
                 event.opened = True
             log.debug("Opened %-6s %s entry %.2f stop %.2f margin %.0f equity %.0f",
-                      signal.symbol, signal.direction, signal.entry_price,
-                      signal.stop_loss, initial_margin_used, equity)
+                      plan.symbol, plan.direction, plan.entry_price,
+                      plan.stop_loss, initial_margin_used, equity)
 
         # ── 4. Apply post-entry position state changes through day close ────
         open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
@@ -1252,7 +1252,7 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model %s bucket %s regime %.1f, candidates long %d short %d, signals long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
+                "Progress %d/%d %s model %s bucket %s regime %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
@@ -1261,8 +1261,8 @@ def run_backtest(
                 regime.score,
                 candidate_counts["LONG"],
                 candidate_counts["SHORT"],
-                signal_counts["LONG"],
-                signal_counts["SHORT"],
+                intent_counts["LONG"],
+                intent_counts["SHORT"],
                 skipped_no_bars,
                 opened_today,
                 closed_today,
@@ -1273,8 +1273,8 @@ def run_backtest(
             )
 
     log.info(
-        "Day breakdown no regime %d, no active budget %d, no candidates %d, no signals %d, with signals %d",
-        days_no_regime, days_no_active_budget, days_no_candidates, days_no_signals, days_with_signals,
+        "Day breakdown no regime %d, no active budget %d, no candidates %d, no intents %d, with intents %d",
+        days_no_regime, days_no_active_budget, days_no_candidates, days_no_intents, days_with_intents,
     )
     log_cache_stats("before_force_close")
 
@@ -1326,8 +1326,7 @@ def run_backtest(
     flush_decision_events(force=True)
     max_dd = _max_drawdown_pct_from_equity([point.equity_usd for point in account_curve])
 
-    # Patch world_regime_label into rows (stored on signal, pass through)
-    # (already embedded in entry_reason; trade write accesses signal directly)
+    # Trade rows read world-regime and intent context from each open position.
     write_account_curve(conn, run_id, account_curve)
     write_trades(conn, run_id, closed_trades)
     update_run_summary(conn, run_id, closed_trades, equity, max_drawdown_pct=max_dd)
