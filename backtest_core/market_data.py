@@ -724,7 +724,7 @@ def get_candidates(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings: bool = False,
-    ibkr_margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
+    ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
 ) -> list[FundamentalRow]:
     if allow_rebuilt_historical_fundamentals:
         raise ValueError(
@@ -1027,7 +1027,7 @@ def preload_candidate_timelines(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings_by_direction: Optional[dict[str, bool]] = None,
-    ibkr_margin_table: str = IBKR_MARGIN_REQUIREMENTS_TABLE,
+    ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
 ) -> None:
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not directions:
         return
@@ -1090,7 +1090,7 @@ def preload_candidate_timelines(
 
 def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: date) -> list[date]:
     """Return distinct NY trading dates present in the configured 1h source."""
-    cache_key = (SOURCE_1H, start, end)
+    cache_key = (SOURCE_MARKET_DATA_1H_TABLE, start, end)
     if cache_key in _TRADING_DAYS_CACHE:
         return _TRADING_DAYS_CACHE[cache_key]
 
@@ -1101,7 +1101,7 @@ def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: dat
                 "FROM {} "
                 "WHERE ts >= %s AND ts < %s "
                 "ORDER BY d"
-            ).format(relation_identifier(SOURCE_1H)),
+            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
             (start, end + timedelta(days=1)),
         )
         days = [row[0] for row in cur.fetchall()]
@@ -1318,7 +1318,7 @@ def _ensure_identity_bars_loaded(
                     "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
                     "WHERE b.ts >= %s AND b.ts <= %s "
                     "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
-                ).format(relation_identifier(SOURCE_1H)),
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
                 (symbols, exchanges, ciks, lower_bound, up_to_ts),
             )
             for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -1380,7 +1380,7 @@ def _load_identity_bars_direct(
                 "WHERE symbol = %s AND exchange = %s AND cik = %s "
                 "  AND ts >= %s AND ts <= %s "
                 "ORDER BY ts"
-            ).format(relation_identifier(SOURCE_1H)),
+            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
             (identity[0], identity[1], identity[2], _bar_cache_start_ts(), up_to_ts),
         )
         rows = cur.fetchall()
@@ -1542,7 +1542,7 @@ def _ensure_signal_bars_loaded(
                         "  LIMIT %s"
                         ") b ON TRUE "
                         "ORDER BY r.symbol, r.exchange, r.cik, b.ts"
-                    ).format(relation_identifier(SOURCE_1H), entry_filter),
+                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
                     params,
                 )
                 for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -1575,7 +1575,7 @@ def _ensure_signal_bars_loaded(
                         "  AND b.ts < %s "
                         "  {} "
                         "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
-                    ).format(relation_identifier(SOURCE_1H), entry_filter),
+                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
                     params,
                 )
                 for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -1717,7 +1717,7 @@ def _load_recent_bars_for_identities_direct(
                     "  LIMIT %s"
                     ") b ON TRUE "
                     "ORDER BY r.symbol, r.exchange, r.cik, b.ts"
-                ).format(relation_identifier(SOURCE_1H), entry_filter),
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
                 params,
             )
             for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -1869,7 +1869,7 @@ def get_next_bar_open(
                 "  AND ts > %s "
                 "ORDER BY ts "
                 "LIMIT 1"
-            ).format(relation_identifier(SOURCE_1H)),
+            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
             (identity[0], identity[1], identity[2], after_ts),
         )
         row = cur.fetchone()

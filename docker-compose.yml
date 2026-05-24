@@ -6,15 +6,13 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      # Explicitly enabled for this refactor: existing backtest result tables
-      # are dropped and recreated by init/schema.sql before the runner starts.
-      DROP_BACKTEST_TABLES_ON_START: true
+      DROP_ALL_BACKTEST_TABLES_ON_START: false
     command:
       - sh
       - -c
       - >
         psql -v ON_ERROR_STOP=1
-        -v drop_backtest_tables_on_start="$${DROP_BACKTEST_TABLES_ON_START:-false}"
+        -v drop_backtest_tables_on_start="$${DROP_ALL_BACKTEST_TABLES_ON_START:-false}"
         -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
     networks:
       - shared_net
@@ -29,7 +27,7 @@ services:
         condition: service_completed_successfully
     environment:
       # ---------------------------------------------------------------------
-      # Runtime and database
+      # Database connection and result schema
       # ---------------------------------------------------------------------
       - PGHOST=timescaledb
       - PGPORT=5432
@@ -39,31 +37,37 @@ services:
       - PGAPPNAME=backtest_runner
       - PGOPTIONS=-c search_path=public
       - RESULT_SCHEMA=public
-      - CONNECT_TIMEOUT_SECONDS=10
+      - DB_CONNECT_TIMEOUT_SECONDS=10
       - DB_CONNECT_RETRIES=5
-      - DB_CONNECT_RETRY_DELAY_S=5.0
+      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0
       - DB_STATEMENT_TIMEOUT_MS=60000
       - DB_LOCK_TIMEOUT_MS=5000
       - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000
+
+      # ---------------------------------------------------------------------
+      # Run metadata and logging
+      # ---------------------------------------------------------------------
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
       - RUN_NOTES_EXTRA=common_policy_split_v1
 
       # ---------------------------------------------------------------------
-      # Backtest runtime performance
+      # Source tables and point-in-time data safety
       # ---------------------------------------------------------------------
-      - PROGRESS_LOG_EVERY_DAYS=1
-      - BAR_CACHE_WARMUP_DAYS=120
-      - BAR_CACHE_BATCH_SIZE=100
-      - BAR_CACHE_MAX_MIB=1024
-      - SIGNAL_BAR_CACHE_ENABLED=true
-      - SIGNAL_BAR_CACHE_MAX_MIB=2048
-      - CANDIDATE_TIMELINE_CACHE_ENABLED=true
-      - CANDIDATE_TIMELINE_CACHE_MAX_MIB=3072
-      - CANDIDATE_TIMELINE_CURSOR_ITERSIZE=10000
+      - SOURCE_MARKET_DATA_1H_TABLE=alpaca_market_data_1h
+      - SOURCE_FUNDAMENTAL_SCORES_TABLE=stock_scorer_fundamental_scores
+      - SOURCE_WORLD_REGIME_TABLE=world_regime_daily_scores_historical_mv
+      - REQUIRE_USD_FUNDAMENTALS=true
+      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
       # ---------------------------------------------------------------------
-      # Model selection
+      # Backtest date range
+      # ---------------------------------------------------------------------
+      - START_DATE=2023-01-01
+      - END_DATE=2026-05-06
+
+      # ---------------------------------------------------------------------
+      # Model selection and model configuration
       # single = run MODEL_FILE only
       # multi  = run comma-separated MODEL_FILES
       # all    = run every *.py model in ./backtest_models except helpers
@@ -80,21 +84,45 @@ services:
       - MODEL_FAILURE_MODE=continue
 
       # ---------------------------------------------------------------------
-      # Source tables and point-in-time data safety
+      # Runtime performance and caches
       # ---------------------------------------------------------------------
-      - SOURCE_1H=alpaca_market_data_1h
-      - SOURCE_FUNDAMENTAL=stock_scorer_fundamental_scores
-      - SOURCE_WORLD_REGIME=world_regime_daily_scores_historical_mv
-      - PEPPERSTONE_TABLE=public.pepperstone_data
-      - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
-      - REQUIRE_USD_FUNDAMENTALS=true
-      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
+      - PROGRESS_LOG_EVERY_DAYS=1
+      - BAR_CACHE_WARMUP_DAYS=120
+      - BAR_CACHE_BATCH_SIZE=100
+      - BAR_CACHE_MAX_MIB=1024
+      - SIGNAL_BAR_CACHE_ENABLED=true
+      - SIGNAL_BAR_CACHE_MAX_MIB=2048
+      - CANDIDATE_TIMELINE_CACHE_ENABLED=true
+      - CANDIDATE_TIMELINE_CACHE_MAX_MIB=3072
+      - CANDIDATE_TIMELINE_CURSOR_ITERSIZE=10000
 
       # ---------------------------------------------------------------------
-      # Backtest date range
+      # Account selection and portfolio risk
       # ---------------------------------------------------------------------
-      - START_DATE=2023-01-01
-      - END_DATE=2026-05-06
+      # ACCOUNT_PROFILE selects the broker/account rules used by the backtest:
+      # ps_acc   = Pepperstone EU retail US Share CFD profile
+      # ibkr_acc = Interactive Brokers margin account profile
+      # all      = run every selected model once with ps_acc and once with ibkr_acc
+      - ACCOUNT_PROFILE=all
+      - INITIAL_EQUITY_USD=5000
+      - RISK_PER_TRADE_EQUITY_PCT=2
+      - MAX_OPEN_POSITIONS=10
+      - SECTOR_DIVERSIFICATION_ENABLED=false
+
+      # ---------------------------------------------------------------------
+      # Trading session and stop/take-profit evaluation windows
+      # ---------------------------------------------------------------------
+      - ENTRY_WINDOW_ENABLED=true
+      - ENTRY_WINDOW_TZ=America/New_York
+      - ENTRY_WINDOW_START=10:30
+      - ENTRY_WINDOW_END=15:00
+      - SL_TP_WINDOW_TZ=America/New_York
+      - SL_TP_WINDOW_START=09:30
+      - SL_TP_WINDOW_END=16:00
+      - STOP_LOSS_RTH_ONLY=true
+      - STOP_LOSS_RTH_TZ=America/New_York
+      - STOP_LOSS_RTH_START=09:30
+      - STOP_LOSS_RTH_END=16:00
 
       # ---------------------------------------------------------------------
       # Common policy: world-regime direction budget
@@ -135,15 +163,15 @@ services:
       - COMMON_SHORT_MAX_FUNDAMENTAL=42.0
       - COMMON_LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
-      - COMMON_MIN_MARKET_CAP_M=1000.0
+      - COMMON_MIN_MARKET_CAP_USD_M=1000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
 
       # ---------------------------------------------------------------------
-      # Common policy: stop loss and take profit placement
-      # Strategy models provide entry candidates by default. The common stop
-      # policy is ignored only by models with explicit model-owned stop params.
+      # Default model trade management and common stop policy
+      # Strategy models provide entry candidates by default. Common stop policy
+      # is ignored only by models with explicit model-owned stop params.
       # ---------------------------------------------------------------------
       - LONG_TP1_PCT=0.055
       - LONG_TP2_PCT=0.12
@@ -154,41 +182,17 @@ services:
       - SHORT_MAX_HOLD_DAYS=5.0
       - COMMON_STOP_LOSS_ENABLED=true
       - COMMON_STOP_LOOKBACK_BARS=24
-      - COMMON_STOP_BUFFER=0.007
+      - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=24
       - COMMON_STOP_ATR_MULT=1.5
       - COMMON_MIN_STOP_PCT=2.5
       - COMMON_MAX_STOP_PCT=8.0
 
-      # ---------------------------------------------------------------------
-      # Portfolio risk and common execution policy
-      # ---------------------------------------------------------------------
-      # ACCOUNT_PROFILE selects the broker/account rules used by the backtest:
-      # ps_acc   = Pepperstone EU retail US Share CFD profile
-      # ibkr_acc = Interactive Brokers margin account profile
-      # all      = run every selected model once with ps_acc and once with ibkr_acc
-      - ACCOUNT_PROFILE=all
-      - INITIAL_EQUITY=5000
-      - RISK_PER_TRADE_PCT=2
-      - MAX_OPEN_POSITIONS=10
-      - SECTOR_DIVERSIFICATION_ENABLED=false
-      - ENTRY_WINDOW_ENABLED=true
-      - ENTRY_WINDOW_TZ=America/New_York
-      - ENTRY_WINDOW_START=10:30
-      - ENTRY_WINDOW_END=15:00
-      - SL_TP_WINDOW_TZ=America/New_York
-      - SL_TP_WINDOW_START=09:30
-      - SL_TP_WINDOW_END=16:00
-      - STOP_LOSS_RTH_ONLY=true
-      - STOP_LOSS_RTH_TZ=America/New_York
-      - STOP_LOSS_RTH_START=09:30
-      - STOP_LOSS_RTH_END=16:00
-
-      # ---------------------------------------------------------------------
       # Pepperstone EU retail US Share CFD account profile
       # Defaults: 20% margin, 0.02 USD/share commission, min 0.02 USD,
       # no extra spread markup, 1 bps slippage, Friday overnight x3.
       # ---------------------------------------------------------------------
+      - PS_TRADABLE_SYMBOLS_TABLE=public.pepperstone_data
       - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
       - PS_MIN_ENTRY_MARGIN_LEVEL_PCT=100
       # - PS_MARGIN_REQUIREMENT_PCT=20
@@ -209,6 +213,7 @@ services:
       # Interactive Brokers margin account profile
       # Used only when ACCOUNT_PROFILE=ibkr_acc.
       # ---------------------------------------------------------------------
+      - IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       # - IBKR_ALLOW_FRACTIONAL_SHARES=true
       # - IBKR_COMMISSION_PER_ORDER_USD=0.0
       # - IBKR_COMMISSION_PER_SHARE_USD=0.0035
@@ -222,9 +227,9 @@ services:
       # ---------------------------------------------------------------------
       # Monte Carlo and grid search
       # ---------------------------------------------------------------------
-      - MONTE_CARLO_ENABLED=false
-      - N_MONTE_CARLO_SIMULATIONS=2000
       - GRID_SEARCH_ENABLED=false
+      - MONTE_CARLO_ENABLED=false
+      - MONTE_CARLO_SIMULATIONS=2000
     networks:
       - shared_net
 

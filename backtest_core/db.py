@@ -40,7 +40,7 @@ def connect_with_retry() -> psycopg2.extensions.connection:
         except psycopg2.OperationalError as exc:
             if attempt == DB_CONNECT_RETRIES:
                 raise
-            delay = DB_CONNECT_RETRY_DELAY_S * (2 ** (attempt - 1))
+            delay = DB_CONNECT_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
             log.warning("DB connect failed (%d/%d, retry in %.0fs): %s", attempt, DB_CONNECT_RETRIES, delay, exc)
             _time.sleep(delay)
     raise RuntimeError("unreachable")
@@ -109,14 +109,14 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "financial_currency",
         })
 
-    _require_columns(conn, SOURCE_1H, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
-    _require_columns(conn, SOURCE_FUNDAMENTAL, fundamental_required)
-    _require_columns(conn, SOURCE_WORLD_REGIME, {"day", "regime_label", "composite_score"})
+    _require_columns(conn, SOURCE_MARKET_DATA_1H_TABLE, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
+    _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
+    _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, {"day", "regime_label", "composite_score"})
 
     if ACCOUNT_PROFILE == "ps_acc":
-        _require_columns(conn, PEPPERSTONE_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
+        _require_columns(conn, PS_TRADABLE_SYMBOLS_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
     elif ACCOUNT_PROFILE == "ibkr_acc":
-        _require_columns(conn, IBKR_MARGIN_REQUIREMENTS_TABLE, {
+        _require_columns(conn, IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE, {
             "source_symbol",
             "action",
             "quantity",
@@ -175,15 +175,15 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             sql.SQL(
                 "SELECT MIN(ts), MAX(ts) FROM {} "
                 "WHERE ts >= %s AND ts <= %s"
-            ).format(relation_identifier(SOURCE_1H)),
+            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
             (start_ts, end_ts),
         )
         bar_min_ts, bar_max_ts = cur.fetchone()
     if bar_min_ts is None:
         raise RuntimeError(
-            f"No 1h bars in {SOURCE_1H} for required window {start_ts} to {end_ts}"
+            f"No 1h bars in {SOURCE_MARKET_DATA_1H_TABLE} for required window {start_ts} to {end_ts}"
         )
-    log.info("Source coverage bars %s min ts %s max ts %s", SOURCE_1H, bar_min_ts, bar_max_ts)
+    log.info("Source coverage bars %s min ts %s max ts %s", SOURCE_MARKET_DATA_1H_TABLE, bar_min_ts, bar_max_ts)
 
     fundamental_where = [
         sql.SQL("time <= %s"),
@@ -206,7 +206,7 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                 "MAX(COALESCE(data_available_at, fundamental_data_available_at)) "
                 "FROM {} WHERE {}"
             ).format(
-                relation_identifier(SOURCE_FUNDAMENTAL),
+                relation_identifier(SOURCE_FUNDAMENTAL_SCORES_TABLE),
                 sql.SQL(" AND ").join(fundamental_where),
             ),
             fundamental_params,
@@ -214,11 +214,11 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
         fund_min_ts, fund_max_ts, fund_max_available_ts = cur.fetchone()
     if fund_min_ts is None:
         raise RuntimeError(
-            f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL} up to {end_ts}"
+            f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL_SCORES_TABLE} up to {end_ts}"
         )
     log.info(
         "Source coverage fundamentals %s min time %s max time %s max available at %s",
-        SOURCE_FUNDAMENTAL,
+        SOURCE_FUNDAMENTAL_SCORES_TABLE,
         fund_min_ts,
         fund_max_ts,
         fund_max_available_ts,
@@ -229,17 +229,17 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
             sql.SQL(
                 "SELECT MIN(day), MAX(day) FROM {} "
                 "WHERE day <= %s AND composite_score IS NOT NULL"
-            ).format(relation_identifier(SOURCE_WORLD_REGIME)),
+            ).format(relation_identifier(SOURCE_WORLD_REGIME_TABLE)),
             (END_DATE,),
         )
         regime_min_day, regime_max_day = cur.fetchone()
     if regime_min_day is None:
         raise RuntimeError(
-            f"No world regime rows in {SOURCE_WORLD_REGIME} up to {END_DATE}"
+            f"No world regime rows in {SOURCE_WORLD_REGIME_TABLE} up to {END_DATE}"
         )
     log.info(
         "Source coverage world regime %s min day %s max day %s",
-        SOURCE_WORLD_REGIME,
+        SOURCE_WORLD_REGIME_TABLE,
         regime_min_day,
         regime_max_day,
     )
@@ -250,16 +250,16 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                 sql.SQL(
                     "SELECT COUNT(*) FROM {} "
                     "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE"
-                ).format(relation_identifier(PEPPERSTONE_TABLE)),
+                ).format(relation_identifier(PS_TRADABLE_SYMBOLS_TABLE)),
             )
             tradable_symbols = cur.fetchone()[0]
         if tradable_symbols <= 0:
             raise RuntimeError(
-                f"Pepperstone account selected, but {PEPPERSTONE_TABLE}.symbol_ps has no tradable rows"
+                f"Pepperstone account selected, but {PS_TRADABLE_SYMBOLS_TABLE}.symbol_ps has no tradable rows"
             )
         log.info(
             "Source coverage pepperstone %s account profile %s tradable symbols %d",
-            PEPPERSTONE_TABLE,
+            PS_TRADABLE_SYMBOLS_TABLE,
             ACCOUNT_PROFILE,
             tradable_symbols,
         )
@@ -293,18 +293,18 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                         ) AS short_symbols
                     FROM {}
                     """
-                ).format(relation_identifier(IBKR_MARGIN_REQUIREMENTS_TABLE)),
+                ).format(relation_identifier(IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE)),
             )
             usable_rows, usable_symbols, long_symbols, short_symbols = cur.fetchone()
         if usable_rows <= 0:
             log.warning(
                 "IBKR margin source %s has no usable rows; candidate selection will return no symbols",
-                IBKR_MARGIN_REQUIREMENTS_TABLE,
+                IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
             )
         else:
             log.info(
                 "IBKR margin percentage source %s usable rows %d symbols %d long symbols %d short symbols %d",
-                IBKR_MARGIN_REQUIREMENTS_TABLE,
+                IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
                 usable_rows,
                 usable_symbols,
                 long_symbols,

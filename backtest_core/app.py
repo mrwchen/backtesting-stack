@@ -28,17 +28,17 @@ def _install_worker_shutdown_handler() -> None:
 
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
-        "Source tables bars %s fundamentals %s world regime %s account profile %s pepperstone table %s",
-        SOURCE_1H,
-        SOURCE_FUNDAMENTAL,
-        SOURCE_WORLD_REGIME,
+        "Source tables bars %s fundamentals %s world regime %s account profile %s PS tradable symbols table %s",
+        SOURCE_MARKET_DATA_1H_TABLE,
+        SOURCE_FUNDAMENTAL_SCORES_TABLE,
+        SOURCE_WORLD_REGIME_TABLE,
         ACCOUNT_PROFILE,
-        PEPPERSTONE_TABLE,
+        PS_TRADABLE_SYMBOLS_TABLE,
     )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
             "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
-            PEPPERSTONE_TABLE,
+            PS_TRADABLE_SYMBOLS_TABLE,
         )
     log.info(
         "Backtesting model selection %s count %d files %s dir %s config dir %s config required %s parallelism %d",
@@ -61,7 +61,7 @@ def log_backtest_context(model_files: list[str]) -> None:
     else:
         log.info(
             "IBKR margin policy reads symbol margin percentages from %s",
-            IBKR_MARGIN_REQUIREMENTS_TABLE,
+            IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
         )
     log.info(
         "Execution model fractional shares %s spread bps %.2f slippage bps %.2f commission per order %.2f commission per share %.4f commission min %.2f commission max pct %.2f commission bps %.2f",

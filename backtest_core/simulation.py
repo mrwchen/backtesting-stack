@@ -617,17 +617,17 @@ def run_backtest(
             conn,
             DIRECTIONS,
             **candidate_policy_kwargs(),
-            source_table=SOURCE_FUNDAMENTAL,
+            source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
             as_of_date=trading_days[0],
             as_of_ts=_day_signal_cutoff_ts(trading_days[0]),
-            pepperstone_table=PEPPERSTONE_TABLE,
+            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
             allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
             filter_negative_earnings_by_direction={
                 direction: direction_filter_negative_earnings(direction)
                 for direction in DIRECTIONS
             },
-            ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
+            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
         )
     record_account_curve(datetime.combine(START_DATE, datetime.min.time(), tzinfo=timezone.utc), open_positions)
 
@@ -662,7 +662,7 @@ def run_backtest(
         day_pnl += pnl_before_entry
 
         # ── 2. Generate signals for today ───────────────────────────────────
-        regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME, as_of_date=day)
+        regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=day)
         if not regime:
             days_no_regime += 1
             buffer_decision_events([DecisionEvent(
@@ -793,14 +793,14 @@ def run_backtest(
                 conn,
                 direction,
                 **candidate_policy_kwargs(),
-                source_table=SOURCE_FUNDAMENTAL,
+                source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
                 as_of_date=day,
                 as_of_ts=day_end_ts,
-                pepperstone_table=PEPPERSTONE_TABLE,
+                pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                 required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
                 allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
                 filter_negative_earnings=direction_filter_negative_earnings(direction),
-                ibkr_margin_table=IBKR_MARGIN_REQUIREMENTS_TABLE,
+                ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
             )
             candidate_elapsed = _time.perf_counter() - candidate_started
             candidate_counts[direction] = len(candidates)
@@ -1332,7 +1332,7 @@ def run_backtest(
     write_trades(conn, run_id, closed_trades)
     update_run_summary(conn, run_id, closed_trades, equity, max_drawdown_pct=max_dd)
     if MONTE_CARLO_ENABLED:
-        run_monte_carlo(conn, run_id, closed_trades, INITIAL_EQUITY, N_MONTE_CARLO_SIMULATIONS)
+        run_monte_carlo(conn, run_id, closed_trades, INITIAL_EQUITY, MONTE_CARLO_SIMULATIONS)
 
     run_duration_seconds = _time.perf_counter() - run_started
     update_run_duration(conn, run_id, run_duration_seconds)

@@ -21,8 +21,8 @@ if env_bool("ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS", False):
 ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS = False
 ACCOUNT_PROFILE_REQUEST = os.getenv("ACCOUNT_PROFILE", "ps_acc").strip().lower()
 ACCOUNT_PROFILE        = ACCOUNT_PROFILE_REQUEST
-INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY", "100000.0"))
-RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT", "2.0"))
+INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY_USD", "100000.0"))
+RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_EQUITY_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
 
 
@@ -210,12 +210,12 @@ CANDIDATE_TIMELINE_CACHE_ENABLED = env_bool("CANDIDATE_TIMELINE_CACHE_ENABLED", 
 CANDIDATE_TIMELINE_CACHE_MAX_MIB = max(128, env_int("CANDIDATE_TIMELINE_CACHE_MAX_MIB", 1024))
 CANDIDATE_TIMELINE_CURSOR_ITERSIZE = max(1000, env_int("CANDIDATE_TIMELINE_CURSOR_ITERSIZE", 10000))
 MONTE_CARLO_ENABLED       = os.getenv("MONTE_CARLO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-N_MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("N_MONTE_CARLO_SIMULATIONS", "2000")))
+MONTE_CARLO_SIMULATIONS = max(0, int(os.getenv("MONTE_CARLO_SIMULATIONS", "2000")))
 COMMON_LONG_MIN_FUNDAMENTAL = env_float("COMMON_LONG_MIN_FUNDAMENTAL", 62.0)
 COMMON_SHORT_MAX_FUNDAMENTAL = env_float("COMMON_SHORT_MAX_FUNDAMENTAL", 42.0)
 COMMON_LONG_LABEL_BLOCKLIST = env_list("COMMON_LONG_LABEL_BLOCKLIST", ["value_trap", "overvalued", "overvalued_weak"])
 COMMON_SHORT_LABEL_BLOCKLIST = env_list("COMMON_SHORT_LABEL_BLOCKLIST", ["deep_value", "quality_value", "compounder"])
-COMMON_MIN_MARKET_CAP_M = float(os.getenv("COMMON_MIN_MARKET_CAP_M", "1000.0"))
+COMMON_MIN_MARKET_CAP_M = float(os.getenv("COMMON_MIN_MARKET_CAP_USD_M", "1000.0"))
 COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE = env_bool("COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE", True)
 COMMON_FILTER_NEGATIVE_EARNINGS_LONG = env_bool("COMMON_FILTER_NEGATIVE_EARNINGS_LONG", False)
 COMMON_FILTER_NEGATIVE_EARNINGS_SHORT = env_bool("COMMON_FILTER_NEGATIVE_EARNINGS_SHORT", False)
@@ -226,18 +226,18 @@ for _name, _value in {
     if _value < 0.0 or _value > 100.0:
         raise ValueError(f"{_name} must be between 0 and 100")
 if COMMON_MIN_MARKET_CAP_M < 0.0:
-    raise ValueError("COMMON_MIN_MARKET_CAP_M must be >= 0")
+    raise ValueError("COMMON_MIN_MARKET_CAP_USD_M must be >= 0")
 SECTOR_DIVERSIFICATION_ENABLED = env_bool("SECTOR_DIVERSIFICATION_ENABLED", False)
 
 COMMON_STOP_LOSS_ENABLED = env_bool("COMMON_STOP_LOSS_ENABLED", True)
 COMMON_STOP_LOOKBACK_BARS = max(1, env_int("COMMON_STOP_LOOKBACK_BARS", 14))
-COMMON_STOP_BUFFER = env_float("COMMON_STOP_BUFFER", 0.007)
+COMMON_STOP_BUFFER = env_float("COMMON_STOP_BUFFER_RATIO", 0.007)
 COMMON_STOP_ATR_LOOKBACK_BARS = max(1, env_int("COMMON_STOP_ATR_LOOKBACK_BARS", 14))
 COMMON_STOP_ATR_MULT = env_float("COMMON_STOP_ATR_MULT", 1.5)
 COMMON_MIN_STOP_PCT = env_float("COMMON_MIN_STOP_PCT", 2.5)
 COMMON_MAX_STOP_PCT = env_float("COMMON_MAX_STOP_PCT", 11.0)
 for _name, _value in {
-    "COMMON_STOP_BUFFER": COMMON_STOP_BUFFER,
+    "COMMON_STOP_BUFFER_RATIO": COMMON_STOP_BUFFER,
     "COMMON_STOP_ATR_MULT": COMMON_STOP_ATR_MULT,
     "COMMON_MIN_STOP_PCT": COMMON_MIN_STOP_PCT,
     "COMMON_MAX_STOP_PCT": COMMON_MAX_STOP_PCT,
@@ -303,15 +303,18 @@ STOP_LOSS_RTH_TZ = os.getenv("STOP_LOSS_RTH_TZ", "America/New_York")
 STOP_LOSS_RTH_START = os.getenv("STOP_LOSS_RTH_START", "09:30")
 STOP_LOSS_RTH_END = os.getenv("STOP_LOSS_RTH_END", "16:00")
 
-SOURCE_1H           = os.getenv("SOURCE_1H", "alpaca_market_data_1h")
-SOURCE_FUNDAMENTAL  = os.getenv("SOURCE_FUNDAMENTAL", "stock_scorer_fundamental_scores")
-SOURCE_WORLD_REGIME = os.getenv("SOURCE_WORLD_REGIME", "world_regime_daily_scores_mv")
-PEPPERSTONE_TABLE   = os.getenv("PEPPERSTONE_TABLE", "public.pepperstone_data")
-IBKR_MARGIN_REQUIREMENTS_TABLE = os.getenv("IBKR_MARGIN_REQUIREMENTS_TABLE", "public.ibkr_symbol_margin_requirements")
+SOURCE_MARKET_DATA_1H_TABLE = os.getenv("SOURCE_MARKET_DATA_1H_TABLE", "alpaca_market_data_1h")
+SOURCE_FUNDAMENTAL_SCORES_TABLE = os.getenv("SOURCE_FUNDAMENTAL_SCORES_TABLE", "stock_scorer_fundamental_scores")
+SOURCE_WORLD_REGIME_TABLE = os.getenv("SOURCE_WORLD_REGIME_TABLE", "world_regime_daily_scores_mv")
+PS_TRADABLE_SYMBOLS_TABLE = os.getenv("PS_TRADABLE_SYMBOLS_TABLE", "public.pepperstone_data")
+IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE = os.getenv(
+    "IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE",
+    "public.ibkr_symbol_margin_requirements",
+)
 REQUIRE_USD_FUNDAMENTALS = os.getenv("REQUIRE_USD_FUNDAMENTALS", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 DB_CONNECT_RETRIES       = int(os.getenv("DB_CONNECT_RETRIES", "5"))
-DB_CONNECT_RETRY_DELAY_S = float(os.getenv("DB_CONNECT_RETRY_DELAY_S", "5.0"))
+DB_CONNECT_RETRY_DELAY_SECONDS = float(os.getenv("DB_CONNECT_RETRY_DELAY_SECONDS", "5.0"))
 DB_STATEMENT_TIMEOUT_MS = max(0, int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "60000")))
 DB_LOCK_TIMEOUT_MS = max(0, int(os.getenv("DB_LOCK_TIMEOUT_MS", "5000")))
 DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = max(0, int(os.getenv("DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS", "60000")))
@@ -322,7 +325,7 @@ DB = {
     "dbname":          os.getenv("PGDATABASE", "postgres"),
     "user":            os.getenv("PGUSER", "market-data-account"),
     "password":        os.getenv("PGPASSWORD", "market-data-account-pw"),
-    "connect_timeout": int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10")),
+    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10")),
     "application_name": os.getenv("PGAPPNAME", "backtest_runner"),
     "options": os.getenv("PGOPTIONS", f"-c search_path={RESULT_SCHEMA}"),
 }
