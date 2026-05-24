@@ -301,12 +301,15 @@ BEGIN
                 )
                 INCLUDE (
                     composite_score,
+                    composite_score_abs,
                     sector,
                     industry,
                     valuation_label,
                     mispricing_score,
                     negative_earnings_flag,
                     high_leverage_flag,
+                    long_eligible,
+                    short_eligible,
                     market_cap_m,
                     current_price_currency,
                     market_cap_currency,

@@ -27,11 +27,17 @@ class FundamentalRow:
     composite_score: float
     sector: str
     industry: str
+    composite_score_abs: float | None = None
     valuation_label: str = ""
     mispricing_score: float | None = None
     negative_earnings_flag: bool = False
     high_leverage_flag: bool = False
     market_cap_m: float | None = None
+    long_eligible: bool = False
+    short_eligible: bool = False
+    relative_absolute_divergence: str = ""
+    long_block_reason: str = ""
+    short_block_reason: str = ""
 
     @property
     def identity_key(self) -> InstrumentKey:

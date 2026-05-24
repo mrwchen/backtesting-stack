@@ -49,11 +49,17 @@ class _CandidateTimelineRow:
     composite_score: Optional[float]
     sector: str
     industry: str
+    composite_score_abs: Optional[float]
     valuation_label: str
     mispricing_score: Optional[float]
     negative_earnings_flag: bool
     high_leverage_flag: bool
     market_cap_m: Optional[float]
+    long_eligible: bool
+    short_eligible: bool
+    relative_absolute_divergence: str
+    long_block_reason: str
+    short_block_reason: str
     current_price_currency: str
     market_cap_currency: str
     currency: str
@@ -69,11 +75,17 @@ class _CandidateTimelineRow:
             composite_score=self.composite_score,
             sector=self.sector,
             industry=self.industry,
+            composite_score_abs=self.composite_score_abs,
             valuation_label=self.valuation_label,
             mispricing_score=self.mispricing_score,
             negative_earnings_flag=self.negative_earnings_flag,
             high_leverage_flag=self.high_leverage_flag,
             market_cap_m=self.market_cap_m,
+            long_eligible=self.long_eligible,
+            short_eligible=self.short_eligible,
+            relative_absolute_divergence=self.relative_absolute_divergence,
+            long_block_reason=self.long_block_reason,
+            short_block_reason=self.short_block_reason,
         )
 
 
@@ -103,7 +115,7 @@ _STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
-_CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 512
+_CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
 
 def _cache_counts() -> tuple[int, int, float, int, int, int]:
     cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
@@ -556,15 +568,21 @@ def _build_candidate_timeline(
                     composite_score=float(row[5]) if row[5] is not None else None,
                     sector=_candidate_text(row[6]),
                     industry=_candidate_text(row[7]),
-                    valuation_label=_candidate_text(row[8]),
-                    mispricing_score=float(row[9]) if row[9] is not None else None,
-                    negative_earnings_flag=bool(row[10]),
-                    high_leverage_flag=bool(row[11]),
-                    market_cap_m=float(row[12]) if row[12] is not None else None,
-                    current_price_currency=_candidate_text(row[13]),
-                    market_cap_currency=_candidate_text(row[14]),
-                    currency=_candidate_text(row[15]),
-                    financial_currency=_candidate_text(row[16]),
+                    composite_score_abs=float(row[8]) if row[8] is not None else None,
+                    valuation_label=_candidate_text(row[9]),
+                    mispricing_score=float(row[10]) if row[10] is not None else None,
+                    negative_earnings_flag=bool(row[11]),
+                    high_leverage_flag=bool(row[12]),
+                    market_cap_m=float(row[13]) if row[13] is not None else None,
+                    long_eligible=bool(row[14]),
+                    short_eligible=bool(row[15]),
+                    relative_absolute_divergence=_candidate_text(row[16]),
+                    long_block_reason=_candidate_text(row[17]),
+                    short_block_reason=_candidate_text(row[18]),
+                    current_price_currency=_candidate_text(row[19]),
+                    market_cap_currency=_candidate_text(row[20]),
+                    currency=_candidate_text(row[21]),
+                    financial_currency=_candidate_text(row[22]),
                 )
                 rows_by_identity.setdefault(identity, []).append(timeline_row)
                 available_by_identity.setdefault(identity, []).append(timeline_row.available_epoch_us)
@@ -800,11 +818,17 @@ def get_candidates(
         f.composite_score,
         COALESCE(f.sector, '') AS sector,
         COALESCE(f.industry, '') AS industry,
+        f.composite_score_abs,
         COALESCE(f.valuation_label, '') AS valuation_label,
         f.mispricing_score,
         COALESCE(f.negative_earnings_flag, false) AS negative_earnings_flag,
         COALESCE(f.high_leverage_flag, false) AS high_leverage_flag,
         f.market_cap_m,
+        COALESCE(f.long_eligible, false) AS long_eligible,
+        COALESCE(f.short_eligible, false) AS short_eligible,
+        COALESCE(f.relative_absolute_divergence, '') AS relative_absolute_divergence,
+        COALESCE(f.long_block_reason, '') AS long_block_reason,
+        COALESCE(f.short_block_reason, '') AS short_block_reason,
         f.current_price_currency,
         f.market_cap_currency,
         f.currency,
@@ -817,11 +841,17 @@ def get_candidates(
         candidates.composite_score,
         candidates.sector,
         candidates.industry,
+        candidates.composite_score_abs,
         candidates.valuation_label,
         candidates.mispricing_score,
         candidates.negative_earnings_flag,
         candidates.high_leverage_flag,
-        candidates.market_cap_m
+        candidates.market_cap_m,
+        candidates.long_eligible,
+        candidates.short_eligible,
+        candidates.relative_absolute_divergence,
+        candidates.long_block_reason,
+        candidates.short_block_reason
     """)
     source_relation = relation_identifier(source_table)
 
@@ -961,11 +991,17 @@ def get_candidates(
             composite_score=float(r[3]),
             sector=r[4],
             industry=r[5],
-            valuation_label=r[6],
-            mispricing_score=float(r[7]) if r[7] is not None else None,
-            negative_earnings_flag=bool(r[8]),
-            high_leverage_flag=bool(r[9]),
-            market_cap_m=float(r[10]) if r[10] is not None else None,
+            composite_score_abs=float(r[6]) if r[6] is not None else None,
+            valuation_label=r[7],
+            mispricing_score=float(r[8]) if r[8] is not None else None,
+            negative_earnings_flag=bool(r[9]),
+            high_leverage_flag=bool(r[10]),
+            market_cap_m=float(r[11]) if r[11] is not None else None,
+            long_eligible=bool(r[12]),
+            short_eligible=bool(r[13]),
+            relative_absolute_divergence=r[14],
+            long_block_reason=r[15],
+            short_block_reason=r[16],
         )
         for r in rows
     ]
