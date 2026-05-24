@@ -83,7 +83,7 @@ services:
       # Source tables and point-in-time data safety
       # ---------------------------------------------------------------------
       - SOURCE_1H=alpaca_market_data_1h
-      - SOURCE_FUNDAMENTAL=stocks_analysis_fundamental_scores
+      - SOURCE_FUNDAMENTAL=stock_scorer_fundamental_scores
       - SOURCE_WORLD_REGIME=world_regime_daily_scores_historical_mv
       - PEPPERSTONE_TABLE=public.pepperstone_data
       - IBKR_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements

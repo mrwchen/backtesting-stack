@@ -7,7 +7,7 @@ backtest_decision_events / backtest_account_curve / backtest_monte_carlo.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv / _historical_mv : as_of each simulated day
-  - stocks_analysis_fundamental_scores : available at each simulated entry cutoff (true PIT by default)
+  - stock_scorer_fundamental_scores : available at each simulated entry cutoff (true PIT by default)
   - alpaca_market_data_1h         : up_to each simulated entry cutoff (true PIT)
 
 Run once, write results, exit.

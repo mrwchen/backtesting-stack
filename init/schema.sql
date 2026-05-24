@@ -289,10 +289,10 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
 
 DO $$
 BEGIN
-    IF to_regclass('public.stocks_analysis_fundamental_scores') IS NOT NULL THEN
+    IF to_regclass('public.stock_scorer_fundamental_scores') IS NOT NULL THEN
         EXECUTE '
             CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_pit_cover
-                ON public.stocks_analysis_fundamental_scores (
+                ON public.stock_scorer_fundamental_scores (
                     symbol,
                     exchange,
                     cik,
@@ -381,4 +381,3 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_monte_carlo TO "market-data-acc
 GRANT USAGE, SELECT ON SEQUENCE backtest_runs_run_id_seq   TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_decision_events_id_seq TO "market-data-account";
 GRANT USAGE, SELECT ON SEQUENCE backtest_trades_id_seq     TO "market-data-account";
-
