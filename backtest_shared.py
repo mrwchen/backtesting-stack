@@ -90,8 +90,10 @@ class TradePlan:
     intent_reason: str
     entry_price: float
     stop_loss: float
-    take_profit_1: float
-    take_profit_2: float
+    take_profit_mode: str
+    take_profit: Optional[float]
+    trailing_activation_price: Optional[float]
+    trailing_distance_pct: Optional[float]
     valuation_label: str = ""
     sector: str = ""
     industry: str = ""

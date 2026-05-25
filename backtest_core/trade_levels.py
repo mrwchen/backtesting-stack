@@ -14,12 +14,14 @@ from .config import (
     COMMON_STOP_LOOKBACK_BARS,
     COMMON_STOP_LOSS_ENABLED,
     EXECUTION_LONG_MAX_HOLD_DAYS,
-    EXECUTION_LONG_TP1_PCT,
-    EXECUTION_LONG_TP2_PCT,
+    EXECUTION_LONG_TAKE_PROFIT_PCT,
+    EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
+    EXECUTION_LONG_TRAILING_DISTANCE_PCT,
     EXECUTION_SHORT_MAX_HOLD_DAYS,
-    EXECUTION_SHORT_TP1_PCT,
-    EXECUTION_SHORT_TP2_PCT,
-    EXECUTION_TP1_CLOSE_RATIO,
+    EXECUTION_SHORT_TAKE_PROFIT_PCT,
+    EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
+    EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
+    TAKE_PROFIT_MODE,
 )
 
 
@@ -61,12 +63,23 @@ def build_trade_plan(
             "Central stop-loss policy could not calculate a valid stop from recent bars.",
         )
 
-    if intent.direction == "LONG":
-        take_profit_1 = entry_price * (1.0 + EXECUTION_LONG_TP1_PCT)
-        take_profit_2 = entry_price * (1.0 + EXECUTION_LONG_TP2_PCT)
+    take_profit = None
+    trailing_activation_price = None
+    trailing_distance_pct = None
+    if TAKE_PROFIT_MODE == "fixed":
+        if intent.direction == "LONG":
+            take_profit = entry_price * (1.0 + EXECUTION_LONG_TAKE_PROFIT_PCT)
+        else:
+            take_profit = entry_price * (1.0 - EXECUTION_SHORT_TAKE_PROFIT_PCT)
+    elif TAKE_PROFIT_MODE == "trailing":
+        if intent.direction == "LONG":
+            trailing_activation_price = entry_price * (1.0 + EXECUTION_LONG_TRAILING_ACTIVATION_PCT)
+            trailing_distance_pct = EXECUTION_LONG_TRAILING_DISTANCE_PCT
+        else:
+            trailing_activation_price = entry_price * (1.0 - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT)
+            trailing_distance_pct = EXECUTION_SHORT_TRAILING_DISTANCE_PCT
     else:
-        take_profit_1 = entry_price * (1.0 - EXECUTION_SHORT_TP1_PCT)
-        take_profit_2 = entry_price * (1.0 - EXECUTION_SHORT_TP2_PCT)
+        raise ValueError(f"Unknown take-profit mode: {TAKE_PROFIT_MODE!r}")
 
     plan = TradePlan(
         symbol=fundamental.symbol,
@@ -76,8 +89,10 @@ def build_trade_plan(
         intent_reason=intent.reason,
         entry_price=entry_price,
         stop_loss=stop_loss,
-        take_profit_1=take_profit_1,
-        take_profit_2=take_profit_2,
+        take_profit_mode=TAKE_PROFIT_MODE,
+        take_profit=take_profit,
+        trailing_activation_price=trailing_activation_price,
+        trailing_distance_pct=trailing_distance_pct,
         valuation_label=fundamental.valuation_label,
         sector=fundamental.sector,
         industry=fundamental.industry,
@@ -89,7 +104,7 @@ def build_trade_plan(
         True,
         "execution",
         "execution_levels_applied",
-        "Central execution risk engine applied entry, stop-loss, and take-profit levels.",
+        "Central execution risk engine applied entry, stop-loss, and take-profit policy.",
         plan,
     )
 
@@ -100,10 +115,6 @@ def execution_max_hold_days(direction: str) -> float:
     if direction == "SHORT":
         return EXECUTION_SHORT_MAX_HOLD_DAYS
     raise ValueError(f"Unknown direction: {direction!r}")
-
-
-def execution_take_profit_close_ratio() -> float:
-    return EXECUTION_TP1_CLOSE_RATIO
 
 
 def validate_intent_for_candidate(intent: TradeIntent, fundamental: FundamentalRow, direction: str) -> TradePlanResult:

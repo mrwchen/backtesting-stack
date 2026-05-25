@@ -191,15 +191,17 @@ def run_single_model_worker() -> None:
             cfg.min_bars,
         )
         log.info(
-            "Execution policy model %s long tp1 %.4f long tp2 %.4f short tp1 %.4f short tp2 %.4f long max hold %.2f short max hold %.2f tp1 close ratio %.2f stop source common",
+            "Execution policy model %s take profit mode %s long fixed tp %.4f short fixed tp %.4f long trailing activation %.4f distance %.4f short trailing activation %.4f distance %.4f long max hold %.2f short max hold %.2f stop source common",
             runtime.CURRENT_MODEL_FILE,
-            EXECUTION_LONG_TP1_PCT,
-            EXECUTION_LONG_TP2_PCT,
-            EXECUTION_SHORT_TP1_PCT,
-            EXECUTION_SHORT_TP2_PCT,
+            TAKE_PROFIT_MODE,
+            EXECUTION_LONG_TAKE_PROFIT_PCT,
+            EXECUTION_SHORT_TAKE_PROFIT_PCT,
+            EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
+            EXECUTION_LONG_TRAILING_DISTANCE_PCT,
+            EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
+            EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
             EXECUTION_LONG_MAX_HOLD_DAYS,
             EXECUTION_SHORT_MAX_HOLD_DAYS,
-            EXECUTION_TP1_CLOSE_RATIO,
         )
         if GRID_SEARCH_ENABLED:
             results = run_grid_search(conn, cfg)

@@ -81,13 +81,15 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     short_max_rsi        NUMERIC(5,2),
 
     -- Central execution/risk policy snapshot
-    execution_long_tp1_pct NUMERIC(6,4)  NOT NULL,
-    execution_long_tp2_pct NUMERIC(6,4)  NOT NULL,
-    execution_short_tp1_pct NUMERIC(6,4) NOT NULL,
-    execution_short_tp2_pct NUMERIC(6,4) NOT NULL,
+    take_profit_mode TEXT NOT NULL,
+    execution_long_take_profit_pct NUMERIC(6,4) NOT NULL,
+    execution_short_take_profit_pct NUMERIC(6,4) NOT NULL,
+    execution_long_trailing_activation_pct NUMERIC(6,4) NOT NULL,
+    execution_short_trailing_activation_pct NUMERIC(6,4) NOT NULL,
+    execution_long_trailing_distance_pct NUMERIC(6,4) NOT NULL,
+    execution_short_trailing_distance_pct NUMERIC(6,4) NOT NULL,
     execution_long_max_hold_days NUMERIC(6,2) NOT NULL,
     execution_short_max_hold_days NUMERIC(6,2) NOT NULL,
-    execution_tp1_close_ratio NUMERIC(4,3) NOT NULL,
     common_stop_loss_enabled BOOLEAN NOT NULL,
     common_stop_lookback_bars INTEGER NOT NULL,
     common_stop_buffer NUMERIC(8,4) NOT NULL,
@@ -156,8 +158,9 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     entry_ts             TIMESTAMPTZ,
     entry_price          NUMERIC(15,4),
     stop_loss            NUMERIC(15,4),
-    take_profit_1        NUMERIC(15,4),
-    take_profit_2        NUMERIC(15,4),
+    take_profit          NUMERIC(15,4),
+    trailing_activation_price NUMERIC(15,4),
+    trailing_distance_pct NUMERIC(6,4),
 
     -- Portfolio context at decision time
     open_positions       INTEGER,
@@ -213,8 +216,10 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     -- Execution levels
     entry_price          NUMERIC(15,4) NOT NULL,
     stop_loss            NUMERIC(15,4) NOT NULL,
-    take_profit_1        NUMERIC(15,4) NOT NULL,
-    take_profit_2        NUMERIC(15,4) NOT NULL,
+    take_profit_mode     TEXT          NOT NULL,
+    take_profit          NUMERIC(15,4),
+    trailing_activation_price NUMERIC(15,4),
+    trailing_distance_pct NUMERIC(6,4),
 
     -- Position sizing
     position_size_usd    NUMERIC(15,2),
@@ -224,18 +229,19 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     equity_before        NUMERIC(15,2),
 
     -- Outcome
-    outcome_status       TEXT,          -- HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | MAX_HOLD_TP1 | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
+    outcome_status       TEXT,          -- HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price        NUMERIC(15,4),
     outcome_date         DATE,
     outcome_bars         INTEGER,       -- 1h bars from entry to close
-    tp1_hit              BOOLEAN        NOT NULL DEFAULT FALSE,
+    trailing_activated   BOOLEAN        NOT NULL DEFAULT FALSE,
+    trailing_stop        NUMERIC(15,4),
     return_pct           NUMERIC(8,4),
     margin_hours_usd     NUMERIC(20,4),
     return_per_margin_hour_pct NUMERIC(18,8),
     pnl_usd              NUMERIC(15,2),
     equity_after         NUMERIC(15,2),
     entry_ts             TIMESTAMPTZ,
-    tp1_exit_ts          TIMESTAMPTZ,
+    trailing_activated_ts TIMESTAMPTZ,
     exit_ts              TIMESTAMPTZ,
 
     UNIQUE (run_id, intent_date, symbol, exchange, cik)

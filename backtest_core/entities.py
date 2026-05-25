@@ -16,9 +16,11 @@ class OpenPosition:
     entry_ts: datetime
     entry_price: float
     stop_loss: float
-    effective_sl: float        # moves to entry after TP1 hit
-    take_profit_1: float
-    take_profit_2: float
+    effective_sl: float
+    take_profit_mode: str
+    take_profit: Optional[float]
+    trailing_activation_price: Optional[float]
+    trailing_distance_pct: Optional[float]
     valid_until: datetime
     shares: float
     position_size_usd: float
@@ -29,11 +31,11 @@ class OpenPosition:
     world_regime_label: str = ""
     world_regime_score: float = 0.0
     valuation_label: str = ""
-    tp1_close_ratio: float = 0.5
     # incremental simulate_outcome state — updated in-place on each day's pass
-    tp1_hit: bool = False
-    tp1_price: Optional[float] = None
-    tp1_exit_ts: Optional[datetime] = None
+    trailing_activated: bool = False
+    trailing_reference_price: Optional[float] = None
+    trailing_stop: Optional[float] = None
+    trailing_activated_ts: Optional[datetime] = None
     last_bar_ts: Optional[datetime] = None
     bars_processed: int = 0
 
@@ -45,18 +47,19 @@ class OpenPosition:
 @dataclass
 class ClosedTrade:
     position: OpenPosition
-    outcome_status: str        # HIT_TP2 | HIT_TP1_THEN_BE | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
+    outcome_status: str        # HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price: float
     outcome_date: date
     outcome_bars: int
-    tp1_hit: bool
+    trailing_activated: bool
     return_pct: float
     margin_hours_usd: float
     return_per_margin_hour_pct: Optional[float]
     pnl_usd: float
     equity_after: float
     exit_ts: datetime = None
-    tp1_exit_ts: Optional[datetime] = None
+    trailing_stop: Optional[float] = None
+    trailing_activated_ts: Optional[datetime] = None
 
 
 @dataclass
@@ -128,8 +131,9 @@ class DecisionEvent:
     entry_ts: Optional[datetime] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
-    take_profit_1: Optional[float] = None
-    take_profit_2: Optional[float] = None
+    take_profit: Optional[float] = None
+    trailing_activation_price: Optional[float] = None
+    trailing_distance_pct: Optional[float] = None
     open_positions: Optional[int] = None
     max_open_positions: Optional[int] = None
     account_equity: Optional[float] = None

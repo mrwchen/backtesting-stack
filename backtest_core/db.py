@@ -136,9 +136,13 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "run_duration_seconds",
         "margin_hours_usd",
         "return_per_margin_hour_pct",
-        "execution_long_tp1_pct",
-        "execution_short_tp1_pct",
-        "execution_tp1_close_ratio",
+        "take_profit_mode",
+        "execution_long_take_profit_pct",
+        "execution_short_take_profit_pct",
+        "execution_long_trailing_activation_pct",
+        "execution_short_trailing_activation_pct",
+        "execution_long_trailing_distance_pct",
+        "execution_short_trailing_distance_pct",
         "common_stop_buffer",
         "ps_share_cfd_arr_pct",
         "ps_share_cfd_admin_fee_pct",
@@ -147,7 +151,9 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
         "run_id", "symbol", "exchange", "cik", "entry_ts", "margin_hours_usd",
-        "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason"
+        "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason",
+        "take_profit_mode", "take_profit", "trailing_activation_price", "trailing_distance_pct",
+        "trailing_activated", "trailing_stop", "trailing_activated_ts"
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
         "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score"
