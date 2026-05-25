@@ -181,7 +181,7 @@ services:
       # The engine owns entry levels, stops, take profits, and hold duration.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=fixed
-      - EXECUTION_LONG_TAKE_PROFIT_PCT=0.055
+      - EXECUTION_LONG_TAKE_PROFIT_PCT=0.06
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.06
       - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.04
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.04
