@@ -15,7 +15,6 @@ today's recent drawdown event.
 
 import dataclasses
 import math
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -85,11 +84,9 @@ class IntentConfig:
 
 def intent_config_from_env() -> IntentConfig:
     d = IntentConfig()
-    shared_min_bars = env_int("MIN_BARS", d.min_bars)
-    shared_lookback_bars = env_int("PRICE_LOOKBACK_BARS", d.price_lookback_bars)
     return IntentConfig(
-        min_bars=env_int("PROBABILITY_MIN_BARS", max(d.min_bars, shared_min_bars)),
-        price_lookback_bars=env_int("PROBABILITY_HISTORY_BARS", max(d.price_lookback_bars, shared_lookback_bars)),
+        min_bars=env_int("MIN_BARS", d.min_bars),
+        price_lookback_bars=env_int("PRICE_LOOKBACK_BARS", d.price_lookback_bars),
         long_min_pullback=d.long_min_pullback,
         long_max_pullback=d.long_max_pullback,
         long_ideal_pullback=d.long_ideal_pullback,
@@ -106,7 +103,7 @@ def intent_config_from_env() -> IntentConfig:
         fundamental_abs_weight=env_float("FUNDAMENTAL_ABS_WEIGHT", d.fundamental_abs_weight),
         long_min_absolute_score=env_optional_float("LONG_MIN_ABSOLUTE_SCORE", d.long_min_absolute_score),
         short_max_absolute_score=env_optional_float("SHORT_MAX_ABSOLUTE_SCORE", d.short_max_absolute_score),
-        session_tz=os.getenv("PROBABILITY_SESSION_TZ", d.session_tz).strip() or d.session_tz,
+        session_tz=env_str("PROBABILITY_SESSION_TZ", d.session_tz),
         event_lookback_days=env_int("EVENT_LOOKBACK_DAYS", d.event_lookback_days),
         volatility_lookback_days=env_int("VOLATILITY_LOOKBACK_DAYS", d.volatility_lookback_days),
         min_daily_observations=env_int("MIN_DAILY_OBSERVATIONS", d.min_daily_observations),
