@@ -114,8 +114,8 @@ services:
       # ---------------------------------------------------------------------
       - ENTRY_WINDOW_ENABLED=true
       - ENTRY_WINDOW_TZ=America/New_York
-      - ENTRY_WINDOW_START=10:30
-      - ENTRY_WINDOW_END=15:00
+      - ENTRY_WINDOW_START=10:00
+      - ENTRY_WINDOW_END=15:30
       - SL_TP_WINDOW_TZ=America/New_York
       - SL_TP_WINDOW_START=09:30
       - SL_TP_WINDOW_END=16:00
