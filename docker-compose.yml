@@ -105,7 +105,7 @@ services:
       # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=1.5
+      - RISK_PER_TRADE_EQUITY_PCT=2
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
@@ -167,13 +167,13 @@ services:
       # This pre-filter is model-independent. Models only emit symbol,
       # direction, score, and reason.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=62.0
-      - COMMON_SHORT_MAX_FUNDAMENTAL=42.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=65.0
+      - COMMON_SHORT_MAX_FUNDAMENTAL=35.0
       - COMMON_LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
       - COMMON_MIN_MARKET_CAP_USD_M=10000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
-      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
+      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=true
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
 
       # ---------------------------------------------------------------------
@@ -192,15 +192,15 @@ services:
       # Take-profit/trailing checks use the SL_TP_WINDOW_* trading window.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
-      - EXECUTION_LONG_TAKE_PROFIT_PCT=0.06
-      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.04
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.04
-      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.04
+      - EXECUTION_LONG_TAKE_PROFIT_PCT=0.05
+      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.05
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.02
+      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.025
       - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.025
       - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.025
       - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
-      - COMMON_STOP_LOSS_ENABLED=true
+      - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=24
       - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=24
