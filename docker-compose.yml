@@ -122,7 +122,7 @@ services:
       - STOP_LOSS_RTH_ONLY=true
       - STOP_LOSS_RTH_TZ=America/New_York
       - STOP_LOSS_RTH_START=09:30
-      - STOP_LOSS_RTH_END=16:00
+      - STOP_LOSS_RTH_END=15:55
 
       # ---------------------------------------------------------------------
       # Common policy: world-regime direction budget
