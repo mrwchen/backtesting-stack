@@ -171,7 +171,7 @@ services:
       - COMMON_SHORT_MAX_FUNDAMENTAL=42.0
       - COMMON_LONG_LABEL_BLOCKLIST=value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST=deep_value,quality_value,compounder
-      - COMMON_MIN_MARKET_CAP_USD_M=2000.0
+      - COMMON_MIN_MARKET_CAP_USD_M=10000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=true
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
@@ -179,14 +179,25 @@ services:
       # ---------------------------------------------------------------------
       # Central execution/risk policy
       # The engine owns entry levels, stops, take profits, and hold duration.
+      # TAKE_PROFIT_MODE allowed values:
+      # fixed    = hard take-profit from entry price.
+      #            LONG: entry * (1 + EXECUTION_LONG_TAKE_PROFIT_PCT)
+      #            SHORT: entry * (1 - EXECUTION_SHORT_TAKE_PROFIT_PCT)
+      #            The trailing activation/distance settings are ignored.
+      # trailing = no fixed take-profit. Once price reaches the configured
+      #            activation pct from entry, the stop becomes a trailing stop
+      #            using the configured trailing distance pct.
+      #            The fixed take-profit pct settings are ignored.
+      # Percent values are decimals: 0.06 = 6%, 0.03 = 3%.
+      # Take-profit/trailing checks use the SL_TP_WINDOW_* trading window.
       # ---------------------------------------------------------------------
-      - TAKE_PROFIT_MODE=fixed
+      - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=0.06
-      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.06
+      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.04
       - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.04
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.04
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.03
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.03
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.025
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.025
       - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
       - COMMON_STOP_LOSS_ENABLED=true

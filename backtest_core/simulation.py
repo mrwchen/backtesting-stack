@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import psycopg2
 
-from backtest_shared import IntentEvaluation, TradeIntent, TradePlan, fundamental_base_score
+from backtest_shared import InstrumentKey, IntentEvaluation, TradeIntent, TradePlan, fundamental_base_score
 from . import runtime
 from .broker import (
     _account_snapshot_values,
@@ -23,7 +23,7 @@ from .broker import (
     initial_stop_cash_risk,
 )
 from .config import *
-from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition, PortfolioEvent
+from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition
 from .market_data import (
     _day_close_ts,
     _day_signal_cutoff_ts,
@@ -34,6 +34,7 @@ from .market_data import (
     get_next_bar_open,
     get_trading_days,
     get_world_regime,
+    _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
     load_recent_bars_for_identities,
@@ -68,6 +69,7 @@ from .trade_levels import (
 log = logging.getLogger(__name__)
 
 DIRECTIONS = ("LONG", "SHORT")
+REFILL_EXIT_STATUSES = {"HIT_SL", "HIT_TRAILING_STOP", "HIT_TP", "MAX_HOLD"}
 
 
 def _bar_lookback_limit(model: Any, cfg: Any) -> int:
@@ -231,6 +233,66 @@ def _short_take_profit_trade(
     if price is None:
         raise ValueError("Fixed short take-profit was requested without a take_profit level")
     return _exit_trade(conn, pos, "HIT_TP", price, bar_date, total_bars, equity, ts)
+
+
+def _simulate_position_bar(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    ts: datetime,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    equity: float,
+) -> Optional[ClosedTrade]:
+    ts = _ensure_utc_ts(ts)
+    bar_date = ts.date()
+    total_bars = pos.bars_processed + 1
+    stop_loss_active = _is_stop_loss_active(ts)
+    sl_tp_active = _is_in_sl_tp_window(ts)
+    is_long = pos.direction == "LONG"
+
+    if is_long:
+        trade = _simulate_long_intrabar(
+            conn,
+            pos,
+            ts,
+            bar_date,
+            total_bars,
+            float(open_),
+            float(high),
+            float(low),
+            float(close),
+            stop_loss_active,
+            sl_tp_active,
+            equity,
+        )
+    else:
+        trade = _simulate_short_intrabar(
+            conn,
+            pos,
+            ts,
+            bar_date,
+            total_bars,
+            float(open_),
+            float(high),
+            float(low),
+            float(close),
+            stop_loss_active,
+            sl_tp_active,
+            equity,
+        )
+    if trade is not None:
+        return trade
+
+    if ts >= pos.valid_until:
+        price = float(close)
+        pnl = _pnl_long(pos, price) if is_long else _pnl_short(pos, price)
+        return _make_trade(conn, pos, "MAX_HOLD", price, bar_date, total_bars, pnl, equity, ts)
+
+    pos.last_bar_ts = ts
+    pos.bars_processed = total_bars
+    return None
 
 
 def _activate_long_trailing(pos: OpenPosition, reference_price: float, ts: datetime) -> float:
@@ -416,55 +478,10 @@ def simulate_outcome(
     if not bars:
         return None
 
-    is_long = pos.direction == "LONG"
-
-    for bar_idx, (ts, open_, high, low, close) in enumerate(bars):
-        bar_date = ts.date() if hasattr(ts, "date") else ts
-        total_bars = pos.bars_processed + bar_idx + 1
-        sl_tp_active = _is_in_sl_tp_window(ts)
-        stop_loss_active = _is_stop_loss_active(ts)
-
-        if is_long:
-            trade = _simulate_long_intrabar(
-                conn,
-                pos,
-                ts,
-                bar_date,
-                total_bars,
-                float(open_),
-                float(high),
-                float(low),
-                float(close),
-                stop_loss_active,
-                sl_tp_active,
-                equity,
-            )
-        else:
-            trade = _simulate_short_intrabar(
-                conn,
-                pos,
-                ts,
-                bar_date,
-                total_bars,
-                float(open_),
-                float(high),
-                float(low),
-                float(close),
-                stop_loss_active,
-                sl_tp_active,
-                equity,
-            )
+    for ts, open_, high, low, close in bars:
+        trade = _simulate_position_bar(conn, pos, ts, open_, high, low, close, equity)
         if trade is not None:
             return trade
-
-        if ts >= pos.valid_until:
-            price = float(close)
-            pnl = _pnl_long(pos, price) if is_long else _pnl_short(pos, price)
-            return _make_trade(conn, pos, "MAX_HOLD", price, bar_date, total_bars, pnl, equity, ts)
-
-    # Still open — persist incremental state for the next day's call
-    pos.last_bar_ts = bars[-1][0]
-    pos.bars_processed += len(bars)
     return None
 
 def run_backtest(
@@ -527,47 +544,115 @@ def run_backtest(
     def apply_position_events_through(
         positions: list[OpenPosition],
         end_ts: datetime,
-    ) -> tuple[list[OpenPosition], int, float]:
+        refill_callback=None,
+        closed_identity_blocklist: Optional[set[InstrumentKey]] = None,
+    ) -> tuple[list[OpenPosition], int, float, int]:
         nonlocal equity
         end_ts = _ensure_utc_ts(end_ts)
-        portfolio_events: list[PortfolioEvent] = []
+        active_positions = list(positions)
+        bars_by_position: dict[int, list] = {}
+        bar_index_by_position: dict[int, int] = {}
         closed_count = 0
         realized_pnl = 0.0
-        if positions:
+        refill_opened = 0
+        closed_identity_blocklist = closed_identity_blocklist if closed_identity_blocklist is not None else set()
+
+        if active_positions:
             preload_identity_bars(
                 conn,
-                [pos.identity_key for pos in positions],
+                [pos.identity_key for pos in active_positions],
                 end_ts,
                 batch_size=BAR_CACHE_BATCH_SIZE,
                 log_batches=False,
             )
 
-        for pos in positions:
-            trade = simulate_outcome(conn, pos, end_ts, equity)
-            if trade is not None:
-                close_ts = trade.exit_ts or end_ts
-                portfolio_events.append(PortfolioEvent(
-                    ts=close_ts,
-                    priority=1,
-                    kind="close",
-                    position=pos,
-                    trade=trade,
-                ))
+        def position_is_active(position: OpenPosition) -> bool:
+            return any(current is position for current in active_positions)
+
+        def ensure_position_bars(position: OpenPosition) -> None:
+            key = id(position)
+            if key in bars_by_position:
+                return
+            after_ts = (
+                position.last_bar_ts
+                if position.last_bar_ts is not None
+                else position.entry_ts - timedelta(microseconds=1)
+            )
+            bars_by_position[key] = get_bars_range_through(conn, position.identity_key, after_ts, end_ts)
+            bar_index_by_position[key] = 0
+
+        while True:
+            for position in active_positions:
+                ensure_position_bars(position)
+
+            next_ts: Optional[datetime] = None
+            for position in active_positions:
+                key = id(position)
+                bars = bars_by_position.get(key, [])
+                idx = bar_index_by_position.get(key, 0)
+                if idx >= len(bars):
+                    continue
+                bar_ts = _ensure_utc_ts(bars[idx][0])
+                if next_ts is None or bar_ts < next_ts:
+                    next_ts = bar_ts
+
+            if next_ts is None:
+                break
+
+            close_events: list[tuple[OpenPosition, ClosedTrade]] = []
+            for position in list(active_positions):
+                key = id(position)
+                bars = bars_by_position.get(key, [])
+                idx = bar_index_by_position.get(key, 0)
+                if idx >= len(bars):
+                    continue
+                ts, open_, high, low, close = bars[idx]
+                ts = _ensure_utc_ts(ts)
+                if ts != next_ts:
+                    continue
+                bar_index_by_position[key] = idx + 1
+                trade = _simulate_position_bar(conn, position, ts, open_, high, low, close, equity)
+                if trade is not None:
+                    close_events.append((position, trade))
+
+            if not close_events:
                 continue
 
-        active_positions = list(positions)
-        for event in sorted(portfolio_events, key=lambda e: (_ensure_utc_ts(e.ts), e.priority)):
-            if event.kind == "close" and event.trade is not None:
-                _remove_position_by_identity(active_positions, event.position)
-                event.trade.equity_after = round(equity + event.trade.pnl_usd, 2)
-                equity = event.trade.equity_after
-                closed_trades.append(event.trade)
+            refill_triggered = False
+            for position, trade in close_events:
+                if not position_is_active(position):
+                    continue
+                close_ts = _ensure_utc_ts(trade.exit_ts or next_ts)
+                _remove_position_by_identity(active_positions, position)
+                trade.equity_after = round(equity + trade.pnl_usd, 2)
+                equity = trade.equity_after
+                closed_trades.append(trade)
                 closed_count += 1
-                realized_pnl += event.trade.pnl_usd
+                realized_pnl += trade.pnl_usd
+                closed_identity_blocklist.add(position.identity_key)
+                refill_triggered = refill_triggered or trade.outcome_status in REFILL_EXIT_STATUSES
                 log.debug("Closed %-6s %s %s pnl %.0f balance %.0f",
-                          event.position.symbol, event.position.direction, event.trade.outcome_status,
-                          event.trade.pnl_usd, equity)
-                record_account_curve(event.ts, active_positions)
+                          position.symbol, position.direction, trade.outcome_status,
+                          trade.pnl_usd, equity)
+                record_account_curve(close_ts, active_positions)
+
+            liquidation_trades, equity = _enforce_account_margin_liquidation(
+                conn,
+                active_positions,
+                equity,
+                next_ts,
+            )
+            if liquidation_trades:
+                closed_trades.extend(liquidation_trades)
+                closed_count += len(liquidation_trades)
+                realized_pnl += sum(t.pnl_usd for t in liquidation_trades)
+                for trade in liquidation_trades:
+                    closed_identity_blocklist.add(trade.position.identity_key)
+                record_account_curve(next_ts, active_positions)
+
+            if refill_callback is not None and refill_triggered and len(active_positions) < MAX_OPEN_POSITIONS:
+                opened = refill_callback(next_ts, active_positions, closed_identity_blocklist, end_ts)
+                refill_opened += opened
 
         liquidation_trades, equity = _enforce_account_margin_liquidation(
             conn,
@@ -581,7 +666,539 @@ def run_backtest(
             realized_pnl += sum(t.pnl_usd for t in liquidation_trades)
             record_account_curve(end_ts, active_positions)
 
-        return active_positions, closed_count, realized_pnl
+        return active_positions, closed_count, realized_pnl, refill_opened
+
+    def build_intent_plans_for_as_of(
+        day: date,
+        as_of_ts: datetime,
+        regime: Any,
+        regime_bucket: str,
+        regime_exposure: dict,
+        model: Any,
+        active_positions: list[OpenPosition],
+        *,
+        log_progress_today: bool = False,
+        context_label: str = "daily",
+    ) -> tuple[dict[str, list[TradePlan]], dict[tuple[str, tuple[str, str, int]], DecisionEvent], list[DecisionEvent], dict]:
+        as_of_ts = _ensure_utc_ts(as_of_ts)
+        plans_by_direction: dict[str, list[TradePlan]] = {direction: [] for direction in DIRECTIONS}
+        plans: list[TradePlan] = []
+        decision_events: list[DecisionEvent] = []
+        plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent] = {}
+        skipped_no_bars = 0
+        total_candidates = 0
+        candidate_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
+        intent_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
+
+        for direction in DIRECTIONS:
+            direction_risk = direction_risk_multiplier(regime_exposure, direction)
+            direction_cap = direction_max_positions(regime_exposure, direction)
+            if direction_risk <= 0.0 and direction_cap <= 0:
+                decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=as_of_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=direction,
+                    decision_stage="regime_filter",
+                    decision="skipped_direction",
+                    reason_code="regime_direction_disabled",
+                    reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max {direction.lower()} positions.",
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(active_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
+                continue
+
+            if log_progress_today:
+                log.info(
+                    "Candidate query starting context %s day %s model %s direction %s bucket %s cutoff %s",
+                    context_label,
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    regime_bucket,
+                    as_of_ts,
+                )
+            candidate_started = _time.perf_counter()
+            candidates = get_candidates(
+                conn,
+                direction,
+                **candidate_policy_kwargs(),
+                **candidate_score_kwargs,
+                source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
+                as_of_date=day,
+                as_of_ts=as_of_ts,
+                pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+                required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+                filter_negative_earnings=direction_filter_negative_earnings(direction),
+                ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            )
+            candidate_elapsed = _time.perf_counter() - candidate_started
+            candidate_counts[direction] = len(candidates)
+            total_candidates += len(candidates)
+            if log_progress_today or candidate_elapsed >= 5.0:
+                log.info(
+                    "Candidate query complete context %s day %s model %s direction %s bucket %s found %d candidates in %.1f s",
+                    context_label,
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    regime_bucket,
+                    len(candidates),
+                    candidate_elapsed,
+                )
+
+            if not candidates:
+                decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=as_of_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=direction,
+                    decision_stage="candidate_filter",
+                    decision="no_candidates",
+                    reason_code="no_candidates_after_fundamental_filters",
+                    reason_text="No symbols passed the point-in-time fundamental, currency, market-cap and broker filters.",
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(active_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
+                continue
+
+            candidate_identities = [fundamental.identity_key for fundamental in candidates]
+            bar_lookback_limit = _bar_lookback_limit(model, cfg)
+            bar_load_started = _time.perf_counter()
+            recent_bars_by_identity = load_recent_bars_for_identities(
+                conn,
+                candidate_identities,
+                bar_lookback_limit,
+                as_of_ts,
+                batch_size=BAR_CACHE_BATCH_SIZE,
+                log_batches=log_progress_today,
+            )
+            loaded_bar_rows = sum(len(bars) for bars in recent_bars_by_identity.values())
+            bar_load_elapsed = _time.perf_counter() - bar_load_started
+            if log_progress_today or bar_load_elapsed >= 5.0:
+                log.info(
+                    "Recent bar load complete context %s day %s model %s direction %s loaded %d rows for %d candidates limit %d through %s in %.1f s",
+                    context_label,
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    direction,
+                    loaded_bar_rows,
+                    len(candidate_identities),
+                    bar_lookback_limit,
+                    as_of_ts,
+                    bar_load_elapsed,
+                )
+
+            evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
+
+            for candidate_rank, fundamental in enumerate(candidates, start=1):
+                bars = recent_bars_by_identity.get(fundamental.identity_key, [])
+                if len(bars) < cfg.min_bars:
+                    skipped_no_bars += 1
+                    decision_events.append(DecisionEvent(
+                        run_id=run_id,
+                        intent_date=day,
+                        as_of_ts=as_of_ts,
+                        symbol=fundamental.symbol,
+                        exchange=fundamental.exchange,
+                        cik=fundamental.cik,
+                        direction=direction,
+                        decision_stage="bar_load",
+                        decision="rejected",
+                        reason_code="insufficient_bars",
+                        reason_text=f"Only {len(bars)} cached 1h bars were available; model requires at least {cfg.min_bars}.",
+                        candidate_rank=candidate_rank,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        valuation_label=fundamental.valuation_label,
+                        sector=fundamental.sector,
+                        industry=fundamental.industry,
+                        fundamental_score=_model_fundamental_score(fundamental, cfg),
+                        mispricing_score=fundamental.mispricing_score,
+                        market_cap_m=fundamental.market_cap_m,
+                        bar_count=len(bars),
+                        min_bars=cfg.min_bars,
+                        open_positions=len(active_positions),
+                        max_open_positions=MAX_OPEN_POSITIONS,
+                        account_equity=equity,
+                    ))
+                    continue
+
+                evaluation = evaluate_fn(bars, fundamental, as_of_ts, cfg)
+                if not isinstance(evaluation, IntentEvaluation):
+                    evaluation = IntentEvaluation(
+                        intent=None,
+                        decision="rejected",
+                        reason_code="invalid_model_evaluation",
+                        reason_text="Model did not return an IntentEvaluation.",
+                    )
+                intent = evaluation.intent
+                plan: TradePlan | None = None
+                if intent and not isinstance(intent, TradeIntent):
+                    intent = None
+                    evaluation.intent = None
+                    evaluation.decision = "rejected"
+                    evaluation.reason_code = "invalid_model_intent"
+                    evaluation.reason_text = "Model did not return a TradeIntent."
+                if intent:
+                    intent_check = validate_intent_for_candidate(intent, fundamental, direction)
+                    if not intent_check.accepted:
+                        intent = None
+                        evaluation.intent = None
+                        evaluation.decision = "rejected"
+                        evaluation.reason_code = intent_check.reason_code
+                        evaluation.reason_text = intent_check.reason_text
+                if intent:
+                    next_entry = get_next_bar_open(conn, fundamental.identity_key, as_of_ts)
+                    if next_entry is None:
+                        intent = None
+                        evaluation.intent = None
+                        evaluation.decision = "rejected"
+                        evaluation.reason_code = "next_entry_bar_missing"
+                        evaluation.reason_text = (
+                            f"No 1h bar after decision timestamp {as_of_ts} was available for next-bar-open entry."
+                        )
+                    else:
+                        entry_ts, entry_open = next_entry
+                        trade_plan_result = build_trade_plan(
+                            intent,
+                            fundamental,
+                            bars,
+                            _ensure_utc_ts(entry_ts),
+                            entry_open,
+                        )
+                        if not trade_plan_result.accepted:
+                            intent = None
+                            evaluation.intent = None
+                            evaluation.decision = "rejected"
+                            evaluation.reason_code = trade_plan_result.reason_code
+                            evaluation.reason_text = trade_plan_result.reason_text
+                        else:
+                            plan = trade_plan_result.plan
+                            if plan is None:
+                                intent = None
+                                evaluation.intent = None
+                                evaluation.decision = "rejected"
+                                evaluation.reason_code = "execution_plan_missing"
+                                evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
+                            else:
+                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                                plans.append(plan)
+                                plans_by_direction[direction].append(plan)
+
+                event = DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=as_of_ts,
+                    symbol=fundamental.symbol,
+                    exchange=fundamental.exchange,
+                    cik=fundamental.cik,
+                    direction=direction,
+                    decision_stage="intent_eval",
+                    decision="intent" if plan else "rejected",
+                    reason_code=evaluation.reason_code,
+                    reason_text=evaluation.reason_text,
+                    intent_passed=bool(plan),
+                    candidate_rank=candidate_rank,
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    valuation_label=fundamental.valuation_label,
+                    sector=fundamental.sector,
+                    industry=fundamental.industry,
+                    fundamental_score=_model_fundamental_score(fundamental, cfg),
+                    mispricing_score=fundamental.mispricing_score,
+                    market_cap_m=fundamental.market_cap_m,
+                    bar_count=len(bars),
+                    min_bars=cfg.min_bars,
+                    intent_score=plan.intent_score if plan else (intent.score if intent else None),
+                    intent_reason=plan.intent_reason if plan else (intent.reason if intent else ""),
+                    entry_ts=plan.entry_ts if plan else None,
+                    entry_price=plan.entry_price if plan else None,
+                    stop_loss=plan.stop_loss if plan else None,
+                    take_profit=plan.take_profit if plan else None,
+                    trailing_activation_price=plan.trailing_activation_price if plan else None,
+                    trailing_distance_pct=plan.trailing_distance_pct if plan else None,
+                    open_positions=len(active_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                )
+                decision_events.append(event)
+                if plan:
+                    plan_events[_plan_event_key(plan)] = event
+
+        for direction, direction_plans in plans_by_direction.items():
+            direction_plans.sort(key=lambda plan: plan.intent_score, reverse=True)
+            intent_counts[direction] = len(direction_plans)
+            for intent_rank, plan in enumerate(direction_plans, start=1):
+                event = plan_events.get(_plan_event_key(plan))
+                if event:
+                    event.intent_rank = intent_rank
+
+        stats = {
+            "total_candidates": total_candidates,
+            "plans": len(plans),
+            "skipped_no_bars": skipped_no_bars,
+            "candidate_counts": candidate_counts,
+            "intent_counts": intent_counts,
+        }
+        return plans_by_direction, plan_events, decision_events, stats
+
+    def open_ranked_plans(
+        day: date,
+        as_of_ts: datetime,
+        regime: Any,
+        regime_bucket: str,
+        regime_exposure: dict,
+        plans_by_direction: dict[str, list[TradePlan]],
+        plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent],
+        active_positions: list[OpenPosition],
+        blocked_identities: set[InstrumentKey],
+        *,
+        require_entry_window: bool = False,
+        entry_deadline_ts: Optional[datetime] = None,
+    ) -> int:
+        if SECTOR_DIVERSIFICATION_ENABLED:
+            open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
+            open_sector_industries: set[tuple[str, str]] = {
+                (p.plan.sector, p.plan.industry)
+                for p in active_positions
+                if p.plan.sector
+            }
+
+            def _sector_tier(plan: TradePlan) -> int:
+                if not plan.sector or plan.sector not in open_sectors:
+                    return 0
+                if (plan.sector, plan.industry) not in open_sector_industries:
+                    return 1
+                return 2
+
+            for direction, direction_plans in plans_by_direction.items():
+                direction_plans.sort(key=lambda plan: (_sector_tier(plan), -plan.intent_score))
+                for intent_rank, plan in enumerate(direction_plans, start=1):
+                    event = plan_events.get(_plan_event_key(plan))
+                    if event:
+                        event.intent_rank = intent_rank
+
+        direction_order = sorted(
+            DIRECTIONS,
+            key=lambda d: (
+                direction_risk_multiplier(regime_exposure, d),
+                direction_max_positions(regime_exposure, d),
+            ),
+            reverse=True,
+        )
+        plans_to_open: list[TradePlan] = []
+        for direction in direction_order:
+            plans_to_open.extend(plans_by_direction[direction])
+
+        opened_count = 0
+        open_identities = {p.identity_key for p in active_positions}
+        entry_deadline_ts = _ensure_utc_ts(entry_deadline_ts) if entry_deadline_ts is not None else None
+
+        for plan in plans_to_open:
+            event = plan_events.get(_plan_event_key(plan))
+            plan_entry_ts = _ensure_utc_ts(plan.entry_ts or as_of_ts)
+            snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
+            account_equity_current = snapshot.equity_with_loan_value
+            initial_margin = sum(_active_margin_used(p) for p in active_positions)
+            maintenance_margin = sum(_active_maintenance_margin_used(p) for p in active_positions)
+            available_funds = account_equity_current - initial_margin
+            excess_liquidity = account_equity_current - maintenance_margin
+            direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
+            direction_cap = direction_max_positions(regime_exposure, plan.direction)
+            if event:
+                event.open_positions = len(active_positions)
+                event.max_open_positions = MAX_OPEN_POSITIONS
+                event.account_equity = account_equity_current
+                event.initial_margin = initial_margin
+                event.maintenance_margin = maintenance_margin
+                event.available_funds = available_funds
+                event.excess_liquidity = excess_liquidity
+
+            if direction_risk <= 0.0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "regime_direction_risk_zero"
+                    event.reason_text = f"Regime bucket {regime_bucket} assigned zero {plan.direction.lower()} risk."
+                continue
+            if _direction_open_count(active_positions, plan.direction) >= direction_cap:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "max_direction_positions_reached"
+                    event.reason_text = (
+                        f"Regime bucket {regime_bucket} allows {direction_cap} open "
+                        f"{plan.direction.lower()} positions; this limit was already reached."
+                    )
+                continue
+            if len(active_positions) >= MAX_OPEN_POSITIONS:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "max_open_positions_reached"
+                    event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
+                continue
+            if plan.identity_key in open_identities:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "instrument_already_open"
+                    event.reason_text = "Instrument already had an open position."
+                continue
+            if plan.identity_key in blocked_identities:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "instrument_already_used_today"
+                    event.reason_text = "Instrument was already opened or closed on this trading day; refill requires another instrument."
+                continue
+            if require_entry_window and not _is_in_entry_window(plan_entry_ts):
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "entry_outside_refill_window"
+                    event.reason_text = f"Next entry bar {plan_entry_ts} is outside the configured entry window."
+                continue
+            if entry_deadline_ts is not None and plan_entry_ts > entry_deadline_ts:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "entry_after_refill_deadline"
+                    event.reason_text = f"Next entry bar {plan_entry_ts} is after refill deadline {entry_deadline_ts}."
+                continue
+            if account_equity_current <= 0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "account_equity_non_positive"
+                    event.reason_text = "Account equity was not positive at decision time."
+                continue
+
+            initial_margin_used, maintenance_margin_used, shares, position_size_usd = calc_position(
+                conn,
+                plan,
+                account_equity_current,
+                direction_risk,
+            )
+            if event:
+                event.required_initial_margin = initial_margin_used
+                event.required_maintenance_margin = maintenance_margin_used
+                event.position_size_usd = position_size_usd
+                event.shares = shares
+            if position_size_usd <= 0:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "position_size_non_positive"
+                    event.reason_text = "Position sizing produced a non-positive position size."
+                continue
+
+            initial_margin_after = initial_margin + initial_margin_used
+            maintenance_margin_after = maintenance_margin + maintenance_margin_used
+            available_funds_after = account_equity_current - initial_margin_after
+            excess_liquidity_after = account_equity_current - maintenance_margin_after
+            if event:
+                event.available_funds_after = available_funds_after
+                event.excess_liquidity_after = excess_liquidity_after
+
+            if ACCOUNT_PROFILE == "ps_acc":
+                margin_level_after = _margin_level_pct(account_equity_current, initial_margin_after)
+                if margin_level_after <= PS_MARGIN_STOP_OUT_LEVEL_PCT:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "margin_level_stop_out_guard"
+                        event.reason_text = (
+                            f"Margin level after entry would be {margin_level_after:.2f}%, "
+                            f"at or below Pepperstone stop-out level {PS_MARGIN_STOP_OUT_LEVEL_PCT:.2f}%."
+                        )
+                    continue
+                if margin_level_after < PS_MIN_ENTRY_MARGIN_LEVEL_PCT:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "margin_level_entry_guard"
+                        event.reason_text = (
+                            f"Margin level after entry would be {margin_level_after:.2f}%, "
+                            f"below configured Pepperstone backtest minimum {PS_MIN_ENTRY_MARGIN_LEVEL_PCT:.2f}%."
+                        )
+                    continue
+            elif ACCOUNT_PROFILE == "ibkr_acc":
+                if available_funds_after < 0:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "available_funds_insufficient"
+                        event.reason_text = (
+                            f"Available Funds after entry would be {available_funds_after:.2f}, "
+                            "below zero."
+                        )
+                    continue
+                if excess_liquidity_after <= 0:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "excess_liquidity_non_positive_guard"
+                        event.reason_text = (
+                            f"Excess Liquidity after entry would be {excess_liquidity_after:.2f}, "
+                            "at or below zero."
+                        )
+                    continue
+
+            active_positions.append(OpenPosition(
+                symbol=plan.symbol,
+                exchange=plan.exchange,
+                cik=plan.cik,
+                direction=plan.direction,
+                entry_date=day,
+                entry_ts=plan_entry_ts,
+                entry_price=plan.entry_price,
+                stop_loss=plan.stop_loss,
+                effective_sl=plan.stop_loss,
+                take_profit_mode=plan.take_profit_mode,
+                take_profit=plan.take_profit,
+                trailing_activation_price=plan.trailing_activation_price,
+                trailing_distance_pct=plan.trailing_distance_pct,
+                valid_until=plan_entry_ts + timedelta(days=execution_max_hold_days(plan.direction)),
+                shares=shares,
+                position_size_usd=position_size_usd,
+                margin_used=initial_margin_used,
+                maintenance_margin_used=maintenance_margin_used,
+                equity_before=account_equity_current,
+                plan=plan,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=plan.valuation_label,
+            ))
+            open_identities.add(plan.identity_key)
+            blocked_identities.add(plan.identity_key)
+            opened_count += 1
+            record_account_curve(plan_entry_ts, active_positions)
+            if event:
+                event.decision_stage = "order_open"
+                event.decision = "opened"
+                event.reason_code = "opened"
+                event.reason_text = "Intent passed portfolio checks and a simulated position was opened."
+                event.opened = True
+            log.debug("Opened %-6s %s entry %.2f stop %.2f margin %.0f equity %.0f",
+                      plan.symbol, plan.direction, plan.entry_price,
+                      plan.stop_loss, initial_margin_used, equity)
+
+        return opened_count
 
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
@@ -627,14 +1244,13 @@ def run_backtest(
             )
             log_cache_stats(f"day_start {day_idx}/{len(trading_days)} {day}")
 
-        # ── 1. Apply open-position state changes up to entry decision time ──
+        # ── 1. Initialize day state ────────────────────────────────────────
         closed_today = 0
         day_pnl = 0.0
+        opened_today = 0
+        used_identities_today: set[InstrumentKey] = set()
         day_end_ts = _day_signal_cutoff_ts(day)
         day_close_ts = _day_close_ts(day)
-        open_positions, closed_before_entry, pnl_before_entry = apply_position_events_through(open_positions, day_end_ts)
-        closed_today += closed_before_entry
-        day_pnl += pnl_before_entry
 
         # ── 2. Generate model intents and central execution plans ───────────
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=day)
@@ -656,7 +1272,10 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
-            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+            open_positions, closed_after_entry, pnl_after_entry, _ = apply_position_events_through(
+                open_positions,
+                day_close_ts,
+            )
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
@@ -707,7 +1326,10 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
-            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+            open_positions, closed_after_entry, pnl_after_entry, _ = apply_position_events_through(
+                open_positions,
+                day_close_ts,
+            )
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
@@ -719,6 +1341,52 @@ def run_backtest(
             continue
 
         model = get_model_module()
+
+        def refill_callback(
+            refill_ts: datetime,
+            active_positions: list[OpenPosition],
+            blocked_identities: set[InstrumentKey],
+            entry_deadline_ts: datetime,
+        ) -> int:
+            refill_plans_by_direction, refill_plan_events, refill_events, _ = build_intent_plans_for_as_of(
+                day,
+                refill_ts,
+                regime,
+                regime_bucket,
+                regime_exposure,
+                model,
+                active_positions,
+                log_progress_today=False,
+                context_label="refill",
+            )
+            opened = open_ranked_plans(
+                day,
+                refill_ts,
+                regime,
+                regime_bucket,
+                regime_exposure,
+                refill_plans_by_direction,
+                refill_plan_events,
+                active_positions,
+                blocked_identities,
+                require_entry_window=True,
+                entry_deadline_ts=entry_deadline_ts,
+            )
+            buffer_decision_events(refill_events)
+            return opened
+
+        # Existing positions are processed first so exits can immediately free
+        # a slot for refill candidates before the regular daily entry cycle.
+        open_positions, closed_before_entry, pnl_before_entry, refill_opened = apply_position_events_through(
+            open_positions,
+            day_end_ts,
+            refill_callback=refill_callback,
+            closed_identity_blocklist=used_identities_today,
+        )
+        closed_today += closed_before_entry
+        day_pnl += pnl_before_entry
+        opened_today += refill_opened
+
         plans_by_direction: dict[str, list[TradePlan]] = {direction: [] for direction in DIRECTIONS}
         plans: list[TradePlan] = []
         decision_events: list[DecisionEvent] = []
@@ -1034,7 +1702,6 @@ def run_backtest(
         for direction in direction_order:
             plans_to_open.extend(plans_by_direction[direction])
 
-        opened_today = 0
         account_snapshot_today = _account_snapshot_values(conn, open_positions, equity, day_end_ts)
         account_equity_today = account_snapshot_today.equity_with_loan_value
         initial_margin = sum(_active_margin_used(p) for p in open_positions)
@@ -1091,6 +1758,13 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "instrument_already_open"
                     event.reason_text = "Instrument already had an open position."
+                continue
+            if plan.identity_key in used_identities_today:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "instrument_already_used_today"
+                    event.reason_text = "Instrument was already opened or closed on this trading day; refill requires another instrument."
                 continue
 
             if account_equity_today <= 0:
@@ -1200,6 +1874,7 @@ def run_backtest(
                 valuation_label=plan.valuation_label,
             ))
             open_identities.add(plan.identity_key)
+            used_identities_today.add(plan.identity_key)
             initial_margin += initial_margin_used
             maintenance_margin += maintenance_margin_used
             direction_open_counts[plan.direction] += 1
@@ -1216,9 +1891,15 @@ def run_backtest(
                       plan.stop_loss, initial_margin_used, equity)
 
         # ── 4. Apply post-entry position state changes through day close ────
-        open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(open_positions, day_close_ts)
+        open_positions, closed_after_entry, pnl_after_entry, refill_opened = apply_position_events_through(
+            open_positions,
+            day_close_ts,
+            refill_callback=refill_callback,
+            closed_identity_blocklist=used_identities_today,
+        )
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
+        opened_today += refill_opened
         record_account_curve(day_close_ts, open_positions)
 
         buffer_decision_events(decision_events)
