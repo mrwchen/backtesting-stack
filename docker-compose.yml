@@ -56,7 +56,7 @@ services:
       # ---------------------------------------------------------------------
       - SOURCE_MARKET_DATA_1H_TABLE=alpaca_market_data_1h
       - SOURCE_FUNDAMENTAL_SCORES_TABLE=stock_scorer_fundamental_scores
-      - SOURCE_WORLD_REGIME_TABLE=world_regime_daily_scores_historical_mv
+      - SOURCE_WORLD_REGIME_TABLE=world_regime_daily_scores_mv
       - REQUIRE_USD_FUNDAMENTALS=true
       - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
 
