@@ -1,7 +1,7 @@
-"""Regime-adaptive swing model.
+"""Adaptive entry swing model.
 
 Model idea:
-  - The runner selects LONG/SHORT from world regime.
+  - The runner selects LONG/SHORT exposure from world regime.
   - This model changes the entry style by side:
     LONG = quality pullback with moderate momentum confirmation.
     SHORT = weak-fundamental breakdown/failed bounce.
@@ -74,7 +74,7 @@ def required_bar_lookback(cfg: IntentConfig) -> int:
 
 
 def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals):
-    yield {"config": dataclasses.replace(base_cfg), "notes": "grid model=regime_adaptive_swing_v1", "summary": {}}
+    yield {"config": dataclasses.replace(base_cfg), "notes": "grid model=adaptive_entry_swing_v1", "summary": {}}
 
 
 def _vol_ratio(volumes: list[float], cfg: IntentConfig) -> float:
@@ -122,7 +122,7 @@ def evaluate_long_intent(bars: list[Bar], fundamental: FundamentalRow, now: date
     combined = (_fund(fundamental, cfg, False) * 0.45 + entry_score * 0.55) * 10.0
     reason = f"Adaptive long pullback {pullback:.1f}% | Momentum {mom:.1f}%"
     intent = TradeIntent(fundamental.symbol, "LONG", round(combined, 4), reason)
-    return IntentEvaluation(intent, "intent", "regime_adaptive_long_passed", reason)
+    return IntentEvaluation(intent, "intent", "adaptive_entry_long_passed", reason)
 
 
 def compute_short_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> Optional[TradeIntent]:
@@ -152,4 +152,4 @@ def evaluate_short_intent(bars: list[Bar], fundamental: FundamentalRow, now: dat
     combined = (_fund(fundamental, cfg, True) * 0.50 + entry_score * 0.50) * 10.0
     reason = f"Adaptive short bounce {bounce:.1f}% | Momentum {mom:.1f}%"
     intent = TradeIntent(fundamental.symbol, "SHORT", round(combined, 4), reason)
-    return IntentEvaluation(intent, "intent", "regime_adaptive_short_passed", reason)
+    return IntentEvaluation(intent, "intent", "adaptive_entry_short_passed", reason)

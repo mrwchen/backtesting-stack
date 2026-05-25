@@ -1,10 +1,10 @@
-"""Statistical regime/fundamental probability model.
+"""Statistical direction/fundamental probability model.
 
 Model idea:
-  - The generic runner chooses direction from world-regime score.
-  - LONG side: good fundamentals in low world-regime scores, only when a
+  - The generic runner chooses direction exposure from world-regime score.
+  - LONG side: good fundamentals, only when a
     point-in-time empirical event study estimates high next-day up probability.
-  - SHORT side: weak fundamentals in high world-regime scores, only when a
+  - SHORT side: weak fundamentals, only when a
     point-in-time empirical event study estimates high next-day down probability.
 
 The model intentionally uses no RSI, EMA, moving-average crossover, chart
@@ -27,7 +27,7 @@ from backtest_shared import clamp, env_bool, env_float, env_int, mean
 
 @dataclass
 class IntentConfig:
-    """Parameters for statistical_regime_probability_v1."""
+    """Parameters for statistical_direction_probability_v1."""
 
     # Keep enough 1h history so the model can build daily event samples.
     min_bars: int = 650
@@ -115,7 +115,7 @@ def required_bar_lookback(cfg: IntentConfig) -> int:
 def iter_grid_search_configs(base_cfg, parse_grid_vals, parse_hold_grid_vals):
     yield {
         "config": dataclasses.replace(base_cfg),
-        "notes": "grid model=statistical_regime_probability_v1",
+        "notes": "grid model=statistical_direction_probability_v1",
         "summary": {},
     }
 
