@@ -22,7 +22,16 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from backtest_shared import Bar, FundamentalRow, TradeIntent, IntentEvaluation
-from backtest_shared import clamp, env_bool, env_float, env_int, mean
+from backtest_shared import (
+    clamp,
+    directional_fundamental_score,
+    env_bool,
+    env_float,
+    env_int,
+    env_optional_float,
+    env_str,
+    mean,
+)
 
 
 @dataclass
@@ -46,6 +55,11 @@ class IntentConfig:
 
     use_mispricing_score: bool = True
     mispricing_weight: float = 0.30
+    fundamental_score_mode: str = "peer"
+    fundamental_peer_weight: float = 1.0
+    fundamental_abs_weight: float = 0.0
+    long_min_absolute_score: Optional[float] = 45.0
+    short_max_absolute_score: Optional[float] = 55.0
 
     session_tz: str = "America/New_York"
     event_lookback_days: int = 5
@@ -87,6 +101,11 @@ def intent_config_from_env() -> IntentConfig:
         short_max_rsi=d.short_max_rsi,
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", d.use_mispricing_score),
         mispricing_weight=env_float("MISPRICING_WEIGHT", d.mispricing_weight),
+        fundamental_score_mode=env_str("FUNDAMENTAL_SCORE_MODE", d.fundamental_score_mode),
+        fundamental_peer_weight=env_float("FUNDAMENTAL_PEER_WEIGHT", d.fundamental_peer_weight),
+        fundamental_abs_weight=env_float("FUNDAMENTAL_ABS_WEIGHT", d.fundamental_abs_weight),
+        long_min_absolute_score=env_optional_float("LONG_MIN_ABSOLUTE_SCORE", d.long_min_absolute_score),
+        short_max_absolute_score=env_optional_float("SHORT_MAX_ABSOLUTE_SCORE", d.short_max_absolute_score),
         session_tz=os.getenv("PROBABILITY_SESSION_TZ", d.session_tz).strip() or d.session_tz,
         event_lookback_days=env_int("EVENT_LOOKBACK_DAYS", d.event_lookback_days),
         volatility_lookback_days=env_int("VOLATILITY_LOOKBACK_DAYS", d.volatility_lookback_days),
@@ -323,10 +342,15 @@ def _estimate_probability(bars: list[Bar], cfg: IntentConfig) -> Optional[Probab
 
 
 def _fundamental_score(fundamental: FundamentalRow, cfg: IntentConfig, short: bool) -> float:
-    score = fundamental.composite_score
-    if cfg.use_mispricing_score and fundamental.mispricing_score is not None:
-        score = score * (1.0 - cfg.mispricing_weight) + fundamental.mispricing_score * cfg.mispricing_weight
-    return clamp((100.0 - score if short else score) / 100.0, 0.0, 1.0)
+    return directional_fundamental_score(
+        fundamental,
+        short=short,
+        score_mode=cfg.fundamental_score_mode,
+        peer_weight=cfg.fundamental_peer_weight,
+        abs_weight=cfg.fundamental_abs_weight,
+        use_mispricing_score=cfg.use_mispricing_score,
+        mispricing_weight=cfg.mispricing_weight,
+    )
 
 
 def _build_intent(

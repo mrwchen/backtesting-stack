@@ -12,7 +12,17 @@ from datetime import datetime
 from typing import Optional
 
 from backtest_shared import Bar, FundamentalRow, TradeIntent, IntentEvaluation
-from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, mean
+from backtest_shared import (
+    clamp,
+    compute_rsi,
+    directional_fundamental_score,
+    env_bool,
+    env_float,
+    env_int,
+    env_optional_float,
+    env_str,
+    mean,
+)
 
 
 @dataclass
@@ -31,6 +41,11 @@ class IntentConfig:
 
     use_mispricing_score: bool = True
     mispricing_weight: float = 0.35
+    fundamental_score_mode: str = "blend"
+    fundamental_peer_weight: float = 0.30
+    fundamental_abs_weight: float = 0.70
+    long_min_absolute_score: Optional[float] = None
+    short_max_absolute_score: Optional[float] = None
 
     price_lookback_bars: int = 420
     vol_short_bars: int = 5
@@ -54,6 +69,11 @@ def intent_config_from_env() -> IntentConfig:
         short_max_rsi=env_float("SHORT_MAX_RSI", d.short_max_rsi),
         use_mispricing_score=env_bool("USE_MISPRICING_SCORE", d.use_mispricing_score),
         mispricing_weight=env_float("MISPRICING_WEIGHT", d.mispricing_weight),
+        fundamental_score_mode=env_str("FUNDAMENTAL_SCORE_MODE", d.fundamental_score_mode),
+        fundamental_peer_weight=env_float("FUNDAMENTAL_PEER_WEIGHT", d.fundamental_peer_weight),
+        fundamental_abs_weight=env_float("FUNDAMENTAL_ABS_WEIGHT", d.fundamental_abs_weight),
+        long_min_absolute_score=env_optional_float("LONG_MIN_ABSOLUTE_SCORE", d.long_min_absolute_score),
+        short_max_absolute_score=env_optional_float("SHORT_MAX_ABSOLUTE_SCORE", d.short_max_absolute_score),
         price_lookback_bars=env_int("PRICE_LOOKBACK_BARS", d.price_lookback_bars),
         vol_short_bars=env_int("VOL_SHORT_BARS", d.vol_short_bars),
         vol_long_bars=env_int("VOL_LONG_BARS", d.vol_long_bars),
@@ -84,10 +104,15 @@ def _vol_ratio(volumes: list[float], cfg: IntentConfig) -> float:
 
 
 def _fund_score(f: FundamentalRow, cfg: IntentConfig, short: bool = False) -> float:
-    raw = f.composite_score
-    if cfg.use_mispricing_score and f.mispricing_score is not None:
-        raw = raw * (1.0 - cfg.mispricing_weight) + f.mispricing_score * cfg.mispricing_weight
-    return (100.0 - raw if short else raw) / 100.0
+    return directional_fundamental_score(
+        f,
+        short=short,
+        score_mode=cfg.fundamental_score_mode,
+        peer_weight=cfg.fundamental_peer_weight,
+        abs_weight=cfg.fundamental_abs_weight,
+        use_mispricing_score=cfg.use_mispricing_score,
+        mispricing_weight=cfg.mispricing_weight,
+    )
 
 
 def compute_long_intent(bars: list[Bar], fundamental: FundamentalRow, now: datetime, cfg: IntentConfig) -> Optional[TradeIntent]:

@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import psycopg2
 
-from backtest_shared import IntentEvaluation, TradeIntent, TradePlan
+from backtest_shared import IntentEvaluation, TradeIntent, TradePlan, fundamental_base_score
 from . import runtime
 from .broker import (
     _account_snapshot_values,
@@ -81,6 +81,25 @@ def _bar_lookback_limit(model: Any, cfg: Any) -> int:
 
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
     return sum(1 for pos in open_positions if pos.direction == direction)
+
+
+def _candidate_score_kwargs(cfg: Any) -> dict:
+    return {
+        "fundamental_score_mode": getattr(cfg, "fundamental_score_mode", "peer"),
+        "fundamental_peer_weight": getattr(cfg, "fundamental_peer_weight", 1.0),
+        "fundamental_abs_weight": getattr(cfg, "fundamental_abs_weight", 0.0),
+        "long_min_absolute_score": getattr(cfg, "long_min_absolute_score", None),
+        "short_max_absolute_score": getattr(cfg, "short_max_absolute_score", None),
+    }
+
+
+def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
+    return fundamental_base_score(
+        fundamental,
+        getattr(cfg, "fundamental_score_mode", "peer"),
+        getattr(cfg, "fundamental_peer_weight", 1.0),
+        getattr(cfg, "fundamental_abs_weight", 0.0),
+    )
 
 
 def _plan_event_key(plan: TradePlan) -> tuple[str, tuple[str, str, int]]:
@@ -618,11 +637,13 @@ def run_backtest(
 
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
+    candidate_score_kwargs = _candidate_score_kwargs(cfg)
     if trading_days:
         preload_candidate_timelines(
             conn,
             DIRECTIONS,
             **candidate_policy_kwargs(),
+            **candidate_score_kwargs,
             source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
             as_of_date=trading_days[0],
             as_of_ts=_day_signal_cutoff_ts(trading_days[0]),
@@ -799,6 +820,7 @@ def run_backtest(
                 conn,
                 direction,
                 **candidate_policy_kwargs(),
+                **candidate_score_kwargs,
                 source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
                 as_of_date=day,
                 as_of_ts=day_end_ts,
@@ -897,7 +919,7 @@ def run_backtest(
                         valuation_label=fundamental.valuation_label,
                         sector=fundamental.sector,
                         industry=fundamental.industry,
-                        fundamental_score=fundamental.composite_score,
+                        fundamental_score=_model_fundamental_score(fundamental, cfg),
                         mispricing_score=fundamental.mispricing_score,
                         market_cap_m=fundamental.market_cap_m,
                         bar_count=len(bars),
@@ -970,6 +992,7 @@ def run_backtest(
                                 evaluation.reason_code = "execution_plan_missing"
                                 evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                             else:
+                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
                                 plans.append(plan)
                                 plans_by_direction[direction].append(plan)
                 event = DecisionEvent(
@@ -991,7 +1014,7 @@ def run_backtest(
                     valuation_label=fundamental.valuation_label,
                     sector=fundamental.sector,
                     industry=fundamental.industry,
-                    fundamental_score=fundamental.composite_score,
+                    fundamental_score=_model_fundamental_score(fundamental, cfg),
                     mispricing_score=fundamental.mispricing_score,
                     market_cap_m=fundamental.market_cap_m,
                     bar_count=len(bars),

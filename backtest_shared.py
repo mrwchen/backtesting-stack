@@ -123,8 +123,26 @@ def env_float(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
 
 
+def env_optional_float(name: str, default: Optional[float]) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if not text:
+        return None
+    return float(text)
+
+
 def env_int(name: str, default: int) -> int:
     return int(os.getenv(name, str(default)))
+
+
+def env_str(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    return text or default
 
 
 def env_list(name: str, default: Iterable[str]) -> list[str]:
@@ -155,3 +173,65 @@ def clamp(value: float, lo: float, hi: float) -> float:
 
 def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def normalize_fundamental_score_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower().replace("-", "_")
+    if normalized not in {"peer", "absolute", "blend"}:
+        raise ValueError("FUNDAMENTAL_SCORE_MODE must be one of: peer, absolute, blend")
+    return normalized
+
+
+def combine_peer_absolute_scores(
+    peer_score: float,
+    absolute_score: Optional[float],
+    score_mode: str,
+    peer_weight: float,
+    abs_weight: float,
+) -> float:
+    mode = normalize_fundamental_score_mode(score_mode)
+    peer = float(peer_score)
+    absolute = float(absolute_score) if absolute_score is not None else peer
+
+    if mode == "peer":
+        score = peer
+    elif mode == "absolute":
+        score = absolute
+    else:
+        total_weight = float(peer_weight) + float(abs_weight)
+        if total_weight <= 0.0:
+            raise ValueError("FUNDAMENTAL_PEER_WEIGHT + FUNDAMENTAL_ABS_WEIGHT must be > 0 for blend mode")
+        score = (peer * float(peer_weight) + absolute * float(abs_weight)) / total_weight
+    return clamp(score, 0.0, 100.0)
+
+
+def fundamental_base_score(
+    fundamental: FundamentalRow,
+    score_mode: str,
+    peer_weight: float,
+    abs_weight: float,
+) -> float:
+    return combine_peer_absolute_scores(
+        fundamental.composite_score,
+        fundamental.composite_score_abs,
+        score_mode,
+        peer_weight,
+        abs_weight,
+    )
+
+
+def directional_fundamental_score(
+    fundamental: FundamentalRow,
+    *,
+    short: bool,
+    score_mode: str,
+    peer_weight: float,
+    abs_weight: float,
+    use_mispricing_score: bool,
+    mispricing_weight: float,
+) -> float:
+    score = fundamental_base_score(fundamental, score_mode, peer_weight, abs_weight)
+    if use_mispricing_score and fundamental.mispricing_score is not None:
+        weight = clamp(float(mispricing_weight), 0.0, 1.0)
+        score = score * (1.0 - weight) + float(fundamental.mispricing_score) * weight
+    return clamp((100.0 - score if short else score) / 100.0, 0.0, 1.0)

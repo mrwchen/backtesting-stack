@@ -13,7 +13,15 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2 import sql
 
-from backtest_shared import Bar, FundamentalRow, InstrumentKey, WorldRegime, instrument_key
+from backtest_shared import (
+    Bar,
+    FundamentalRow,
+    InstrumentKey,
+    WorldRegime,
+    combine_peer_absolute_scores,
+    instrument_key,
+    normalize_fundamental_score_mode,
+)
 from .config import *
 from .ibkr_margin import get_ibkr_margin_symbols, get_ibkr_margin_universe, ibkr_action_for_direction
 from .sql_utils import relation_identifier
@@ -260,12 +268,29 @@ def _candidate_row_passes_filters(
     filter_high_leverage: bool,
     filter_negative_earnings: bool,
     label_blocklist: Optional[list],
+    fundamental_score_mode: str,
+    fundamental_peer_weight: float,
+    fundamental_abs_weight: float,
+    long_min_absolute_score: Optional[float],
+    short_max_absolute_score: Optional[float],
 ) -> bool:
     if row.composite_score is None:
         return False
-    if direction == "LONG" and row.composite_score < score_val:
+    score = combine_peer_absolute_scores(
+        row.composite_score,
+        row.composite_score_abs,
+        fundamental_score_mode,
+        fundamental_peer_weight,
+        fundamental_abs_weight,
+    )
+    absolute_score = row.composite_score_abs if row.composite_score_abs is not None else row.composite_score
+    if direction == "LONG" and score < score_val:
         return False
-    if direction != "LONG" and row.composite_score > score_val:
+    if direction != "LONG" and score > score_val:
+        return False
+    if direction == "LONG" and long_min_absolute_score is not None and absolute_score < long_min_absolute_score:
+        return False
+    if direction != "LONG" and short_max_absolute_score is not None and absolute_score > short_max_absolute_score:
         return False
     if (row.market_cap_m or 0.0) < min_market_cap_m:
         return False
@@ -286,6 +311,19 @@ def _candidate_row_passes_filters(
         if effective_currency != required_currency.upper():
             return False
     return True
+
+
+def _candidate_score_sql(score_mode: str) -> sql.SQL:
+    mode = normalize_fundamental_score_mode(score_mode)
+    if mode == "peer":
+        return sql.SQL("candidates.composite_score")
+    if mode == "absolute":
+        return sql.SQL("COALESCE(candidates.composite_score_abs, candidates.composite_score)")
+    return sql.SQL(
+        "((candidates.composite_score * %(fundamental_peer_weight)s) + "
+        "(COALESCE(candidates.composite_score_abs, candidates.composite_score) * %(fundamental_abs_weight)s)) "
+        "/ %(fundamental_score_weight_sum)s"
+    )
 
 
 def _candidate_as_of_ts(as_of_date: Optional[date], as_of_ts: Optional[object]) -> Optional[datetime]:
@@ -657,6 +695,11 @@ def _get_candidates_from_timeline(
     filter_negative_earnings: bool,
     pepperstone_table: str,
     ibkr_margin_table: str,
+    fundamental_score_mode: str,
+    fundamental_peer_weight: float,
+    fundamental_abs_weight: float,
+    long_min_absolute_score: Optional[float],
+    short_max_absolute_score: Optional[float],
 ) -> Optional[list[FundamentalRow]]:
     timeline = _build_candidate_timeline(
         conn,
@@ -700,6 +743,11 @@ def _get_candidates_from_timeline(
                     filter_high_leverage,
                     filter_negative_earnings,
                     label_blocklist,
+                    fundamental_score_mode,
+                    fundamental_peer_weight,
+                    fundamental_abs_weight,
+                    long_min_absolute_score,
+                    short_max_absolute_score,
                 ):
                     candidates.append(row.to_fundamental_row())
                 break
@@ -725,12 +773,22 @@ def get_candidates(
     filter_high_leverage: bool = False,
     filter_negative_earnings: bool = False,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    fundamental_score_mode: str = "peer",
+    fundamental_peer_weight: float = 1.0,
+    fundamental_abs_weight: float = 0.0,
+    long_min_absolute_score: Optional[float] = None,
+    short_max_absolute_score: Optional[float] = None,
 ) -> list[FundamentalRow]:
     if allow_rebuilt_historical_fundamentals:
         raise ValueError(
             "allow_rebuilt_historical_fundamentals=True is disabled; candidate queries must stay point-in-time safe."
         )
     resolved_as_of_ts = _candidate_as_of_ts(as_of_date, as_of_ts)
+    fundamental_score_mode = normalize_fundamental_score_mode(fundamental_score_mode)
+    fundamental_peer_weight = float(fundamental_peer_weight)
+    fundamental_abs_weight = float(fundamental_abs_weight)
+    if fundamental_score_mode == "blend" and fundamental_peer_weight + fundamental_abs_weight <= 0.0:
+        raise ValueError("FUNDAMENTAL_PEER_WEIGHT + FUNDAMENTAL_ABS_WEIGHT must be > 0 for blend mode")
     if resolved_as_of_ts is not None:
         as_of_ts = resolved_as_of_ts
     cacheable_result = resolved_as_of_ts is None and as_of_date is None and as_of_ts is None
@@ -751,18 +809,30 @@ def get_candidates(
         filter_high_leverage,
         filter_negative_earnings,
         ibkr_margin_table,
+        fundamental_score_mode,
+        fundamental_peer_weight,
+        fundamental_abs_weight,
+        long_min_absolute_score,
+        short_max_absolute_score,
     )
     if cacheable_result and cache_key in _CANDIDATE_CACHE:
         return _CANDIDATE_CACHE[cache_key]
 
+    candidate_score_expr = _candidate_score_sql(fundamental_score_mode)
     if direction == "LONG":
-        score_filter = sql.SQL("candidates.composite_score >= %(score_val)s")
+        score_filter = sql.SQL("{} >= %(score_val)s").format(candidate_score_expr)
         score_val = long_min_fundamental
     else:
-        score_filter = sql.SQL("candidates.composite_score <= %(score_val)s")
+        score_filter = sql.SQL("{} <= %(score_val)s").format(candidate_score_expr)
         score_val = short_max_fundamental
 
-    params: dict = {"score_val": score_val, "min_market_cap_m": min_market_cap_m}
+    params: dict = {
+        "score_val": score_val,
+        "min_market_cap_m": min_market_cap_m,
+        "fundamental_peer_weight": fundamental_peer_weight,
+        "fundamental_abs_weight": fundamental_abs_weight,
+        "fundamental_score_weight_sum": fundamental_peer_weight + fundamental_abs_weight,
+    }
     broker_universe_key_override: Optional[tuple] = None
     base_where_parts = [
         sql.SQL("f.symbol IS NOT NULL"),
@@ -774,6 +844,13 @@ def get_candidates(
         sql.SQL("candidates.composite_score IS NOT NULL"),
         sql.SQL("COALESCE(candidates.market_cap_m, 0) >= %(min_market_cap_m)s"),
     ]
+    absolute_score_expr = sql.SQL("COALESCE(candidates.composite_score_abs, candidates.composite_score)")
+    if direction == "LONG" and long_min_absolute_score is not None:
+        params["long_min_absolute_score"] = long_min_absolute_score
+        eligibility_where_parts.append(sql.SQL("{} >= %(long_min_absolute_score)s").format(absolute_score_expr))
+    elif direction != "LONG" and short_max_absolute_score is not None:
+        params["short_max_absolute_score"] = short_max_absolute_score
+        eligibility_where_parts.append(sql.SQL("{} <= %(short_max_absolute_score)s").format(absolute_score_expr))
     if filter_high_leverage:
         eligibility_where_parts.append(sql.SQL("candidates.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
@@ -887,6 +964,11 @@ def get_candidates(
             filter_negative_earnings,
             pepperstone_table,
             ibkr_margin_table,
+            fundamental_score_mode,
+            fundamental_peer_weight,
+            fundamental_abs_weight,
+            long_min_absolute_score,
+            short_max_absolute_score,
         )
         if timeline_candidates is not None:
             return timeline_candidates
@@ -1028,6 +1110,11 @@ def preload_candidate_timelines(
     filter_high_leverage: bool = False,
     filter_negative_earnings_by_direction: Optional[dict[str, bool]] = None,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    fundamental_score_mode: str = "peer",
+    fundamental_peer_weight: float = 1.0,
+    fundamental_abs_weight: float = 0.0,
+    long_min_absolute_score: Optional[float] = None,
+    short_max_absolute_score: Optional[float] = None,
 ) -> None:
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not directions:
         return
@@ -1063,6 +1150,11 @@ def preload_candidate_timelines(
             filter_high_leverage=filter_high_leverage,
             filter_negative_earnings=(filter_negative_earnings_by_direction or {}).get(direction, False),
             ibkr_margin_table=ibkr_margin_table,
+            fundamental_score_mode=fundamental_score_mode,
+            fundamental_peer_weight=fundamental_peer_weight,
+            fundamental_abs_weight=fundamental_abs_weight,
+            long_min_absolute_score=long_min_absolute_score,
+            short_max_absolute_score=short_max_absolute_score,
         )
         timeline_sets, timeline_rows, timeline_identities, timeline_mib = _candidate_timeline_cache_counts()
         log.info(
