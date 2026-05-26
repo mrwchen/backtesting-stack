@@ -109,7 +109,7 @@ services:
       # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=1.5
+      - RISK_PER_TRADE_EQUITY_PCT=2.5
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
