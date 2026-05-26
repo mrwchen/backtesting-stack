@@ -116,10 +116,10 @@ _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _CANDIDATE_TIMELINE_CACHE: dict[tuple, _CandidateTimeline] = {}
 _CANDIDATE_TIMELINE_CACHE_DISABLED = False
-_PEPPERSTONE_SYMBOL_CACHE: dict[str, tuple[str, ...]] = {}
+_PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
+_PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
-_STOP_LOSS_RTH_ZONE = ZoneInfo(STOP_LOSS_RTH_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
@@ -174,7 +174,52 @@ def _get_pepperstone_symbols(
     conn: psycopg2.extensions.connection,
     pepperstone_table: str,
 ) -> tuple[str, ...]:
-    cached = _PEPPERSTONE_SYMBOL_CACHE.get(pepperstone_table)
+    cache_key = (pepperstone_table, PS_24_ENTRY_SL_TP_ACTIVE)
+    cached = _PEPPERSTONE_SYMBOL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    tradable_symbol_filter = (
+        "NULLIF(BTRIM(symbol_ps), '') IS NOT NULL OR NULLIF(BTRIM(symbol_ps24), '') IS NOT NULL"
+        if PS_24_ENTRY_SL_TP_ACTIVE
+        else "NULLIF(BTRIM(symbol_ps), '') IS NOT NULL"
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT DISTINCT symbol::text AS symbol
+                FROM {}
+                WHERE ({})
+                  AND is_trading_enabled IS NOT FALSE
+                  AND symbol IS NOT NULL
+                ORDER BY symbol
+                """
+            ).format(
+                relation_identifier(pepperstone_table),
+                sql.SQL(tradable_symbol_filter),
+            ),
+        )
+        symbols = tuple(row[0] for row in cur.fetchall() if row[0])
+
+    _PEPPERSTONE_SYMBOL_CACHE[cache_key] = symbols
+    log.info(
+        "Loaded Pepperstone tradable symbols table %s count %d ps24 entry sl tp active %s",
+        pepperstone_table,
+        len(symbols),
+        PS_24_ENTRY_SL_TP_ACTIVE,
+    )
+    return symbols
+
+
+def _get_pepperstone_24_symbols(
+    conn: psycopg2.extensions.connection,
+    pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
+) -> frozenset[str]:
+    if ACCOUNT_PROFILE != "ps_acc" or not PS_24_ENTRY_SL_TP_ACTIVE:
+        return frozenset()
+
+    cached = _PEPPERSTONE_24_SYMBOL_CACHE.get(pepperstone_table)
     if cached is not None:
         return cached
 
@@ -184,22 +229,51 @@ def _get_pepperstone_symbols(
                 """
                 SELECT DISTINCT symbol::text AS symbol
                 FROM {}
-                WHERE symbol_ps IS NOT NULL
+                WHERE NULLIF(BTRIM(symbol_ps24), '') IS NOT NULL
                   AND is_trading_enabled IS NOT FALSE
                   AND symbol IS NOT NULL
                 ORDER BY symbol
                 """
             ).format(relation_identifier(pepperstone_table)),
         )
-        symbols = tuple(row[0] for row in cur.fetchall() if row[0])
+        symbols = frozenset(row[0] for row in cur.fetchall() if row[0])
 
-    _PEPPERSTONE_SYMBOL_CACHE[pepperstone_table] = symbols
+    _PEPPERSTONE_24_SYMBOL_CACHE[pepperstone_table] = symbols
     log.info(
-        "Loaded Pepperstone tradable symbols table %s count %d",
+        "Loaded Pepperstone 24h symbols table %s count %d",
         pepperstone_table,
         len(symbols),
     )
     return symbols
+
+
+def _is_pepperstone_24_symbol(
+    conn: psycopg2.extensions.connection,
+    identity: InstrumentKey,
+    pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
+) -> bool:
+    if ACCOUNT_PROFILE != "ps_acc" or not PS_24_ENTRY_SL_TP_ACTIVE:
+        return False
+    return instrument_key(*identity)[0] in _get_pepperstone_24_symbols(conn, pepperstone_table)
+
+
+def _split_entry_window_identities(
+    conn: psycopg2.extensions.connection,
+    identities: list[InstrumentKey],
+) -> tuple[list[InstrumentKey], list[InstrumentKey]]:
+    unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
+    if ACCOUNT_PROFILE != "ps_acc" or not PS_24_ENTRY_SL_TP_ACTIVE:
+        return unique_identities, []
+
+    ps24_symbols = _get_pepperstone_24_symbols(conn)
+    entry_window_identities: list[InstrumentKey] = []
+    unrestricted_identities: list[InstrumentKey] = []
+    for identity in unique_identities:
+        if identity[0] in ps24_symbols:
+            unrestricted_identities.append(identity)
+        else:
+            entry_window_identities.append(identity)
+    return entry_window_identities, unrestricted_identities
 
 
 def _default_as_of_ts(as_of_date: date) -> datetime:
@@ -353,7 +427,7 @@ def _candidate_timeline_key(
     broker_universe_key_override: Optional[tuple] = None,
 ) -> tuple:
     if ACCOUNT_PROFILE == "ps_acc":
-        broker_universe_key = ("ps_acc", pepperstone_table)
+        broker_universe_key = ("ps_acc", pepperstone_table, PS_24_ENTRY_SL_TP_ACTIVE)
     elif ACCOUNT_PROFILE == "ibkr_acc":
         broker_universe_key = broker_universe_key_override or (
             "ibkr_acc",
@@ -804,6 +878,7 @@ def get_candidates(
         tuple(short_label_blocklist or ()),
         ACCOUNT_PROFILE,
         pepperstone_table,
+        PS_24_ENTRY_SL_TP_ACTIVE,
         required_currency,
         allow_rebuilt_historical_fundamentals,
         filter_high_leverage,
@@ -1242,7 +1317,13 @@ def _session_end_ts(d: date) -> datetime:
     return _session_ts(d, ENTRY_WINDOW_END)
 
 
-def _is_in_entry_window(ts: datetime) -> bool:
+def _is_in_entry_window(
+    ts: datetime,
+    conn: Optional[psycopg2.extensions.connection] = None,
+    identity: Optional[InstrumentKey] = None,
+) -> bool:
+    if conn is not None and identity is not None and _is_pepperstone_24_symbol(conn, identity):
+        return True
     if not ENTRY_WINDOW_ENABLED:
         return True
     local = ts.astimezone(_ENTRY_WINDOW_ZONE)
@@ -1260,18 +1341,23 @@ def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) ->
     return current >= start or current <= end
 
 
-def _is_in_sl_tp_window(ts: datetime) -> bool:
+def _is_in_sl_tp_window(
+    ts: datetime,
+    conn: Optional[psycopg2.extensions.connection] = None,
+    identity: Optional[InstrumentKey] = None,
+) -> bool:
+    if conn is not None and identity is not None and _is_pepperstone_24_symbol(conn, identity):
+        return True
     local = ts.astimezone(_SL_TP_WINDOW_ZONE)
     return _is_local_time_in_window(local, SL_TP_WINDOW_START, SL_TP_WINDOW_END)
 
 
-def _is_stop_loss_active(ts: datetime) -> bool:
-    if not _is_in_sl_tp_window(ts):
-        return False
-    if not STOP_LOSS_RTH_ONLY:
-        return True
-    local = ts.astimezone(_STOP_LOSS_RTH_ZONE)
-    return _is_local_time_in_window(local, STOP_LOSS_RTH_START, STOP_LOSS_RTH_END)
+def _is_stop_loss_active(
+    ts: datetime,
+    conn: Optional[psycopg2.extensions.connection] = None,
+    identity: Optional[InstrumentKey] = None,
+) -> bool:
+    return _is_in_sl_tp_window(ts, conn, identity)
 
 
 def _day_signal_cutoff_ts(d: date) -> datetime:
@@ -1522,8 +1608,8 @@ def preload_identity_bars(
     )
 
 
-def _entry_window_sql_filter() -> tuple[sql.SQL, list[object]]:
-    if not ENTRY_WINDOW_ENABLED:
+def _entry_window_sql_filter(apply_entry_window: bool = True) -> tuple[sql.SQL, list[object]]:
+    if not apply_entry_window or not ENTRY_WINDOW_ENABLED:
         return sql.SQL(""), []
 
     start_h, start_m = _parse_hhmm(ENTRY_WINDOW_START)
@@ -1551,6 +1637,7 @@ def _ensure_signal_bars_loaded(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
+    apply_entry_window: bool = True,
 ) -> bool:
     up_to_ts = _ensure_utc_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
@@ -1588,7 +1675,7 @@ def _ensure_signal_bars_loaded(
             up_to_ts,
         )
 
-    entry_filter, entry_params = _entry_window_sql_filter()
+    entry_filter, entry_params = _entry_window_sql_filter(apply_entry_window)
     for batch_idx, batch in enumerate(batches, start=1):
         batch_started = _time.perf_counter()
         for identity in batch:
@@ -1761,6 +1848,7 @@ def _load_recent_bars_for_identities_direct(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
+    apply_entry_window: bool = True,
 ) -> dict[InstrumentKey, list[Bar]]:
     up_to_ts = _ensure_utc_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
@@ -1780,7 +1868,7 @@ def _load_recent_bars_for_identities_direct(
             up_to_ts,
         )
 
-    entry_filter, entry_params = _entry_window_sql_filter()
+    entry_filter, entry_params = _entry_window_sql_filter(apply_entry_window)
     for batch_idx, batch in enumerate(batches, start=1):
         batch_started = _time.perf_counter()
         symbols = [identity[0] for identity in batch]
@@ -1839,7 +1927,7 @@ def _load_recent_bars_for_identities_direct(
     return bars_by_identity
 
 
-def load_recent_bars_for_identities(
+def _load_recent_bars_for_identity_group(
     conn: psycopg2.extensions.connection,
     identities: list[InstrumentKey],
     limit: int,
@@ -1847,12 +1935,8 @@ def load_recent_bars_for_identities(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
+    apply_entry_window: bool = True,
 ) -> dict[InstrumentKey, list[Bar]]:
-    """Load bounded recent entry-window bars for one signal-evaluation day.
-
-    Signal evaluation reuses a compact, incremental cache. Open-position outcome
-    simulation keeps using the full-bar cache via get_bars_range().
-    """
     up_to_ts = _ensure_utc_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
     if not unique_identities or limit <= 0:
@@ -1866,6 +1950,7 @@ def load_recent_bars_for_identities(
             up_to_ts,
             batch_size=batch_size,
             log_batches=log_batches,
+            apply_entry_window=apply_entry_window,
         )
         if loaded:
             bars_by_identity = _recent_bars_from_signal_cache(unique_identities, limit, up_to_ts)
@@ -1890,7 +1975,54 @@ def load_recent_bars_for_identities(
         up_to_ts,
         batch_size=batch_size,
         log_batches=log_batches,
+        apply_entry_window=apply_entry_window,
     )
+
+
+def load_recent_bars_for_identities(
+    conn: psycopg2.extensions.connection,
+    identities: list[InstrumentKey],
+    limit: int,
+    up_to_ts: datetime,
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+    log_batches: bool = False,
+) -> dict[InstrumentKey, list[Bar]]:
+    """Load bounded recent signal bars for one signal-evaluation day.
+
+    Pepperstone 24h symbols can bypass the entry-window filter when
+    PS_24_ENTRY_SL_TP_ACTIVE is enabled. Open-position outcome simulation keeps
+    using the full-bar cache via get_bars_range().
+    """
+    unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
+    if not unique_identities or limit <= 0:
+        return {identity: [] for identity in unique_identities}
+
+    entry_window_identities, unrestricted_identities = _split_entry_window_identities(conn, unique_identities)
+    bars_by_identity: dict[InstrumentKey, list[Bar]] = {}
+    if entry_window_identities:
+        bars_by_identity.update(_load_recent_bars_for_identity_group(
+            conn,
+            entry_window_identities,
+            limit,
+            up_to_ts,
+            batch_size=batch_size,
+            log_batches=log_batches,
+            apply_entry_window=True,
+        ))
+    if unrestricted_identities:
+        bars_by_identity.update(_load_recent_bars_for_identity_group(
+            conn,
+            unrestricted_identities,
+            limit,
+            up_to_ts,
+            batch_size=batch_size,
+            log_batches=log_batches,
+            apply_entry_window=False,
+        ))
+    for identity in unique_identities:
+        bars_by_identity.setdefault(identity, [])
+    return bars_by_identity
 
 
 def get_cached_bars(
@@ -1907,7 +2039,7 @@ def get_cached_bars(
     bar_idx = end_idx - 1
     while bar_idx >= 0 and len(selected) < limit:
         bar = bars[bar_idx]
-        if not _is_in_entry_window(bar.ts):
+        if not _is_in_entry_window(bar.ts, conn, identity):
             bar_idx -= 1
             continue
         selected.append(bar)
@@ -2026,6 +2158,7 @@ def clear_market_data_caches(context: str = "after_run") -> None:
     _CANDIDATE_TIMELINE_CACHE.clear()
     _CANDIDATE_TIMELINE_CACHE_DISABLED = False
     _PEPPERSTONE_SYMBOL_CACHE.clear()
+    _PEPPERSTONE_24_SYMBOL_CACHE.clear()
     _TRADING_DAYS_CACHE.clear()
     _WORLD_REGIME_CACHE.clear()
     _CANDIDATE_CACHE.clear()

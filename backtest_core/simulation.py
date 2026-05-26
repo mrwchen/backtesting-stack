@@ -248,8 +248,8 @@ def _simulate_position_bar(
     ts = _ensure_utc_ts(ts)
     bar_date = ts.date()
     total_bars = pos.bars_processed + 1
-    stop_loss_active = _is_stop_loss_active(ts)
-    sl_tp_active = _is_in_sl_tp_window(ts)
+    stop_loss_active = _is_stop_loss_active(ts, conn, pos.identity_key)
+    sl_tp_active = _is_in_sl_tp_window(ts, conn, pos.identity_key)
     is_long = pos.direction == "LONG"
 
     if is_long:
@@ -1066,7 +1066,7 @@ def run_backtest(
                     event.reason_code = "instrument_already_used_today"
                     event.reason_text = "Instrument was already opened or closed on this trading day; refill requires another instrument."
                 continue
-            if require_entry_window and not _is_in_entry_window(plan_entry_ts):
+            if require_entry_window and not _is_in_entry_window(plan_entry_ts, conn, plan.identity_key):
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"

@@ -173,6 +173,19 @@ def _account_setting_bool(env_key: str, default: bool) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
+def _parse_window_setting(env_key: str, value: str) -> tuple[str, str]:
+    start, sep, end = value.partition("-")
+    if not sep or not start.strip() or not end.strip():
+        raise ValueError(f"{env_key} must use HH:MM-HH:MM format")
+    return start.strip(), end.strip()
+
+def _account_window_setting(env_key: str) -> tuple[str, str]:
+    prefixed_key = f"{_ACC_ENV_PREFIX}_{env_key}"
+    raw = os.getenv(prefixed_key)
+    if raw is None:
+        raise ValueError(f"{prefixed_key} is required and must use HH:MM-HH:MM format")
+    return _parse_window_setting(prefixed_key, raw)
+
 MARGIN_REQUIREMENT_PCT = _account_float("MARGIN_REQUIREMENT_PCT", "margin_requirement_pct") if "margin_requirement_pct" in _ACC else None
 IBKR_LONG_INITIAL_MARGIN_PCT = _account_float("LONG_INITIAL_MARGIN_PCT", "long_initial_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
 IBKR_LONG_MAINTENANCE_MARGIN_PCT = _account_float("LONG_MAINTENANCE_MARGIN_PCT", "long_maintenance_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
@@ -344,20 +357,15 @@ def _parse_hold_grid_vals(env_key: str, default_val: float) -> list[float]:
     return sorted({float(x.strip()) for x in raw.split(",") if x.strip()})
 ENTRY_WINDOW_ENABLED = _account_setting_bool("ENTRY_WINDOW_ENABLED", True)
 ENTRY_WINDOW_TZ = _account_setting("ENTRY_WINDOW_TZ", "America/New_York")
-ENTRY_WINDOW_START = _account_setting("ENTRY_WINDOW_START", "06:30")
-ENTRY_WINDOW_END = _account_setting("ENTRY_WINDOW_END", "19:00")
+ENTRY_WINDOW_START, ENTRY_WINDOW_END = _account_window_setting("ENTRY_WINDOW")
 SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")
-SL_TP_WINDOW_START = _account_setting("SL_TP_WINDOW_START", "09:30")
-SL_TP_WINDOW_END = _account_setting("SL_TP_WINDOW_END", "16:00")
-STOP_LOSS_RTH_ONLY = _account_setting_bool("STOP_LOSS_RTH_ONLY", False)
-STOP_LOSS_RTH_TZ = _account_setting("STOP_LOSS_RTH_TZ", "America/New_York")
-STOP_LOSS_RTH_START = _account_setting("STOP_LOSS_RTH_START", "09:30")
-STOP_LOSS_RTH_END = _account_setting("STOP_LOSS_RTH_END", "16:00")
+SL_TP_WINDOW_START, SL_TP_WINDOW_END = _account_window_setting("SL_TP_WINDOW")
 
 SOURCE_MARKET_DATA_1H_TABLE = os.getenv("SOURCE_MARKET_DATA_1H_TABLE", "alpaca_market_data_1h")
 SOURCE_FUNDAMENTAL_SCORES_TABLE = os.getenv("SOURCE_FUNDAMENTAL_SCORES_TABLE", "stock_scorer_fundamental_scores")
 SOURCE_WORLD_REGIME_TABLE = os.getenv("SOURCE_WORLD_REGIME_TABLE", "world_regime_daily_scores_mv")
 PS_TRADABLE_SYMBOLS_TABLE = os.getenv("PS_TRADABLE_SYMBOLS_TABLE", "public.pepperstone_data")
+PS_24_ENTRY_SL_TP_ACTIVE = env_bool("PS_24_ENTRY_SL_TP_ACTIVE", False) if ACCOUNT_PROFILE == "ps_acc" else False
 IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE = os.getenv(
     "IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE",
     "public.ibkr_symbol_margin_requirements",

@@ -109,34 +109,6 @@ services:
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
-      # ---------------------------------------------------------------------
-      # Trading session and stop/take-profit evaluation windows
-      # Account-prefixed values are used for that profile. Unprefixed
-      # ENTRY_WINDOW_*, SL_TP_WINDOW_*, and STOP_LOSS_RTH_* remain valid
-      # fallback defaults when a profile-specific value is not set.
-      # ---------------------------------------------------------------------
-      - PS_ENTRY_WINDOW_ENABLED=true
-      - PS_ENTRY_WINDOW_TZ=America/New_York
-      - PS_ENTRY_WINDOW_START=09:30
-      - PS_ENTRY_WINDOW_END=16:00
-      - PS_SL_TP_WINDOW_TZ=America/New_York
-      - PS_SL_TP_WINDOW_START=09:30
-      - PS_SL_TP_WINDOW_END=16:00
-      - PS_STOP_LOSS_RTH_ONLY=true
-      - PS_STOP_LOSS_RTH_TZ=America/New_York
-      - PS_STOP_LOSS_RTH_START=09:30
-      - PS_STOP_LOSS_RTH_END=16:00
-      - IBKR_ENTRY_WINDOW_ENABLED=true
-      - IBKR_ENTRY_WINDOW_TZ=America/New_York
-      - IBKR_ENTRY_WINDOW_START=10:00
-      - IBKR_ENTRY_WINDOW_END=15:30
-      - IBKR_SL_TP_WINDOW_TZ=America/New_York
-      - IBKR_SL_TP_WINDOW_START=09:30
-      - IBKR_SL_TP_WINDOW_END=16:00
-      - IBKR_STOP_LOSS_RTH_ONLY=true
-      - IBKR_STOP_LOSS_RTH_TZ=America/New_York
-      - IBKR_STOP_LOSS_RTH_START=09:30
-      - IBKR_STOP_LOSS_RTH_END=15:55
 
       # ---------------------------------------------------------------------
       # Common policy: world-regime direction budget
@@ -203,7 +175,7 @@ services:
       #            using the configured trailing distance pct.
       #            The fixed take-profit pct settings are ignored.
       # Percent values are decimals: 0.06 = 6%, 0.03 = 3%.
-      # Take-profit/trailing checks use the SL_TP_WINDOW_* trading window.
+      # Stop-loss, take-profit and trailing checks use the SL_TP_WINDOW trading window.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=0.04
@@ -219,8 +191,8 @@ services:
       - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=24
       - COMMON_STOP_ATR_MULT=1.5
-      - COMMON_MIN_STOP_PCT=2.5
-      - COMMON_MAX_STOP_PCT=8.0
+      - COMMON_MIN_STOP_PCT=3.0
+      - COMMON_MAX_STOP_PCT=5.0
 
       # Pepperstone EU retail US Share CFD account profile
       # Defaults: 20% margin, 0.02 USD/share commission, min 0.02 USD,
@@ -257,6 +229,23 @@ services:
       # - IBKR_SPREAD_BPS=0.0
       # - IBKR_SLIPPAGE_BPS=1.0
       # - IBKR_MARGIN_FINANCING_RATE_PCT=5.14
+
+      # ---------------------------------------------------------------------
+      # Trading session and stop-loss/take-profit evaluation windows
+      # Window values use HH:MM-HH:MM in the configured timezone.
+      # Each account profile requires its own account-prefixed window values.
+      # ---------------------------------------------------------------------
+      - PS_24_ENTRY_SL_TP_ACTIVE=true
+      - PS_ENTRY_WINDOW_ENABLED=true
+      - PS_ENTRY_WINDOW_TZ=America/New_York
+      - PS_ENTRY_WINDOW=09:30-16:00
+      - PS_SL_TP_WINDOW_TZ=America/New_York
+      - PS_SL_TP_WINDOW=09:30-16:00
+      - IBKR_ENTRY_WINDOW_ENABLED=true
+      - IBKR_ENTRY_WINDOW_TZ=America/New_York
+      - IBKR_ENTRY_WINDOW=04:30-19:30
+      - IBKR_SL_TP_WINDOW_TZ=America/New_York
+      - IBKR_SL_TP_WINDOW=04:30-19:30
 
       # ---------------------------------------------------------------------
       # Monte Carlo and grid search

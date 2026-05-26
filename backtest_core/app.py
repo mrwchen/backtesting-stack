@@ -36,9 +36,11 @@ def log_backtest_context(model_files: list[str]) -> None:
     )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
-            "Pepperstone account filter active — candidates must exist in %s with symbol_ps and trading enabled",
+            "Pepperstone account filter active — candidates must exist in %s with symbol_ps%s and trading enabled",
             PS_TRADABLE_SYMBOLS_TABLE,
+            " or symbol_ps24" if PS_24_ENTRY_SL_TP_ACTIVE else "",
         )
+        log.info("Pepperstone 24h entry/sl/tp active %s", PS_24_ENTRY_SL_TP_ACTIVE)
     log.info(
         "Backtesting model selection %s count %d files %s dir %s config dir %s config required %s parallelism %d",
         MODEL_SELECTION,
@@ -98,13 +100,6 @@ def log_backtest_context(model_files: list[str]) -> None:
         SL_TP_WINDOW_TZ,
         SL_TP_WINDOW_START,
         SL_TP_WINDOW_END,
-    )
-    log.info(
-        "Stop loss RTH guard — %s %s %s %s",
-        STOP_LOSS_RTH_ONLY,
-        STOP_LOSS_RTH_TZ,
-        STOP_LOSS_RTH_START,
-        STOP_LOSS_RTH_END,
     )
     log.info(
         "Common stop loss policy enabled %s lookback bars %d buffer %.4f ATR lookback bars %d ATR multiplier %.2f min stop pct %.2f max stop pct %.2f",

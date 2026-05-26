@@ -114,7 +114,10 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, {"day", "regime_label", "composite_score"})
 
     if ACCOUNT_PROFILE == "ps_acc":
-        _require_columns(conn, PS_TRADABLE_SYMBOLS_TABLE, {"symbol", "symbol_ps", "is_trading_enabled"})
+        pepperstone_required = {"symbol", "symbol_ps", "is_trading_enabled"}
+        if PS_24_ENTRY_SL_TP_ACTIVE:
+            pepperstone_required.add("symbol_ps24")
+        _require_columns(conn, PS_TRADABLE_SYMBOLS_TABLE, pepperstone_required)
     elif ACCOUNT_PROFILE == "ibkr_acc":
         _require_columns(conn, IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE, {
             "source_symbol",
@@ -255,23 +258,32 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
     )
 
     if ACCOUNT_PROFILE == "ps_acc":
+        tradable_where = (
+            "(NULLIF(BTRIM(symbol_ps), '') IS NOT NULL OR NULLIF(BTRIM(symbol_ps24), '') IS NOT NULL)"
+            if PS_24_ENTRY_SL_TP_ACTIVE
+            else "NULLIF(BTRIM(symbol_ps), '') IS NOT NULL"
+        )
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     "SELECT COUNT(*) FROM {} "
-                    "WHERE symbol_ps IS NOT NULL AND is_trading_enabled IS NOT FALSE"
-                ).format(relation_identifier(PS_TRADABLE_SYMBOLS_TABLE)),
+                    "WHERE {} AND is_trading_enabled IS NOT FALSE"
+                ).format(
+                    relation_identifier(PS_TRADABLE_SYMBOLS_TABLE),
+                    sql.SQL(tradable_where),
+                ),
             )
             tradable_symbols = cur.fetchone()[0]
         if tradable_symbols <= 0:
             raise RuntimeError(
-                f"Pepperstone account selected, but {PS_TRADABLE_SYMBOLS_TABLE}.symbol_ps has no tradable rows"
+                f"Pepperstone account selected, but {PS_TRADABLE_SYMBOLS_TABLE} has no tradable rows"
             )
         log.info(
-            "Source coverage pepperstone %s account profile %s tradable symbols %d",
+            "Source coverage pepperstone %s account profile %s tradable symbols %d ps24 entry sl tp active %s",
             PS_TRADABLE_SYMBOLS_TABLE,
             ACCOUNT_PROFILE,
             tradable_symbols,
+            PS_24_ENTRY_SL_TP_ACTIVE,
         )
     elif ACCOUNT_PROFILE == "ibkr_acc":
         with conn.cursor() as cur:
