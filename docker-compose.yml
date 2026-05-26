@@ -159,8 +159,8 @@ services:
       # ---------------------------------------------------------------------
       - COMMON_LONG_MIN_FUNDAMENTAL=60.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
-      - COMMON_LONG_LABEL_BLOCKLIST= #value_trap,overvalued,overvalued_weak
-      - COMMON_SHORT_LABEL_BLOCKLIST= #deep_value,quality_value,compounder
+      - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data #value_trap,overvalued,overvalued_weak
+      - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data #deep_value,quality_value,compounder
       - COMMON_MIN_MARKET_CAP_USD_M=10000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
