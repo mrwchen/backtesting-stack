@@ -63,7 +63,7 @@ services:
       # ---------------------------------------------------------------------
       # Backtest date range
       # ---------------------------------------------------------------------
-      - START_DATE=2022-01-01
+      - START_DATE=2023-01-01
       - END_DATE=2026-05-01
 
       # ---------------------------------------------------------------------
@@ -109,7 +109,7 @@ services:
       # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=2.5
+      - RISK_PER_TRADE_EQUITY_PCT=2
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
@@ -134,8 +134,8 @@ services:
 
       # neutral: 55 <= score < 60
       - REGIME_SHORT_MIN_SCORE=60.0
-      - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.25
-      - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.35
+      - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.40
+      - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.60
       - REGIME_NEUTRAL_MAX_LONG_POSITIONS=7
       - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=3
 
