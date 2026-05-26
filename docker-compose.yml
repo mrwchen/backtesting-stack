@@ -80,7 +80,7 @@ services:
       # - MODEL_FILES=adaptive_entry_swing_v1.py,deep_pullback_quality_mean_reversion_v1.py,failed_breakout_reversal_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,relative_strength_momentum_v1.py,sector_rotation_long_short_v1.py,statistical_direction_probability_v1.py,trend_pullback_reclaim_v1.py,volatility_contraction_breakout_v1.py,weak_fundamental_breakdown_v1.py
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
       - MODEL_CONFIG_REQUIRED=true
-      - MODEL_PARALLELISM=4
+      - MODEL_PARALLELISM=3
       - MODEL_FAILURE_MODE=continue
 
       # ---------------------------------------------------------------------
@@ -92,7 +92,7 @@ services:
       - DECISION_EVENT_FLUSH_BATCH_SIZE=25000
       - BAR_CACHE_WARMUP_DAYS=120
       - BAR_CACHE_BATCH_SIZE=200
-      - BAR_CACHE_MAX_MIB=1024
+      - BAR_CACHE_MAX_MIB=2048
       - SIGNAL_BAR_CACHE_ENABLED=true
       - SIGNAL_BAR_CACHE_MAX_MIB=2048
       - CANDIDATE_TIMELINE_CACHE_ENABLED=true
@@ -109,7 +109,7 @@ services:
       # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=2
+      - RISK_PER_TRADE_EQUITY_PCT=1.5
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
@@ -157,7 +157,7 @@ services:
       # This pre-filter is model-independent. Models only emit symbol,
       # direction, score, and reason.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=60.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=65.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
       - COMMON_LONG_LABEL_BLOCKLIST= #value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST= #deep_value,quality_value,compounder
