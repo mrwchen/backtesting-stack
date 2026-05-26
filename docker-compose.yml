@@ -242,14 +242,14 @@ services:
       - PS_24_ENTRY_SL_TP_ACTIVE=true
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
-      - PS_ENTRY_WINDOW=09:30-16:00
+      - PS_ENTRY_WINDOW=10:15-15:00
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true
       - IBKR_ENTRY_WINDOW_TZ=America/New_York
-      - IBKR_ENTRY_WINDOW=04:30-19:30
+      - IBKR_ENTRY_WINDOW=10:15-15:00
       - IBKR_SL_TP_WINDOW_TZ=America/New_York
-      - IBKR_SL_TP_WINDOW=04:30-19:30
+      - IBKR_SL_TP_WINDOW=04:00-20:00
 
       # ---------------------------------------------------------------------
       # Monte Carlo and grid search
