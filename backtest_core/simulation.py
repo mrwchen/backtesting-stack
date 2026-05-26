@@ -488,9 +488,10 @@ def run_backtest(
     conn: psycopg2.extensions.connection,
     cfg: Any,
     notes: Optional[str] = None,
+    reserved_run_id: Optional[int] = None,
 ) -> tuple[int, dict]:
     run_started = _time.perf_counter()
-    run_id = create_run(conn, cfg, notes)
+    run_id = create_run(conn, cfg, notes, reserved_run_id=reserved_run_id)
 
     equity: float = INITIAL_EQUITY
     open_positions: list[OpenPosition] = []

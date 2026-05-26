@@ -25,13 +25,68 @@ def create_run(
     conn: psycopg2.extensions.connection,
     cfg: Any,
     notes: Optional[str] = None,
+    reserved_run_id: Optional[int] = None,
 ) -> int:
+    if reserved_run_id is not None and reserved_run_id <= 0:
+        raise ValueError(f"Invalid reserved run id: {reserved_run_id!r}")
+
     run_notes = _build_run_notes(notes)
+    run_id_column = "run_id, " if reserved_run_id is not None else ""
+    run_id_placeholder = "%s, " if reserved_run_id is not None else ""
+    params = (
+        START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, runtime.CURRENT_MODEL_FILE,
+        ACCOUNT_PROFILE,
+        INITIAL_EQUITY, RISK_PER_TRADE_PCT, MAX_OPEN_POSITIONS,
+        MARGIN_REQUIREMENT_PCT, PS_MARGIN_STOP_OUT_LEVEL_PCT, PS_MIN_ENTRY_MARGIN_LEVEL_PCT,
+        IBKR_LONG_INITIAL_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
+        IBKR_LONG_MAINTENANCE_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
+        IBKR_SHORT_INITIAL_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
+        IBKR_SHORT_MAINTENANCE_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
+        ALLOW_FRACTIONAL_SHARES, SPREAD_BPS, SLIPPAGE_BPS,
+        COMMISSION_PER_ORDER_USD, COMMISSION_PER_SHARE_USD,
+        COMMISSION_MIN_PER_ORDER_USD, COMMISSION_MAX_PCT,
+        COMMISSION_BPS, MARGIN_FINANCING_RATE_PCT,
+        PS_SHARE_CFD_ARR_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+        PS_SHARE_CFD_ADMIN_FEE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+        PS_SHARE_CFD_SHORT_BORROW_RATE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
+        PS_SHARE_CFD_OVERNIGHT_DAY_COUNT if ACCOUNT_PROFILE == "ps_acc" else None,
+        ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
+        COMMON_POLICY.regime_long_max_score, COMMON_POLICY.regime_short_min_score,
+        COMMON_POLICY.long_min_fundamental, COMMON_POLICY.short_max_fundamental, COMMON_POLICY.min_market_cap_m,
+        _cfg_or_none(cfg, "long_min_pullback"),
+        _cfg_or_none(cfg, "long_max_pullback"),
+        _cfg_or_none(cfg, "long_ideal_pullback"),
+        _cfg_or_none(cfg, "long_max_rsi"),
+        _cfg_or_none(cfg, "short_min_bounce"),
+        _cfg_or_none(cfg, "short_max_bounce"),
+        _cfg_or_none(cfg, "short_ideal_bounce"),
+        _cfg_or_none(cfg, "short_min_rsi"),
+        _cfg_or_none(cfg, "short_max_rsi"),
+        TAKE_PROFIT_MODE,
+        EXECUTION_LONG_TAKE_PROFIT_PCT,
+        EXECUTION_SHORT_TAKE_PROFIT_PCT,
+        EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
+        EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
+        EXECUTION_LONG_TRAILING_DISTANCE_PCT,
+        EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
+        EXECUTION_LONG_MAX_HOLD_DAYS,
+        EXECUTION_SHORT_MAX_HOLD_DAYS,
+        COMMON_STOP_LOSS_ENABLED,
+        COMMON_STOP_LOOKBACK_BARS,
+        COMMON_STOP_BUFFER,
+        COMMON_STOP_ATR_LOOKBACK_BARS,
+        COMMON_STOP_ATR_MULT,
+        COMMON_MIN_STOP_PCT,
+        COMMON_MAX_STOP_PCT,
+    )
+    if reserved_run_id is not None:
+        params = (reserved_run_id, *params)
+
     with conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO {_result_table("backtest_runs")} (
-                start_date, end_date, notes, run_label, model_file,
+                {run_id_column}start_date, end_date, notes, run_label, model_file,
                 account_profile,
                 initial_equity, risk_per_trade_pct, max_open_positions,
                 ps_margin_requirement_pct, ps_margin_stop_out_level_pct, ps_min_entry_margin_level_pct,
@@ -57,7 +112,7 @@ def create_run(
                 common_stop_atr_lookback_bars, common_stop_atr_mult,
                 common_min_stop_pct, common_max_stop_pct
             ) VALUES (
-                %s, %s, %s, to_char(NOW() AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI'), %s,
+                {run_id_placeholder}%s, %s, %s, to_char(NOW() AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI'), %s,
                 %s,
                 %s, %s, %s,
                 %s, %s, %s,
@@ -81,57 +136,34 @@ def create_run(
                 %s, %s, %s
             ) RETURNING run_id
             """,
-            (
-                START_DATE, END_DATE, run_notes, RUN_LABEL_TZ, runtime.CURRENT_MODEL_FILE,
-                ACCOUNT_PROFILE,
-                INITIAL_EQUITY, RISK_PER_TRADE_PCT, MAX_OPEN_POSITIONS,
-                MARGIN_REQUIREMENT_PCT, PS_MARGIN_STOP_OUT_LEVEL_PCT, PS_MIN_ENTRY_MARGIN_LEVEL_PCT,
-                IBKR_LONG_INITIAL_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
-                IBKR_LONG_MAINTENANCE_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
-                IBKR_SHORT_INITIAL_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
-                IBKR_SHORT_MAINTENANCE_MARGIN_PCT if ACCOUNT_PROFILE == "ibkr_acc" else None,
-                ALLOW_FRACTIONAL_SHARES, SPREAD_BPS, SLIPPAGE_BPS,
-                COMMISSION_PER_ORDER_USD, COMMISSION_PER_SHARE_USD,
-                COMMISSION_MIN_PER_ORDER_USD, COMMISSION_MAX_PCT,
-                COMMISSION_BPS, MARGIN_FINANCING_RATE_PCT,
-                PS_SHARE_CFD_ARR_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
-                PS_SHARE_CFD_ADMIN_FEE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
-                PS_SHARE_CFD_SHORT_BORROW_RATE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
-                PS_SHARE_CFD_OVERNIGHT_DAY_COUNT if ACCOUNT_PROFILE == "ps_acc" else None,
-                ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
-                COMMON_POLICY.regime_long_max_score, COMMON_POLICY.regime_short_min_score,
-                COMMON_POLICY.long_min_fundamental, COMMON_POLICY.short_max_fundamental, COMMON_POLICY.min_market_cap_m,
-                _cfg_or_none(cfg, "long_min_pullback"),
-                _cfg_or_none(cfg, "long_max_pullback"),
-                _cfg_or_none(cfg, "long_ideal_pullback"),
-                _cfg_or_none(cfg, "long_max_rsi"),
-                _cfg_or_none(cfg, "short_min_bounce"),
-                _cfg_or_none(cfg, "short_max_bounce"),
-                _cfg_or_none(cfg, "short_ideal_bounce"),
-                _cfg_or_none(cfg, "short_min_rsi"),
-                _cfg_or_none(cfg, "short_max_rsi"),
-                TAKE_PROFIT_MODE,
-                EXECUTION_LONG_TAKE_PROFIT_PCT,
-                EXECUTION_SHORT_TAKE_PROFIT_PCT,
-                EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
-                EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
-                EXECUTION_LONG_TRAILING_DISTANCE_PCT,
-                EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
-                EXECUTION_LONG_MAX_HOLD_DAYS,
-                EXECUTION_SHORT_MAX_HOLD_DAYS,
-                COMMON_STOP_LOSS_ENABLED,
-                COMMON_STOP_LOOKBACK_BARS,
-                COMMON_STOP_BUFFER,
-                COMMON_STOP_ATR_LOOKBACK_BARS,
-                COMMON_STOP_ATR_MULT,
-                COMMON_MIN_STOP_PCT,
-                COMMON_MAX_STOP_PCT,
-            ),
+            params,
         )
         run_id = cur.fetchone()[0]
     conn.commit()
     log.info("Created run %d model %s account profile %s", run_id, runtime.CURRENT_MODEL_FILE, ACCOUNT_PROFILE)
     return run_id
+
+
+def reserve_run_ids(conn: psycopg2.extensions.connection, count: int) -> list[int]:
+    if count < 0:
+        raise ValueError(f"Invalid run id reservation count: {count!r}")
+    if count == 0:
+        return []
+
+    table_name = f"{RESULT_SCHEMA}.backtest_runs"
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_get_serial_sequence(%s, 'run_id')", (table_name,))
+        sequence_name = cur.fetchone()[0]
+        if not sequence_name:
+            raise RuntimeError(f"Could not find run_id sequence for {table_name}")
+        cur.execute(
+            "SELECT nextval(%s::regclass) FROM generate_series(1, %s)",
+            (sequence_name, count),
+        )
+        run_ids = [int(row[0]) for row in cur.fetchall()]
+
+    log.info("Reserved %d backtest run ids first %d last %d", count, run_ids[0], run_ids[-1])
+    return run_ids
 
 
 def write_trades(

@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import *
+from .db import connect_with_retry, validate_result_schema
 from .logging_utils import set_log_process_name
 from .model_loader import select_model_files
+from .persistence import reserve_run_ids
 
 log = logging.getLogger(__name__)
 
@@ -50,13 +52,16 @@ def _pg_application_name_for_job(job: BacktestJob) -> str:
     return f"{prefix}{safe_stem[:max_stem_len]}{suffix}"
 
 
-def _child_env(job: BacktestJob) -> dict[str, str]:
+def _child_env(job: BacktestJob, reserved_run_id: int | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["BACKTEST_PARALLEL_CHILD"] = "1"
     env["MODEL_SELECTION"] = "single"
     env["MODEL_FILE"] = job.model_file
     env["ACCOUNT_PROFILE"] = job.account_profile
     env["PGAPPNAME"] = _pg_application_name_for_job(job)
+    env.pop("BACKTEST_RUN_ID", None)
+    if reserved_run_id is not None:
+        env["BACKTEST_RUN_ID"] = str(reserved_run_id)
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
@@ -77,6 +82,31 @@ def _terminate_running_workers(running: dict[subprocess.Popen, BacktestJob]) -> 
             process.wait(timeout=30)
 
 
+def _reserve_run_ids_for_jobs(jobs: list[BacktestJob]) -> dict[BacktestJob, int]:
+    if not jobs:
+        return {}
+    if GRID_SEARCH_ENABLED:
+        log.warning("Run id reservation disabled because grid search can create multiple runs per worker")
+        return {}
+
+    conn = connect_with_retry()
+    try:
+        validate_result_schema(conn)
+        run_ids = reserve_run_ids(conn, len(jobs))
+    finally:
+        conn.close()
+
+    reservations = dict(zip(jobs, run_ids))
+    log.info(
+        "Reserved run ids for model queue first %s id %d last %s id %d",
+        jobs[0].label,
+        reservations[jobs[0]],
+        jobs[-1].label,
+        reservations[jobs[-1]],
+    )
+    return reservations
+
+
 def run_parallel_parent() -> None:
     set_log_process_name("bt-parent")
     if MODEL_FAILURE_MODE not in {"fail_fast", "continue"}:
@@ -84,6 +114,7 @@ def run_parallel_parent() -> None:
 
     model_files = select_model_files()
     jobs = _selected_jobs(model_files)
+    reserved_run_ids = _reserve_run_ids_for_jobs(jobs)
     parallelism = min(MODEL_PARALLELISM, len(jobs))
     script_path = PROJECT_ROOT / "backtest_runner.py"
     pending = list(jobs)
@@ -104,11 +135,12 @@ def run_parallel_parent() -> None:
     signal.signal(signal.SIGINT, _handle_shutdown)
 
     log.info(
-        "Parallel backtest orchestration starting models %d jobs %d parallelism %d failure mode %s files %s profiles %s",
+        "Parallel backtest orchestration starting models %d jobs %d parallelism %d failure mode %s run id reservation %s files %s profiles %s",
         len(model_files),
         len(jobs),
         parallelism,
         MODEL_FAILURE_MODE,
+        "enabled" if reserved_run_ids else "disabled",
         ",".join(model_files),
         ",".join(sorted({job.account_profile for job in jobs})),
     )
@@ -117,14 +149,16 @@ def run_parallel_parent() -> None:
         while pending or running:
             while pending and len(running) < parallelism:
                 job = pending.pop(0)
+                reserved_run_id = reserved_run_ids.get(job)
                 command = [sys.executable, str(script_path)]
-                process = subprocess.Popen(command, env=_child_env(job))
+                process = subprocess.Popen(command, env=_child_env(job, reserved_run_id))
                 running[process] = job
                 log.info(
-                    "Started model worker pid %d model %s account profile %s slot %d/%d",
+                    "Started model worker pid %d model %s account profile %s reserved run id %s slot %d/%d",
                     process.pid,
                     job.model_file,
                     job.account_profile,
+                    str(reserved_run_id) if reserved_run_id is not None else "-",
                     len(running),
                     parallelism,
                 )

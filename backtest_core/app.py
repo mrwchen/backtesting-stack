@@ -1,6 +1,7 @@
 """Single-model worker entry point and startup context logging."""
 
 import logging
+import os
 import signal
 from pathlib import Path
 
@@ -24,6 +25,20 @@ def _install_worker_shutdown_handler() -> None:
 
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
+
+
+def _reserved_run_id_from_env() -> int | None:
+    raw = os.getenv("BACKTEST_RUN_ID", "").strip()
+    if not raw:
+        return None
+    try:
+        run_id = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"BACKTEST_RUN_ID must be a positive integer, got {raw!r}") from exc
+    if run_id <= 0:
+        raise ValueError(f"BACKTEST_RUN_ID must be a positive integer, got {raw!r}")
+    return run_id
+
 
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
@@ -158,6 +173,7 @@ def log_backtest_context(model_files: list[str]) -> None:
 
 def run_single_model_worker() -> None:
     model_file = MODEL_FILE
+    reserved_run_id = _reserved_run_id_from_env()
     _validate_model_filename(model_file)
     model_files = [model_file]
     runtime.CURRENT_MODEL_FILE = model_file
@@ -185,6 +201,8 @@ def run_single_model_worker() -> None:
             GRID_SEARCH_ENABLED,
             cfg.min_bars,
         )
+        if reserved_run_id is not None:
+            log.info("Model worker using reserved run id %d", reserved_run_id)
         log.info(
             "Execution policy model %s take profit mode %s long fixed tp %.4f short fixed tp %.4f long trailing activation %.4f distance %.4f short trailing activation %.4f distance %.4f long max hold %.2f short max hold %.2f stop source common",
             runtime.CURRENT_MODEL_FILE,
@@ -199,11 +217,13 @@ def run_single_model_worker() -> None:
             EXECUTION_SHORT_MAX_HOLD_DAYS,
         )
         if GRID_SEARCH_ENABLED:
+            if reserved_run_id is not None:
+                raise ValueError("BACKTEST_RUN_ID cannot be used with GRID_SEARCH_ENABLED=true")
             results = run_grid_search(conn, cfg)
             _print_grid_summary(results)
         else:
             try:
-                run_backtest(conn, cfg)
+                run_backtest(conn, cfg, reserved_run_id=reserved_run_id)
             finally:
                 clear_market_data_caches("single_run")
     finally:
