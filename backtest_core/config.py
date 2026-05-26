@@ -159,6 +159,20 @@ def _account_bool(env_key: str, default_key: str) -> bool:
         return bool(_ACC[default_key])
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
+def _account_setting(env_key: str, default: str) -> str:
+    raw = os.getenv(f"{_ACC_ENV_PREFIX}_{env_key}")
+    if raw is None:
+        raw = os.getenv(env_key)
+    return default if raw is None else raw
+
+def _account_setting_bool(env_key: str, default: bool) -> bool:
+    raw = os.getenv(f"{_ACC_ENV_PREFIX}_{env_key}")
+    if raw is None:
+        raw = os.getenv(env_key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
 MARGIN_REQUIREMENT_PCT = _account_float("MARGIN_REQUIREMENT_PCT", "margin_requirement_pct") if "margin_requirement_pct" in _ACC else None
 IBKR_LONG_INITIAL_MARGIN_PCT = _account_float("LONG_INITIAL_MARGIN_PCT", "long_initial_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
 IBKR_LONG_MAINTENANCE_MARGIN_PCT = _account_float("LONG_MAINTENANCE_MARGIN_PCT", "long_maintenance_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
@@ -328,17 +342,17 @@ def _parse_grid_vals(env_key: str, default_val: float) -> list[float]:
 def _parse_hold_grid_vals(env_key: str, default_val: float) -> list[float]:
     raw = os.getenv(env_key, str(default_val))
     return sorted({float(x.strip()) for x in raw.split(",") if x.strip()})
-ENTRY_WINDOW_ENABLED = os.getenv("ENTRY_WINDOW_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-ENTRY_WINDOW_TZ = os.getenv("ENTRY_WINDOW_TZ", "America/New_York")
-ENTRY_WINDOW_START = os.getenv("ENTRY_WINDOW_START", "06:30")
-ENTRY_WINDOW_END = os.getenv("ENTRY_WINDOW_END", "19:00")
-SL_TP_WINDOW_TZ = os.getenv("SL_TP_WINDOW_TZ", "America/New_York")
-SL_TP_WINDOW_START = os.getenv("SL_TP_WINDOW_START", "09:30")
-SL_TP_WINDOW_END = os.getenv("SL_TP_WINDOW_END", "16:00")
-STOP_LOSS_RTH_ONLY = env_bool("STOP_LOSS_RTH_ONLY", False)
-STOP_LOSS_RTH_TZ = os.getenv("STOP_LOSS_RTH_TZ", "America/New_York")
-STOP_LOSS_RTH_START = os.getenv("STOP_LOSS_RTH_START", "09:30")
-STOP_LOSS_RTH_END = os.getenv("STOP_LOSS_RTH_END", "16:00")
+ENTRY_WINDOW_ENABLED = _account_setting_bool("ENTRY_WINDOW_ENABLED", True)
+ENTRY_WINDOW_TZ = _account_setting("ENTRY_WINDOW_TZ", "America/New_York")
+ENTRY_WINDOW_START = _account_setting("ENTRY_WINDOW_START", "06:30")
+ENTRY_WINDOW_END = _account_setting("ENTRY_WINDOW_END", "19:00")
+SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")
+SL_TP_WINDOW_START = _account_setting("SL_TP_WINDOW_START", "09:30")
+SL_TP_WINDOW_END = _account_setting("SL_TP_WINDOW_END", "16:00")
+STOP_LOSS_RTH_ONLY = _account_setting_bool("STOP_LOSS_RTH_ONLY", False)
+STOP_LOSS_RTH_TZ = _account_setting("STOP_LOSS_RTH_TZ", "America/New_York")
+STOP_LOSS_RTH_START = _account_setting("STOP_LOSS_RTH_START", "09:30")
+STOP_LOSS_RTH_END = _account_setting("STOP_LOSS_RTH_END", "16:00")
 
 SOURCE_MARKET_DATA_1H_TABLE = os.getenv("SOURCE_MARKET_DATA_1H_TABLE", "alpaca_market_data_1h")
 SOURCE_FUNDAMENTAL_SCORES_TABLE = os.getenv("SOURCE_FUNDAMENTAL_SCORES_TABLE", "stock_scorer_fundamental_scores")

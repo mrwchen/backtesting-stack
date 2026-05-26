@@ -111,18 +111,32 @@ services:
 
       # ---------------------------------------------------------------------
       # Trading session and stop/take-profit evaluation windows
+      # Account-prefixed values are used for that profile. Unprefixed
+      # ENTRY_WINDOW_*, SL_TP_WINDOW_*, and STOP_LOSS_RTH_* remain valid
+      # fallback defaults when a profile-specific value is not set.
       # ---------------------------------------------------------------------
-      - ENTRY_WINDOW_ENABLED=true
-      - ENTRY_WINDOW_TZ=America/New_York
-      - ENTRY_WINDOW_START=10:00
-      - ENTRY_WINDOW_END=15:30
-      - SL_TP_WINDOW_TZ=America/New_York
-      - SL_TP_WINDOW_START=09:30
-      - SL_TP_WINDOW_END=16:00
-      - STOP_LOSS_RTH_ONLY=true
-      - STOP_LOSS_RTH_TZ=America/New_York
-      - STOP_LOSS_RTH_START=09:30
-      - STOP_LOSS_RTH_END=15:55
+      - PS_ENTRY_WINDOW_ENABLED=true
+      - PS_ENTRY_WINDOW_TZ=America/New_York
+      - PS_ENTRY_WINDOW_START=09:30
+      - PS_ENTRY_WINDOW_END=16:00
+      - PS_SL_TP_WINDOW_TZ=America/New_York
+      - PS_SL_TP_WINDOW_START=09:30
+      - PS_SL_TP_WINDOW_END=16:00
+      - PS_STOP_LOSS_RTH_ONLY=true
+      - PS_STOP_LOSS_RTH_TZ=America/New_York
+      - PS_STOP_LOSS_RTH_START=09:30
+      - PS_STOP_LOSS_RTH_END=16:00
+      - IBKR_ENTRY_WINDOW_ENABLED=true
+      - IBKR_ENTRY_WINDOW_TZ=America/New_York
+      - IBKR_ENTRY_WINDOW_START=10:00
+      - IBKR_ENTRY_WINDOW_END=15:30
+      - IBKR_SL_TP_WINDOW_TZ=America/New_York
+      - IBKR_SL_TP_WINDOW_START=09:30
+      - IBKR_SL_TP_WINDOW_END=16:00
+      - IBKR_STOP_LOSS_RTH_ONLY=true
+      - IBKR_STOP_LOSS_RTH_TZ=America/New_York
+      - IBKR_STOP_LOSS_RTH_START=09:30
+      - IBKR_STOP_LOSS_RTH_END=15:55
 
       # ---------------------------------------------------------------------
       # Common policy: world-regime direction budget
