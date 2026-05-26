@@ -63,7 +63,7 @@ services:
       # ---------------------------------------------------------------------
       # Backtest date range
       # ---------------------------------------------------------------------
-      - START_DATE=2023-01-01
+      - START_DATE=2024-01-01
       - END_DATE=2026-05-01
 
       # ---------------------------------------------------------------------
@@ -109,7 +109,7 @@ services:
       # all      = run every selected model once with ps_acc and once with ibkr_acc
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=1.5
+      - RISK_PER_TRADE_EQUITY_PCT=2
       - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
@@ -157,7 +157,7 @@ services:
       # This pre-filter is model-independent. Models only emit symbol,
       # direction, score, and reason.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=65.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=60.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
       - COMMON_LONG_LABEL_BLOCKLIST= #value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST= #deep_value,quality_value,compounder
@@ -183,20 +183,20 @@ services:
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=0.04
-      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.03
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.03
-      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.02
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.025
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.025
+      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.04
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.04
+      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.04
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.02
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.02
       - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
-      - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
+      - EXECUTION_SHORT_MAX_HOLD_DAYS=12.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=24
       - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=24
       - COMMON_STOP_ATR_MULT=1.5
-      - COMMON_MIN_STOP_PCT=3.0
-      - COMMON_MAX_STOP_PCT=5.0
+      - COMMON_MIN_STOP_PCT=2.5
+      - COMMON_MAX_STOP_PCT=8.0
 
       # Pepperstone EU retail US Share CFD account profile
       # Defaults: 20% margin, 0.02 USD/share commission, min 0.02 USD,
@@ -239,17 +239,17 @@ services:
       # Window values use HH:MM-HH:MM in the configured timezone.
       # Each account profile requires its own account-prefixed window values.
       # ---------------------------------------------------------------------
-      - PS_24_ENTRY_SL_TP_ACTIVE=true
+      - PS_24_ENTRY_SL_TP_ACTIVE=false
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
-      - PS_ENTRY_WINDOW=10:15-15:00
+      - PS_ENTRY_WINDOW=10:00-15:30
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true
       - IBKR_ENTRY_WINDOW_TZ=America/New_York
-      - IBKR_ENTRY_WINDOW=10:15-15:00
+      - IBKR_ENTRY_WINDOW=10:00-15:30
       - IBKR_SL_TP_WINDOW_TZ=America/New_York
-      - IBKR_SL_TP_WINDOW=04:00-20:00
+      - IBKR_SL_TP_WINDOW=09:30-16:00
 
       # ---------------------------------------------------------------------
       # Monte Carlo and grid search
