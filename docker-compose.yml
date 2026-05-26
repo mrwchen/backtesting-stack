@@ -86,9 +86,12 @@ services:
       # ---------------------------------------------------------------------
       # Runtime performance and caches
       # ---------------------------------------------------------------------
-      - PROGRESS_LOG_EVERY_DAYS=1
+      - PROGRESS_LOG_EVERY_DAYS=25
+      # all = full candidate diagnostics; signals = only accepted intents plus day summaries.
+      - DECISION_EVENT_MODE=signals
+      - DECISION_EVENT_FLUSH_BATCH_SIZE=25000
       - BAR_CACHE_WARMUP_DAYS=120
-      - BAR_CACHE_BATCH_SIZE=100
+      - BAR_CACHE_BATCH_SIZE=200
       - BAR_CACHE_MAX_MIB=1024
       - SIGNAL_BAR_CACHE_ENABLED=true
       - SIGNAL_BAR_CACHE_MAX_MIB=2048

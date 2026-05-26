@@ -295,6 +295,35 @@ CREATE INDEX IF NOT EXISTS idx_backtest_runs_model_created
 
 DO $$
 BEGIN
+    IF to_regclass('public.alpaca_market_data_1h') IS NOT NULL THEN
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_amd_1h_identity_ts_cover
+                ON public.alpaca_market_data_1h (symbol, exchange, cik, ts)
+                INCLUDE (open, high, low, close, volume)
+        ';
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_amd_1h_ts
+                ON public.alpaca_market_data_1h (ts DESC)
+        ';
+    END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF to_regclass('public.world_regime_daily_scores_mv') IS NOT NULL THEN
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_world_regime_day_score
+                ON public.world_regime_daily_scores_mv (day DESC)
+                INCLUDE (regime_label, composite_score)
+                WHERE composite_score IS NOT NULL
+        ';
+    END IF;
+END;
+$$;
+
+DO $$
+BEGIN
     IF to_regclass('public.stock_scorer_fundamental_scores') IS NOT NULL THEN
         EXECUTE '
             CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_pit_cover
@@ -327,6 +356,60 @@ BEGIN
                   AND cik IS NOT NULL
                   AND composite_score IS NOT NULL
         ';
+    END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF to_regclass('public.pepperstone_data') IS NOT NULL
+       AND EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'pepperstone_data'
+              AND column_name = 'symbol'
+       )
+       AND EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'pepperstone_data'
+              AND column_name = 'symbol_ps'
+       )
+       AND EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'pepperstone_data'
+              AND column_name = 'is_trading_enabled'
+       ) THEN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'pepperstone_data'
+              AND column_name = 'symbol_ps24'
+        ) THEN
+            EXECUTE '
+                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_tradable
+                    ON public.pepperstone_data (symbol)
+                    WHERE symbol IS NOT NULL
+                      AND is_trading_enabled IS NOT FALSE
+                      AND (
+                          NULLIF(BTRIM(symbol_ps), '''') IS NOT NULL
+                          OR NULLIF(BTRIM(symbol_ps24), '''') IS NOT NULL
+                      )
+            ';
+        ELSE
+            EXECUTE '
+                CREATE INDEX IF NOT EXISTS idx_backtest_pepperstone_symbol_tradable
+                    ON public.pepperstone_data (symbol)
+                    WHERE symbol IS NOT NULL
+                      AND is_trading_enabled IS NOT FALSE
+                      AND NULLIF(BTRIM(symbol_ps), '''') IS NOT NULL
+            ';
+        END IF;
     END IF;
 END;
 $$;

@@ -310,10 +310,34 @@ def _decimal_or_none(value: Optional[float], digits: int) -> Optional[Decimal]:
     return Decimal(str(round(float(value), digits)))
 
 
+def _should_write_decision_event(event: DecisionEvent) -> bool:
+    if DECISION_EVENT_MODE == "all":
+        return True
+    if DECISION_EVENT_MODE == "none":
+        return False
+    if DECISION_EVENT_MODE == "signals":
+        if event.intent_passed or event.opened:
+            return True
+        return event.symbol is None and event.decision in {
+            "skipped_day",
+            "skipped_direction",
+            "no_candidates",
+        }
+    if DECISION_EVENT_MODE == "summary":
+        return event.opened or (
+            event.symbol is None
+            and event.decision in {"skipped_day", "skipped_direction", "no_candidates"}
+        )
+    raise ValueError(f"Unknown DECISION_EVENT_MODE: {DECISION_EVENT_MODE!r}")
+
+
 def write_decision_events(
     conn: psycopg2.extensions.connection,
     events: list[DecisionEvent],
 ) -> None:
+    if not events:
+        return
+    events = [event for event in events if _should_write_decision_event(event)]
     if not events:
         return
 

@@ -163,11 +163,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         )
     log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(
-        "Performance caches — trading days on, world regime on, candidate timeline %s max %.0f MiB, bars incremental PIT batches of %d symbols with %d warmup days",
+        "Performance caches — trading days on, world regime on, candidate timeline %s max %.0f MiB, bars incremental PIT batches of %d symbols with %d warmup days decision event mode %s flush batch %d",
         CANDIDATE_TIMELINE_CACHE_ENABLED,
         CANDIDATE_TIMELINE_CACHE_MAX_MIB,
         BAR_CACHE_BATCH_SIZE,
         BAR_CACHE_WARMUP_DAYS,
+        DECISION_EVENT_MODE,
+        DECISION_EVENT_FLUSH_BATCH_SIZE,
     )
 
 
