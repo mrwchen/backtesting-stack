@@ -13,6 +13,7 @@ from pathlib import Path
 from .config import *
 from .db import connect_with_retry, validate_result_schema
 from .logging_utils import set_log_process_name
+from .market_data import reset_shared_candidate_timeline_cache
 from .model_loader import select_model_files
 from .persistence import reserve_run_ids
 
@@ -60,6 +61,7 @@ def _child_env(job: BacktestJob, reserved_run_id: int | None = None) -> dict[str
     env["ACCOUNT_PROFILE"] = job.account_profile
     env["PGAPPNAME"] = _pg_application_name_for_job(job)
     env.pop("BACKTEST_RUN_ID", None)
+    env.pop("BACKTEST_SHARED_TIMELINE_PREBUILDER", None)
     if reserved_run_id is not None:
         env["BACKTEST_RUN_ID"] = str(reserved_run_id)
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -107,6 +109,26 @@ def _reserve_run_ids_for_jobs(jobs: list[BacktestJob]) -> dict[BacktestJob, int]
     return reservations
 
 
+def _prebuild_shared_candidate_timelines(jobs: list[BacktestJob], script_path: Path) -> None:
+    profiles = sorted({job.account_profile for job in jobs})
+    if not CANDIDATE_TIMELINE_CACHE_ENABLED or not profiles:
+        return
+
+    reset_shared_candidate_timeline_cache()
+    for profile in profiles:
+        env = os.environ.copy()
+        env["BACKTEST_SHARED_TIMELINE_PREBUILDER"] = "1"
+        env.pop("BACKTEST_PARALLEL_CHILD", None)
+        env["ACCOUNT_PROFILE"] = profile
+        env["PGAPPNAME"] = f"backtest_runner:timeline:{profile}"
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        log.info("Shared candidate timeline prebuild process starting account profile %s", profile)
+        process = subprocess.run([sys.executable, str(script_path)], env=env)
+        if process.returncode != 0:
+            raise SystemExit(process.returncode if process.returncode > 0 else 1)
+        log.info("Shared candidate timeline prebuild process complete account profile %s", profile)
+
+
 def run_parallel_parent() -> None:
     set_log_process_name("bt-parent")
     if MODEL_FAILURE_MODE not in {"fail_fast", "continue"}:
@@ -114,9 +136,10 @@ def run_parallel_parent() -> None:
 
     model_files = select_model_files()
     jobs = _selected_jobs(model_files)
+    script_path = PROJECT_ROOT / "backtest_runner.py"
+    _prebuild_shared_candidate_timelines(jobs, script_path)
     reserved_run_ids = _reserve_run_ids_for_jobs(jobs)
     parallelism = min(MODEL_PARALLELISM, len(jobs))
-    script_path = PROJECT_ROOT / "backtest_runner.py"
     pending = list(jobs)
     running: dict[subprocess.Popen, BacktestJob] = {}
     succeeded: list[BacktestJob] = []

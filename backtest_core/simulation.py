@@ -31,12 +31,12 @@ from .market_data import (
     get_bars_range,
     get_bars_range_through,
     get_candidates,
-    get_next_bar_open,
     get_trading_days,
     get_world_regime,
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
+    load_next_bar_opens,
     load_recent_bars_for_identities,
     log_cache_stats,
     preload_identity_bars,
@@ -804,6 +804,7 @@ def run_backtest(
                 )
 
             evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
+            pending_intents: list[dict[str, Any]] = []
 
             for candidate_rank, fundamental in enumerate(candidates, start=1):
                 bars = recent_bars_by_identity.get(fundamental.identity_key, [])
@@ -863,42 +864,117 @@ def run_backtest(
                         evaluation.reason_code = intent_check.reason_code
                         evaluation.reason_text = intent_check.reason_text
                 if intent:
-                    next_entry = get_next_bar_open(conn, fundamental.identity_key, as_of_ts)
-                    if next_entry is None:
+                    pending_intents.append({
+                        "candidate_rank": candidate_rank,
+                        "fundamental": fundamental,
+                        "bars": bars,
+                        "evaluation": evaluation,
+                        "intent": intent,
+                        "after_ts": as_of_ts,
+                        "missing_reason_text": (
+                            f"No 1h bar after decision timestamp {as_of_ts} was available for next-bar-open entry."
+                        ),
+                    })
+                    continue
+
+                event = DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=as_of_ts,
+                    symbol=fundamental.symbol,
+                    exchange=fundamental.exchange,
+                    cik=fundamental.cik,
+                    direction=direction,
+                    decision_stage="intent_eval",
+                    decision="rejected",
+                    reason_code=evaluation.reason_code,
+                    reason_text=evaluation.reason_text,
+                    intent_passed=False,
+                    candidate_rank=candidate_rank,
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    valuation_label=fundamental.valuation_label,
+                    sector=fundamental.sector,
+                    industry=fundamental.industry,
+                    fundamental_score=_model_fundamental_score(fundamental, cfg),
+                    mispricing_score=fundamental.mispricing_score,
+                    market_cap_m=fundamental.market_cap_m,
+                    bar_count=len(bars),
+                    min_bars=cfg.min_bars,
+                    intent_score=None,
+                    intent_reason="",
+                    open_positions=len(active_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                )
+                decision_events.append(event)
+
+            next_bar_opens: dict[tuple[InstrumentKey, datetime], tuple[datetime, float]] = {}
+            if pending_intents:
+                next_open_started = _time.perf_counter()
+                next_bar_opens = load_next_bar_opens(
+                    conn,
+                    [
+                        (pending["fundamental"].identity_key, pending["after_ts"])
+                        for pending in pending_intents
+                    ],
+                    batch_size=BAR_CACHE_BATCH_SIZE,
+                )
+                next_open_elapsed = _time.perf_counter() - next_open_started
+                if log_progress_today or next_open_elapsed >= 5.0:
+                    log.info(
+                        "Next entry open batch complete context %s day %s model %s direction %s intents %d found %d in %.1f s",
+                        context_label,
+                        day,
+                        runtime.CURRENT_MODEL_FILE,
+                        direction,
+                        len(pending_intents),
+                        len(next_bar_opens),
+                        next_open_elapsed,
+                    )
+
+            for pending in pending_intents:
+                candidate_rank = pending["candidate_rank"]
+                fundamental = pending["fundamental"]
+                bars = pending["bars"]
+                evaluation = pending["evaluation"]
+                intent = pending["intent"]
+                after_ts = pending["after_ts"]
+                plan: TradePlan | None = None
+                next_entry = next_bar_opens.get((fundamental.identity_key, after_ts))
+                if next_entry is None:
+                    intent = None
+                    evaluation.intent = None
+                    evaluation.decision = "rejected"
+                    evaluation.reason_code = "next_entry_bar_missing"
+                    evaluation.reason_text = pending["missing_reason_text"]
+                else:
+                    entry_ts, entry_open = next_entry
+                    trade_plan_result = build_trade_plan(
+                        intent,
+                        fundamental,
+                        bars,
+                        _ensure_utc_ts(entry_ts),
+                        entry_open,
+                    )
+                    if not trade_plan_result.accepted:
                         intent = None
                         evaluation.intent = None
                         evaluation.decision = "rejected"
-                        evaluation.reason_code = "next_entry_bar_missing"
-                        evaluation.reason_text = (
-                            f"No 1h bar after decision timestamp {as_of_ts} was available for next-bar-open entry."
-                        )
+                        evaluation.reason_code = trade_plan_result.reason_code
+                        evaluation.reason_text = trade_plan_result.reason_text
                     else:
-                        entry_ts, entry_open = next_entry
-                        trade_plan_result = build_trade_plan(
-                            intent,
-                            fundamental,
-                            bars,
-                            _ensure_utc_ts(entry_ts),
-                            entry_open,
-                        )
-                        if not trade_plan_result.accepted:
+                        plan = trade_plan_result.plan
+                        if plan is None:
                             intent = None
                             evaluation.intent = None
                             evaluation.decision = "rejected"
-                            evaluation.reason_code = trade_plan_result.reason_code
-                            evaluation.reason_text = trade_plan_result.reason_text
+                            evaluation.reason_code = "execution_plan_missing"
+                            evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                         else:
-                            plan = trade_plan_result.plan
-                            if plan is None:
-                                intent = None
-                                evaluation.intent = None
-                                evaluation.decision = "rejected"
-                                evaluation.reason_code = "execution_plan_missing"
-                                evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
-                            else:
-                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
-                                plans.append(plan)
-                                plans_by_direction[direction].append(plan)
+                            plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                            plans.append(plan)
+                            plans_by_direction[direction].append(plan)
 
                 event = DecisionEvent(
                     run_id=run_id,
@@ -1513,6 +1589,7 @@ def run_backtest(
                 )
 
             evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
+            pending_intents: list[dict[str, Any]] = []
 
             for candidate_rank, fundamental in enumerate(candidates, start=1):
                 bars = recent_bars_by_identity.get(fundamental.identity_key, [])
@@ -1576,42 +1653,119 @@ def run_backtest(
                         evaluation.reason_code = intent_check.reason_code
                         evaluation.reason_text = intent_check.reason_text
                 if intent:
-                    next_entry = get_next_bar_open(conn, fundamental.identity_key, bars[-1].ts)
-                    if next_entry is None:
+                    after_ts = _ensure_utc_ts(bars[-1].ts)
+                    pending_intents.append({
+                        "candidate_rank": candidate_rank,
+                        "fundamental": fundamental,
+                        "bars": bars,
+                        "evaluation": evaluation,
+                        "intent": intent,
+                        "after_ts": after_ts,
+                        "missing_reason_text": (
+                            f"No 1h bar after intent bar {after_ts} was available for next-bar-open entry."
+                        ),
+                    })
+                    continue
+
+                event = DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=day_end_ts,
+                    symbol=fundamental.symbol,
+                    exchange=fundamental.exchange,
+                    cik=fundamental.cik,
+                    direction=direction,
+                    decision_stage="intent_eval",
+                    decision="rejected",
+                    reason_code=evaluation.reason_code,
+                    reason_text=evaluation.reason_text,
+                    intent_passed=False,
+                    candidate_rank=candidate_rank,
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    valuation_label=fundamental.valuation_label,
+                    sector=fundamental.sector,
+                    industry=fundamental.industry,
+                    fundamental_score=_model_fundamental_score(fundamental, cfg),
+                    mispricing_score=fundamental.mispricing_score,
+                    market_cap_m=fundamental.market_cap_m,
+                    bar_count=len(bars),
+                    min_bars=cfg.min_bars,
+                    intent_score=None,
+                    intent_reason="",
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                )
+                decision_events.append(event)
+
+            next_bar_opens: dict[tuple[InstrumentKey, datetime], tuple[datetime, float]] = {}
+            if pending_intents:
+                next_open_started = _time.perf_counter()
+                next_bar_opens = load_next_bar_opens(
+                    conn,
+                    [
+                        (pending["fundamental"].identity_key, pending["after_ts"])
+                        for pending in pending_intents
+                    ],
+                    batch_size=BAR_CACHE_BATCH_SIZE,
+                )
+                next_open_elapsed = _time.perf_counter() - next_open_started
+                if log_progress_today or next_open_elapsed >= 5.0:
+                    log.info(
+                        "Next entry open batch complete day %d/%d %s model %s direction %s intents %d found %d in %.1f s",
+                        day_idx,
+                        len(trading_days),
+                        day,
+                        runtime.CURRENT_MODEL_FILE,
+                        direction,
+                        len(pending_intents),
+                        len(next_bar_opens),
+                        next_open_elapsed,
+                    )
+
+            for pending in pending_intents:
+                candidate_rank = pending["candidate_rank"]
+                fundamental = pending["fundamental"]
+                bars = pending["bars"]
+                evaluation = pending["evaluation"]
+                intent = pending["intent"]
+                after_ts = pending["after_ts"]
+                plan: TradePlan | None = None
+                next_entry = next_bar_opens.get((fundamental.identity_key, after_ts))
+                if next_entry is None:
+                    intent = None
+                    evaluation.intent = None
+                    evaluation.decision = "rejected"
+                    evaluation.reason_code = "next_entry_bar_missing"
+                    evaluation.reason_text = pending["missing_reason_text"]
+                else:
+                    entry_ts, entry_open = next_entry
+                    trade_plan_result = build_trade_plan(
+                        intent,
+                        fundamental,
+                        bars,
+                        _ensure_utc_ts(entry_ts),
+                        entry_open,
+                    )
+                    if not trade_plan_result.accepted:
                         intent = None
                         evaluation.intent = None
                         evaluation.decision = "rejected"
-                        evaluation.reason_code = "next_entry_bar_missing"
-                        evaluation.reason_text = (
-                            f"No 1h bar after intent bar {bars[-1].ts} was available for next-bar-open entry."
-                        )
+                        evaluation.reason_code = trade_plan_result.reason_code
+                        evaluation.reason_text = trade_plan_result.reason_text
                     else:
-                        entry_ts, entry_open = next_entry
-                        trade_plan_result = build_trade_plan(
-                            intent,
-                            fundamental,
-                            bars,
-                            _ensure_utc_ts(entry_ts),
-                            entry_open,
-                        )
-                        if not trade_plan_result.accepted:
+                        plan = trade_plan_result.plan
+                        if plan is None:
                             intent = None
                             evaluation.intent = None
                             evaluation.decision = "rejected"
-                            evaluation.reason_code = trade_plan_result.reason_code
-                            evaluation.reason_text = trade_plan_result.reason_text
+                            evaluation.reason_code = "execution_plan_missing"
+                            evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                         else:
-                            plan = trade_plan_result.plan
-                            if plan is None:
-                                intent = None
-                                evaluation.intent = None
-                                evaluation.decision = "rejected"
-                                evaluation.reason_code = "execution_plan_missing"
-                                evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
-                            else:
-                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
-                                plans.append(plan)
-                                plans_by_direction[direction].append(plan)
+                            plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                            plans.append(plan)
+                            plans_by_direction[direction].append(plan)
                 event = DecisionEvent(
                     run_id=run_id,
                     intent_date=day,

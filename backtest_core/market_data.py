@@ -1,15 +1,21 @@
 """Point-in-time source queries, trading calendar, and bar cache."""
 
+import hashlib
+import json
 import logging
+import os
+import shutil
 import sys as _sys
 import time as _time
 from array import array
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import psycopg2
 from psycopg2 import sql
 
@@ -47,64 +53,37 @@ class _SignalBarCacheEntry:
     loaded_until_ts: Optional[datetime]
 
 
-@dataclass(frozen=True, slots=True)
-class _CandidateTimelineRow:
-    available_epoch_us: int
-    source_epoch_us: int
-    symbol: str
-    exchange: str
-    cik: int
-    composite_score: Optional[float]
-    sector: str
-    industry: str
-    composite_score_abs: Optional[float]
-    valuation_label: str
-    mispricing_score: Optional[float]
-    negative_earnings_flag: bool
-    high_leverage_flag: bool
-    market_cap_m: Optional[float]
-    long_eligible: bool
-    short_eligible: bool
-    relative_absolute_divergence: str
-    long_block_reason: str
-    short_block_reason: str
-    current_price_currency: str
-    market_cap_currency: str
-    currency: str
-    financial_currency: str
-
-    def to_fundamental_row(self) -> FundamentalRow:
-        if self.composite_score is None:
-            raise ValueError("Cannot convert candidate timeline row without composite_score")
-        return FundamentalRow(
-            symbol=self.symbol,
-            exchange=self.exchange,
-            cik=self.cik,
-            composite_score=self.composite_score,
-            sector=self.sector,
-            industry=self.industry,
-            composite_score_abs=self.composite_score_abs,
-            valuation_label=self.valuation_label,
-            mispricing_score=self.mispricing_score,
-            negative_earnings_flag=self.negative_earnings_flag,
-            high_leverage_flag=self.high_leverage_flag,
-            market_cap_m=self.market_cap_m,
-            long_eligible=self.long_eligible,
-            short_eligible=self.short_eligible,
-            relative_absolute_divergence=self.relative_absolute_divergence,
-            long_block_reason=self.long_block_reason,
-            short_block_reason=self.short_block_reason,
-        )
-
-
 @dataclass
-class _CandidateTimeline:
-    rows_by_identity: dict[InstrumentKey, list[_CandidateTimelineRow]]
-    available_by_identity: dict[InstrumentKey, list[int]]
+class _SharedCandidateTimeline:
+    cache_dir: Path
+    strings: list[str]
     loaded_through_ts: datetime
     loaded_through_epoch_us: int
     rows: int
+    identity_count: int
     estimated_mib: float
+    identity_start: np.ndarray
+    identity_end: np.ndarray
+    identity_symbol_code: np.ndarray
+    identity_exchange_code: np.ndarray
+    identity_cik: np.ndarray
+    available_epoch_us: np.ndarray
+    source_epoch_us: np.ndarray
+    composite_score: np.ndarray
+    composite_score_abs: np.ndarray
+    mispricing_score: np.ndarray
+    market_cap_m: np.ndarray
+    flags: np.ndarray
+    sector_code: np.ndarray
+    industry_code: np.ndarray
+    valuation_label_code: np.ndarray
+    relative_absolute_divergence_code: np.ndarray
+    long_block_reason_code: np.ndarray
+    short_block_reason_code: np.ndarray
+    current_price_currency_code: np.ndarray
+    market_cap_currency_code: np.ndarray
+    currency_code: np.ndarray
+    financial_currency_code: np.ndarray
 
 
 _BAR_CACHE: dict[InstrumentKey, _BarCacheEntry] = {}
@@ -114,7 +93,7 @@ _SIGNAL_BAR_CACHE_DISABLED = False
 _TRADING_DAYS_CACHE: dict[tuple[str, date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
-_CANDIDATE_TIMELINE_CACHE: dict[tuple, _CandidateTimeline] = {}
+_CANDIDATE_TIMELINE_CACHE: dict[tuple, _SharedCandidateTimeline] = {}
 _CANDIDATE_TIMELINE_CACHE_DISABLED = False
 _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
@@ -124,6 +103,31 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
 _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
+_SHARED_CANDIDATE_TIMELINE_VERSION = 1
+_SHARED_CANDIDATE_TIMELINE_ARRAYS = (
+    "identity_start",
+    "identity_end",
+    "identity_symbol_code",
+    "identity_exchange_code",
+    "identity_cik",
+    "available_epoch_us",
+    "source_epoch_us",
+    "composite_score",
+    "composite_score_abs",
+    "mispricing_score",
+    "market_cap_m",
+    "flags",
+    "sector_code",
+    "industry_code",
+    "valuation_label_code",
+    "relative_absolute_divergence_code",
+    "long_block_reason_code",
+    "short_block_reason_code",
+    "current_price_currency_code",
+    "market_cap_currency_code",
+    "currency_code",
+    "financial_currency_code",
+)
 
 def _cache_counts() -> tuple[int, int, float, int, int, int]:
     cached_bars = sum(len(entry.bars) for entry in _BAR_CACHE.values())
@@ -150,7 +154,7 @@ def _candidate_cache_counts() -> tuple[int, int]:
 
 def _candidate_timeline_cache_counts() -> tuple[int, int, int, float]:
     rows = sum(timeline.rows for timeline in _CANDIDATE_TIMELINE_CACHE.values())
-    identities = sum(len(timeline.rows_by_identity) for timeline in _CANDIDATE_TIMELINE_CACHE.values())
+    identities = sum(timeline.identity_count for timeline in _CANDIDATE_TIMELINE_CACHE.values())
     estimated_mib = sum(timeline.estimated_mib for timeline in _CANDIDATE_TIMELINE_CACHE.values())
     return len(_CANDIDATE_TIMELINE_CACHE), rows, identities, estimated_mib
 
@@ -168,6 +172,134 @@ def _disable_candidate_timeline_cache(reason: str) -> None:
         timeline_identities,
         timeline_mib,
     )
+
+
+def reset_shared_candidate_timeline_cache() -> None:
+    root = _shared_candidate_timeline_cache_root()
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    log.info("Shared candidate timeline cache reset path %s", root)
+
+
+def _shared_candidate_timeline_cache_root() -> Path:
+    return Path(CANDIDATE_TIMELINE_SHARED_CACHE_DIR)
+
+
+def _shared_candidate_timeline_key_repr(timeline_key: tuple) -> str:
+    return repr((
+        "candidate_timeline_shared",
+        _SHARED_CANDIDATE_TIMELINE_VERSION,
+        timeline_key,
+    ))
+
+
+def _shared_candidate_timeline_cache_dir(timeline_key: tuple) -> Path:
+    key_repr = _shared_candidate_timeline_key_repr(timeline_key)
+    digest = hashlib.sha256(key_repr.encode("utf-8")).hexdigest()[:24]
+    profile = str(timeline_key[1]) if len(timeline_key) > 1 else ACCOUNT_PROFILE
+    safe_profile = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in profile)
+    return _shared_candidate_timeline_cache_root() / f"v{_SHARED_CANDIDATE_TIMELINE_VERSION}_{safe_profile}_{digest}"
+
+
+def _load_shared_candidate_timeline(timeline_key: tuple) -> Optional[_SharedCandidateTimeline]:
+    cache_dir = _shared_candidate_timeline_cache_dir(timeline_key)
+    manifest_path = cache_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("version") != _SHARED_CANDIDATE_TIMELINE_VERSION:
+            return None
+        if manifest.get("key_repr") != _shared_candidate_timeline_key_repr(timeline_key):
+            return None
+        arrays = {
+            name: np.load(cache_dir / f"{name}.npy", mmap_mode="r")
+            for name in _SHARED_CANDIDATE_TIMELINE_ARRAYS
+        }
+        loaded_through_ts = datetime.fromisoformat(manifest["loaded_through_ts"])
+        timeline = _SharedCandidateTimeline(
+            cache_dir=cache_dir,
+            strings=list(manifest["strings"]),
+            loaded_through_ts=loaded_through_ts,
+            loaded_through_epoch_us=int(manifest["loaded_through_epoch_us"]),
+            rows=int(manifest["rows"]),
+            identity_count=int(manifest["identities"]),
+            estimated_mib=float(manifest["estimated_mib"]),
+            identity_start=arrays["identity_start"],
+            identity_end=arrays["identity_end"],
+            identity_symbol_code=arrays["identity_symbol_code"],
+            identity_exchange_code=arrays["identity_exchange_code"],
+            identity_cik=arrays["identity_cik"],
+            available_epoch_us=arrays["available_epoch_us"],
+            source_epoch_us=arrays["source_epoch_us"],
+            composite_score=arrays["composite_score"],
+            composite_score_abs=arrays["composite_score_abs"],
+            mispricing_score=arrays["mispricing_score"],
+            market_cap_m=arrays["market_cap_m"],
+            flags=arrays["flags"],
+            sector_code=arrays["sector_code"],
+            industry_code=arrays["industry_code"],
+            valuation_label_code=arrays["valuation_label_code"],
+            relative_absolute_divergence_code=arrays["relative_absolute_divergence_code"],
+            long_block_reason_code=arrays["long_block_reason_code"],
+            short_block_reason_code=arrays["short_block_reason_code"],
+            current_price_currency_code=arrays["current_price_currency_code"],
+            market_cap_currency_code=arrays["market_cap_currency_code"],
+            currency_code=arrays["currency_code"],
+            financial_currency_code=arrays["financial_currency_code"],
+        )
+    except Exception as exc:
+        log.warning("Shared candidate timeline cache load failed path %s error %s", cache_dir, exc)
+        return None
+
+    log.info(
+        "Shared candidate timeline cache loaded path %s rows %d identities %d estimated %.0f MiB",
+        cache_dir,
+        timeline.rows,
+        timeline.identity_count,
+        timeline.estimated_mib,
+    )
+    return timeline
+
+
+def _open_timeline_row_memmaps(cache_dir: Path, rows: int) -> dict[str, np.ndarray]:
+    specs = {
+        "available_epoch_us": np.int64,
+        "source_epoch_us": np.int64,
+        "composite_score": np.float64,
+        "composite_score_abs": np.float64,
+        "mispricing_score": np.float64,
+        "market_cap_m": np.float64,
+        "flags": np.uint8,
+        "sector_code": np.int32,
+        "industry_code": np.int32,
+        "valuation_label_code": np.int32,
+        "relative_absolute_divergence_code": np.int32,
+        "long_block_reason_code": np.int32,
+        "short_block_reason_code": np.int32,
+        "current_price_currency_code": np.int32,
+        "market_cap_currency_code": np.int32,
+        "currency_code": np.int32,
+        "financial_currency_code": np.int32,
+    }
+    return {
+        name: np.lib.format.open_memmap(cache_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=(rows,))
+        for name, dtype in specs.items()
+    }
+
+
+def _float_or_nan(value: object) -> float:
+    return float(value) if value is not None else np.nan
+
+
+def _shared_float_or_none(values: np.ndarray, idx: int) -> Optional[float]:
+    value = float(values[idx])
+    return value if value == value else None
+
+
+def _shared_text(timeline: _SharedCandidateTimeline, code: object) -> str:
+    return timeline.strings[int(code)]
 
 
 def _get_pepperstone_symbols(
@@ -331,60 +463,6 @@ def _candidate_effective_currency(
         if text:
             return text
     return required_currency.upper() if required_currency else ""
-
-
-def _candidate_row_passes_filters(
-    row: _CandidateTimelineRow,
-    direction: str,
-    score_val: float,
-    min_market_cap_m: float,
-    required_currency: Optional[str],
-    filter_high_leverage: bool,
-    filter_negative_earnings: bool,
-    label_blocklist: Optional[list],
-    fundamental_score_mode: str,
-    fundamental_peer_weight: float,
-    fundamental_abs_weight: float,
-    long_min_absolute_score: Optional[float],
-    short_max_absolute_score: Optional[float],
-) -> bool:
-    if row.composite_score is None:
-        return False
-    score = combine_peer_absolute_scores(
-        row.composite_score,
-        row.composite_score_abs,
-        fundamental_score_mode,
-        fundamental_peer_weight,
-        fundamental_abs_weight,
-    )
-    absolute_score = row.composite_score_abs if row.composite_score_abs is not None else row.composite_score
-    if direction == "LONG" and score < score_val:
-        return False
-    if direction != "LONG" and score > score_val:
-        return False
-    if direction == "LONG" and long_min_absolute_score is not None and absolute_score < long_min_absolute_score:
-        return False
-    if direction != "LONG" and short_max_absolute_score is not None and absolute_score > short_max_absolute_score:
-        return False
-    if (row.market_cap_m or 0.0) < min_market_cap_m:
-        return False
-    if filter_high_leverage and row.high_leverage_flag:
-        return False
-    if filter_negative_earnings and row.negative_earnings_flag:
-        return False
-    if label_blocklist and row.valuation_label in label_blocklist:
-        return False
-    if required_currency:
-        effective_currency = _candidate_effective_currency(
-            row.current_price_currency,
-            row.market_cap_currency,
-            row.currency,
-            row.financial_currency,
-            required_currency,
-        )
-        if effective_currency != required_currency.upper():
-            return False
-    return True
 
 
 def _candidate_score_sql(score_mode: str) -> sql.SQL:
@@ -565,6 +643,224 @@ def _timeline_count_query(
     )
 
 
+def _build_shared_candidate_timeline(
+    conn: psycopg2.extensions.connection,
+    timeline_key: tuple,
+    direction: str,
+    query: sql.Composed,
+    query_params: dict,
+    loaded_through_ts: datetime,
+    loaded_through_epoch_us: int,
+    projected_rows: int,
+    projected_identities: int,
+) -> Optional[_SharedCandidateTimeline]:
+    cache_dir = _shared_candidate_timeline_cache_dir(timeline_key)
+    loaded = _load_shared_candidate_timeline(timeline_key)
+    if loaded is not None:
+        return loaded
+
+    root = _shared_candidate_timeline_cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = root / f".building_{cache_dir.name}_{os.getpid()}"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=False)
+
+    strings: list[str] = [""]
+    string_codes: dict[str, int] = {"": 0}
+
+    def code_for(value: object) -> int:
+        text = _candidate_text(value)
+        code = string_codes.get(text)
+        if code is None:
+            code = len(strings)
+            strings.append(text)
+            string_codes[text] = code
+        return code
+
+    row_arrays = _open_timeline_row_memmaps(tmp_dir, projected_rows)
+    identity_start: list[int] = []
+    identity_end: list[int] = []
+    identity_symbol_code: list[int] = []
+    identity_exchange_code: list[int] = []
+    identity_cik: list[int] = []
+    rows_loaded = 0
+    current_identity: Optional[InstrumentKey] = None
+    current_rows: list[tuple] = []
+    previous_autocommit = conn.autocommit
+    transaction_started = False
+    cursor_name = f"shared_candidate_timeline_{abs(hash(timeline_key)) % 10_000_000_000}"
+    started = _time.perf_counter()
+
+    def flush_identity() -> None:
+        nonlocal rows_loaded, current_identity, current_rows
+        if current_identity is None:
+            return
+        start_idx = rows_loaded
+        identity_start.append(start_idx)
+        identity_symbol_code.append(code_for(current_identity[0]))
+        identity_exchange_code.append(code_for(current_identity[1]))
+        identity_cik.append(current_identity[2])
+        for item in reversed(current_rows):
+            (
+                available_epoch_us,
+                source_epoch_us,
+                composite_score,
+                composite_score_abs,
+                mispricing_score,
+                market_cap_m,
+                flags,
+                sector_code,
+                industry_code,
+                valuation_label_code,
+                relative_absolute_divergence_code,
+                long_block_reason_code,
+                short_block_reason_code,
+                current_price_currency_code,
+                market_cap_currency_code,
+                currency_code,
+                financial_currency_code,
+            ) = item
+            row_arrays["available_epoch_us"][rows_loaded] = available_epoch_us
+            row_arrays["source_epoch_us"][rows_loaded] = source_epoch_us
+            row_arrays["composite_score"][rows_loaded] = composite_score
+            row_arrays["composite_score_abs"][rows_loaded] = composite_score_abs
+            row_arrays["mispricing_score"][rows_loaded] = mispricing_score
+            row_arrays["market_cap_m"][rows_loaded] = market_cap_m
+            row_arrays["flags"][rows_loaded] = flags
+            row_arrays["sector_code"][rows_loaded] = sector_code
+            row_arrays["industry_code"][rows_loaded] = industry_code
+            row_arrays["valuation_label_code"][rows_loaded] = valuation_label_code
+            row_arrays["relative_absolute_divergence_code"][rows_loaded] = relative_absolute_divergence_code
+            row_arrays["long_block_reason_code"][rows_loaded] = long_block_reason_code
+            row_arrays["short_block_reason_code"][rows_loaded] = short_block_reason_code
+            row_arrays["current_price_currency_code"][rows_loaded] = current_price_currency_code
+            row_arrays["market_cap_currency_code"][rows_loaded] = market_cap_currency_code
+            row_arrays["currency_code"][rows_loaded] = currency_code
+            row_arrays["financial_currency_code"][rows_loaded] = financial_currency_code
+            rows_loaded += 1
+        identity_end.append(rows_loaded)
+        current_rows = []
+
+    try:
+        log.info(
+            "Shared candidate timeline cache build starting direction %s path %s rows %d identities %d through %s",
+            direction,
+            cache_dir,
+            projected_rows,
+            projected_identities,
+            loaded_through_ts,
+        )
+        if previous_autocommit:
+            conn.autocommit = False
+            transaction_started = True
+        with conn.cursor(name=cursor_name) as cur:
+            cur.itersize = CANDIDATE_TIMELINE_CURSOR_ITERSIZE
+            cur.execute(query, query_params)
+            for row in cur:
+                available_at, source_time = row[0], row[1]
+                symbol = _candidate_text(row[2])
+                exchange = _candidate_text(row[3])
+                cik = int(row[4])
+                identity = instrument_key(symbol, exchange, cik)
+                if current_identity is None:
+                    current_identity = identity
+                elif identity != current_identity:
+                    flush_identity()
+                    current_identity = identity
+
+                flags = (
+                    (1 if bool(row[11]) else 0)
+                    | (2 if bool(row[12]) else 0)
+                    | (4 if bool(row[14]) else 0)
+                    | (8 if bool(row[15]) else 0)
+                )
+                current_rows.append((
+                    _ts_to_epoch_us(available_at),
+                    _ts_to_epoch_us(source_time),
+                    _float_or_nan(row[5]),
+                    _float_or_nan(row[8]),
+                    _float_or_nan(row[10]),
+                    _float_or_nan(row[13]),
+                    flags,
+                    code_for(row[6]),
+                    code_for(row[7]),
+                    code_for(row[9]),
+                    code_for(row[16]),
+                    code_for(row[17]),
+                    code_for(row[18]),
+                    code_for(row[19]),
+                    code_for(row[20]),
+                    code_for(row[21]),
+                    code_for(row[22]),
+                ))
+        flush_identity()
+        if transaction_started:
+            conn.commit()
+
+        if rows_loaded != projected_rows:
+            raise RuntimeError(f"Projected {projected_rows} rows but loaded {rows_loaded}")
+        if len(identity_start) != projected_identities:
+            raise RuntimeError(f"Projected {projected_identities} identities but loaded {len(identity_start)}")
+
+        for arr in row_arrays.values():
+            arr.flush()
+        del row_arrays
+
+        np.save(tmp_dir / "identity_start.npy", np.asarray(identity_start, dtype=np.int64))
+        np.save(tmp_dir / "identity_end.npy", np.asarray(identity_end, dtype=np.int64))
+        np.save(tmp_dir / "identity_symbol_code.npy", np.asarray(identity_symbol_code, dtype=np.int32))
+        np.save(tmp_dir / "identity_exchange_code.npy", np.asarray(identity_exchange_code, dtype=np.int32))
+        np.save(tmp_dir / "identity_cik.npy", np.asarray(identity_cik, dtype=np.int64))
+
+        estimated_mib = rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
+        manifest = {
+            "version": _SHARED_CANDIDATE_TIMELINE_VERSION,
+            "key_repr": _shared_candidate_timeline_key_repr(timeline_key),
+            "loaded_through_ts": loaded_through_ts.isoformat(),
+            "loaded_through_epoch_us": loaded_through_epoch_us,
+            "rows": rows_loaded,
+            "identities": len(identity_start),
+            "estimated_mib": estimated_mib,
+            "strings": strings,
+        }
+        (tmp_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+        tmp_dir.rename(cache_dir)
+        elapsed = _time.perf_counter() - started
+        log.info(
+            "Shared candidate timeline cache build complete direction %s path %s rows %d identities %d strings %d estimated %.0f MiB in %.1f s",
+            direction,
+            cache_dir,
+            rows_loaded,
+            len(identity_start),
+            len(strings),
+            estimated_mib,
+            elapsed,
+        )
+        return _load_shared_candidate_timeline(timeline_key)
+    except Exception as exc:
+        if transaction_started:
+            conn.rollback()
+        log.error(
+            "Shared candidate timeline cache build failed direction %s path %s after %d rows error %s",
+            direction,
+            cache_dir,
+            rows_loaded,
+            exc,
+        )
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        return None
+    finally:
+        if previous_autocommit and not conn.autocommit:
+            conn.autocommit = True
+
+
 def _build_candidate_timeline(
     conn: psycopg2.extensions.connection,
     timeline_key: tuple,
@@ -575,7 +871,7 @@ def _build_candidate_timeline(
     params: dict,
     pepperstone_table: str,
     ibkr_margin_table: str,
-) -> Optional[_CandidateTimeline]:
+) -> Optional[_SharedCandidateTimeline]:
     if _CANDIDATE_TIMELINE_CACHE_DISABLED or not CANDIDATE_TIMELINE_CACHE_ENABLED:
         return None
     if timeline_key in _CANDIDATE_TIMELINE_CACHE:
@@ -602,8 +898,6 @@ def _build_candidate_timeline(
             get_ibkr_margin_symbols(conn, query_params["ibkr_margin_action"], ibkr_margin_table)
         )
 
-    rows_loaded = 0
-    started = _time.perf_counter()
     existing_timeline_mib = _candidate_timeline_cache_counts()[3]
     count_started = _time.perf_counter()
     count_query = _timeline_count_query(
@@ -642,116 +936,129 @@ def _build_candidate_timeline(
         )
         return None
 
-    rows_by_identity: dict[InstrumentKey, list[_CandidateTimelineRow]] = {}
-    available_by_identity: dict[InstrumentKey, list[int]] = {}
-    previous_autocommit = conn.autocommit
-    transaction_started = False
-    overflow = False
-    cursor_name = f"candidate_timeline_{abs(hash(timeline_key)) % 10_000_000_000}"
-
-    log.info(
-        "Candidate timeline cache build starting direction %s through %s current %.0f MiB max %.0f MiB",
+    shared_timeline = _build_shared_candidate_timeline(
+        conn,
+        timeline_key,
         direction,
+        query,
+        query_params,
         loaded_through_ts,
-        existing_timeline_mib,
-        CANDIDATE_TIMELINE_CACHE_MAX_MIB,
+        loaded_through_epoch_us,
+        int(projected_rows),
+        int(projected_identities),
     )
-    try:
-        if previous_autocommit:
-            conn.autocommit = False
-            transaction_started = True
-        with conn.cursor(name=cursor_name) as cur:
-            cur.itersize = CANDIDATE_TIMELINE_CURSOR_ITERSIZE
-            cur.execute(query, query_params)
-            for row in cur:
-                available_at, source_time = row[0], row[1]
-                if available_at is None or source_time is None:
-                    continue
-                symbol = _candidate_text(row[2])
-                exchange = _candidate_text(row[3])
-                cik = int(row[4])
-                identity = instrument_key(symbol, exchange, cik)
-                timeline_row = _CandidateTimelineRow(
-                    available_epoch_us=_ts_to_epoch_us(available_at),
-                    source_epoch_us=_ts_to_epoch_us(source_time),
+    if shared_timeline is None:
+        _disable_candidate_timeline_cache("shared file cache build failed")
+        return None
+    _CANDIDATE_TIMELINE_CACHE[timeline_key] = shared_timeline
+    return shared_timeline
+
+
+def _get_candidates_from_shared_timeline(
+    timeline: _SharedCandidateTimeline,
+    direction: str,
+    as_of_epoch_us: int,
+    params: dict,
+    long_label_blocklist: Optional[list],
+    short_label_blocklist: Optional[list],
+    filter_high_leverage: bool,
+    filter_negative_earnings: bool,
+    fundamental_score_mode: str,
+    fundamental_peer_weight: float,
+    fundamental_abs_weight: float,
+    long_min_absolute_score: Optional[float],
+    short_max_absolute_score: Optional[float],
+) -> list[FundamentalRow]:
+    candidates: list[FundamentalRow] = []
+    score_val = params["score_val"]
+    label_blocklist = long_label_blocklist if direction == "LONG" else short_label_blocklist
+    required_currency = params.get("required_currency")
+
+    for identity_idx in range(timeline.identity_count):
+        start = int(timeline.identity_start[identity_idx])
+        end = int(timeline.identity_end[identity_idx])
+        row_idx = int(np.searchsorted(
+            timeline.available_epoch_us[start:end],
+            as_of_epoch_us,
+            side="right",
+        )) - 1
+        while row_idx >= 0:
+            absolute_idx = start + row_idx
+            if int(timeline.source_epoch_us[absolute_idx]) <= as_of_epoch_us:
+                composite_score = _shared_float_or_none(timeline.composite_score, absolute_idx)
+                if composite_score is None:
+                    break
+                composite_score_abs = _shared_float_or_none(timeline.composite_score_abs, absolute_idx)
+                score = combine_peer_absolute_scores(
+                    composite_score,
+                    composite_score_abs,
+                    fundamental_score_mode,
+                    fundamental_peer_weight,
+                    fundamental_abs_weight,
+                )
+                absolute_score = composite_score_abs if composite_score_abs is not None else composite_score
+                if direction == "LONG" and score < score_val:
+                    break
+                if direction != "LONG" and score > score_val:
+                    break
+                if direction == "LONG" and long_min_absolute_score is not None and absolute_score < long_min_absolute_score:
+                    break
+                if direction != "LONG" and short_max_absolute_score is not None and absolute_score > short_max_absolute_score:
+                    break
+
+                market_cap_m = _shared_float_or_none(timeline.market_cap_m, absolute_idx)
+                if (market_cap_m or 0.0) < params["min_market_cap_m"]:
+                    break
+
+                flags = int(timeline.flags[absolute_idx])
+                negative_earnings_flag = bool(flags & 1)
+                high_leverage_flag = bool(flags & 2)
+                if filter_high_leverage and high_leverage_flag:
+                    break
+                if filter_negative_earnings and negative_earnings_flag:
+                    break
+
+                valuation_label = _shared_text(timeline, timeline.valuation_label_code[absolute_idx])
+                if label_blocklist and valuation_label in label_blocklist:
+                    break
+                if required_currency:
+                    effective_currency = _candidate_effective_currency(
+                        _shared_text(timeline, timeline.current_price_currency_code[absolute_idx]),
+                        _shared_text(timeline, timeline.market_cap_currency_code[absolute_idx]),
+                        _shared_text(timeline, timeline.currency_code[absolute_idx]),
+                        _shared_text(timeline, timeline.financial_currency_code[absolute_idx]),
+                        required_currency,
+                    )
+                    if effective_currency != required_currency.upper():
+                        break
+
+                symbol = _shared_text(timeline, timeline.identity_symbol_code[identity_idx])
+                exchange = _shared_text(timeline, timeline.identity_exchange_code[identity_idx])
+                candidates.append(FundamentalRow(
                     symbol=symbol,
                     exchange=exchange,
-                    cik=cik,
-                    composite_score=float(row[5]) if row[5] is not None else None,
-                    sector=_candidate_text(row[6]),
-                    industry=_candidate_text(row[7]),
-                    composite_score_abs=float(row[8]) if row[8] is not None else None,
-                    valuation_label=_candidate_text(row[9]),
-                    mispricing_score=float(row[10]) if row[10] is not None else None,
-                    negative_earnings_flag=bool(row[11]),
-                    high_leverage_flag=bool(row[12]),
-                    market_cap_m=float(row[13]) if row[13] is not None else None,
-                    long_eligible=bool(row[14]),
-                    short_eligible=bool(row[15]),
-                    relative_absolute_divergence=_candidate_text(row[16]),
-                    long_block_reason=_candidate_text(row[17]),
-                    short_block_reason=_candidate_text(row[18]),
-                    current_price_currency=_candidate_text(row[19]),
-                    market_cap_currency=_candidate_text(row[20]),
-                    currency=_candidate_text(row[21]),
-                    financial_currency=_candidate_text(row[22]),
-                )
-                rows_by_identity.setdefault(identity, []).append(timeline_row)
-                available_by_identity.setdefault(identity, []).append(timeline_row.available_epoch_us)
-                rows_loaded += 1
-                total_estimated_mib = existing_timeline_mib + rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
-                if total_estimated_mib > CANDIDATE_TIMELINE_CACHE_MAX_MIB:
-                    rows_by_identity.clear()
-                    available_by_identity.clear()
-                    overflow = True
-                    _disable_candidate_timeline_cache(
-                        "direction %s loaded %.0f MiB exceeds max %.0f MiB after %d rows"
-                        % (direction, total_estimated_mib, CANDIDATE_TIMELINE_CACHE_MAX_MIB, rows_loaded)
-                    )
-                    break
-        if overflow:
-            if transaction_started:
-                conn.rollback()
-            return None
-        if transaction_started:
-            conn.commit()
-    except Exception as exc:
-        if transaction_started:
-            conn.rollback()
-        _disable_candidate_timeline_cache(
-            "direction %s build failed after %d rows: %s"
-            % (direction, rows_loaded, exc)
-        )
-        return None
-    finally:
-        if previous_autocommit and not conn.autocommit:
-            conn.autocommit = True
-
-    for identity in list(rows_by_identity):
-        rows_by_identity[identity].reverse()
-        available_by_identity[identity].reverse()
-
-    estimated_mib = rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
-    timeline = _CandidateTimeline(
-        rows_by_identity=rows_by_identity,
-        available_by_identity=available_by_identity,
-        loaded_through_ts=loaded_through_ts,
-        loaded_through_epoch_us=loaded_through_epoch_us,
-        rows=rows_loaded,
-        estimated_mib=estimated_mib,
-    )
-    _CANDIDATE_TIMELINE_CACHE[timeline_key] = timeline
-    elapsed = _time.perf_counter() - started
-    log.info(
-        "Candidate timeline cache build complete direction %s rows %d identities %d estimated %.0f MiB through %s in %.1f s",
-        direction,
-        rows_loaded,
-        len(rows_by_identity),
-        estimated_mib,
-        loaded_through_ts,
-        elapsed,
-    )
-    return timeline
+                    cik=int(timeline.identity_cik[identity_idx]),
+                    composite_score=composite_score,
+                    sector=_shared_text(timeline, timeline.sector_code[absolute_idx]),
+                    industry=_shared_text(timeline, timeline.industry_code[absolute_idx]),
+                    composite_score_abs=composite_score_abs,
+                    valuation_label=valuation_label,
+                    mispricing_score=_shared_float_or_none(timeline.mispricing_score, absolute_idx),
+                    negative_earnings_flag=negative_earnings_flag,
+                    high_leverage_flag=high_leverage_flag,
+                    market_cap_m=market_cap_m,
+                    long_eligible=bool(flags & 4),
+                    short_eligible=bool(flags & 8),
+                    relative_absolute_divergence=_shared_text(
+                        timeline,
+                        timeline.relative_absolute_divergence_code[absolute_idx],
+                    ),
+                    long_block_reason=_shared_text(timeline, timeline.long_block_reason_code[absolute_idx]),
+                    short_block_reason=_shared_text(timeline, timeline.short_block_reason_code[absolute_idx]),
+                ))
+                break
+            row_idx -= 1
+    return candidates
 
 
 def _get_candidates_from_timeline(
@@ -799,35 +1106,21 @@ def _get_candidates_from_timeline(
         )
         return None
 
-    candidates: list[FundamentalRow] = []
-    score_val = params["score_val"]
-    label_blocklist = long_label_blocklist if direction == "LONG" else short_label_blocklist
-    for identity, rows in timeline.rows_by_identity.items():
-        available_epochs = timeline.available_by_identity[identity]
-        row_idx = bisect_right(available_epochs, as_of_epoch_us) - 1
-        while row_idx >= 0:
-            row = rows[row_idx]
-            if row.source_epoch_us <= as_of_epoch_us:
-                if _candidate_row_passes_filters(
-                    row,
-                    direction,
-                    score_val,
-                    params["min_market_cap_m"],
-                    params.get("required_currency"),
-                    filter_high_leverage,
-                    filter_negative_earnings,
-                    label_blocklist,
-                    fundamental_score_mode,
-                    fundamental_peer_weight,
-                    fundamental_abs_weight,
-                    long_min_absolute_score,
-                    short_max_absolute_score,
-                ):
-                    candidates.append(row.to_fundamental_row())
-                break
-            row_idx -= 1
-    candidates.sort(key=lambda r: (r.symbol, r.exchange, r.cik))
-    return candidates
+    return _get_candidates_from_shared_timeline(
+        timeline,
+        direction,
+        as_of_epoch_us,
+        params,
+        long_label_blocklist,
+        short_label_blocklist,
+        filter_high_leverage,
+        filter_negative_earnings,
+        fundamental_score_mode,
+        fundamental_peer_weight,
+        fundamental_abs_weight,
+        long_min_absolute_score,
+        short_max_absolute_score,
+    )
 
 
 def get_candidates(
@@ -1190,13 +1483,13 @@ def preload_candidate_timelines(
     fundamental_abs_weight: float = 0.0,
     long_min_absolute_score: Optional[float] = None,
     short_max_absolute_score: Optional[float] = None,
-) -> None:
+) -> tuple[int, int, int, float]:
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not directions:
-        return
+        return _candidate_timeline_cache_counts()
 
     resolved_as_of_ts = _candidate_as_of_ts(as_of_date, as_of_ts)
     if resolved_as_of_ts is None:
-        return
+        return _candidate_timeline_cache_counts()
 
     started = _time.perf_counter()
     log.info(
@@ -1252,6 +1545,7 @@ def preload_candidate_timelines(
         timeline_mib,
         _time.perf_counter() - started,
     )
+    return timeline_sets, timeline_rows, timeline_identities, timeline_mib
 
 # ── Trading day calendar ──────────────────────────────────────────────────────
 
@@ -2076,30 +2370,63 @@ def get_bars_range_through(
     return [(bars[i].ts, bars[i].open, bars[i].high, bars[i].low, bars[i].close) for i in range(start_idx, end_idx)]
 
 
-def get_next_bar_open(
+def load_next_bar_opens(
     conn: psycopg2.extensions.connection,
-    identity: InstrumentKey,
-    after_ts: datetime,
-) -> Optional[tuple[datetime, float]]:
-    """Return the next available 1h bar open after a completed signal bar."""
-    identity = instrument_key(*identity)
-    after_ts = _ensure_utc_ts(after_ts)
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT ts, open "
-                "FROM {} "
-                "WHERE symbol = %s AND exchange = %s AND cik = %s "
-                "  AND ts > %s "
-                "ORDER BY ts "
-                "LIMIT 1"
-            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
-            (identity[0], identity[1], identity[2], after_ts),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    return _ensure_utc_ts(row[0]), float(row[1])
+    requests: list[tuple[InstrumentKey, datetime]],
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+) -> dict[tuple[InstrumentKey, datetime], tuple[datetime, float]]:
+    """Return next available 1h bar opens for many identity/after_ts pairs."""
+    if not requests:
+        return {}
+
+    unique_requests = sorted({
+        (instrument_key(*identity), _ensure_utc_ts(after_ts))
+        for identity, after_ts in requests
+    })
+    results: dict[tuple[InstrumentKey, datetime], tuple[datetime, float]] = {}
+
+    for batch in _chunked_next_bar_requests(unique_requests, batch_size):
+        symbols = [identity[0] for identity, _ in batch]
+        exchanges = [identity[1] for identity, _ in batch]
+        ciks = [identity[2] for identity, _ in batch]
+        after_timestamps = [after_ts for _, after_ts in batch]
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "WITH requested AS ("
+                    "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[], %s::timestamptz[]) "
+                    "    AS u(symbol, exchange, cik, after_ts)"
+                    ") "
+                    "SELECT r.symbol, r.exchange, r.cik, r.after_ts, b.ts, b.open "
+                    "FROM requested r "
+                    "LEFT JOIN LATERAL ("
+                    "  SELECT b.ts, b.open "
+                    "  FROM {} b "
+                    "  WHERE b.symbol = r.symbol "
+                    "    AND b.exchange = r.exchange "
+                    "    AND b.cik = r.cik "
+                    "    AND b.ts > r.after_ts "
+                    "  ORDER BY b.ts "
+                    "  LIMIT 1"
+                    ") b ON TRUE"
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
+                (symbols, exchanges, ciks, after_timestamps),
+            )
+            for symbol, exchange, cik, after_ts, next_ts, open_ in cur.fetchall():
+                if next_ts is None:
+                    continue
+                key = (instrument_key(symbol, exchange, cik), _ensure_utc_ts(after_ts))
+                results[key] = (_ensure_utc_ts(next_ts), float(open_))
+
+    return results
+
+
+def _chunked_next_bar_requests(
+    values: list[tuple[InstrumentKey, datetime]],
+    size: int,
+) -> list[list[tuple[InstrumentKey, datetime]]]:
+    return [values[idx:idx + size] for idx in range(0, len(values), size)]
 
 
 def log_cache_stats(context: str = "current") -> None:

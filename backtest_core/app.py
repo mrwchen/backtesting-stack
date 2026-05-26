@@ -10,9 +10,9 @@ from .config import *
 from .db import connect_with_retry, validate_result_schema, validate_source_schema
 from .grid_search import _print_grid_summary, run_grid_search
 from .logging_utils import set_log_process_name
-from .market_data import clear_market_data_caches
+from .market_data import clear_market_data_caches, preload_candidate_timelines
 from .model_loader import _validate_model_filename, load_model_config_env, load_model_module
-from .policy import COMMON_POLICY
+from .policy import COMMON_POLICY, candidate_policy_kwargs
 from .simulation import run_backtest
 
 log = logging.getLogger(__name__)
@@ -38,6 +38,50 @@ def _reserved_run_id_from_env() -> int | None:
     if run_id <= 0:
         raise ValueError(f"BACKTEST_RUN_ID must be a positive integer, got {raw!r}")
     return run_id
+
+
+def run_shared_candidate_timeline_prebuilder() -> None:
+    set_log_process_name(f"bt-timeline-{ACCOUNT_PROFILE}")
+    conn = connect_with_retry()
+    try:
+        log.info(
+            "Shared candidate timeline prebuild starting account profile %s application name %s",
+            ACCOUNT_PROFILE,
+            DB["application_name"],
+        )
+        validate_source_schema(conn)
+        timeline_sets, timeline_rows, timeline_identities, timeline_mib = preload_candidate_timelines(
+            conn,
+            ("LONG", "SHORT"),
+            **candidate_policy_kwargs(),
+            source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
+            as_of_date=START_DATE,
+            as_of_ts=None,
+            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+            filter_negative_earnings_by_direction={"LONG": False, "SHORT": False},
+            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            fundamental_score_mode="peer",
+            fundamental_peer_weight=1.0,
+            fundamental_abs_weight=0.0,
+            long_min_absolute_score=None,
+            short_max_absolute_score=None,
+        )
+        if CANDIDATE_TIMELINE_CACHE_ENABLED and timeline_sets <= 0:
+            raise RuntimeError(
+                "Shared candidate timeline prebuild produced no cache sets; refusing slow per-worker fallback."
+            )
+        log.info(
+            "Shared candidate timeline prebuild complete account profile %s cache sets %d rows %d identities %d estimated %.0f MiB",
+            ACCOUNT_PROFILE,
+            timeline_sets,
+            timeline_rows,
+            timeline_identities,
+            timeline_mib,
+        )
+    finally:
+        conn.close()
 
 
 def log_backtest_context(model_files: list[str]) -> None:
