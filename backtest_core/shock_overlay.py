@@ -28,11 +28,11 @@ from .config import (
     SHOCK_OVERLAY_POLICY_FILE,
     SHOCK_OVERLAY_SECTOR_BIAS_SHEET,
     SHOCK_OVERLAY_SPECIAL_RULES_SHEET,
-    SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_ENABLED,
-    SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS,
-    SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS,
-    SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE,
-    SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER,
+    SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED,
+    SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS,
+    SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS,
+    SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE,
+    SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER,
 )
 
 log = logging.getLogger(__name__)
@@ -355,23 +355,22 @@ def apply_shock_overlay(plan: TradePlan, fundamental: FundamentalRow, regime: Wo
             )
 
 
-def should_evaluate_disabled_direction(regime_bucket: str, direction: str) -> bool:
+def should_evaluate_disabled_direction(regime_label: str, direction: str) -> bool:
     return (
         SHOCK_OVERLAY_MODE == "full"
-        and SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_ENABLED
-        and regime_bucket == "strong_risk_off"
+        and SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED
+        and regime_label == "RISK-OFF"
         and direction == "LONG"
-        and SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS > 0
-        and SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER > 0.0
+        and SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS > 0
+        and SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER > 0.0
     )
 
 
-def strong_risk_off_long_sleeve_risk(plan: TradePlan, regime_bucket: str) -> float | None:
-    if not should_evaluate_disabled_direction(regime_bucket, plan.direction):
+def risk_off_long_sleeve_risk(plan: TradePlan, regime_label: str) -> float | None:
+    if not should_evaluate_disabled_direction(regime_label, plan.direction):
         return None
-    if plan.shock_sector_bias < SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS:
+    if plan.shock_sector_bias < SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS:
         return None
-    if plan.intent_score < SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE:
+    if plan.intent_score < SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE:
         return None
-    return SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER * plan.shock_risk_multiplier
-
+    return SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER * plan.shock_risk_multiplier

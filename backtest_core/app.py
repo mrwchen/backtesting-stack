@@ -186,24 +186,14 @@ def log_backtest_context(model_files: list[str]) -> None:
         ",".join(COMMON_POLICY.short_label_blocklist) or "-",
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
-    log.info(
-        "Regime exposure bucket thresholds strong risk-on below %.2f strong risk-off from %.2f",
-        COMMON_POLICY.regime_strong_risk_on_max_score,
-        COMMON_POLICY.regime_strong_risk_off_min_score,
-    )
-    log.info(
-        "Regime direction thresholds long below %.2f short from %.2f",
-        COMMON_POLICY.regime_long_max_score,
-        COMMON_POLICY.regime_short_min_score,
-    )
-    for bucket_name, bucket in REGIME_EXPOSURE_BUCKETS.items():
+    for regime_label, exposure in REGIME_EXPOSURE_BY_LABEL.items():
         log.info(
-            "Regime exposure bucket %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",
-            bucket_name,
-            bucket["long_risk_multiplier"],
-            bucket["short_risk_multiplier"],
-            bucket["max_long_positions"],
-            bucket["max_short_positions"],
+            "Regime exposure label %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",
+            regime_label,
+            exposure["long_risk_multiplier"],
+            exposure["short_risk_multiplier"],
+            exposure["max_long_positions"],
+            exposure["max_short_positions"],
         )
     log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(

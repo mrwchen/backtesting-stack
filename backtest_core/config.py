@@ -30,23 +30,6 @@ def _default_position_cap(ratio: float) -> int:
     return max(0, min(MAX_OPEN_POSITIONS, int(round(MAX_OPEN_POSITIONS * ratio))))
 
 
-REGIME_STRONG_RISK_ON_MAX_SCORE = env_float("REGIME_STRONG_RISK_ON_MAX_SCORE", 45.0)
-REGIME_LONG_MAX_SCORE = env_float("REGIME_LONG_MAX_SCORE", 55.0)
-REGIME_SHORT_MIN_SCORE = env_float("REGIME_SHORT_MIN_SCORE", 60.0)
-REGIME_STRONG_RISK_OFF_MIN_SCORE = env_float("REGIME_STRONG_RISK_OFF_MIN_SCORE", 70.0)
-if not (
-    REGIME_STRONG_RISK_ON_MAX_SCORE
-    <= REGIME_LONG_MAX_SCORE
-    <= REGIME_SHORT_MIN_SCORE
-    <= REGIME_STRONG_RISK_OFF_MIN_SCORE
-):
-    raise ValueError(
-        "Regime policy thresholds must satisfy "
-        "REGIME_STRONG_RISK_ON_MAX_SCORE <= REGIME_LONG_MAX_SCORE "
-        "<= REGIME_SHORT_MIN_SCORE <= REGIME_STRONG_RISK_OFF_MIN_SCORE"
-    )
-
-
 def _regime_risk_multiplier(env_key: str, default: float) -> float:
     value = env_float(env_key, default)
     if value < 0.0:
@@ -61,36 +44,36 @@ def _regime_position_cap(env_key: str, default: int) -> int:
     return value
 
 
-REGIME_EXPOSURE_BUCKETS = {
-    "strong_risk_on": {
-        "long_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_ON_LONG_RISK_MULTIPLIER", 1.0),
-        "short_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_ON_SHORT_RISK_MULTIPLIER", 0.0),
-        "max_long_positions": _regime_position_cap("REGIME_STRONG_RISK_ON_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS),
-        "max_short_positions": _regime_position_cap("REGIME_STRONG_RISK_ON_MAX_SHORT_POSITIONS", 0),
+REGIME_EXPOSURE_BY_LABEL = {
+    "RISK-ON": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_LONG_RISK_MULTIPLIER", 1.0),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_SHORT_RISK_MULTIPLIER", 0.0),
+        "max_long_positions": _regime_position_cap("REGIME_RISK_ON_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS),
+        "max_short_positions": _regime_position_cap("REGIME_RISK_ON_MAX_SHORT_POSITIONS", 0),
     },
-    "risk_on": {
-        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_LONG_RISK_MULTIPLIER", 0.75),
-        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_ON_SHORT_RISK_MULTIPLIER", 0.25),
-        "max_long_positions": _regime_position_cap("REGIME_RISK_ON_MAX_LONG_POSITIONS", _default_position_cap(0.8)),
-        "max_short_positions": _regime_position_cap("REGIME_RISK_ON_MAX_SHORT_POSITIONS", MAX_OPEN_POSITIONS - _default_position_cap(0.8)),
+    "CONSTRUCTIVE": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER", 1.0),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER", 0.0),
+        "max_long_positions": _regime_position_cap("REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS),
+        "max_short_positions": _regime_position_cap("REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS", 0),
     },
-    "neutral": {
-        "long_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_LONG_RISK_MULTIPLIER", 0.35),
-        "short_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER", 0.35),
+    "NEUTRAL": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_LONG_RISK_MULTIPLIER", 0.40),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER", 0.60),
         "max_long_positions": _regime_position_cap("REGIME_NEUTRAL_MAX_LONG_POSITIONS", _default_position_cap(0.3)),
         "max_short_positions": _regime_position_cap("REGIME_NEUTRAL_MAX_SHORT_POSITIONS", _default_position_cap(0.3)),
     },
-    "risk_off": {
-        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_LONG_RISK_MULTIPLIER", 0.25),
-        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER", 0.75),
-        "max_long_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS - _default_position_cap(0.8)),
-        "max_short_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_SHORT_POSITIONS", _default_position_cap(0.8)),
+    "DEFENSIVE": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER", 0.25),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_DEFENSIVE_SHORT_RISK_MULTIPLIER", 0.75),
+        "max_long_positions": _regime_position_cap("REGIME_DEFENSIVE_MAX_LONG_POSITIONS", MAX_OPEN_POSITIONS - _default_position_cap(0.8)),
+        "max_short_positions": _regime_position_cap("REGIME_DEFENSIVE_MAX_SHORT_POSITIONS", _default_position_cap(0.8)),
     },
-    "strong_risk_off": {
-        "long_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_OFF_LONG_RISK_MULTIPLIER", 0.0),
-        "short_risk_multiplier": _regime_risk_multiplier("REGIME_STRONG_RISK_OFF_SHORT_RISK_MULTIPLIER", 1.0),
-        "max_long_positions": _regime_position_cap("REGIME_STRONG_RISK_OFF_MAX_LONG_POSITIONS", 0),
-        "max_short_positions": _regime_position_cap("REGIME_STRONG_RISK_OFF_MAX_SHORT_POSITIONS", MAX_OPEN_POSITIONS),
+    "RISK-OFF": {
+        "long_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_LONG_RISK_MULTIPLIER", 0.0),
+        "short_risk_multiplier": _regime_risk_multiplier("REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER", 1.0),
+        "max_long_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_LONG_POSITIONS", 0),
+        "max_short_positions": _regime_position_cap("REGIME_RISK_OFF_MAX_SHORT_POSITIONS", MAX_OPEN_POSITIONS),
     },
 }
 
@@ -296,24 +279,24 @@ SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_NEGATIVE_EARNINGS = env_bool(
     "SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_NEGATIVE_EARNINGS",
     True,
 )
-SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_ENABLED = env_bool(
-    "SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_ENABLED",
+SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED = env_bool(
+    "SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED",
     False,
 )
-SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS = env_int(
-    "SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS",
+SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS = env_int(
+    "SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS",
     1,
 )
-SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS = env_float(
-    "SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS",
+SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS = env_float(
+    "SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS",
     0.60,
 )
-SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE = env_float(
-    "SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE",
+SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE = env_float(
+    "SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE",
     8.0,
 )
-SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER = env_float(
-    "SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER",
+SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER = env_float(
+    "SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER",
     0.15,
 )
 if not (0.0 <= SHOCK_OVERLAY_MIN_SHOCK_SCORE <= 100.0):
@@ -328,14 +311,14 @@ if SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT < 0.0:
     raise ValueError("SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT must be >= 0")
 if SHOCK_OVERLAY_MAX_RISK_CUT_PCT < 0.0:
     raise ValueError("SHOCK_OVERLAY_MAX_RISK_CUT_PCT must be >= 0")
-if SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS < 0:
-    raise ValueError("SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS must be >= 0")
-if not (-1.0 <= SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS <= 1.0):
-    raise ValueError("SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_BIAS must be between -1 and 1")
-if SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE < 0.0:
-    raise ValueError("SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE must be >= 0")
-if SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER < 0.0:
-    raise ValueError("SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER must be >= 0")
+if SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS < 0:
+    raise ValueError("SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS must be >= 0")
+if not (-1.0 <= SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS <= 1.0):
+    raise ValueError("SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS must be between -1 and 1")
+if SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE < 0.0:
+    raise ValueError("SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE must be >= 0")
+if SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER < 0.0:
+    raise ValueError("SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER must be >= 0")
 
 TAKE_PROFIT_MODE = os.getenv("TAKE_PROFIT_MODE", "fixed").strip().lower()
 EXECUTION_LONG_TAKE_PROFIT_PCT = env_float("EXECUTION_LONG_TAKE_PROFIT_PCT", 0.055)

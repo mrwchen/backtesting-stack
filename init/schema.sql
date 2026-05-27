@@ -63,8 +63,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     entry_window_end     TEXT,
 
     -- Common policy snapshot
-    long_max_score       NUMERIC(5,2)  NOT NULL,
-    short_min_score      NUMERIC(5,2)  NOT NULL,
     long_min_fundamental NUMERIC(5,2)  NOT NULL,
     short_max_fundamental NUMERIC(5,2) NOT NULL,
     min_market_cap_m     NUMERIC(10,2),
@@ -104,8 +102,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     shock_overlay_max_intent_score_delta NUMERIC(8,4),
     shock_overlay_max_risk_uplift_pct NUMERIC(6,2),
     shock_overlay_max_risk_cut_pct NUMERIC(6,2),
-    shock_overlay_strong_risk_off_long_sleeve_enabled BOOLEAN,
-    shock_overlay_strong_risk_off_long_sleeve_max_positions INTEGER,
+    shock_overlay_risk_off_long_sleeve_enabled BOOLEAN,
+    shock_overlay_risk_off_long_sleeve_max_positions INTEGER,
 
     -- Results summary (filled after run completes)
     run_duration_seconds NUMERIC(12,3),

@@ -49,7 +49,7 @@ from .policy import (
     direction_filter_negative_earnings,
     direction_max_positions,
     direction_risk_multiplier,
-    regime_exposure_for_score,
+    regime_exposure_for_label,
 )
 from .persistence import (
     create_run,
@@ -62,7 +62,7 @@ from .persistence import (
 from .shock_overlay import (
     apply_shock_overlay,
     should_evaluate_disabled_direction,
-    strong_risk_off_long_sleeve_risk,
+    risk_off_long_sleeve_risk,
 )
 from .trade_levels import (
     build_trade_plan,
@@ -692,7 +692,7 @@ def run_backtest(
         day: date,
         as_of_ts: datetime,
         regime: Any,
-        regime_bucket: str,
+        regime_label: str,
         regime_exposure: dict,
         model: Any,
         active_positions: list[OpenPosition],
@@ -716,7 +716,7 @@ def run_backtest(
             if (
                 direction_risk <= 0.0
                 and direction_cap <= 0
-                and not should_evaluate_disabled_direction(regime_bucket, direction)
+                and not should_evaluate_disabled_direction(regime_label, direction)
             ):
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
@@ -729,7 +729,7 @@ def run_backtest(
                     decision_stage="regime_filter",
                     decision="skipped_direction",
                     reason_code="regime_direction_disabled",
-                    reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max {direction.lower()} positions.",
+                    reason_text=f"Regime label {regime_label} assigned zero risk and zero max {direction.lower()} positions.",
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(active_positions),
@@ -740,12 +740,12 @@ def run_backtest(
 
             if log_progress_today:
                 log.info(
-                    "Candidate query starting context %s day %s model %s direction %s bucket %s cutoff %s",
+                    "Candidate query starting context %s day %s model %s direction %s regime label %s cutoff %s",
                     context_label,
                     day,
                     runtime.CURRENT_MODEL_FILE,
                     direction,
-                    regime_bucket,
+                    regime_label,
                     as_of_ts,
                 )
             candidate_started = _time.perf_counter()
@@ -768,12 +768,12 @@ def run_backtest(
             total_candidates += len(candidates)
             if log_progress_today or candidate_elapsed >= 5.0:
                 log.info(
-                    "Candidate query complete context %s day %s model %s direction %s bucket %s found %d candidates in %.1f s",
+                    "Candidate query complete context %s day %s model %s direction %s regime label %s found %d candidates in %.1f s",
                     context_label,
                     day,
                     runtime.CURRENT_MODEL_FILE,
                     direction,
-                    regime_bucket,
+                    regime_label,
                     len(candidates),
                     candidate_elapsed,
                 )
@@ -1062,7 +1062,7 @@ def run_backtest(
         day: date,
         as_of_ts: datetime,
         regime: Any,
-        regime_bucket: str,
+        regime_label: str,
         regime_exposure: dict,
         plans_by_direction: dict[str, list[TradePlan]],
         plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent],
@@ -1121,10 +1121,10 @@ def run_backtest(
             excess_liquidity = account_equity_current - maintenance_margin
             direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
             direction_cap = direction_max_positions(regime_exposure, plan.direction)
-            sleeve_risk = strong_risk_off_long_sleeve_risk(plan, regime_bucket)
+            sleeve_risk = risk_off_long_sleeve_risk(plan, regime_label)
             if sleeve_risk is not None and direction_risk <= 0.0:
                 direction_risk = sleeve_risk
-                direction_cap = max(direction_cap, SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
+                direction_cap = max(direction_cap, SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
             else:
                 direction_risk *= plan.shock_risk_multiplier
             if event:
@@ -1141,7 +1141,7 @@ def run_backtest(
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
                     event.reason_code = "regime_direction_risk_zero"
-                    event.reason_text = f"Regime bucket {regime_bucket} assigned zero {plan.direction.lower()} risk."
+                    event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                 continue
             if _direction_open_count(active_positions, plan.direction) >= direction_cap:
                 if event:
@@ -1149,7 +1149,7 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "max_direction_positions_reached"
                     event.reason_text = (
-                        f"Regime bucket {regime_bucket} allows {direction_cap} open "
+                        f"Regime label {regime_label} allows {direction_cap} open "
                         f"{plan.direction.lower()} positions; this limit was already reached."
                     )
                 continue
@@ -1394,15 +1394,15 @@ def run_backtest(
                 )
             continue
 
-        regime_bucket, regime_exposure = regime_exposure_for_score(regime.score)
+        regime_label, regime_exposure = regime_exposure_for_label(regime.label)
         if log_progress_today:
             log.info(
-                "Regime exposure day %d/%d %s model %s bucket %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
+                "Regime exposure day %d/%d %s model %s label %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
-                regime_bucket,
+                regime_label,
                 regime.score,
                 direction_risk_multiplier(regime_exposure, "LONG"),
                 direction_risk_multiplier(regime_exposure, "SHORT"),
@@ -1413,7 +1413,7 @@ def run_backtest(
         if all(
             direction_risk_multiplier(regime_exposure, direction) <= 0.0
             and direction_max_positions(regime_exposure, direction) <= 0
-            and not should_evaluate_disabled_direction(regime_bucket, direction)
+            and not should_evaluate_disabled_direction(regime_label, direction)
             for direction in DIRECTIONS
         ):
             days_no_active_budget += 1
@@ -1428,7 +1428,7 @@ def run_backtest(
                 decision_stage="regime_filter",
                 decision="skipped_day",
                 reason_code="no_regime_exposure_budget",
-                reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max positions to both directions.",
+                reason_text=f"Regime label {regime_label} assigned zero risk and zero max positions to both directions.",
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
                 open_positions=len(open_positions),
@@ -1444,8 +1444,8 @@ def run_backtest(
             record_account_curve(day_close_ts, open_positions)
             if log_progress_today:
                 log.info(
-                    "Progress %d/%d %s model %s regime bucket %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
-                    day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, regime_bucket, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
+                    "Progress %d/%d %s model %s regime label %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
+                    day_idx, len(trading_days), day, runtime.CURRENT_MODEL_FILE, regime_label, day_pnl, equity, len(open_positions), closed_today, len(closed_trades),
                 )
             continue
 
@@ -1461,7 +1461,7 @@ def run_backtest(
                 day,
                 refill_ts,
                 regime,
-                regime_bucket,
+                regime_label,
                 regime_exposure,
                 model,
                 active_positions,
@@ -1472,7 +1472,7 @@ def run_backtest(
                 day,
                 refill_ts,
                 regime,
-                regime_bucket,
+                regime_label,
                 regime_exposure,
                 refill_plans_by_direction,
                 refill_plan_events,
@@ -1511,7 +1511,7 @@ def run_backtest(
             if (
                 direction_risk <= 0.0
                 and direction_cap <= 0
-                and not should_evaluate_disabled_direction(regime_bucket, direction)
+                and not should_evaluate_disabled_direction(regime_label, direction)
             ):
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
@@ -1524,7 +1524,7 @@ def run_backtest(
                     decision_stage="regime_filter",
                     decision="skipped_direction",
                     reason_code="regime_direction_disabled",
-                    reason_text=f"Regime bucket {regime_bucket} assigned zero risk and zero max {direction.lower()} positions.",
+                    reason_text=f"Regime label {regime_label} assigned zero risk and zero max {direction.lower()} positions.",
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(open_positions),
@@ -1535,13 +1535,13 @@ def run_backtest(
 
             if log_progress_today:
                 log.info(
-                    "Candidate query starting day %d/%d %s model %s direction %s bucket %s cutoff %s",
+                    "Candidate query starting day %d/%d %s model %s direction %s regime label %s cutoff %s",
                     day_idx,
                     len(trading_days),
                     day,
                     runtime.CURRENT_MODEL_FILE,
                     direction,
-                    regime_bucket,
+                    regime_label,
                     day_end_ts,
                 )
             candidate_started = _time.perf_counter()
@@ -1564,13 +1564,13 @@ def run_backtest(
             total_candidates += len(candidates)
             if log_progress_today or candidate_elapsed >= 5.0:
                 log.info(
-                    "Candidate query complete day %d/%d %s model %s direction %s bucket %s found %d candidates in %.1f s",
+                    "Candidate query complete day %d/%d %s model %s direction %s regime label %s found %d candidates in %.1f s",
                     day_idx,
                     len(trading_days),
                     day,
                     runtime.CURRENT_MODEL_FILE,
                     direction,
-                    regime_bucket,
+                    regime_label,
                     len(candidates),
                     candidate_elapsed,
                 )
@@ -1908,10 +1908,10 @@ def run_backtest(
             event = plan_events.get(_plan_event_key(plan))
             direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
             direction_cap = direction_max_positions(regime_exposure, plan.direction)
-            sleeve_risk = strong_risk_off_long_sleeve_risk(plan, regime_bucket)
+            sleeve_risk = risk_off_long_sleeve_risk(plan, regime_label)
             if sleeve_risk is not None and direction_risk <= 0.0:
                 direction_risk = sleeve_risk
-                direction_cap = max(direction_cap, SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
+                direction_cap = max(direction_cap, SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
             else:
                 direction_risk *= plan.shock_risk_multiplier
             available_funds = account_equity_today - initial_margin
@@ -1931,7 +1931,7 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "regime_direction_risk_zero"
                     event.reason_text = (
-                            f"Regime bucket {regime_bucket} assigned zero {plan.direction.lower()} risk."
+                            f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                         )
                 continue
             if direction_open_counts[plan.direction] >= direction_cap:
@@ -1940,7 +1940,7 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "max_direction_positions_reached"
                     event.reason_text = (
-                        f"Regime bucket {regime_bucket} allows {direction_cap} open "
+                        f"Regime label {regime_label} allows {direction_cap} open "
                         f"{plan.direction.lower()} positions; this limit was already reached."
                     )
                 continue
@@ -2105,12 +2105,12 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model %s bucket %s regime %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
+                "Progress %d/%d %s model %s regime label %s score %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
-                regime_bucket,
+                regime_label,
                 regime.score,
                 candidate_counts["LONG"],
                 candidate_counts["SHORT"],
