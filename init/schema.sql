@@ -425,6 +425,39 @@ BEGIN
                   AND cik IS NOT NULL
                   AND composite_score IS NOT NULL
         ';
+        EXECUTE '
+            CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_available_full_cover
+                ON public.stock_scorer_fundamental_scores (
+                    symbol,
+                    exchange,
+                    cik,
+                    (COALESCE(data_available_at, fundamental_data_available_at)) DESC NULLS LAST,
+                    "time" DESC
+                )
+                INCLUDE (
+                    composite_score,
+                    composite_score_abs,
+                    sector,
+                    industry,
+                    valuation_label,
+                    mispricing_score,
+                    negative_earnings_flag,
+                    high_leverage_flag,
+                    long_eligible,
+                    short_eligible,
+                    market_cap_m,
+                    relative_absolute_divergence,
+                    long_block_reason,
+                    short_block_reason,
+                    current_price_currency,
+                    market_cap_currency,
+                    currency,
+                    financial_currency
+                )
+                WHERE symbol IS NOT NULL
+                  AND exchange IS NOT NULL
+                  AND cik IS NOT NULL
+        ';
     END IF;
 END;
 $$;

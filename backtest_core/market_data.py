@@ -104,6 +104,25 @@ _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
 _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
 _SHARED_CANDIDATE_TIMELINE_VERSION = 1
+_TIMELINE_ROW_BUFFER_SPECS = {
+    "available_epoch_us": ("q", np.int64),
+    "source_epoch_us": ("q", np.int64),
+    "composite_score": ("d", np.float64),
+    "composite_score_abs": ("d", np.float64),
+    "mispricing_score": ("d", np.float64),
+    "market_cap_m": ("d", np.float64),
+    "flags": ("B", np.uint8),
+    "sector_code": ("i", np.int32),
+    "industry_code": ("i", np.int32),
+    "valuation_label_code": ("i", np.int32),
+    "relative_absolute_divergence_code": ("i", np.int32),
+    "long_block_reason_code": ("i", np.int32),
+    "short_block_reason_code": ("i", np.int32),
+    "current_price_currency_code": ("i", np.int32),
+    "market_cap_currency_code": ("i", np.int32),
+    "currency_code": ("i", np.int32),
+    "financial_currency_code": ("i", np.int32),
+}
 _SHARED_CANDIDATE_TIMELINE_ARRAYS = (
     "identity_start",
     "identity_end",
@@ -263,30 +282,17 @@ def _load_shared_candidate_timeline(timeline_key: tuple) -> Optional[_SharedCand
     return timeline
 
 
-def _open_timeline_row_memmaps(cache_dir: Path, rows: int) -> dict[str, np.ndarray]:
-    specs = {
-        "available_epoch_us": np.int64,
-        "source_epoch_us": np.int64,
-        "composite_score": np.float64,
-        "composite_score_abs": np.float64,
-        "mispricing_score": np.float64,
-        "market_cap_m": np.float64,
-        "flags": np.uint8,
-        "sector_code": np.int32,
-        "industry_code": np.int32,
-        "valuation_label_code": np.int32,
-        "relative_absolute_divergence_code": np.int32,
-        "long_block_reason_code": np.int32,
-        "short_block_reason_code": np.int32,
-        "current_price_currency_code": np.int32,
-        "market_cap_currency_code": np.int32,
-        "currency_code": np.int32,
-        "financial_currency_code": np.int32,
-    }
+def _open_timeline_row_buffers() -> dict[str, array]:
     return {
-        name: np.lib.format.open_memmap(cache_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=(rows,))
-        for name, dtype in specs.items()
+        name: array(typecode)
+        for name, (typecode, _dtype) in _TIMELINE_ROW_BUFFER_SPECS.items()
     }
+
+
+def _save_timeline_row_buffers(cache_dir: Path, row_buffers: dict[str, array]) -> None:
+    for name, values in row_buffers.items():
+        _typecode, dtype = _TIMELINE_ROW_BUFFER_SPECS[name]
+        np.save(cache_dir / f"{name}.npy", np.asarray(values, dtype=dtype))
 
 
 def _float_or_nan(value: object) -> float:
@@ -568,15 +574,25 @@ def _timeline_query(
 
     if account_profile == "ps_acc":
         return sql.SQL("""
+            WITH broker_symbols AS (
+                SELECT broker.symbol
+                FROM unnest(%(pepperstone_symbols)s::text[]) AS broker(symbol)
+                WHERE broker.symbol IS NOT NULL
+                GROUP BY broker.symbol
+                ORDER BY broker.symbol
+            )
             SELECT {}
-            FROM {} f
-            WHERE {}
-              AND f.symbol = ANY(%(pepperstone_symbols)s::text[])
-            ORDER BY
-                f.symbol,
-                f.exchange,
-                f.cik,
-                {}
+            FROM broker_symbols broker
+            CROSS JOIN LATERAL (
+                SELECT *
+                FROM {} f
+                WHERE {}
+                  AND f.symbol = broker.symbol
+                ORDER BY
+                    f.exchange,
+                    f.cik,
+                    {}
+            ) f
         """).format(
             timeline_select_columns,
             source_relation,
@@ -585,15 +601,25 @@ def _timeline_query(
         )
     if account_profile == "ibkr_acc":
         return sql.SQL("""
+            WITH broker_symbols AS (
+                SELECT broker.symbol
+                FROM unnest(%(ibkr_margin_symbols)s::text[]) AS broker(symbol)
+                WHERE broker.symbol IS NOT NULL
+                GROUP BY broker.symbol
+                ORDER BY broker.symbol
+            )
             SELECT {}
-            FROM {} f
-            WHERE {}
-              AND f.symbol = ANY(%(ibkr_margin_symbols)s::text[])
-            ORDER BY
-                f.symbol,
-                f.exchange,
-                f.cik,
-                {}
+            FROM broker_symbols broker
+            CROSS JOIN LATERAL (
+                SELECT *
+                FROM {} f
+                WHERE {}
+                  AND f.symbol = broker.symbol
+                ORDER BY
+                    f.exchange,
+                    f.cik,
+                    {}
+            ) f
         """).format(
             timeline_select_columns,
             source_relation,
@@ -617,53 +643,6 @@ def _timeline_query(
     )
 
 
-def _timeline_count_query(
-    account_profile: str,
-    source_relation: sql.Composed,
-    where_parts: list[sql.SQL],
-    pepperstone_table: str,
-    ibkr_margin_table: str,
-) -> sql.Composed:
-    timeline_where = list(where_parts)
-    timeline_where.append(sql.SQL("f.time <= %(timeline_end_ts)s"))
-    timeline_where.append(sql.SQL("COALESCE(f.data_available_at, f.fundamental_data_available_at) <= %(timeline_end_ts)s"))
-
-    if account_profile == "ps_acc":
-        return sql.SQL("""
-            SELECT
-                COUNT(*)::bigint AS rows,
-                COUNT(DISTINCT (f.symbol, f.exchange, f.cik))::bigint AS identities
-            FROM {} f
-            WHERE {}
-              AND f.symbol = ANY(%(pepperstone_symbols)s::text[])
-        """).format(
-            source_relation,
-            sql.SQL("\n              AND ").join(timeline_where),
-        )
-    if account_profile == "ibkr_acc":
-        return sql.SQL("""
-            SELECT
-                COUNT(*)::bigint AS rows,
-                COUNT(DISTINCT (f.symbol, f.exchange, f.cik))::bigint AS identities
-            FROM {} f
-            WHERE {}
-              AND f.symbol = ANY(%(ibkr_margin_symbols)s::text[])
-        """).format(
-            source_relation,
-            sql.SQL("\n              AND ").join(timeline_where),
-        )
-    return sql.SQL("""
-        SELECT
-            COUNT(*)::bigint AS rows,
-            COUNT(DISTINCT (f.symbol, f.exchange, f.cik))::bigint AS identities
-        FROM {} f
-        WHERE {}
-    """).format(
-        source_relation,
-        sql.SQL("\n          AND ").join(timeline_where),
-    )
-
-
 def _build_shared_candidate_timeline(
     conn: psycopg2.extensions.connection,
     timeline_key: tuple,
@@ -672,8 +651,6 @@ def _build_shared_candidate_timeline(
     query_params: dict,
     loaded_through_ts: datetime,
     loaded_through_epoch_us: int,
-    projected_rows: int,
-    projected_identities: int,
 ) -> Optional[_SharedCandidateTimeline]:
     cache_dir = _shared_candidate_timeline_cache_dir(timeline_key)
     loaded = _load_shared_candidate_timeline(timeline_key)
@@ -699,7 +676,7 @@ def _build_shared_candidate_timeline(
             string_codes[text] = code
         return code
 
-    row_arrays = _open_timeline_row_memmaps(tmp_dir, projected_rows)
+    row_buffers = _open_timeline_row_buffers()
     identity_start: list[int] = []
     identity_end: list[int] = []
     identity_symbol_code: list[int] = []
@@ -708,13 +685,25 @@ def _build_shared_candidate_timeline(
     rows_loaded = 0
     current_identity: Optional[InstrumentKey] = None
     current_rows: list[tuple] = []
+    flushed_identities: set[InstrumentKey] = set()
+    last_flushed_identity: Optional[InstrumentKey] = None
     previous_autocommit = conn.autocommit
     transaction_started = False
     cursor_name = f"shared_candidate_timeline_{abs(hash(timeline_key)) % 10_000_000_000}"
     started = _time.perf_counter()
+    existing_timeline_mib = _candidate_timeline_cache_counts()[3]
+
+    def assert_cache_budget() -> None:
+        estimated_mib = rows_loaded * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
+        estimated_total_mib = existing_timeline_mib + estimated_mib
+        if estimated_total_mib > CANDIDATE_TIMELINE_CACHE_MAX_MIB:
+            raise RuntimeError(
+                "streamed estimated %.0f MiB total %.0f MiB exceeds max %.0f MiB"
+                % (estimated_mib, estimated_total_mib, CANDIDATE_TIMELINE_CACHE_MAX_MIB)
+            )
 
     def flush_identity() -> None:
-        nonlocal rows_loaded, current_identity, current_rows
+        nonlocal rows_loaded, current_identity, current_rows, last_flushed_identity
         if current_identity is None:
             return
         start_idx = rows_loaded
@@ -742,35 +731,40 @@ def _build_shared_candidate_timeline(
                 currency_code,
                 financial_currency_code,
             ) = item
-            row_arrays["available_epoch_us"][rows_loaded] = available_epoch_us
-            row_arrays["source_epoch_us"][rows_loaded] = source_epoch_us
-            row_arrays["composite_score"][rows_loaded] = composite_score
-            row_arrays["composite_score_abs"][rows_loaded] = composite_score_abs
-            row_arrays["mispricing_score"][rows_loaded] = mispricing_score
-            row_arrays["market_cap_m"][rows_loaded] = market_cap_m
-            row_arrays["flags"][rows_loaded] = flags
-            row_arrays["sector_code"][rows_loaded] = sector_code
-            row_arrays["industry_code"][rows_loaded] = industry_code
-            row_arrays["valuation_label_code"][rows_loaded] = valuation_label_code
-            row_arrays["relative_absolute_divergence_code"][rows_loaded] = relative_absolute_divergence_code
-            row_arrays["long_block_reason_code"][rows_loaded] = long_block_reason_code
-            row_arrays["short_block_reason_code"][rows_loaded] = short_block_reason_code
-            row_arrays["current_price_currency_code"][rows_loaded] = current_price_currency_code
-            row_arrays["market_cap_currency_code"][rows_loaded] = market_cap_currency_code
-            row_arrays["currency_code"][rows_loaded] = currency_code
-            row_arrays["financial_currency_code"][rows_loaded] = financial_currency_code
+            row_buffers["available_epoch_us"].append(available_epoch_us)
+            row_buffers["source_epoch_us"].append(source_epoch_us)
+            row_buffers["composite_score"].append(composite_score)
+            row_buffers["composite_score_abs"].append(composite_score_abs)
+            row_buffers["mispricing_score"].append(mispricing_score)
+            row_buffers["market_cap_m"].append(market_cap_m)
+            row_buffers["flags"].append(flags)
+            row_buffers["sector_code"].append(sector_code)
+            row_buffers["industry_code"].append(industry_code)
+            row_buffers["valuation_label_code"].append(valuation_label_code)
+            row_buffers["relative_absolute_divergence_code"].append(relative_absolute_divergence_code)
+            row_buffers["long_block_reason_code"].append(long_block_reason_code)
+            row_buffers["short_block_reason_code"].append(short_block_reason_code)
+            row_buffers["current_price_currency_code"].append(current_price_currency_code)
+            row_buffers["market_cap_currency_code"].append(market_cap_currency_code)
+            row_buffers["currency_code"].append(currency_code)
+            row_buffers["financial_currency_code"].append(financial_currency_code)
             rows_loaded += 1
+            if rows_loaded % CANDIDATE_TIMELINE_CURSOR_ITERSIZE == 0:
+                assert_cache_budget()
         identity_end.append(rows_loaded)
+        flushed_identities.add(current_identity)
+        last_flushed_identity = current_identity
         current_rows = []
+        assert_cache_budget()
 
     try:
         log.info(
-            "Shared candidate timeline cache build starting direction %s path %s rows %d identities %d through %s",
+            "Shared candidate timeline cache build starting direction %s path %s through %s existing %.0f MiB max %.0f MiB",
             direction,
             cache_dir,
-            projected_rows,
-            projected_identities,
             loaded_through_ts,
+            existing_timeline_mib,
+            CANDIDATE_TIMELINE_CACHE_MAX_MIB,
         )
         if previous_autocommit:
             conn.autocommit = False
@@ -788,6 +782,13 @@ def _build_shared_candidate_timeline(
                     current_identity = identity
                 elif identity != current_identity:
                     flush_identity()
+                    if identity in flushed_identities:
+                        raise RuntimeError(f"Timeline query returned non-contiguous rows for identity {identity!r}")
+                    if last_flushed_identity is not None and identity <= last_flushed_identity:
+                        raise RuntimeError(
+                            "Timeline query returned non-sorted identity %r after %r"
+                            % (identity, last_flushed_identity)
+                        )
                     current_identity = identity
 
                 flags = (
@@ -819,14 +820,8 @@ def _build_shared_candidate_timeline(
         if transaction_started:
             conn.commit()
 
-        if rows_loaded != projected_rows:
-            raise RuntimeError(f"Projected {projected_rows} rows but loaded {rows_loaded}")
-        if len(identity_start) != projected_identities:
-            raise RuntimeError(f"Projected {projected_identities} identities but loaded {len(identity_start)}")
-
-        for arr in row_arrays.values():
-            arr.flush()
-        del row_arrays
+        _save_timeline_row_buffers(tmp_dir, row_buffers)
+        del row_buffers
 
         np.save(tmp_dir / "identity_start.npy", np.asarray(identity_start, dtype=np.int64))
         np.save(tmp_dir / "identity_end.npy", np.asarray(identity_end, dtype=np.int64))
@@ -919,44 +914,6 @@ def _build_candidate_timeline(
             get_ibkr_margin_symbols(conn, query_params["ibkr_margin_action"], ibkr_margin_table)
         )
 
-    existing_timeline_mib = _candidate_timeline_cache_counts()[3]
-    count_started = _time.perf_counter()
-    count_query = _timeline_count_query(
-        ACCOUNT_PROFILE,
-        source_relation,
-        where_parts,
-        pepperstone_table,
-        ibkr_margin_table,
-    )
-    try:
-        with conn.cursor() as cur:
-            cur.execute(count_query, query_params)
-            projected_rows, projected_identities = cur.fetchone()
-    except Exception as exc:
-        _disable_candidate_timeline_cache(
-            "direction %s projection failed: %s"
-            % (direction, exc)
-        )
-        return None
-    projected_mib = int(projected_rows) * _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW / 1024 / 1024
-    projected_total_mib = existing_timeline_mib + projected_mib
-    log.info(
-        "Candidate timeline cache projection direction %s rows %d identities %d estimated %.0f MiB total %.0f MiB max %.0f MiB in %.1f s",
-        direction,
-        int(projected_rows),
-        int(projected_identities),
-        projected_mib,
-        projected_total_mib,
-        CANDIDATE_TIMELINE_CACHE_MAX_MIB,
-        _time.perf_counter() - count_started,
-    )
-    if projected_total_mib > CANDIDATE_TIMELINE_CACHE_MAX_MIB:
-        _disable_candidate_timeline_cache(
-            "direction %s projected %.0f MiB exceeds max %.0f MiB"
-            % (direction, projected_total_mib, CANDIDATE_TIMELINE_CACHE_MAX_MIB)
-        )
-        return None
-
     shared_timeline = _build_shared_candidate_timeline(
         conn,
         timeline_key,
@@ -965,8 +922,6 @@ def _build_candidate_timeline(
         query_params,
         loaded_through_ts,
         loaded_through_epoch_us,
-        int(projected_rows),
-        int(projected_identities),
     )
     if shared_timeline is None:
         _disable_candidate_timeline_cache("shared file cache build failed")
