@@ -118,7 +118,7 @@ services:
       # off = baseline behavior. Other modes: score_only, risk_only,
       # score_and_risk, full.
       # ---------------------------------------------------------------------
-      - SHOCK_OVERLAY_MODE=off
+      - SHOCK_OVERLAY_MODE=full
       - SHOCK_OVERLAY_POLICY_FILE=backtest_policy_configs/shock_overlay_policy.xlsx
       - SHOCK_OVERLAY_SECTOR_BIAS_SHEET=sector_bias
       - SHOCK_OVERLAY_SPECIAL_RULES_SHEET=special_rules
