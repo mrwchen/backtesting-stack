@@ -63,6 +63,10 @@ from .shock_overlay import (
     apply_shock_overlay,
     should_evaluate_disabled_direction,
     risk_off_long_sleeve_risk,
+    shock_stress_direction_cap,
+    shock_stress_plan_block_reason,
+    shock_stress_portfolio_block_reason,
+    shock_stress_sector_limit,
 )
 from .trade_levels import (
     build_trade_plan,
@@ -87,6 +91,18 @@ def _bar_lookback_limit(model: Any, cfg: Any) -> int:
 
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
     return sum(1 for pos in open_positions if pos.direction == direction)
+
+
+def _same_direction_sector_open_count(open_positions: list[OpenPosition], plan: TradePlan) -> int:
+    sector = str(plan.sector or "").strip().lower()
+    if not sector:
+        return 0
+    return sum(
+        1
+        for pos in open_positions
+        if pos.direction == plan.direction
+        and str(pos.plan.sector or "").strip().lower() == sector
+    )
 
 
 def _candidate_score_kwargs(cfg: Any) -> dict:
@@ -1071,6 +1087,7 @@ def run_backtest(
         *,
         require_entry_window: bool = False,
         entry_deadline_ts: Optional[datetime] = None,
+        day_start_equity: Optional[float] = None,
     ) -> int:
         if SECTOR_DIVERSIFICATION_ENABLED:
             open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
@@ -1115,6 +1132,7 @@ def run_backtest(
             plan_entry_ts = _ensure_utc_ts(plan.entry_ts or as_of_ts)
             snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
             account_equity_current = snapshot.equity_with_loan_value
+            guard_day_start_equity = day_start_equity if day_start_equity is not None else account_equity_current
             initial_margin = sum(_active_margin_used(p) for p in active_positions)
             maintenance_margin = sum(_active_maintenance_margin_used(p) for p in active_positions)
             available_funds = account_equity_current - initial_margin
@@ -1127,6 +1145,7 @@ def run_backtest(
                 direction_cap = max(direction_cap, SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
             else:
                 direction_risk *= plan.shock_risk_multiplier
+            direction_cap = shock_stress_direction_cap(regime, plan.direction, direction_cap)
             if event:
                 event.open_positions = len(active_positions)
                 event.max_open_positions = MAX_OPEN_POSITIONS
@@ -1142,6 +1161,29 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "regime_direction_risk_zero"
                     event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
+                continue
+            stress_plan_block = shock_stress_plan_block_reason(plan, regime)
+            if stress_plan_block is not None:
+                reason_code, reason_text = stress_plan_block
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = reason_code
+                    event.reason_text = reason_text
+                continue
+            stress_portfolio_block = shock_stress_portfolio_block_reason(
+                regime,
+                account_equity_current,
+                guard_day_start_equity,
+                snapshot.open_pnl,
+            )
+            if stress_portfolio_block is not None:
+                reason_code, reason_text = stress_portfolio_block
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = reason_code
+                    event.reason_text = reason_text
                 continue
             if _direction_open_count(active_positions, plan.direction) >= direction_cap:
                 if event:
@@ -1159,6 +1201,17 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "max_open_positions_reached"
                     event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
+                continue
+            sector_limit = shock_stress_sector_limit(regime)
+            if sector_limit is not None and _same_direction_sector_open_count(active_positions, plan) >= sector_limit:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "shock_stress_sector_cap_reached"
+                    event.reason_text = (
+                        f"max_shock_type_score stress guard allows {sector_limit} open "
+                        f"{plan.direction.lower()} positions in sector {plan.sector or '-'}."
+                    )
                 continue
             if plan.identity_key in open_identities:
                 if event:
@@ -1359,6 +1412,8 @@ def run_backtest(
         used_identities_today: set[InstrumentKey] = set()
         day_end_ts = _day_signal_cutoff_ts(day)
         day_close_ts = _day_close_ts(day)
+        day_start_ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
 
         # ── 2. Generate model intents and central execution plans ───────────
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=day)
@@ -1480,6 +1535,7 @@ def run_backtest(
                 blocked_identities,
                 require_entry_window=True,
                 entry_deadline_ts=entry_deadline_ts,
+                day_start_equity=day_start_equity,
             )
             buffer_decision_events(refill_events)
             return opened
@@ -1914,6 +1970,7 @@ def run_backtest(
                 direction_cap = max(direction_cap, SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
             else:
                 direction_risk *= plan.shock_risk_multiplier
+            direction_cap = shock_stress_direction_cap(regime, plan.direction, direction_cap)
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:
@@ -1934,6 +1991,29 @@ def run_backtest(
                             f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                         )
                 continue
+            stress_plan_block = shock_stress_plan_block_reason(plan, regime)
+            if stress_plan_block is not None:
+                reason_code, reason_text = stress_plan_block
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = reason_code
+                    event.reason_text = reason_text
+                continue
+            stress_portfolio_block = shock_stress_portfolio_block_reason(
+                regime,
+                account_equity_today,
+                day_start_equity,
+                account_snapshot_today.open_pnl,
+            )
+            if stress_portfolio_block is not None:
+                reason_code, reason_text = stress_portfolio_block
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = reason_code
+                    event.reason_text = reason_text
+                continue
             if direction_open_counts[plan.direction] >= direction_cap:
                 if event:
                     event.decision_stage = "portfolio_filter"
@@ -1950,6 +2030,17 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "max_open_positions_reached"
                     event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
+                continue
+            sector_limit = shock_stress_sector_limit(regime)
+            if sector_limit is not None and _same_direction_sector_open_count(open_positions, plan) >= sector_limit:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "shock_stress_sector_cap_reached"
+                    event.reason_text = (
+                        f"max_shock_type_score stress guard allows {sector_limit} open "
+                        f"{plan.direction.lower()} positions in sector {plan.sector or '-'}."
+                    )
                 continue
             if plan.identity_key in open_identities:
                 if event:

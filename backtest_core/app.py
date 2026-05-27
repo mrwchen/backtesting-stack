@@ -186,6 +186,26 @@ def log_backtest_context(model_files: list[str]) -> None:
         ",".join(COMMON_POLICY.short_label_blocklist) or "-",
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
+    log.info(
+        "Shock stress guard enabled %s min %.1f high %.1f extreme %.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d sector cap enabled %s sector caps %d/%d/%d portfolio guard %s daily loss %.2f open loss %.2f",
+        SHOCK_STRESS_GUARD_ENABLED,
+        SHOCK_STRESS_GUARD_MIN_SCORE,
+        SHOCK_STRESS_GUARD_HIGH_SCORE,
+        SHOCK_STRESS_GUARD_EXTREME_SCORE,
+        SHOCK_STRESS_LONG_RISK_MULTIPLIER_MIN,
+        SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH,
+        SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME,
+        SHOCK_STRESS_MAX_LONG_POSITIONS_MIN,
+        SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH,
+        SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME,
+        SHOCK_STRESS_SECTOR_CAP_ENABLED,
+        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_MIN,
+        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH,
+        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME,
+        SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED,
+        SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT,
+        SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT,
+    )
     for regime_label, exposure in REGIME_EXPOSURE_BY_LABEL.items():
         log.info(
             "Regime exposure label %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",

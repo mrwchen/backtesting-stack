@@ -110,7 +110,7 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
         })
 
     world_regime_required = {"day", "regime_label", "composite_score"}
-    if SHOCK_OVERLAY_ACTIVE:
+    if WORLD_REGIME_SHOCK_FIELDS_ACTIVE:
         world_regime_required.update({
             "dominant_shock_type",
             "max_shock_type_score",

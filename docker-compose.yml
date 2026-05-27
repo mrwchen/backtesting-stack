@@ -49,7 +49,7 @@ services:
       # ---------------------------------------------------------------------
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
-      - RUN_NOTES_EXTRA=regime_label_policy_v1
+      - RUN_NOTES_EXTRA=shock_stress_guard_v1
 
       # ---------------------------------------------------------------------
       # Source tables and point-in-time data safety
@@ -137,6 +137,26 @@ services:
       - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS=0.60
       - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE=8.0
       - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER=0.15
+      - SHOCK_STRESS_GUARD_ENABLED=true
+      - SHOCK_STRESS_GUARD_MIN_SCORE=60.0
+      - SHOCK_STRESS_GUARD_HIGH_SCORE=70.0
+      - SHOCK_STRESS_GUARD_EXTREME_SCORE=80.0
+      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_MIN=0.85
+      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH=0.65
+      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME=0.35
+      - SHOCK_STRESS_MAX_LONG_POSITIONS_MIN=6
+      - SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH=4
+      - SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME=2
+      - SHOCK_STRESS_SECTOR_CAP_ENABLED=true
+      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_MIN=2
+      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH=1
+      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME=1
+      - SHOCK_STRESS_BLOCK_NEGATIVE_BIAS_LONGS=true
+      - SHOCK_STRESS_CREDIT_STRESS_MIN_SCORE=70.0
+      - SHOCK_STRESS_SHORT_MAX_RISK_MULTIPLIER_CREDIT=1.0
+      - SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED=true
+      - SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT=2.0
+      - SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT=2.0
 
       # ---------------------------------------------------------------------
       # Common policy: world-regime-label direction budget

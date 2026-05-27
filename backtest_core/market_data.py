@@ -431,7 +431,7 @@ def get_world_regime(
         "day, regime_label, composite_score, dominant_shock_type, max_shock_type_score, "
         "defensive_risk_off_score, energy_commodity_shock_score, rates_inflation_usd_shock_score, "
         "credit_banking_stress_score, policy_geopolitical_score"
-        if SHOCK_OVERLAY_ACTIVE
+        if WORLD_REGIME_SHOCK_FIELDS_ACTIVE
         else "day, regime_label, composite_score"
     )
     if as_of_date:
@@ -453,7 +453,7 @@ def get_world_regime(
     if not row:
         _WORLD_REGIME_CACHE[cache_key] = None
         return None
-    if SHOCK_OVERLAY_ACTIVE:
+    if WORLD_REGIME_SHOCK_FIELDS_ACTIVE:
         regime = WorldRegime(
             day=row[0],
             label=row[1],
