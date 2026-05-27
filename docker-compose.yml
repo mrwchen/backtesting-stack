@@ -118,15 +118,15 @@ services:
       # off = baseline behavior. Other modes: score_only, risk_only,
       # score_and_risk, full.
       # ---------------------------------------------------------------------
-      - SHOCK_OVERLAY_MODE=full
+      - SHOCK_OVERLAY_MODE=score_only
       - SHOCK_OVERLAY_POLICY_FILE=backtest_policy_configs/shock_overlay_policy.xlsx
       - SHOCK_OVERLAY_SECTOR_BIAS_SHEET=sector_bias
       - SHOCK_OVERLAY_SPECIAL_RULES_SHEET=special_rules
       - SHOCK_OVERLAY_MIN_SHOCK_SCORE=55.0
       - SHOCK_OVERLAY_FULL_SHOCK_SCORE=80.0
-      - SHOCK_OVERLAY_MAX_INTENT_SCORE_DELTA=0.75
-      - SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT=30.0
-      - SHOCK_OVERLAY_MAX_RISK_CUT_PCT=30.0
+      - SHOCK_OVERLAY_MAX_INTENT_SCORE_DELTA=0.0
+      - SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT=0.0
+      - SHOCK_OVERLAY_MAX_RISK_CUT_PCT=0.0
       - SHOCK_OVERLAY_ALLOW_NEW_INTENTS=false
       - SHOCK_OVERLAY_BLOCK_LONG_LABELS=insufficient_data,value_trap
       - SHOCK_OVERLAY_BLOCK_SHORT_LABELS=
