@@ -124,6 +124,29 @@ def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
     )
 
 
+def _signal_bar_recency_rejection(bars: list[Any], as_of_ts: datetime) -> tuple[str, str] | None:
+    if not bars:
+        return None
+    latest_complete_ts = _ensure_utc_ts(bars[-1].ts) + timedelta(hours=1)
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    if latest_complete_ts > as_of_ts:
+        return (
+            "latest_signal_bar_not_complete",
+            f"Latest 1h signal bar completes at {latest_complete_ts}, after decision timestamp {as_of_ts}.",
+        )
+    max_staleness = timedelta(hours=SIGNAL_BAR_MAX_STALENESS_HOURS)
+    staleness = as_of_ts - latest_complete_ts
+    if staleness > max_staleness:
+        return (
+            "latest_signal_bar_too_stale",
+            (
+                f"Latest complete 1h signal bar ended at {latest_complete_ts}, "
+                f"{staleness} before decision timestamp {as_of_ts}; max allowed is {max_staleness}."
+            ),
+        )
+    return None
+
+
 def _plan_event_key(plan: TradePlan) -> tuple[str, tuple[str, str, int]]:
     return (plan.direction, plan.identity_key)
 
@@ -861,6 +884,38 @@ def run_backtest(
                         decision="rejected",
                         reason_code="insufficient_bars",
                         reason_text=f"Only {len(bars)} cached 1h bars were available; model requires at least {cfg.min_bars}.",
+                        candidate_rank=candidate_rank,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        valuation_label=fundamental.valuation_label,
+                        sector=fundamental.sector,
+                        industry=fundamental.industry,
+                        fundamental_score=_model_fundamental_score(fundamental, cfg),
+                        mispricing_score=fundamental.mispricing_score,
+                        market_cap_m=fundamental.market_cap_m,
+                        bar_count=len(bars),
+                        min_bars=cfg.min_bars,
+                        open_positions=len(active_positions),
+                        max_open_positions=MAX_OPEN_POSITIONS,
+                        account_equity=equity,
+                    ))
+                    continue
+
+                staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts)
+                if staleness_rejection is not None:
+                    reason_code, reason_text = staleness_rejection
+                    decision_events.append(DecisionEvent(
+                        run_id=run_id,
+                        intent_date=day,
+                        as_of_ts=as_of_ts,
+                        symbol=fundamental.symbol,
+                        exchange=fundamental.exchange,
+                        cik=fundamental.cik,
+                        direction=direction,
+                        decision_stage="bar_load",
+                        decision="rejected",
+                        reason_code=reason_code,
+                        reason_text=reason_text,
                         candidate_rank=candidate_rank,
                         world_regime_label=regime.label,
                         world_regime_score=regime.score,
@@ -1715,10 +1770,41 @@ def run_backtest(
                         account_equity=equity,
                     ))
                     continue
+                staleness_rejection = _signal_bar_recency_rejection(bars, day_end_ts)
+                if staleness_rejection is not None:
+                    reason_code, reason_text = staleness_rejection
+                    decision_events.append(DecisionEvent(
+                        run_id=run_id,
+                        intent_date=day,
+                        as_of_ts=day_end_ts,
+                        symbol=fundamental.symbol,
+                        exchange=fundamental.exchange,
+                        cik=fundamental.cik,
+                        direction=direction,
+                        decision_stage="bar_load",
+                        decision="rejected",
+                        reason_code=reason_code,
+                        reason_text=reason_text,
+                        candidate_rank=candidate_rank,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        valuation_label=fundamental.valuation_label,
+                        sector=fundamental.sector,
+                        industry=fundamental.industry,
+                        fundamental_score=_model_fundamental_score(fundamental, cfg),
+                        mispricing_score=fundamental.mispricing_score,
+                        market_cap_m=fundamental.market_cap_m,
+                        bar_count=len(bars),
+                        min_bars=cfg.min_bars,
+                        open_positions=len(open_positions),
+                        max_open_positions=MAX_OPEN_POSITIONS,
+                        account_equity=equity,
+                    ))
+                    continue
                 evaluation = evaluate_fn(
                     bars,
                     fundamental,
-                    datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+                    day_end_ts,
                     cfg,
                 )
                 if not isinstance(evaluation, IntentEvaluation):
@@ -1745,7 +1831,7 @@ def run_backtest(
                         evaluation.reason_code = intent_check.reason_code
                         evaluation.reason_text = intent_check.reason_text
                 if intent:
-                    after_ts = _ensure_utc_ts(bars[-1].ts)
+                    after_ts = day_end_ts
                     pending_intents.append({
                         "candidate_rank": candidate_rank,
                         "fundamental": fundamental,
@@ -1754,7 +1840,7 @@ def run_backtest(
                         "intent": intent,
                         "after_ts": after_ts,
                         "missing_reason_text": (
-                            f"No 1h bar after intent bar {after_ts} was available for next-bar-open entry."
+                            f"No 1h bar after decision timestamp {after_ts} was available for next-bar-open entry."
                         ),
                     })
                     continue

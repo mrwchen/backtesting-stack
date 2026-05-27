@@ -100,6 +100,7 @@ _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_SIGNAL_BAR_DURATION = timedelta(hours=1)
 _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
 _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
@@ -1634,6 +1635,10 @@ def _day_signal_cutoff_ts(d: date) -> datetime:
     return _session_end_ts(d) if ENTRY_WINDOW_ENABLED else _day_close_ts(d)
 
 
+def _last_complete_signal_bar_start_ts(up_to_ts: datetime) -> datetime:
+    return _ensure_utc_ts(up_to_ts) - _SIGNAL_BAR_DURATION
+
+
 def _bar_cache_start_ts() -> datetime:
     return datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
 
@@ -1910,6 +1915,7 @@ def _ensure_signal_bars_loaded(
     apply_entry_window: bool = True,
 ) -> bool:
     up_to_ts = _ensure_utc_ts(up_to_ts)
+    complete_upper_ts = _last_complete_signal_bar_start_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
     if not unique_identities:
         return True
@@ -1970,7 +1976,7 @@ def _ensure_signal_bars_loaded(
             symbols = [identity[0] for identity in fresh_batch]
             exchanges = [identity[1] for identity in fresh_batch]
             ciks = [identity[2] for identity in fresh_batch]
-            params: list[object] = [symbols, exchanges, ciks, up_to_ts, *entry_params, limit]
+            params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *entry_params, limit]
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -1985,7 +1991,7 @@ def _ensure_signal_bars_loaded(
                         "  WHERE b.symbol = r.symbol "
                         "    AND b.exchange = r.exchange "
                         "    AND b.cik = r.cik "
-                        "    AND b.ts < %s "
+                        "    AND b.ts <= %s "
                         "    {} "
                         "  ORDER BY b.ts DESC "
                         "  LIMIT %s"
@@ -2005,11 +2011,15 @@ def _ensure_signal_bars_loaded(
                 _SIGNAL_BAR_CACHE[identity].loaded_until_ts = up_to_ts
 
         if incremental_batch:
-            lower_bound = min(_SIGNAL_BAR_CACHE[identity].loaded_until_ts for identity in incremental_batch)
+            lower_bound = min(
+                _last_complete_signal_bar_start_ts(_SIGNAL_BAR_CACHE[identity].loaded_until_ts)
+                for identity in incremental_batch
+                if _SIGNAL_BAR_CACHE[identity].loaded_until_ts is not None
+            )
             symbols = [identity[0] for identity in incremental_batch]
             exchanges = [identity[1] for identity in incremental_batch]
             ciks = [identity[2] for identity in incremental_batch]
-            params = [symbols, exchanges, ciks, lower_bound, up_to_ts, *entry_params]
+            params = [symbols, exchanges, ciks, lower_bound, complete_upper_ts, *entry_params]
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -2020,8 +2030,8 @@ def _ensure_signal_bars_loaded(
                         "FROM {} b "
                         "JOIN requested r "
                         "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
-                        "WHERE b.ts >= %s "
-                        "  AND b.ts < %s "
+                        "WHERE b.ts > %s "
+                        "  AND b.ts <= %s "
                         "  {} "
                         "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
                     ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
@@ -2031,7 +2041,10 @@ def _ensure_signal_bars_loaded(
                     identity = instrument_key(symbol, exchange, cik)
                     entry = _SIGNAL_BAR_CACHE[identity]
                     ts_utc = _ensure_utc_ts(ts)
-                    if entry.loaded_until_ts is not None and ts_utc < entry.loaded_until_ts:
+                    if (
+                        entry.loaded_until_ts is not None
+                        and ts_utc <= _last_complete_signal_bar_start_ts(entry.loaded_until_ts)
+                    ):
                         continue
                     _append_signal_bar(entry, ts_utc, open_, high, low, close, volume)
                     rows_loaded += 1
@@ -2081,14 +2094,14 @@ def _recent_bars_from_signal_cache(
     limit: int,
     up_to_ts: datetime,
 ) -> dict[InstrumentKey, list[Bar]]:
-    up_to_epoch_us = _ts_to_epoch_us(up_to_ts)
+    complete_upper_epoch_us = _ts_to_epoch_us(_last_complete_signal_bar_start_ts(up_to_ts))
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
     bars_by_identity: dict[InstrumentKey, list[Bar]] = {identity: [] for identity in unique_identities}
     for identity in unique_identities:
         entry = _SIGNAL_BAR_CACHE.get(identity)
         if entry is None:
             continue
-        end_idx = bisect_left(entry.ts_epoch_us, up_to_epoch_us)
+        end_idx = bisect_right(entry.ts_epoch_us, complete_upper_epoch_us)
         start_idx = max(0, end_idx - limit)
         ts_epoch_us = entry.ts_epoch_us
         opens = entry.opens
@@ -2121,6 +2134,7 @@ def _load_recent_bars_for_identities_direct(
     apply_entry_window: bool = True,
 ) -> dict[InstrumentKey, list[Bar]]:
     up_to_ts = _ensure_utc_ts(up_to_ts)
+    complete_upper_ts = _last_complete_signal_bar_start_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
     bars_by_identity: dict[InstrumentKey, list[Bar]] = {identity: [] for identity in unique_identities}
     if not unique_identities or limit <= 0:
@@ -2144,7 +2158,7 @@ def _load_recent_bars_for_identities_direct(
         symbols = [identity[0] for identity in batch]
         exchanges = [identity[1] for identity in batch]
         ciks = [identity[2] for identity in batch]
-        params: list[object] = [symbols, exchanges, ciks, up_to_ts, *entry_params, limit]
+        params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *entry_params, limit]
         rows_loaded = 0
 
         with conn.cursor() as cur:
@@ -2161,7 +2175,7 @@ def _load_recent_bars_for_identities_direct(
                     "  WHERE b.symbol = r.symbol "
                     "    AND b.exchange = r.exchange "
                     "    AND b.cik = r.cik "
-                    "    AND b.ts < %s "
+                    "    AND b.ts <= %s "
                     "    {} "
                     "  ORDER BY b.ts DESC "
                     "  LIMIT %s"
@@ -2304,7 +2318,7 @@ def get_cached_bars(
     """Return up to `limit` bars using the per-run instrument cache."""
     up_to_ts = _ensure_utc_ts(up_to_ts)
     timestamps, bars = _load_identity_bars_through(conn, identity, up_to_ts)
-    end_idx = bisect_left(timestamps, up_to_ts)
+    end_idx = bisect_right(timestamps, _last_complete_signal_bar_start_ts(up_to_ts))
     selected: list[Bar] = []
     bar_idx = end_idx - 1
     while bar_idx >= 0 and len(selected) < limit:
