@@ -97,6 +97,15 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     common_stop_atr_mult NUMERIC(8,4) NOT NULL,
     common_min_stop_pct NUMERIC(6,3) NOT NULL,
     common_max_stop_pct NUMERIC(6,3) NOT NULL,
+    shock_overlay_mode TEXT NOT NULL DEFAULT 'off',
+    shock_overlay_policy_file TEXT,
+    shock_overlay_min_shock_score NUMERIC(5,2),
+    shock_overlay_full_shock_score NUMERIC(5,2),
+    shock_overlay_max_intent_score_delta NUMERIC(8,4),
+    shock_overlay_max_risk_uplift_pct NUMERIC(6,2),
+    shock_overlay_max_risk_cut_pct NUMERIC(6,2),
+    shock_overlay_strong_risk_off_long_sleeve_enabled BOOLEAN,
+    shock_overlay_strong_risk_off_long_sleeve_max_positions INTEGER,
 
     -- Results summary (filled after run completes)
     run_duration_seconds NUMERIC(12,3),
@@ -143,6 +152,17 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     -- Market and fundamental context
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
+    dominant_shock_type  TEXT,
+    max_shock_type_score NUMERIC(5,2),
+    defensive_risk_off_score NUMERIC(5,2),
+    energy_commodity_shock_score NUMERIC(5,2),
+    rates_inflation_usd_shock_score NUMERIC(5,2),
+    credit_banking_stress_score NUMERIC(5,2),
+    policy_geopolitical_score NUMERIC(5,2),
+    shock_sector_bias    NUMERIC(8,4),
+    shock_score_delta    NUMERIC(8,4),
+    shock_risk_multiplier NUMERIC(8,4),
+    shock_base_intent_score NUMERIC(8,4),
     valuation_label      TEXT,
     sector               TEXT,
     industry             TEXT,
@@ -204,9 +224,22 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     -- World regime at intent time
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
+    dominant_shock_type  TEXT,
+    max_shock_type_score NUMERIC(5,2),
+    defensive_risk_off_score NUMERIC(5,2),
+    energy_commodity_shock_score NUMERIC(5,2),
+    rates_inflation_usd_shock_score NUMERIC(5,2),
+    credit_banking_stress_score NUMERIC(5,2),
+    policy_geopolitical_score NUMERIC(5,2),
+    shock_sector_bias    NUMERIC(8,4),
+    shock_score_delta    NUMERIC(8,4),
+    shock_risk_multiplier NUMERIC(8,4),
+    shock_base_intent_score NUMERIC(8,4),
 
     -- Fundamental label at intent time
     valuation_label      TEXT,
+    sector               TEXT,
+    industry             TEXT,
 
     -- Intent scores
     fundamental_score    NUMERIC(5,2),
@@ -255,6 +288,9 @@ CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_identity
     ON backtest_trades (symbol, exchange, cik, intent_date);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_shock_sector
+    ON backtest_trades (run_id, dominant_shock_type, sector, direction, intent_date);
 
 -- ── Account curve snapshots ─────────────────────────────────────────────────
 
@@ -312,12 +348,47 @@ $$;
 DO $$
 BEGIN
     IF to_regclass('public.world_regime_daily_scores_mv') IS NOT NULL THEN
-        EXECUTE '
-            CREATE INDEX IF NOT EXISTS idx_backtest_world_regime_day_score
-                ON public.world_regime_daily_scores_mv (day DESC)
-                INCLUDE (regime_label, composite_score)
-                WHERE composite_score IS NOT NULL
-        ';
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'world_regime_daily_scores_mv'
+              AND column_name IN (
+                  'dominant_shock_type',
+                  'max_shock_type_score',
+                  'defensive_risk_off_score',
+                  'energy_commodity_shock_score',
+                  'rates_inflation_usd_shock_score',
+                  'credit_banking_stress_score',
+                  'policy_geopolitical_score'
+              )
+            GROUP BY table_schema, table_name
+            HAVING COUNT(DISTINCT column_name) = 7
+        ) THEN
+            EXECUTE '
+                CREATE INDEX IF NOT EXISTS idx_backtest_world_regime_day_score
+                    ON public.world_regime_daily_scores_mv (day DESC)
+                    INCLUDE (
+                        regime_label,
+                        composite_score,
+                        dominant_shock_type,
+                        max_shock_type_score,
+                        defensive_risk_off_score,
+                        energy_commodity_shock_score,
+                        rates_inflation_usd_shock_score,
+                        credit_banking_stress_score,
+                        policy_geopolitical_score
+                    )
+                    WHERE composite_score IS NOT NULL
+            ';
+        ELSE
+            EXECUTE '
+                CREATE INDEX IF NOT EXISTS idx_backtest_world_regime_day_score
+                    ON public.world_regime_daily_scores_mv (day DESC)
+                    INCLUDE (regime_label, composite_score)
+                    WHERE composite_score IS NOT NULL
+            ';
+        END IF;
     END IF;
 END;
 $$;

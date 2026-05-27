@@ -59,6 +59,11 @@ from .persistence import (
     write_decision_events,
     write_trades,
 )
+from .shock_overlay import (
+    apply_shock_overlay,
+    should_evaluate_disabled_direction,
+    strong_risk_off_long_sleeve_risk,
+)
 from .trade_levels import (
     build_trade_plan,
     common_stop_required_lookback,
@@ -105,6 +110,20 @@ def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
 
 def _plan_event_key(plan: TradePlan) -> tuple[str, tuple[str, str, int]]:
     return (plan.direction, plan.identity_key)
+
+
+def _copy_plan_shock_to_event(event: DecisionEvent, plan: TradePlan) -> None:
+    event.dominant_shock_type = plan.dominant_shock_type
+    event.max_shock_type_score = plan.max_shock_type_score
+    event.defensive_risk_off_score = plan.defensive_risk_off_score
+    event.energy_commodity_shock_score = plan.energy_commodity_shock_score
+    event.rates_inflation_usd_shock_score = plan.rates_inflation_usd_shock_score
+    event.credit_banking_stress_score = plan.credit_banking_stress_score
+    event.policy_geopolitical_score = plan.policy_geopolitical_score
+    event.shock_sector_bias = plan.shock_sector_bias
+    event.shock_score_delta = plan.shock_score_delta
+    event.shock_risk_multiplier = plan.shock_risk_multiplier
+    event.shock_base_intent_score = plan.shock_base_intent_score
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -694,7 +713,11 @@ def run_backtest(
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
             direction_cap = direction_max_positions(regime_exposure, direction)
-            if direction_risk <= 0.0 and direction_cap <= 0:
+            if (
+                direction_risk <= 0.0
+                and direction_cap <= 0
+                and not should_evaluate_disabled_direction(regime_bucket, direction)
+            ):
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -973,6 +996,7 @@ def run_backtest(
                             evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                         else:
                             plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                            apply_shock_overlay(plan, fundamental, regime)
                             plans.append(plan)
                             plans_by_direction[direction].append(plan)
 
@@ -1014,6 +1038,7 @@ def run_backtest(
                 )
                 decision_events.append(event)
                 if plan:
+                    _copy_plan_shock_to_event(event, plan)
                     plan_events[_plan_event_key(plan)] = event
 
         for direction, direction_plans in plans_by_direction.items():
@@ -1096,6 +1121,12 @@ def run_backtest(
             excess_liquidity = account_equity_current - maintenance_margin
             direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
             direction_cap = direction_max_positions(regime_exposure, plan.direction)
+            sleeve_risk = strong_risk_off_long_sleeve_risk(plan, regime_bucket)
+            if sleeve_risk is not None and direction_risk <= 0.0:
+                direction_risk = sleeve_risk
+                direction_cap = max(direction_cap, SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
+            else:
+                direction_risk *= plan.shock_risk_multiplier
             if event:
                 event.open_positions = len(active_positions)
                 event.max_open_positions = MAX_OPEN_POSITIONS
@@ -1382,6 +1413,7 @@ def run_backtest(
         if all(
             direction_risk_multiplier(regime_exposure, direction) <= 0.0
             and direction_max_positions(regime_exposure, direction) <= 0
+            and not should_evaluate_disabled_direction(regime_bucket, direction)
             for direction in DIRECTIONS
         ):
             days_no_active_budget += 1
@@ -1476,7 +1508,11 @@ def run_backtest(
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
             direction_cap = direction_max_positions(regime_exposure, direction)
-            if direction_risk <= 0.0 and direction_cap <= 0:
+            if (
+                direction_risk <= 0.0
+                and direction_cap <= 0
+                and not should_evaluate_disabled_direction(regime_bucket, direction)
+            ):
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1764,6 +1800,7 @@ def run_backtest(
                             evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                         else:
                             plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                            apply_shock_overlay(plan, fundamental, regime)
                             plans.append(plan)
                             plans_by_direction[direction].append(plan)
                 event = DecisionEvent(
@@ -1804,6 +1841,7 @@ def run_backtest(
                 )
                 decision_events.append(event)
                 if plan:
+                    _copy_plan_shock_to_event(event, plan)
                     plan_events[_plan_event_key(plan)] = event
 
         for direction, direction_plans in plans_by_direction.items():
@@ -1870,6 +1908,12 @@ def run_backtest(
             event = plan_events.get(_plan_event_key(plan))
             direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
             direction_cap = direction_max_positions(regime_exposure, plan.direction)
+            sleeve_risk = strong_risk_off_long_sleeve_risk(plan, regime_bucket)
+            if sleeve_risk is not None and direction_risk <= 0.0:
+                direction_risk = sleeve_risk
+                direction_cap = max(direction_cap, SHOCK_OVERLAY_STRONG_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
+            else:
+                direction_risk *= plan.shock_risk_multiplier
             available_funds = account_equity_today - initial_margin
             excess_liquidity = account_equity_today - maintenance_margin
             if event:

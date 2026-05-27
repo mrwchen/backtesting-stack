@@ -18,6 +18,13 @@ class WorldRegime:
     day: object
     label: str
     score: float
+    dominant_shock_type: str = ""
+    max_shock_type_score: float | None = None
+    defensive_risk_off_score: float | None = None
+    energy_commodity_shock_score: float | None = None
+    rates_inflation_usd_shock_score: float | None = None
+    credit_banking_stress_score: float | None = None
+    policy_geopolitical_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,17 @@ class TradePlan:
     entry_ts: Optional[datetime] = None
     exchange: str = ""
     cik: int = 0
+    dominant_shock_type: str = ""
+    max_shock_type_score: float | None = None
+    defensive_risk_off_score: float | None = None
+    energy_commodity_shock_score: float | None = None
+    rates_inflation_usd_shock_score: float | None = None
+    credit_banking_stress_score: float | None = None
+    policy_geopolitical_score: float | None = None
+    shock_sector_bias: float = 0.0
+    shock_score_delta: float = 0.0
+    shock_risk_multiplier: float = 1.0
+    shock_base_intent_score: float | None = None
 
     @property
     def identity_key(self) -> InstrumentKey:

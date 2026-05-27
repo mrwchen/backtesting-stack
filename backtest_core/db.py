@@ -109,9 +109,21 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "financial_currency",
         })
 
+    world_regime_required = {"day", "regime_label", "composite_score"}
+    if SHOCK_OVERLAY_ACTIVE:
+        world_regime_required.update({
+            "dominant_shock_type",
+            "max_shock_type_score",
+            "defensive_risk_off_score",
+            "energy_commodity_shock_score",
+            "rates_inflation_usd_shock_score",
+            "credit_banking_stress_score",
+            "policy_geopolitical_score",
+        })
+
     _require_columns(conn, SOURCE_MARKET_DATA_1H_TABLE, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
     _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
-    _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, {"day", "regime_label", "composite_score"})
+    _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
     if ACCOUNT_PROFILE == "ps_acc":
         pepperstone_required = {"symbol", "symbol_ps", "is_trading_enabled"}
@@ -151,15 +163,21 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "ps_share_cfd_admin_fee_pct",
         "ps_share_cfd_short_borrow_rate_pct",
         "ps_share_cfd_overnight_day_count",
+        "shock_overlay_mode",
+        "shock_overlay_policy_file",
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
         "run_id", "symbol", "exchange", "cik", "entry_ts", "margin_hours_usd",
         "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason",
         "take_profit_mode", "take_profit", "trailing_activation_price", "trailing_distance_pct",
-        "trailing_activated", "trailing_stop", "trailing_activated_ts"
+        "trailing_activated", "trailing_stop", "trailing_activated_ts",
+        "dominant_shock_type", "max_shock_type_score", "shock_sector_bias",
+        "shock_score_delta", "shock_risk_multiplier", "shock_base_intent_score",
+        "sector", "industry",
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
-        "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score"
+        "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score",
+        "dominant_shock_type", "shock_sector_bias", "shock_score_delta", "shock_risk_multiplier"
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",

@@ -421,17 +421,24 @@ def get_world_regime(
     if cache_key in _WORLD_REGIME_CACHE:
         return _WORLD_REGIME_CACHE[cache_key]
 
+    selected_columns = (
+        "day, regime_label, composite_score, dominant_shock_type, max_shock_type_score, "
+        "defensive_risk_off_score, energy_commodity_shock_score, rates_inflation_usd_shock_score, "
+        "credit_banking_stress_score, policy_geopolitical_score"
+        if SHOCK_OVERLAY_ACTIVE
+        else "day, regime_label, composite_score"
+    )
     if as_of_date:
         query = sql.SQL(
-            "SELECT day, regime_label, composite_score FROM {} "
+            "SELECT {} FROM {} "
             "WHERE composite_score IS NOT NULL AND day <= %s ORDER BY day DESC LIMIT 1"
-        ).format(relation_identifier(source_table))
+        ).format(sql.SQL(selected_columns), relation_identifier(source_table))
         params = (as_of_date,)
     else:
         query = sql.SQL(
-            "SELECT day, regime_label, composite_score FROM {} "
+            "SELECT {} FROM {} "
             "WHERE composite_score IS NOT NULL ORDER BY day DESC LIMIT 1"
-        ).format(relation_identifier(source_table))
+        ).format(sql.SQL(selected_columns), relation_identifier(source_table))
         params = ()
 
     with conn.cursor() as cur:
@@ -440,7 +447,21 @@ def get_world_regime(
     if not row:
         _WORLD_REGIME_CACHE[cache_key] = None
         return None
-    regime = WorldRegime(day=row[0], label=row[1], score=float(row[2]))
+    if SHOCK_OVERLAY_ACTIVE:
+        regime = WorldRegime(
+            day=row[0],
+            label=row[1],
+            score=float(row[2]),
+            dominant_shock_type=row[3] or "",
+            max_shock_type_score=float(row[4]) if row[4] is not None else None,
+            defensive_risk_off_score=float(row[5]) if row[5] is not None else None,
+            energy_commodity_shock_score=float(row[6]) if row[6] is not None else None,
+            rates_inflation_usd_shock_score=float(row[7]) if row[7] is not None else None,
+            credit_banking_stress_score=float(row[8]) if row[8] is not None else None,
+            policy_geopolitical_score=float(row[9]) if row[9] is not None else None,
+        )
+    else:
+        regime = WorldRegime(day=row[0], label=row[1], score=float(row[2]))
     _WORLD_REGIME_CACHE[cache_key] = regime
     return regime
 

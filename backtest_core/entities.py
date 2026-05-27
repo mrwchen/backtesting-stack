@@ -128,6 +128,17 @@ class DecisionEvent:
     min_bars: Optional[int] = None
     intent_score: Optional[float] = None
     intent_reason: str = ""
+    dominant_shock_type: str = ""
+    max_shock_type_score: Optional[float] = None
+    defensive_risk_off_score: Optional[float] = None
+    energy_commodity_shock_score: Optional[float] = None
+    rates_inflation_usd_shock_score: Optional[float] = None
+    credit_banking_stress_score: Optional[float] = None
+    policy_geopolitical_score: Optional[float] = None
+    shock_sector_bias: Optional[float] = None
+    shock_score_delta: Optional[float] = None
+    shock_risk_multiplier: Optional[float] = None
+    shock_base_intent_score: Optional[float] = None
     entry_ts: Optional[datetime] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
