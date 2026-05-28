@@ -111,6 +111,11 @@ def log_backtest_context(model_files: list[str]) -> None:
         MODEL_PARALLELISM,
     )
     log.info("Account profile %s", ACCOUNT_PROFILE)
+    log.info(
+        "Portfolio capacity max open positions %d max same day refills %d",
+        MAX_OPEN_POSITIONS,
+        MAX_SAME_DAY_REFILLS,
+    )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
             "Pepperstone margin policy margin requirement %.2f stop-out margin level %.2f min entry margin level %.2f",

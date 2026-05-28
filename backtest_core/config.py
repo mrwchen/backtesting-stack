@@ -25,6 +25,9 @@ ACCOUNT_PROFILE        = ACCOUNT_PROFILE_REQUEST
 INITIAL_EQUITY         = float(os.getenv("INITIAL_EQUITY_USD", "100000.0"))
 RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_EQUITY_PCT", "2.0"))
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
+MAX_SAME_DAY_REFILLS   = env_int("MAX_SAME_DAY_REFILLS", 0)
+if MAX_SAME_DAY_REFILLS < 0:
+    raise ValueError("MAX_SAME_DAY_REFILLS must be >= 0")
 
 
 def _default_position_cap(ratio: float) -> int:
@@ -562,6 +565,7 @@ def _build_run_notes(notes: Optional[str], cfg=None) -> str:
         ("INITIAL_EQUITY_USD", INITIAL_EQUITY),
         ("RISK_PER_TRADE_EQUITY_PCT", RISK_PER_TRADE_PCT),
         ("MAX_OPEN_POSITIONS", MAX_OPEN_POSITIONS),
+        ("MAX_SAME_DAY_REFILLS", MAX_SAME_DAY_REFILLS),
     ]
     if suffix:
         pairs.append(("RUN_NOTE", suffix))

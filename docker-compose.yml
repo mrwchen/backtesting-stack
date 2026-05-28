@@ -171,12 +171,15 @@ services:
       # RISK_PER_TRADE_EQUITY_PCT ist der Basiseinsatz pro Trade vor Regime-,
       # Shock- und Broker-Anpassungen.
       # MAX_OPEN_POSITIONS begrenzt die Portfolio-Groesse.
+      # MAX_SAME_DAY_REFILLS begrenzt zusaetzliche Opens, die nur durch
+      # intraday geschlossene Positionen am selben Trading-Tag moeglich werden.
       # SECTOR_DIVERSIFICATION_ENABLED aktiviert sektorale Streuungsregeln.
       # ---------------------------------------------------------------------
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
       - MAX_OPEN_POSITIONS=10
+      - MAX_SAME_DAY_REFILLS=2
       - SECTOR_DIVERSIFICATION_ENABLED=true
 
       # ---------------------------------------------------------------------
@@ -475,13 +478,13 @@ services:
       - PS_24_ENTRY_SL_TP_ACTIVE=false
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
-      - PS_ENTRY_WINDOW=10:00-16:00
+      - PS_ENTRY_WINDOW=11:00-16:00
       # Der Runner bewertet eine Modellentscheidung nach jedem wirklich geschlossenen 1h-Bar.
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true
       - IBKR_ENTRY_WINDOW_TZ=America/New_York
-      - IBKR_ENTRY_WINDOW=10:00-17:00
+      - IBKR_ENTRY_WINDOW=11:00-17:00
       - IBKR_SL_TP_WINDOW_TZ=America/New_York
       - IBKR_SL_TP_WINDOW=09:30-17:00
 
