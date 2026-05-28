@@ -175,8 +175,8 @@ services:
       # ---------------------------------------------------------------------
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=2
-      - MAX_OPEN_POSITIONS=10
+      - RISK_PER_TRADE_EQUITY_PCT=1.5
+      - MAX_OPEN_POSITIONS=5
       - SECTOR_DIVERSIFICATION_ENABLED=true
 
       # ---------------------------------------------------------------------
@@ -198,8 +198,8 @@ services:
       - SHOCK_OVERLAY_SPECIAL_RULES_SHEET=special_rules
 
       # Shock-Score-Bereich, in dem der Excel-Bias von 0 auf volle Staerke skaliert.
-      - SHOCK_OVERLAY_MIN_SHOCK_SCORE=65.0
-      - SHOCK_OVERLAY_FULL_SHOCK_SCORE=90.0
+      - SHOCK_OVERLAY_MIN_SHOCK_SCORE=55.0
+      - SHOCK_OVERLAY_FULL_SHOCK_SCORE=70.0
 
       # Maximaler Auf-/Abschlag auf den Modell-Intent-Score durch das Overlay.
       - SHOCK_OVERLAY_MAX_INTENT_SCORE_DELTA=0.15
@@ -236,23 +236,23 @@ services:
       - SHOCK_STRESS_GUARD_ENABLED=true
 
       # Stress-Schwellen auf Basis von world-regime max_shock_type_score.
-      - SHOCK_STRESS_GUARD_MIN_SCORE=60.0
+      - SHOCK_STRESS_GUARD_ELEVATED_SCORE=60.0
       - SHOCK_STRESS_GUARD_HIGH_SCORE=70.0
       - SHOCK_STRESS_GUARD_EXTREME_SCORE=80.0
 
       # Long-Risiko-Multiplikatoren je Stress-Stufe.
-      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_MIN=0.85
+      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_ELEVATED=0.85
       - SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH=0.65
       - SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME=0.35
 
       # Maximale offene Long-Positionen je Stress-Stufe.
-      - SHOCK_STRESS_MAX_LONG_POSITIONS_MIN=6
+      - SHOCK_STRESS_MAX_LONG_POSITIONS_ELEVATED=6
       - SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH=4
       - SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME=2
 
       # Sektor-Konzentrationsbremse waehrend Stress-Phasen.
       - SHOCK_STRESS_SECTOR_CAP_ENABLED=true
-      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_MIN=2
+      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_ELEVATED=2
       - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH=1
       - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME=1
 

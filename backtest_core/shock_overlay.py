@@ -36,18 +36,18 @@ from .config import (
     SHOCK_STRESS_BLOCK_NEGATIVE_BIAS_LONGS,
     SHOCK_STRESS_CREDIT_STRESS_MIN_SCORE,
     SHOCK_STRESS_GUARD_ENABLED,
+    SHOCK_STRESS_GUARD_ELEVATED_SCORE,
     SHOCK_STRESS_GUARD_EXTREME_SCORE,
     SHOCK_STRESS_GUARD_HIGH_SCORE,
-    SHOCK_STRESS_GUARD_MIN_SCORE,
+    SHOCK_STRESS_LONG_RISK_MULTIPLIER_ELEVATED,
     SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME,
     SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH,
-    SHOCK_STRESS_LONG_RISK_MULTIPLIER_MIN,
+    SHOCK_STRESS_MAX_LONG_POSITIONS_ELEVATED,
     SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME,
     SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH,
-    SHOCK_STRESS_MAX_LONG_POSITIONS_MIN,
+    SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_ELEVATED,
     SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME,
     SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH,
-    SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_MIN,
     SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT,
     SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED,
     SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT,
@@ -273,13 +273,13 @@ def shock_stress_score(regime: WorldRegime) -> float:
 
 
 def _shock_stress_bucket(score: float) -> str:
-    if not SHOCK_STRESS_GUARD_ENABLED or score < SHOCK_STRESS_GUARD_MIN_SCORE:
+    if not SHOCK_STRESS_GUARD_ENABLED or score < SHOCK_STRESS_GUARD_ELEVATED_SCORE:
         return ""
     if score >= SHOCK_STRESS_GUARD_EXTREME_SCORE:
         return "extreme"
     if score >= SHOCK_STRESS_GUARD_HIGH_SCORE:
         return "high"
-    return "min"
+    return "elevated"
 
 
 def _shock_stress_long_risk_multiplier(score: float) -> float:
@@ -288,8 +288,8 @@ def _shock_stress_long_risk_multiplier(score: float) -> float:
         return SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME
     if bucket == "high":
         return SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH
-    if bucket == "min":
-        return SHOCK_STRESS_LONG_RISK_MULTIPLIER_MIN
+    if bucket == "elevated":
+        return SHOCK_STRESS_LONG_RISK_MULTIPLIER_ELEVATED
     return 1.0
 
 
@@ -301,8 +301,8 @@ def shock_stress_direction_cap(regime: WorldRegime, direction: str, base_cap: in
         return min(base_cap, SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME)
     if bucket == "high":
         return min(base_cap, SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH)
-    if bucket == "min":
-        return min(base_cap, SHOCK_STRESS_MAX_LONG_POSITIONS_MIN)
+    if bucket == "elevated":
+        return min(base_cap, SHOCK_STRESS_MAX_LONG_POSITIONS_ELEVATED)
     return base_cap
 
 
@@ -314,8 +314,8 @@ def shock_stress_sector_limit(regime: WorldRegime) -> int | None:
         return SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME
     if bucket == "high":
         return SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH
-    if bucket == "min":
-        return SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_MIN
+    if bucket == "elevated":
+        return SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_ELEVATED
     return None
 
 
