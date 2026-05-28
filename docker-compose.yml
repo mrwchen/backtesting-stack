@@ -336,7 +336,7 @@ services:
       # Initial daily model decision time; entries still wait for the entry window.
       - DAILY_DECISION_TIME=08:00
       # Refill mode: daily_list reuses the morning list, fresh_intraday reruns point-in-time analysis.
-      - REFILL_ANALYSIS_MODE=daily_list
+      - REFILL_ANALYSIS_MODE=fresh_intraday
       # Enables a separate signal-bar analysis window independent from the entry window.
       - SIGNAL_BAR_WINDOW_ENABLED=false
       # Timezone for filtering signal bars used by model analysis.
