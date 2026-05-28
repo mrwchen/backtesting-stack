@@ -6,7 +6,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_BACKTEST_TABLES_ON_START: true
+      DROP_ALL_BACKTEST_TABLES_ON_START: false
     command:
       - sh
       - -c
@@ -331,9 +331,7 @@ services:
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
       - PS_ENTRY_WINDOW=10:00-16:00
-      # The runner evaluates one model decision when each configured signal bar is fully closed.
-      - SIGNAL_DECISION_WINDOW_TZ=America/New_York
-      - SIGNAL_DECISION_WINDOW=09:00-16:00
+      # The runner evaluates one model decision after every actual closed 1h bar.
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true

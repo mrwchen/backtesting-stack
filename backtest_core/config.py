@@ -562,9 +562,6 @@ def _build_run_notes(notes: Optional[str], cfg=None) -> str:
         ("ENTRY_WINDOW_TZ", ENTRY_WINDOW_TZ),
         ("ENTRY_WINDOW_START", ENTRY_WINDOW_START),
         ("ENTRY_WINDOW_END", ENTRY_WINDOW_END),
-        ("SIGNAL_DECISION_WINDOW_TZ", SIGNAL_DECISION_WINDOW_TZ),
-        ("SIGNAL_DECISION_WINDOW_START", SIGNAL_DECISION_WINDOW_START),
-        ("SIGNAL_DECISION_WINDOW_END", SIGNAL_DECISION_WINDOW_END),
         ("SL_TP_WINDOW_TZ", SL_TP_WINDOW_TZ),
         ("SL_TP_WINDOW_START", SL_TP_WINDOW_START),
         ("SL_TP_WINDOW_END", SL_TP_WINDOW_END),
@@ -663,11 +660,6 @@ def _parse_hold_grid_vals(env_key: str, default_val: float) -> list[float]:
 ENTRY_WINDOW_ENABLED = _account_setting_bool("ENTRY_WINDOW_ENABLED", True)
 ENTRY_WINDOW_TZ = _account_setting("ENTRY_WINDOW_TZ", "America/New_York")
 ENTRY_WINDOW_START, ENTRY_WINDOW_END = _account_window_setting("ENTRY_WINDOW")
-SIGNAL_DECISION_WINDOW_TZ = _account_setting("SIGNAL_DECISION_WINDOW_TZ", ENTRY_WINDOW_TZ)
-SIGNAL_DECISION_WINDOW_START, SIGNAL_DECISION_WINDOW_END = _account_window_setting_default(
-    "SIGNAL_DECISION_WINDOW",
-    "09:30-16:00",
-)
 SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")
 SL_TP_WINDOW_START, SL_TP_WINDOW_END = _account_window_setting("SL_TP_WINDOW")
 

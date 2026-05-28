@@ -26,7 +26,6 @@ from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition
 from .market_data import (
     _day_close_ts,
-    _day_signal_cutoff_ts,
     _ensure_utc_ts,
     get_bars_range,
     get_bars_range_through,
@@ -36,7 +35,6 @@ from .market_data import (
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
-    latest_expected_signal_bar_start_ts,
     load_next_bar_opens,
     load_recent_bars_for_identities,
     log_cache_stats,
@@ -128,7 +126,6 @@ def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
 def _signal_bar_recency_rejection(
     bars: list[Any],
     as_of_ts: datetime,
-    trading_days: list[date],
 ) -> tuple[str, str] | None:
     if not bars:
         return None
@@ -140,8 +137,8 @@ def _signal_bar_recency_rejection(
             "latest_signal_bar_not_complete",
             f"Latest 1h signal bar completes at {latest_complete_ts}, after decision timestamp {as_of_ts}.",
         )
-    expected_signal_bar_start_ts = latest_expected_signal_bar_start_ts(as_of_ts, trading_days)
-    if expected_signal_bar_start_ts is None or latest_signal_bar_start_ts >= expected_signal_bar_start_ts:
+    expected_signal_bar_start_ts = as_of_ts - timedelta(hours=1)
+    if latest_signal_bar_start_ts >= expected_signal_bar_start_ts:
         return None
 
     max_staleness = timedelta(hours=SIGNAL_BAR_MAX_STALENESS_HOURS)
@@ -918,7 +915,7 @@ def run_backtest(
                     ))
                     continue
 
-                staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts, trading_days)
+                staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts)
                 if staleness_rejection is not None:
                     reason_code, reason_text = staleness_rejection
                     decision_events.append(DecisionEvent(
@@ -1182,7 +1179,6 @@ def run_backtest(
         blocked_identities: set[InstrumentKey],
         *,
         require_entry_window: bool = False,
-        entry_deadline_ts: Optional[datetime] = None,
         day_start_equity: Optional[float] = None,
     ) -> int:
         if SECTOR_DIVERSIFICATION_ENABLED:
@@ -1221,7 +1217,6 @@ def run_backtest(
 
         opened_count = 0
         open_identities = {p.identity_key for p in active_positions}
-        entry_deadline_ts = _ensure_utc_ts(entry_deadline_ts) if entry_deadline_ts is not None else None
 
         for plan in plans_to_open:
             event = plan_events.get(_plan_event_key(plan))
@@ -1329,13 +1324,6 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "entry_outside_entry_window"
                     event.reason_text = f"Next entry bar {plan_entry_ts} is outside the configured entry window."
-                continue
-            if entry_deadline_ts is not None and plan_entry_ts > entry_deadline_ts:
-                if event:
-                    event.decision_stage = "portfolio_filter"
-                    event.decision = "blocked"
-                    event.reason_code = "entry_after_deadline"
-                    event.reason_text = f"Next entry bar {plan_entry_ts} is after entry deadline {entry_deadline_ts}."
                 continue
             if account_equity_current <= 0:
                 if event:
@@ -1461,7 +1449,7 @@ def run_backtest(
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
     candidate_score_kwargs = _candidate_score_kwargs(cfg)
     if trading_days:
-        first_signal_decisions = signal_bar_close_decisions_for_day(trading_days[0])
+        first_signal_decisions = signal_bar_close_decisions_for_day(conn, trading_days[0])
         preload_as_of_ts = (
             first_signal_decisions[0][1]
             if first_signal_decisions
@@ -1512,10 +1500,9 @@ def run_backtest(
         day_pnl = 0.0
         opened_today = 0
         used_identities_today: set[InstrumentKey] = set()
-        entry_deadline_ts = _day_signal_cutoff_ts(day)
         day_close_ts = _day_close_ts(day)
         day_start_ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
-        signal_decision_points = signal_bar_close_decisions_for_day(day)
+        signal_decision_points = signal_bar_close_decisions_for_day(conn, day)
         day_decision_ts = signal_decision_points[0][1] if signal_decision_points else day_start_ts
         day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
 
@@ -1683,7 +1670,6 @@ def run_backtest(
             skipped_no_bars += signal_stats["skipped_no_bars"]
             plans_count += signal_stats["plans"]
 
-            signal_entry_deadline_ts = min(entry_deadline_ts, signal_decision_ts)
             opened_today += open_ranked_plans(
                 day,
                 signal_decision_ts,
@@ -1695,7 +1681,6 @@ def run_backtest(
                 open_positions,
                 used_identities_today,
                 require_entry_window=True,
-                entry_deadline_ts=signal_entry_deadline_ts,
                 day_start_equity=day_start_equity,
             )
             buffer_decision_events(signal_decision_events)

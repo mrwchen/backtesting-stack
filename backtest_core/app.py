@@ -155,12 +155,6 @@ def log_backtest_context(model_files: list[str]) -> None:
         ENTRY_WINDOW_END,
     )
     log.info(
-        "Signal decision window tz %s start %s end %s",
-        SIGNAL_DECISION_WINDOW_TZ,
-        SIGNAL_DECISION_WINDOW_START,
-        SIGNAL_DECISION_WINDOW_END,
-    )
-    log.info(
         "SL/TP window tz %s start %s end %s",
         SL_TP_WINDOW_TZ,
         SL_TP_WINDOW_START,
