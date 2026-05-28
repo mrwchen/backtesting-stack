@@ -1749,28 +1749,28 @@ def _ensure_identity_bars_loaded(
         for identity in batch:
             _BAR_CACHE.setdefault(identity, _BarCacheEntry(timestamps=[], bars=[], loaded_until_ts=None))
 
-        lower_bound = min(
-            _BAR_CACHE[identity].loaded_until_ts or _bar_cache_start_ts()
-            for identity in batch
-        )
         symbols = [identity[0] for identity in batch]
         exchanges = [identity[1] for identity in batch]
         ciks = [identity[2] for identity in batch]
+        lower_bounds = [
+            _BAR_CACHE[identity].loaded_until_ts or _bar_cache_start_ts()
+            for identity in batch
+        ]
         rows_loaded = 0
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     "WITH requested AS ("
-                    "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[]) AS u(symbol, exchange, cik)"
+                    "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[], %s::timestamptz[]) AS u(symbol, exchange, cik, lower_bound)"
                     ") "
                     "SELECT b.symbol, b.exchange, b.cik, b.ts, b.open, b.high, b.low, b.close, b.volume "
                     "FROM {} b "
                     "JOIN requested r "
                     "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
-                    "WHERE b.ts >= %s AND b.ts <= %s "
+                    "WHERE b.ts >= r.lower_bound AND b.ts <= %s "
                     "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
                 ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
-                (symbols, exchanges, ciks, lower_bound, up_to_ts),
+                (symbols, exchanges, ciks, lower_bounds, up_to_ts),
             )
             for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
                 identity = instrument_key(symbol, exchange, cik)
@@ -1985,26 +1985,26 @@ def _ensure_signal_bars_loaded(
                 _SIGNAL_BAR_CACHE[identity].loaded_until_ts = up_to_ts
 
         if incremental_batch:
-            lower_bound = min(
-                _last_complete_signal_bar_start_ts(_SIGNAL_BAR_CACHE[identity].loaded_until_ts)
-                for identity in incremental_batch
-                if _SIGNAL_BAR_CACHE[identity].loaded_until_ts is not None
-            )
             symbols = [identity[0] for identity in incremental_batch]
             exchanges = [identity[1] for identity in incremental_batch]
             ciks = [identity[2] for identity in incremental_batch]
-            params = [symbols, exchanges, ciks, lower_bound, complete_upper_ts]
+            lower_bounds = [
+                _last_complete_signal_bar_start_ts(_SIGNAL_BAR_CACHE[identity].loaded_until_ts)
+                for identity in incremental_batch
+                if _SIGNAL_BAR_CACHE[identity].loaded_until_ts is not None
+            ]
+            params = [symbols, exchanges, ciks, lower_bounds, complete_upper_ts]
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
                         "WITH requested AS ("
-                        "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[]) AS u(symbol, exchange, cik)"
+                        "  SELECT * FROM unnest(%s::text[], %s::text[], %s::bigint[], %s::timestamptz[]) AS u(symbol, exchange, cik, lower_bound)"
                         ") "
                         "SELECT b.symbol, b.exchange, b.cik, b.ts, b.open, b.high, b.low, b.close, b.volume "
                         "FROM {} b "
                         "JOIN requested r "
                         "  ON r.symbol = b.symbol AND r.exchange = b.exchange AND r.cik = b.cik "
-                        "WHERE b.ts > %s "
+                        "WHERE b.ts > r.lower_bound "
                         "  AND b.ts <= %s "
                         "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
                     ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),

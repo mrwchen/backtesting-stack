@@ -222,6 +222,9 @@ DECISION_EVENT_FLUSH_BATCH_SIZE = max(1, env_int("DECISION_EVENT_FLUSH_BATCH_SIZ
 DECISION_EVENT_MODE = os.getenv("DECISION_EVENT_MODE", "all").strip().lower()
 if DECISION_EVENT_MODE not in {"all", "signals", "summary", "none"}:
     raise ValueError("DECISION_EVENT_MODE must be one of: all, signals, summary, none")
+TRADE_INSERT_PAGE_SIZE = max(1, env_int("TRADE_INSERT_PAGE_SIZE", 1000))
+ACCOUNT_CURVE_INSERT_PAGE_SIZE = max(1, env_int("ACCOUNT_CURVE_INSERT_PAGE_SIZE", 2000))
+DECISION_EVENT_INSERT_PAGE_SIZE = max(1, env_int("DECISION_EVENT_INSERT_PAGE_SIZE", 2500))
 BAR_CACHE_WARMUP_DAYS = max(1, int(os.getenv("BAR_CACHE_WARMUP_DAYS", "120")))
 BAR_CACHE_BATCH_SIZE = max(1, int(os.getenv("BAR_CACHE_BATCH_SIZE", "100")))
 BAR_CACHE_MAX_MIB = max(128, env_int("BAR_CACHE_MAX_MIB", 1024))

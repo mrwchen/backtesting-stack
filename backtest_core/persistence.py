@@ -291,7 +291,7 @@ def write_trades(
             exit_ts        = EXCLUDED.exit_ts
     """.format(table=_result_table("backtest_trades"))
     with conn.cursor() as cur:
-        execute_values(cur, query, rows, page_size=200)
+        execute_values(cur, query, rows, page_size=TRADE_INSERT_PAGE_SIZE)
     conn.commit()
 
 
@@ -344,7 +344,7 @@ def write_account_curve(
             closed_trades    = EXCLUDED.closed_trades
     """.format(table=_result_table("backtest_account_curve"))
     with conn.cursor() as cur:
-        execute_values(cur, query, rows, page_size=500)
+        execute_values(cur, query, rows, page_size=ACCOUNT_CURVE_INSERT_PAGE_SIZE)
     conn.commit()
     log.info("Wrote %d account-curve snapshots for run %d", len(points), run_id)
 
@@ -475,7 +475,7 @@ def write_decision_events(
         ) VALUES %s
     """.format(table=_result_table("backtest_decision_events"))
     with conn.cursor() as cur:
-        execute_values(cur, query, rows, page_size=500)
+        execute_values(cur, query, rows, page_size=DECISION_EVENT_INSERT_PAGE_SIZE)
     conn.commit()
 
 
