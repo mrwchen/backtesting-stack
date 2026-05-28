@@ -180,7 +180,7 @@ services:
       - RISK_PER_TRADE_EQUITY_PCT=1.5
       - MAX_OPEN_POSITIONS=10
       - MAX_SAME_DAY_REFILLS=2
-      - SECTOR_DIVERSIFICATION_ENABLED=true
+      - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
       # Shock-Overlay-Policy
