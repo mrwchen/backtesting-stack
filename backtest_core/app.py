@@ -206,6 +206,26 @@ def log_backtest_context(model_files: list[str]) -> None:
         SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT,
         SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT,
     )
+    log.info(
+        "Regime risk management enabled %s neutral elevated %s confirm days elevated/high/extreme/recovery %d/%d/%d/%d exit scores %.1f/%.1f max close fraction %.2f cooldown days %d long stop distances %.2f/%.2f/%.2f long caps high/extreme %d/%d close excess %s close risk-off longs %s",
+        REGIME_RISK_MANAGEMENT_ENABLED,
+        REGIME_RISK_NEUTRAL_IS_ELEVATED,
+        REGIME_RISK_ELEVATED_CONFIRM_DAYS,
+        REGIME_RISK_HIGH_CONFIRM_DAYS,
+        REGIME_RISK_EXTREME_CONFIRM_DAYS,
+        REGIME_RISK_RECOVERY_CONFIRM_DAYS,
+        REGIME_RISK_ELEVATED_EXIT_SCORE,
+        REGIME_RISK_HIGH_EXIT_SCORE,
+        REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY,
+        REGIME_RISK_POSITION_COOLDOWN_DAYS,
+        REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT,
+        REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT,
+        REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT,
+        REGIME_RISK_HIGH_MAX_LONG_POSITIONS,
+        REGIME_RISK_EXTREME_MAX_LONG_POSITIONS,
+        REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS,
+        REGIME_RISK_RISK_OFF_CLOSE_LONGS,
+    )
     for regime_label, exposure in REGIME_EXPOSURE_BY_LABEL.items():
         log.info(
             "Regime exposure label %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",

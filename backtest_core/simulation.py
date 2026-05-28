@@ -1,6 +1,7 @@
 """Core point-in-time portfolio simulation loop."""
 
 import logging
+import math
 import time as _time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -59,10 +60,12 @@ from .persistence import (
     write_decision_events,
     write_trades,
 )
+from .regime_risk import ELEVATED, EXTREME_STRESS, HIGH_STRESS, RegimeRiskTracker, RegimeRiskSnapshot
 from .shock_overlay import (
     apply_shock_overlay,
     should_evaluate_disabled_direction,
     risk_off_long_sleeve_risk,
+    shock_sector_bias_for_sector,
     shock_stress_direction_cap,
     shock_stress_plan_block_reason,
     shock_stress_portfolio_block_reason,
@@ -171,6 +174,17 @@ def _copy_plan_shock_to_event(event: DecisionEvent, plan: TradePlan) -> None:
     event.shock_score_delta = plan.shock_score_delta
     event.shock_risk_multiplier = plan.shock_risk_multiplier
     event.shock_base_intent_score = plan.shock_base_intent_score
+
+
+def _copy_regime_shock_to_event(event: DecisionEvent, regime: Any, shock_sector_bias: float | None = None) -> None:
+    event.dominant_shock_type = regime.dominant_shock_type or ""
+    event.max_shock_type_score = regime.max_shock_type_score
+    event.defensive_risk_off_score = regime.defensive_risk_off_score
+    event.energy_commodity_shock_score = regime.energy_commodity_shock_score
+    event.rates_inflation_usd_shock_score = regime.rates_inflation_usd_shock_score
+    event.credit_banking_stress_score = regime.credit_banking_stress_score
+    event.policy_geopolitical_score = regime.policy_geopolitical_score
+    event.shock_sector_bias = shock_sector_bias
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -565,6 +579,8 @@ def run_backtest(
     account_curve: list[AccountCurvePoint] = []
     account_curve_seq = 0
     decision_event_buffer: list[DecisionEvent] = []
+    regime_risk_tracker = RegimeRiskTracker()
+    regime_risk_action_dates: dict[InstrumentKey, date] = {}
 
     def flush_decision_events(force: bool = False) -> None:
         if not decision_event_buffer:
@@ -726,6 +742,326 @@ def run_backtest(
             record_account_curve(end_ts, active_positions)
 
         return active_positions, closed_count, realized_pnl
+
+    def latest_close_for_position(position: OpenPosition, end_ts: datetime) -> tuple[datetime, float] | None:
+        end_ts = _ensure_utc_ts(end_ts)
+        after_ts = (
+            position.last_bar_ts - timedelta(microseconds=1)
+            if position.last_bar_ts is not None
+            else position.entry_ts - timedelta(microseconds=1)
+        )
+        bars = get_bars_range_through(conn, position.identity_key, after_ts, end_ts)
+        if not bars:
+            return None
+        ts, _open, _high, _low, close = bars[-1]
+        return _ensure_utc_ts(ts), float(close)
+
+    def long_unrealized_pct(position: OpenPosition, current_price: float) -> float:
+        if position.entry_price <= 0.0:
+            return 0.0
+        return (current_price / position.entry_price - 1.0) * 100.0
+
+    def regime_risk_stop_distance_pct(snapshot: RegimeRiskSnapshot) -> float | None:
+        if snapshot.tier >= EXTREME_STRESS:
+            return REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT
+        if snapshot.tier >= HIGH_STRESS:
+            return REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT
+        if snapshot.tier >= ELEVATED:
+            return REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT
+        return None
+
+    def regime_risk_long_target_cap(regime: Any, regime_exposure: dict, snapshot: RegimeRiskSnapshot) -> int:
+        base_cap = direction_max_positions(regime_exposure, "LONG")
+        stress_cap = shock_stress_direction_cap(regime, "LONG", base_cap)
+        if snapshot.tier >= EXTREME_STRESS:
+            return min(stress_cap, REGIME_RISK_EXTREME_MAX_LONG_POSITIONS)
+        if snapshot.tier >= HIGH_STRESS:
+            return min(stress_cap, REGIME_RISK_HIGH_MAX_LONG_POSITIONS)
+        return stress_cap
+
+    def regime_risk_event(
+        day: date,
+        as_of_ts: datetime,
+        regime: Any,
+        snapshot: RegimeRiskSnapshot,
+        decision: str,
+        reason_code: str,
+        reason_text: str,
+        position: OpenPosition | None = None,
+        current_price: float | None = None,
+        shock_sector_bias: float | None = None,
+        open_position_count: int | None = None,
+    ) -> DecisionEvent:
+        event = DecisionEvent(
+            run_id=run_id,
+            intent_date=day,
+            as_of_ts=as_of_ts,
+            symbol=position.symbol if position else None,
+            exchange=position.exchange if position else None,
+            cik=position.cik if position else None,
+            direction=position.direction if position else None,
+            decision_stage="regime_risk",
+            decision=decision,
+            reason_code=reason_code,
+            reason_text=reason_text,
+            intent_passed=False,
+            opened=False,
+            world_regime_label=regime.label,
+            world_regime_score=regime.score,
+            valuation_label=position.valuation_label if position else "",
+            sector=position.plan.sector if position else "",
+            industry=position.plan.industry if position else "",
+            fundamental_score=position.plan.fundamental_score if position else None,
+            intent_score=position.plan.intent_score if position else None,
+            intent_reason=position.plan.intent_reason if position else "",
+            entry_ts=position.entry_ts if position else None,
+            entry_price=position.entry_price if position else None,
+            stop_loss=position.effective_sl if position else None,
+            take_profit=position.take_profit if position else None,
+            trailing_activation_price=position.trailing_activation_price if position else None,
+            trailing_distance_pct=position.trailing_distance_pct if position else None,
+            open_positions=len(open_positions) if open_position_count is None else open_position_count,
+            max_open_positions=MAX_OPEN_POSITIONS,
+            account_equity=equity,
+            position_size_usd=position.position_size_usd if position else None,
+            shares=position.shares if position else None,
+        )
+        _copy_regime_shock_to_event(event, regime, shock_sector_bias)
+        return event
+
+    def apply_regime_risk_management(
+        day: date,
+        as_of_ts: datetime,
+        regime: Any,
+        regime_label: str,
+        regime_exposure: dict,
+        snapshot: RegimeRiskSnapshot,
+        positions: list[OpenPosition],
+        closed_identity_blocklist: set[InstrumentKey],
+    ) -> tuple[list[OpenPosition], int, float, list[DecisionEvent]]:
+        nonlocal equity
+        events: list[DecisionEvent] = []
+        active_positions = list(positions)
+        closed_count = 0
+        realized_pnl = 0.0
+
+        if snapshot.state != "NORMAL" or snapshot.raw_tier > 0:
+            events.append(regime_risk_event(
+                day,
+                as_of_ts,
+                regime,
+                snapshot,
+                "state",
+                f"regime_risk_{snapshot.state.lower()}",
+                (
+                    f"{snapshot.state}: {snapshot.reason}; raw_tier={snapshot.raw_tier}; "
+                    f"shock_score={snapshot.shock_score:.2f}; recovery_count={snapshot.recovery_count}."
+                ),
+                open_position_count=len(active_positions),
+            ))
+
+        if not REGIME_RISK_MANAGEMENT_ENABLED or snapshot.tier <= 0:
+            return active_positions, closed_count, realized_pnl, events
+
+        long_positions = [pos for pos in active_positions if pos.direction == "LONG"]
+        if not long_positions:
+            return active_positions, closed_count, realized_pnl, events
+
+        if long_positions:
+            preload_identity_bars(
+                conn,
+                [pos.identity_key for pos in long_positions],
+                _ensure_utc_ts(as_of_ts),
+                batch_size=BAR_CACHE_BATCH_SIZE,
+                log_batches=False,
+            )
+
+        price_by_position: dict[int, tuple[datetime, float]] = {}
+        bias_by_position: dict[int, float] = {}
+        for position in long_positions:
+            latest = latest_close_for_position(position, as_of_ts)
+            if latest is None:
+                continue
+            price_by_position[id(position)] = latest
+            try:
+                bias_by_position[id(position)] = shock_sector_bias_for_sector(position.plan.sector, "LONG", regime)
+            except Exception as exc:
+                bias_by_position[id(position)] = position.plan.shock_sector_bias
+                log.debug(
+                    "Regime risk sector bias fallback %s %s %s: %s",
+                    day,
+                    position.symbol,
+                    position.plan.sector,
+                    exc,
+                )
+
+        if not price_by_position:
+            return active_positions, closed_count, realized_pnl, events
+
+        def close_priority(position: OpenPosition) -> tuple[float, float, float, float, float]:
+            _ts, current_price = price_by_position[id(position)]
+            valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
+            selected_labels = (
+                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
+            )
+            negative_bias = 1.0 if bias_by_position.get(id(position), 0.0) < 0.0 else 0.0
+            selected_value_label = 1.0 if valuation_label in selected_labels else 0.0
+            losing_pct = max(0.0, -long_unrealized_pct(position, current_price))
+            weak_intent = -float(position.plan.intent_score or 0.0)
+            age_days = max(0.0, float((day - position.entry_date).days))
+            return negative_bias, selected_value_label, losing_pct, weak_intent, age_days
+
+        candidates_by_position: dict[int, tuple[OpenPosition, list[str]]] = {}
+
+        def add_close_candidate(position: OpenPosition, reason: str) -> None:
+            if id(position) not in price_by_position:
+                return
+            current = candidates_by_position.get(id(position))
+            if current is None:
+                candidates_by_position[id(position)] = (position, [reason])
+            elif reason not in current[1]:
+                current[1].append(reason)
+
+        ranked_longs = sorted(
+            [pos for pos in long_positions if id(pos) in price_by_position],
+            key=close_priority,
+            reverse=True,
+        )
+
+        if snapshot.tier >= HIGH_STRESS and REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS:
+            target_cap = regime_risk_long_target_cap(regime, regime_exposure, snapshot)
+            excess_longs = max(0, len(long_positions) - target_cap)
+            for position in ranked_longs[:excess_longs]:
+                add_close_candidate(position, f"long_count_above_confirmed_regime_cap_{target_cap}")
+
+        if snapshot.tier >= HIGH_STRESS:
+            label_set = (
+                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
+            )
+            close_negative_bias = (
+                REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS
+            )
+            for position in ranked_longs:
+                valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
+                if valuation_label in label_set:
+                    add_close_candidate(position, f"valuation_label_{valuation_label}_under_{snapshot.state.lower()}")
+                if close_negative_bias and bias_by_position.get(id(position), 0.0) < 0.0:
+                    add_close_candidate(position, f"negative_current_shock_sector_bias_{bias_by_position[id(position)]:.2f}")
+
+        if (
+            snapshot.tier >= EXTREME_STRESS
+            and REGIME_RISK_RISK_OFF_CLOSE_LONGS
+            and str(regime_label or "").strip().upper() == "RISK-OFF"
+        ):
+            for position in ranked_longs:
+                add_close_candidate(position, "risk_off_confirmed_close_longs")
+
+        max_closes = max(1, math.ceil(len(ranked_longs) * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY))
+        close_candidates = sorted(
+            (value[0] for value in candidates_by_position.values()),
+            key=close_priority,
+            reverse=True,
+        )[:max_closes]
+
+        for position in close_candidates:
+            _price_ts, exit_price = price_by_position[id(position)]
+            exit_ts = _ensure_utc_ts(as_of_ts)
+            reasons = candidates_by_position[id(position)][1]
+            trade = _exit_trade(
+                conn,
+                position,
+                "REGIME_RISK_CLOSE",
+                exit_price,
+                day,
+                position.bars_processed,
+                equity,
+                exit_ts,
+            )
+            _remove_position_by_identity(active_positions, position)
+            trade.equity_after = round(equity + trade.pnl_usd, 2)
+            equity = trade.equity_after
+            closed_trades.append(trade)
+            closed_count += 1
+            realized_pnl += trade.pnl_usd
+            closed_identity_blocklist.add(position.identity_key)
+            regime_risk_action_dates[position.identity_key] = day
+            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+            events.append(regime_risk_event(
+                day,
+                exit_ts,
+                regime,
+                snapshot,
+                "closed",
+                "regime_risk_close",
+                (
+                    f"Closed existing long after confirmed {snapshot.state}; "
+                    f"reasons={','.join(reasons)}; exit_price={exit_price:.4f}; "
+                    f"pnl_usd={trade.pnl_usd:.2f}."
+                ),
+                position,
+                exit_price,
+                bias,
+                open_position_count=len(active_positions),
+            ))
+            log.debug(
+                "Regime risk closed %-6s %s state %s pnl %.0f balance %.0f",
+                position.symbol,
+                position.direction,
+                snapshot.state,
+                trade.pnl_usd,
+                equity,
+            )
+            record_account_curve(exit_ts, active_positions)
+
+        stop_distance_pct = regime_risk_stop_distance_pct(snapshot)
+        if stop_distance_pct is None:
+            return active_positions, closed_count, realized_pnl, events
+
+        for position in list(active_positions):
+            if position.direction != "LONG" or id(position) not in price_by_position:
+                continue
+            last_action_date = regime_risk_action_dates.get(position.identity_key)
+            if (
+                last_action_date is not None
+                and REGIME_RISK_POSITION_COOLDOWN_DAYS > 0
+                and (day - last_action_date).days < REGIME_RISK_POSITION_COOLDOWN_DAYS
+            ):
+                continue
+            _price_ts, current_price = price_by_position[id(position)]
+            action_ts = _ensure_utc_ts(as_of_ts)
+            new_stop = current_price * (1.0 - stop_distance_pct / 100.0)
+            if new_stop <= position.effective_sl or new_stop >= current_price:
+                continue
+            old_stop = position.effective_sl
+            position.effective_sl = new_stop
+            position.stop_loss = max(position.stop_loss, new_stop)
+            regime_risk_action_dates[position.identity_key] = day
+            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+            events.append(regime_risk_event(
+                day,
+                action_ts,
+                regime,
+                snapshot,
+                "tightened_stop",
+                "regime_risk_stop_tightened",
+                (
+                    f"Tightened long stop after confirmed {snapshot.state}; "
+                    f"old_stop={old_stop:.4f}; new_stop={new_stop:.4f}; "
+                    f"max_distance_pct={stop_distance_pct:.2f}; current_price={current_price:.4f}."
+                ),
+                position,
+                current_price,
+                bias,
+                open_position_count=len(active_positions),
+            ))
+
+        return active_positions, closed_count, realized_pnl, events
 
     def build_intent_plans_for_as_of(
         day: date,
@@ -1556,6 +1892,44 @@ def run_backtest(
                 direction_max_positions(regime_exposure, "LONG"),
                 direction_max_positions(regime_exposure, "SHORT"),
             )
+
+        open_positions, closed_before_regime_risk, pnl_before_regime_risk = apply_position_events_through(
+            open_positions,
+            day_decision_ts,
+            closed_identity_blocklist=used_identities_today,
+        )
+        closed_today += closed_before_regime_risk
+        day_pnl += pnl_before_regime_risk
+
+        if REGIME_RISK_MANAGEMENT_ENABLED:
+            regime_risk_snapshot = regime_risk_tracker.update(regime_label, regime)
+            open_positions, closed_by_regime_risk, pnl_by_regime_risk, regime_risk_events = apply_regime_risk_management(
+                day,
+                day_decision_ts,
+                regime,
+                regime_label,
+                regime_exposure,
+                regime_risk_snapshot,
+                open_positions,
+                used_identities_today,
+            )
+            closed_today += closed_by_regime_risk
+            day_pnl += pnl_by_regime_risk
+            buffer_decision_events(regime_risk_events)
+            if log_progress_today and regime_risk_snapshot.state != "NORMAL":
+                log.info(
+                    "Regime risk day %d/%d %s model %s state %s raw tier %d shock %.1f closed %d day pnl %.0f open %d",
+                    day_idx,
+                    len(trading_days),
+                    day,
+                    runtime.CURRENT_MODEL_FILE,
+                    regime_risk_snapshot.state,
+                    regime_risk_snapshot.raw_tier,
+                    regime_risk_snapshot.shock_score,
+                    closed_by_regime_risk,
+                    day_pnl,
+                    len(open_positions),
+                )
 
         if all(
             direction_risk_multiplier(regime_exposure, direction) <= 0.0

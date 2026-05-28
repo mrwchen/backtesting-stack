@@ -454,6 +454,26 @@ def _copy_regime_to_plan(plan: TradePlan, regime: WorldRegime) -> None:
     plan.policy_geopolitical_score = regime.policy_geopolitical_score
 
 
+def shock_sector_bias_for_sector(sector: str, direction: str, regime: WorldRegime) -> float:
+    if not SHOCK_OVERLAY_ACTIVE:
+        return 0.0
+
+    policy = load_shock_overlay_policy()
+    sector_key = _normalize_sector(sector)
+    if not sector_key:
+        return 0.0
+
+    bias = 0.0
+    for shock_type in SHOCK_SCORE_ATTRS:
+        strength = _shock_strength(_shock_score(regime, shock_type))
+        if strength <= 0.0:
+            continue
+        bias += strength * policy.sector_bias.get((shock_type, sector_key), 0.0)
+
+    bias = clamp(bias, -1.0, 1.0)
+    return _apply_special_rules(bias, policy, regime, sector_key, direction)
+
+
 def apply_shock_overlay(plan: TradePlan, fundamental: FundamentalRow, regime: WorldRegime) -> None:
     plan.shock_base_intent_score = float(plan.intent_score)
     plan.shock_score_delta = 0.0

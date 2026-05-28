@@ -47,7 +47,7 @@ class OpenPosition:
 @dataclass
 class ClosedTrade:
     position: OpenPosition
-    outcome_status: str        # HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
+    outcome_status: str        # HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | REGIME_RISK_CLOSE | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price: float
     outcome_date: date
     outcome_bars: int
