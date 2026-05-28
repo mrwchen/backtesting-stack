@@ -198,7 +198,7 @@ services:
       - SHOCK_OVERLAY_SPECIAL_RULES_SHEET=special_rules
 
       # Shock-Score-Bereich, in dem der Excel-Bias von 0 auf volle Staerke skaliert.
-      - SHOCK_OVERLAY_MIN_SHOCK_SCORE=55.0
+      - SHOCK_OVERLAY_MIN_SHOCK_SCORE=60.0
       - SHOCK_OVERLAY_FULL_SHOCK_SCORE=70.0
 
       # Maximaler Auf-/Abschlag auf den Modell-Intent-Score durch das Overlay.
