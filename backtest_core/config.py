@@ -180,6 +180,13 @@ def _account_window_setting(env_key: str) -> tuple[str, str]:
         raise ValueError(f"{prefixed_key} is required and must use HH:MM-HH:MM format")
     return _parse_window_setting(prefixed_key, raw)
 
+def _account_window_setting_default(env_key: str, default: str) -> tuple[str, str]:
+    prefixed_key = f"{_ACC_ENV_PREFIX}_{env_key}"
+    raw = os.getenv(prefixed_key)
+    if raw is None:
+        raw = os.getenv(env_key, default)
+    return _parse_window_setting(prefixed_key if os.getenv(prefixed_key) is not None else env_key, raw)
+
 MARGIN_REQUIREMENT_PCT = _account_float("MARGIN_REQUIREMENT_PCT", "margin_requirement_pct") if "margin_requirement_pct" in _ACC else None
 IBKR_LONG_INITIAL_MARGIN_PCT = _account_float("LONG_INITIAL_MARGIN_PCT", "long_initial_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
 IBKR_LONG_MAINTENANCE_MARGIN_PCT = _account_float("LONG_MAINTENANCE_MARGIN_PCT", "long_maintenance_margin_pct") if ACCOUNT_PROFILE == "ibkr_acc" else None
@@ -494,6 +501,15 @@ DAILY_DECISION_TZ = (
 DAILY_DECISION_TIME = _parse_hhmm_setting(
     f"{_ACC_ENV_PREFIX}_DAILY_DECISION_TIME",
     os.getenv(f"{_ACC_ENV_PREFIX}_DAILY_DECISION_TIME", os.getenv("DAILY_DECISION_TIME", "10:00")),
+)
+REFILL_ANALYSIS_MODE = _account_setting("REFILL_ANALYSIS_MODE", "fresh_intraday").strip().lower()
+if REFILL_ANALYSIS_MODE not in {"fresh_intraday", "daily_list"}:
+    raise ValueError("REFILL_ANALYSIS_MODE must be one of: fresh_intraday, daily_list")
+SIGNAL_BAR_WINDOW_ENABLED = _account_setting_bool("SIGNAL_BAR_WINDOW_ENABLED", True)
+SIGNAL_BAR_WINDOW_TZ = _account_setting("SIGNAL_BAR_WINDOW_TZ", ENTRY_WINDOW_TZ)
+SIGNAL_BAR_WINDOW_START, SIGNAL_BAR_WINDOW_END = _account_window_setting_default(
+    "SIGNAL_BAR_WINDOW",
+    "09:30-16:00",
 )
 SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")
 SL_TP_WINDOW_START, SL_TP_WINDOW_END = _account_window_setting("SL_TP_WINDOW")

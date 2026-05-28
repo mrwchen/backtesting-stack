@@ -331,8 +331,18 @@ services:
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
       - PS_ENTRY_WINDOW=10:00-15:30
+      # Timezone for the once-per-day initial model decision.
       - DAILY_DECISION_TZ=America/New_York
+      # Initial daily model decision time; entries still wait for the entry window.
       - DAILY_DECISION_TIME=09:00
+      # Refill mode: daily_list reuses the morning list, fresh_intraday reruns point-in-time analysis.
+      - REFILL_ANALYSIS_MODE=fresh_intraday
+      # Enables a separate signal-bar analysis window independent from the entry window.
+      - SIGNAL_BAR_WINDOW_ENABLED=true
+      # Timezone for filtering signal bars used by model analysis.
+      - SIGNAL_BAR_WINDOW_TZ=America/New_York
+      # Regular-session signal-bar window; bars must fit fully inside this interval.
+      - SIGNAL_BAR_WINDOW=09:30-16:00
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true

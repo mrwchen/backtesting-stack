@@ -486,9 +486,6 @@ def update_run_summary(
     final_equity: float,
     max_drawdown_pct: Optional[float] = None,
 ) -> None:
-    if not trades:
-        return
-
     wins      = [t for t in trades if t.pnl_usd > 0]
     losses    = [t for t in trades if t.pnl_usd < 0]
     breakevens= [t for t in trades if t.pnl_usd == 0]

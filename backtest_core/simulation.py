@@ -37,6 +37,7 @@ from .market_data import (
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
+    latest_expected_signal_bar_start_ts,
     load_next_bar_opens,
     load_recent_bars_for_identities,
     log_cache_stats,
@@ -125,16 +126,25 @@ def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
     )
 
 
-def _signal_bar_recency_rejection(bars: list[Any], as_of_ts: datetime) -> tuple[str, str] | None:
+def _signal_bar_recency_rejection(
+    bars: list[Any],
+    as_of_ts: datetime,
+    trading_days: list[date],
+) -> tuple[str, str] | None:
     if not bars:
         return None
-    latest_complete_ts = _ensure_utc_ts(bars[-1].ts) + timedelta(hours=1)
+    latest_signal_bar_start_ts = _ensure_utc_ts(bars[-1].ts)
+    latest_complete_ts = latest_signal_bar_start_ts + timedelta(hours=1)
     as_of_ts = _ensure_utc_ts(as_of_ts)
     if latest_complete_ts > as_of_ts:
         return (
             "latest_signal_bar_not_complete",
             f"Latest 1h signal bar completes at {latest_complete_ts}, after decision timestamp {as_of_ts}.",
         )
+    expected_signal_bar_start_ts = latest_expected_signal_bar_start_ts(as_of_ts, trading_days)
+    if expected_signal_bar_start_ts is None or latest_signal_bar_start_ts >= expected_signal_bar_start_ts:
+        return None
+
     max_staleness = timedelta(hours=SIGNAL_BAR_MAX_STALENESS_HOURS)
     staleness = as_of_ts - latest_complete_ts
     if staleness > max_staleness:
@@ -142,7 +152,8 @@ def _signal_bar_recency_rejection(bars: list[Any], as_of_ts: datetime) -> tuple[
             "latest_signal_bar_too_stale",
             (
                 f"Latest complete 1h signal bar ended at {latest_complete_ts}, "
-                f"{staleness} before decision timestamp {as_of_ts}; max allowed is {max_staleness}."
+                f"{staleness} before decision timestamp {as_of_ts}; latest expected signal bar start "
+                f"was {expected_signal_bar_start_ts}; max allowed during an active signal session is {max_staleness}."
             ),
         )
     return None
@@ -909,7 +920,7 @@ def run_backtest(
                     ))
                     continue
 
-                staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts)
+                staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts, trading_days)
                 if staleness_rejection is not None:
                     reason_code, reason_text = staleness_rejection
                     decision_events.append(DecisionEvent(
@@ -1691,7 +1702,8 @@ def run_backtest(
         model = get_model_module()
 
         # Existing positions are advanced to the morning decision first; the
-        # daily list is then frozen and reused for any later refill.
+        # daily list handles initial entries and can still be used by the
+        # optional daily_list refill mode.
         open_positions, closed_before_decision, pnl_before_decision, _ = apply_position_events_through(
             open_positions,
             day_decision_ts,
@@ -1767,8 +1779,43 @@ def run_backtest(
             refill_ts: datetime,
             active_positions: list[OpenPosition],
             blocked_identities: set[InstrumentKey],
-            _refill_deadline_ts: datetime,
+            refill_deadline_ts: datetime,
         ) -> int:
+            if REFILL_ANALYSIS_MODE == "fresh_intraday":
+                (
+                    refill_plans_by_direction,
+                    refill_plan_events,
+                    refill_events,
+                    _refill_stats,
+                    _refill_plan_contexts,
+                ) = build_intent_plans_for_as_of(
+                    day,
+                    refill_ts,
+                    regime,
+                    regime_label,
+                    regime_exposure,
+                    model,
+                    active_positions,
+                    log_progress_today=False,
+                    context_label="refill",
+                )
+                opened = open_ranked_plans(
+                    day,
+                    refill_ts,
+                    regime,
+                    regime_label,
+                    regime_exposure,
+                    refill_plans_by_direction,
+                    refill_plan_events,
+                    active_positions,
+                    blocked_identities,
+                    require_entry_window=True,
+                    entry_deadline_ts=refill_deadline_ts,
+                    day_start_equity=day_start_equity,
+                )
+                buffer_decision_events(refill_events)
+                return opened
+
             refill_plans_by_direction, refill_plan_events = reprice_daily_plans_for_as_of(
                 day,
                 refill_ts,
@@ -1791,7 +1838,7 @@ def run_backtest(
                 active_positions,
                 blocked_identities,
                 require_entry_window=True,
-                entry_deadline_ts=entry_deadline_ts,
+                entry_deadline_ts=refill_deadline_ts,
                 day_start_equity=day_start_equity,
             )
 

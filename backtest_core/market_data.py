@@ -99,6 +99,7 @@ _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
 _DAILY_DECISION_ZONE = ZoneInfo(DAILY_DECISION_TZ)
+_SIGNAL_BAR_WINDOW_ZONE = ZoneInfo(SIGNAL_BAR_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SIGNAL_BAR_DURATION = timedelta(hours=1)
@@ -1608,6 +1609,20 @@ def _is_in_entry_window(
     return _is_local_time_in_window(local, ENTRY_WINDOW_START, ENTRY_WINDOW_END)
 
 
+def _is_in_signal_bar_window(
+    ts: datetime,
+    conn: Optional[psycopg2.extensions.connection] = None,
+    identity: Optional[InstrumentKey] = None,
+) -> bool:
+    if conn is not None and identity is not None and _is_pepperstone_24_symbol(conn, identity):
+        return True
+    if not SIGNAL_BAR_WINDOW_ENABLED:
+        return True
+    local_start = ts.astimezone(_SIGNAL_BAR_WINDOW_ZONE)
+    local_end = (_ensure_utc_ts(ts) + _SIGNAL_BAR_DURATION).astimezone(_SIGNAL_BAR_WINDOW_ZONE)
+    return _is_local_bar_fully_in_window(local_start, local_end, SIGNAL_BAR_WINDOW_START, SIGNAL_BAR_WINDOW_END)
+
+
 def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) -> bool:
     start_h, start_m = _parse_hhmm(start_hhmm)
     end_h, end_m = _parse_hhmm(end_hhmm)
@@ -1617,6 +1632,33 @@ def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) ->
     if start <= end:
         return start <= current <= end
     return current >= start or current <= end
+
+
+def _is_local_bar_fully_in_window(local_start: datetime, local_end: datetime, start_hhmm: str, end_hhmm: str) -> bool:
+    start_h, start_m = _parse_hhmm(start_hhmm)
+    end_h, end_m = _parse_hhmm(end_hhmm)
+    window_start = start_h * 60 + start_m
+    window_end = end_h * 60 + end_m
+    start_minute = local_start.hour * 60 + local_start.minute
+    end_minute = local_end.hour * 60 + local_end.minute
+    if local_end.date() > local_start.date():
+        end_minute += 1440
+    return _is_bar_minutes_fully_in_window(start_minute, end_minute, window_start, window_end)
+
+
+def _is_bar_minutes_fully_in_window(
+    start_minute: int,
+    end_minute: int,
+    window_start: int,
+    window_end: int,
+) -> bool:
+    if window_start <= window_end:
+        return start_minute >= window_start and end_minute <= window_end
+    if start_minute < window_start:
+        start_minute += 1440
+    if end_minute < window_start:
+        end_minute += 1440
+    return start_minute >= window_start and end_minute <= window_end + 1440
 
 
 def _is_in_sl_tp_window(
@@ -1648,6 +1690,56 @@ def _day_decision_ts(d: date) -> datetime:
 
 def _last_complete_signal_bar_start_ts(up_to_ts: datetime) -> datetime:
     return _ensure_utc_ts(up_to_ts) - _SIGNAL_BAR_DURATION
+
+
+def _signal_bar_start_minutes_for_window() -> list[int]:
+    start_h, start_m = _parse_hhmm(SIGNAL_BAR_WINDOW_START)
+    end_h, end_m = _parse_hhmm(SIGNAL_BAR_WINDOW_END)
+    window_start = start_h * 60 + start_m
+    window_end = end_h * 60 + end_m
+    return [
+        start_minute
+        for start_minute in range(0, 24 * 60, 60)
+        if _is_bar_minutes_fully_in_window(
+            start_minute,
+            start_minute + int(_SIGNAL_BAR_DURATION.total_seconds() // 60),
+            window_start,
+            window_end,
+        )
+    ]
+
+
+def latest_expected_signal_bar_start_ts(
+    as_of_ts: datetime,
+    trading_days: list[date],
+) -> Optional[datetime]:
+    if not SIGNAL_BAR_WINDOW_ENABLED:
+        return _last_complete_signal_bar_start_ts(as_of_ts)
+
+    complete_upper_ts = _last_complete_signal_bar_start_ts(as_of_ts)
+    complete_upper_local = complete_upper_ts.astimezone(_SIGNAL_BAR_WINDOW_ZONE)
+    complete_upper_date = complete_upper_local.date()
+    start_minutes = _signal_bar_start_minutes_for_window()
+    if not start_minutes:
+        return None
+
+    for trading_day in reversed(trading_days):
+        if trading_day > complete_upper_date:
+            continue
+        for start_minute in reversed(start_minutes):
+            hour, minute = divmod(start_minute, 60)
+            local_start = datetime(
+                trading_day.year,
+                trading_day.month,
+                trading_day.day,
+                hour,
+                minute,
+                tzinfo=_SIGNAL_BAR_WINDOW_ZONE,
+            )
+            signal_start_ts = local_start.astimezone(timezone.utc)
+            if signal_start_ts <= complete_upper_ts:
+                return signal_start_ts
+    return None
 
 
 def _bar_cache_start_ts() -> datetime:
@@ -1894,24 +1986,25 @@ def preload_identity_bars(
     )
 
 
-def _entry_window_sql_filter(apply_entry_window: bool = True) -> tuple[sql.SQL, list[object]]:
-    if not apply_entry_window or not ENTRY_WINDOW_ENABLED:
+def _signal_bar_window_sql_filter(apply_signal_window: bool = True) -> tuple[sql.SQL, list[object]]:
+    if not apply_signal_window or not SIGNAL_BAR_WINDOW_ENABLED:
         return sql.SQL(""), []
 
-    start_h, start_m = _parse_hhmm(ENTRY_WINDOW_START)
-    end_h, end_m = _parse_hhmm(ENTRY_WINDOW_END)
+    start_h, start_m = _parse_hhmm(SIGNAL_BAR_WINDOW_START)
+    end_h, end_m = _parse_hhmm(SIGNAL_BAR_WINDOW_END)
     start_time = time(start_h, start_m)
     end_time = time(end_h, end_m)
-    local_time = sql.SQL("(b.ts AT TIME ZONE %s)::time")
+    local_start_time = sql.SQL("(b.ts AT TIME ZONE %s)::time")
+    local_end_time = sql.SQL("((b.ts + interval '1 hour') AT TIME ZONE %s)::time")
 
     if start_time <= end_time:
         return (
-            sql.SQL("AND {} BETWEEN %s AND %s").format(local_time),
-            [ENTRY_WINDOW_TZ, start_time, end_time],
+            sql.SQL("AND {} >= %s AND {} <= %s").format(local_start_time, local_end_time),
+            [SIGNAL_BAR_WINDOW_TZ, start_time, SIGNAL_BAR_WINDOW_TZ, end_time],
         )
     return (
-        sql.SQL("AND ({} >= %s OR {} <= %s)").format(local_time, local_time),
-        [ENTRY_WINDOW_TZ, start_time, ENTRY_WINDOW_TZ, end_time],
+        sql.SQL("AND ({} >= %s OR {} <= %s)").format(local_start_time, local_end_time),
+        [SIGNAL_BAR_WINDOW_TZ, start_time, SIGNAL_BAR_WINDOW_TZ, end_time],
     )
 
 
@@ -1923,7 +2016,7 @@ def _ensure_signal_bars_loaded(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
-    apply_entry_window: bool = True,
+    apply_signal_window: bool = True,
 ) -> bool:
     up_to_ts = _ensure_utc_ts(up_to_ts)
     complete_upper_ts = _last_complete_signal_bar_start_ts(up_to_ts)
@@ -1962,7 +2055,7 @@ def _ensure_signal_bars_loaded(
             up_to_ts,
         )
 
-    entry_filter, entry_params = _entry_window_sql_filter(apply_entry_window)
+    signal_filter, signal_params = _signal_bar_window_sql_filter(apply_signal_window)
     for batch_idx, batch in enumerate(batches, start=1):
         batch_started = _time.perf_counter()
         for identity in batch:
@@ -1987,7 +2080,7 @@ def _ensure_signal_bars_loaded(
             symbols = [identity[0] for identity in fresh_batch]
             exchanges = [identity[1] for identity in fresh_batch]
             ciks = [identity[2] for identity in fresh_batch]
-            params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *entry_params, limit]
+            params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *signal_params, limit]
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -2008,7 +2101,7 @@ def _ensure_signal_bars_loaded(
                         "  LIMIT %s"
                         ") b ON TRUE "
                         "ORDER BY r.symbol, r.exchange, r.cik, b.ts"
-                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
+                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), signal_filter),
                     params,
                 )
                 for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -2030,7 +2123,7 @@ def _ensure_signal_bars_loaded(
             symbols = [identity[0] for identity in incremental_batch]
             exchanges = [identity[1] for identity in incremental_batch]
             ciks = [identity[2] for identity in incremental_batch]
-            params = [symbols, exchanges, ciks, lower_bound, complete_upper_ts, *entry_params]
+            params = [symbols, exchanges, ciks, lower_bound, complete_upper_ts, *signal_params]
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -2045,7 +2138,7 @@ def _ensure_signal_bars_loaded(
                         "  AND b.ts <= %s "
                         "  {} "
                         "ORDER BY b.symbol, b.exchange, b.cik, b.ts"
-                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
+                    ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), signal_filter),
                     params,
                 )
                 for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -2142,7 +2235,7 @@ def _load_recent_bars_for_identities_direct(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
-    apply_entry_window: bool = True,
+    apply_signal_window: bool = True,
 ) -> dict[InstrumentKey, list[Bar]]:
     up_to_ts = _ensure_utc_ts(up_to_ts)
     complete_upper_ts = _last_complete_signal_bar_start_ts(up_to_ts)
@@ -2163,13 +2256,13 @@ def _load_recent_bars_for_identities_direct(
             up_to_ts,
         )
 
-    entry_filter, entry_params = _entry_window_sql_filter(apply_entry_window)
+    signal_filter, signal_params = _signal_bar_window_sql_filter(apply_signal_window)
     for batch_idx, batch in enumerate(batches, start=1):
         batch_started = _time.perf_counter()
         symbols = [identity[0] for identity in batch]
         exchanges = [identity[1] for identity in batch]
         ciks = [identity[2] for identity in batch]
-        params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *entry_params, limit]
+        params: list[object] = [symbols, exchanges, ciks, complete_upper_ts, *signal_params, limit]
         rows_loaded = 0
 
         with conn.cursor() as cur:
@@ -2192,7 +2285,7 @@ def _load_recent_bars_for_identities_direct(
                     "  LIMIT %s"
                     ") b ON TRUE "
                     "ORDER BY r.symbol, r.exchange, r.cik, b.ts"
-                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), entry_filter),
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE), signal_filter),
                 params,
             )
             for symbol, exchange, cik, ts, open_, high, low, close, volume in cur.fetchall():
@@ -2230,7 +2323,7 @@ def _load_recent_bars_for_identity_group(
     *,
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
-    apply_entry_window: bool = True,
+    apply_signal_window: bool = True,
 ) -> dict[InstrumentKey, list[Bar]]:
     up_to_ts = _ensure_utc_ts(up_to_ts)
     unique_identities = sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities})
@@ -2245,7 +2338,7 @@ def _load_recent_bars_for_identity_group(
             up_to_ts,
             batch_size=batch_size,
             log_batches=log_batches,
-            apply_entry_window=apply_entry_window,
+            apply_signal_window=apply_signal_window,
         )
         if loaded:
             bars_by_identity = _recent_bars_from_signal_cache(unique_identities, limit, up_to_ts)
@@ -2270,7 +2363,7 @@ def _load_recent_bars_for_identity_group(
         up_to_ts,
         batch_size=batch_size,
         log_batches=log_batches,
-        apply_entry_window=apply_entry_window,
+        apply_signal_window=apply_signal_window,
     )
 
 
@@ -2283,9 +2376,9 @@ def load_recent_bars_for_identities(
     batch_size: int = BAR_CACHE_BATCH_SIZE,
     log_batches: bool = False,
 ) -> dict[InstrumentKey, list[Bar]]:
-    """Load bounded recent signal bars for one signal-evaluation day.
+    """Load bounded recent signal bars for one signal-evaluation timestamp.
 
-    Pepperstone 24h symbols can bypass the entry-window filter when
+    Pepperstone 24h symbols can bypass the signal-bar window when
     PS_24_ENTRY_SL_TP_ACTIVE is enabled. Open-position outcome simulation keeps
     using the full-bar cache via get_bars_range().
     """
@@ -2303,7 +2396,7 @@ def load_recent_bars_for_identities(
             up_to_ts,
             batch_size=batch_size,
             log_batches=log_batches,
-            apply_entry_window=True,
+            apply_signal_window=True,
         ))
     if unrestricted_identities:
         bars_by_identity.update(_load_recent_bars_for_identity_group(
@@ -2313,7 +2406,7 @@ def load_recent_bars_for_identities(
             up_to_ts,
             batch_size=batch_size,
             log_batches=log_batches,
-            apply_entry_window=False,
+            apply_signal_window=False,
         ))
     for identity in unique_identities:
         bars_by_identity.setdefault(identity, [])
@@ -2334,7 +2427,7 @@ def get_cached_bars(
     bar_idx = end_idx - 1
     while bar_idx >= 0 and len(selected) < limit:
         bar = bars[bar_idx]
-        if not _is_in_entry_window(bar.ts, conn, identity):
+        if not _is_in_signal_bar_window(bar.ts, conn, identity):
             bar_idx -= 1
             continue
         selected.append(bar)
