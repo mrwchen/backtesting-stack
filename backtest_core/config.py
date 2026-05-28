@@ -163,17 +163,6 @@ def _parse_window_setting(env_key: str, value: str) -> tuple[str, str]:
         raise ValueError(f"{env_key} must use HH:MM-HH:MM format")
     return start.strip(), end.strip()
 
-def _parse_hhmm_setting(env_key: str, value: str) -> str:
-    text = value.strip()
-    hour_text, sep, minute_text = text.partition(":")
-    if not sep:
-        raise ValueError(f"{env_key} must use HH:MM format")
-    hour = int(hour_text)
-    minute = int(minute_text)
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        raise ValueError(f"{env_key} must use HH:MM format")
-    return f"{hour:02d}:{minute:02d}"
-
 def _account_window_setting(env_key: str) -> tuple[str, str]:
     prefixed_key = f"{_ACC_ENV_PREFIX}_{env_key}"
     raw = os.getenv(prefixed_key)
@@ -573,13 +562,9 @@ def _build_run_notes(notes: Optional[str], cfg=None) -> str:
         ("ENTRY_WINDOW_TZ", ENTRY_WINDOW_TZ),
         ("ENTRY_WINDOW_START", ENTRY_WINDOW_START),
         ("ENTRY_WINDOW_END", ENTRY_WINDOW_END),
-        ("DAILY_DECISION_TZ", DAILY_DECISION_TZ),
-        ("DAILY_DECISION_TIME", DAILY_DECISION_TIME),
-        ("REFILL_ANALYSIS_MODE", REFILL_ANALYSIS_MODE),
-        ("SIGNAL_BAR_WINDOW_ENABLED", SIGNAL_BAR_WINDOW_ENABLED),
-        ("SIGNAL_BAR_WINDOW_TZ", SIGNAL_BAR_WINDOW_TZ),
-        ("SIGNAL_BAR_WINDOW_START", SIGNAL_BAR_WINDOW_START),
-        ("SIGNAL_BAR_WINDOW_END", SIGNAL_BAR_WINDOW_END),
+        ("SIGNAL_DECISION_WINDOW_TZ", SIGNAL_DECISION_WINDOW_TZ),
+        ("SIGNAL_DECISION_WINDOW_START", SIGNAL_DECISION_WINDOW_START),
+        ("SIGNAL_DECISION_WINDOW_END", SIGNAL_DECISION_WINDOW_END),
         ("SL_TP_WINDOW_TZ", SL_TP_WINDOW_TZ),
         ("SL_TP_WINDOW_START", SL_TP_WINDOW_START),
         ("SL_TP_WINDOW_END", SL_TP_WINDOW_END),
@@ -678,21 +663,9 @@ def _parse_hold_grid_vals(env_key: str, default_val: float) -> list[float]:
 ENTRY_WINDOW_ENABLED = _account_setting_bool("ENTRY_WINDOW_ENABLED", True)
 ENTRY_WINDOW_TZ = _account_setting("ENTRY_WINDOW_TZ", "America/New_York")
 ENTRY_WINDOW_START, ENTRY_WINDOW_END = _account_window_setting("ENTRY_WINDOW")
-DAILY_DECISION_TZ = (
-    os.getenv(f"{_ACC_ENV_PREFIX}_DAILY_DECISION_TZ", os.getenv("DAILY_DECISION_TZ", ENTRY_WINDOW_TZ)).strip()
-    or ENTRY_WINDOW_TZ
-)
-DAILY_DECISION_TIME = _parse_hhmm_setting(
-    f"{_ACC_ENV_PREFIX}_DAILY_DECISION_TIME",
-    os.getenv(f"{_ACC_ENV_PREFIX}_DAILY_DECISION_TIME", os.getenv("DAILY_DECISION_TIME", "10:00")),
-)
-REFILL_ANALYSIS_MODE = _account_setting("REFILL_ANALYSIS_MODE", "fresh_intraday").strip().lower()
-if REFILL_ANALYSIS_MODE not in {"fresh_intraday", "daily_list"}:
-    raise ValueError("REFILL_ANALYSIS_MODE must be one of: fresh_intraday, daily_list")
-SIGNAL_BAR_WINDOW_ENABLED = _account_setting_bool("SIGNAL_BAR_WINDOW_ENABLED", True)
-SIGNAL_BAR_WINDOW_TZ = _account_setting("SIGNAL_BAR_WINDOW_TZ", ENTRY_WINDOW_TZ)
-SIGNAL_BAR_WINDOW_START, SIGNAL_BAR_WINDOW_END = _account_window_setting_default(
-    "SIGNAL_BAR_WINDOW",
+SIGNAL_DECISION_WINDOW_TZ = _account_setting("SIGNAL_DECISION_WINDOW_TZ", ENTRY_WINDOW_TZ)
+SIGNAL_DECISION_WINDOW_START, SIGNAL_DECISION_WINDOW_END = _account_window_setting_default(
+    "SIGNAL_DECISION_WINDOW",
     "09:30-16:00",
 )
 SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")

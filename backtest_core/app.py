@@ -155,20 +155,10 @@ def log_backtest_context(model_files: list[str]) -> None:
         ENTRY_WINDOW_END,
     )
     log.info(
-        "Daily decision time tz %s time %s",
-        DAILY_DECISION_TZ,
-        DAILY_DECISION_TIME,
-    )
-    log.info(
-        "Refill analysis mode %s",
-        REFILL_ANALYSIS_MODE,
-    )
-    log.info(
-        "Signal bar window enabled %s tz %s start %s end %s",
-        SIGNAL_BAR_WINDOW_ENABLED,
-        SIGNAL_BAR_WINDOW_TZ,
-        SIGNAL_BAR_WINDOW_START,
-        SIGNAL_BAR_WINDOW_END,
+        "Signal decision window tz %s start %s end %s",
+        SIGNAL_DECISION_WINDOW_TZ,
+        SIGNAL_DECISION_WINDOW_START,
+        SIGNAL_DECISION_WINDOW_END,
     )
     log.info(
         "SL/TP window tz %s start %s end %s",

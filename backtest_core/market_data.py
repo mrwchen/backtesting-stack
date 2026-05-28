@@ -98,8 +98,7 @@ _CANDIDATE_TIMELINE_CACHE_DISABLED = False
 _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
-_DAILY_DECISION_ZONE = ZoneInfo(DAILY_DECISION_TZ)
-_SIGNAL_BAR_WINDOW_ZONE = ZoneInfo(SIGNAL_BAR_WINDOW_TZ)
+_SIGNAL_DECISION_WINDOW_ZONE = ZoneInfo(SIGNAL_DECISION_WINDOW_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SIGNAL_BAR_DURATION = timedelta(hours=1)
@@ -1582,12 +1581,6 @@ def _session_ts(d: date, hhmm: str) -> datetime:
     return local_ts.astimezone(timezone.utc)
 
 
-def _daily_decision_session_ts(d: date) -> datetime:
-    hour, minute = _parse_hhmm(DAILY_DECISION_TIME)
-    local_ts = datetime(d.year, d.month, d.day, hour, minute, tzinfo=_DAILY_DECISION_ZONE)
-    return local_ts.astimezone(timezone.utc)
-
-
 def _session_start_ts(d: date) -> datetime:
     return _session_ts(d, ENTRY_WINDOW_START)
 
@@ -1616,11 +1609,14 @@ def _is_in_signal_bar_window(
 ) -> bool:
     if conn is not None and identity is not None and _is_pepperstone_24_symbol(conn, identity):
         return True
-    if not SIGNAL_BAR_WINDOW_ENABLED:
-        return True
-    local_start = ts.astimezone(_SIGNAL_BAR_WINDOW_ZONE)
-    local_end = (_ensure_utc_ts(ts) + _SIGNAL_BAR_DURATION).astimezone(_SIGNAL_BAR_WINDOW_ZONE)
-    return _is_local_bar_fully_in_window(local_start, local_end, SIGNAL_BAR_WINDOW_START, SIGNAL_BAR_WINDOW_END)
+    local_start = ts.astimezone(_SIGNAL_DECISION_WINDOW_ZONE)
+    local_end = (_ensure_utc_ts(ts) + _SIGNAL_BAR_DURATION).astimezone(_SIGNAL_DECISION_WINDOW_ZONE)
+    return _is_local_bar_fully_in_window(
+        local_start,
+        local_end,
+        SIGNAL_DECISION_WINDOW_START,
+        SIGNAL_DECISION_WINDOW_END,
+    )
 
 
 def _is_local_time_in_window(local: datetime, start_hhmm: str, end_hhmm: str) -> bool:
@@ -1684,17 +1680,13 @@ def _day_signal_cutoff_ts(d: date) -> datetime:
     return _session_end_ts(d) if ENTRY_WINDOW_ENABLED else _day_close_ts(d)
 
 
-def _day_decision_ts(d: date) -> datetime:
-    return _daily_decision_session_ts(d)
-
-
 def _last_complete_signal_bar_start_ts(up_to_ts: datetime) -> datetime:
     return _ensure_utc_ts(up_to_ts) - _SIGNAL_BAR_DURATION
 
 
-def _signal_bar_start_minutes_for_window() -> list[int]:
-    start_h, start_m = _parse_hhmm(SIGNAL_BAR_WINDOW_START)
-    end_h, end_m = _parse_hhmm(SIGNAL_BAR_WINDOW_END)
+def _bar_start_minutes_for_window(start_hhmm: str, end_hhmm: str) -> list[int]:
+    start_h, start_m = _parse_hhmm(start_hhmm)
+    end_h, end_m = _parse_hhmm(end_hhmm)
     window_start = start_h * 60 + start_m
     window_end = end_h * 60 + end_m
     return [
@@ -1709,17 +1701,35 @@ def _signal_bar_start_minutes_for_window() -> list[int]:
     ]
 
 
+def _signal_decision_start_minutes_for_window() -> list[int]:
+    return _bar_start_minutes_for_window(SIGNAL_DECISION_WINDOW_START, SIGNAL_DECISION_WINDOW_END)
+
+
+def signal_bar_close_decisions_for_day(d: date) -> list[tuple[datetime, datetime]]:
+    decisions: list[tuple[datetime, datetime]] = []
+    for start_minute in _signal_decision_start_minutes_for_window():
+        hour, minute = divmod(start_minute, 60)
+        local_start = datetime(
+            d.year,
+            d.month,
+            d.day,
+            hour,
+            minute,
+            tzinfo=_SIGNAL_DECISION_WINDOW_ZONE,
+        )
+        signal_start_ts = local_start.astimezone(timezone.utc)
+        decisions.append((signal_start_ts, signal_start_ts + _SIGNAL_BAR_DURATION))
+    return sorted(decisions, key=lambda item: item[1])
+
+
 def latest_expected_signal_bar_start_ts(
     as_of_ts: datetime,
     trading_days: list[date],
 ) -> Optional[datetime]:
-    if not SIGNAL_BAR_WINDOW_ENABLED:
-        return _last_complete_signal_bar_start_ts(as_of_ts)
-
     complete_upper_ts = _last_complete_signal_bar_start_ts(as_of_ts)
-    complete_upper_local = complete_upper_ts.astimezone(_SIGNAL_BAR_WINDOW_ZONE)
+    complete_upper_local = complete_upper_ts.astimezone(_SIGNAL_DECISION_WINDOW_ZONE)
     complete_upper_date = complete_upper_local.date()
-    start_minutes = _signal_bar_start_minutes_for_window()
+    start_minutes = _signal_decision_start_minutes_for_window()
     if not start_minutes:
         return None
 
@@ -1734,7 +1744,7 @@ def latest_expected_signal_bar_start_ts(
                 trading_day.day,
                 hour,
                 minute,
-                tzinfo=_SIGNAL_BAR_WINDOW_ZONE,
+                tzinfo=_SIGNAL_DECISION_WINDOW_ZONE,
             )
             signal_start_ts = local_start.astimezone(timezone.utc)
             if signal_start_ts <= complete_upper_ts:
@@ -1987,11 +1997,11 @@ def preload_identity_bars(
 
 
 def _signal_bar_window_sql_filter(apply_signal_window: bool = True) -> tuple[sql.SQL, list[object]]:
-    if not apply_signal_window or not SIGNAL_BAR_WINDOW_ENABLED:
+    if not apply_signal_window:
         return sql.SQL(""), []
 
-    start_h, start_m = _parse_hhmm(SIGNAL_BAR_WINDOW_START)
-    end_h, end_m = _parse_hhmm(SIGNAL_BAR_WINDOW_END)
+    start_h, start_m = _parse_hhmm(SIGNAL_DECISION_WINDOW_START)
+    end_h, end_m = _parse_hhmm(SIGNAL_DECISION_WINDOW_END)
     start_time = time(start_h, start_m)
     end_time = time(end_h, end_m)
     local_start_time = sql.SQL("(b.ts AT TIME ZONE %s)::time")
@@ -2000,11 +2010,11 @@ def _signal_bar_window_sql_filter(apply_signal_window: bool = True) -> tuple[sql
     if start_time <= end_time:
         return (
             sql.SQL("AND {} >= %s AND {} <= %s").format(local_start_time, local_end_time),
-            [SIGNAL_BAR_WINDOW_TZ, start_time, SIGNAL_BAR_WINDOW_TZ, end_time],
+            [SIGNAL_DECISION_WINDOW_TZ, start_time, SIGNAL_DECISION_WINDOW_TZ, end_time],
         )
     return (
         sql.SQL("AND ({} >= %s OR {} <= %s)").format(local_start_time, local_end_time),
-        [SIGNAL_BAR_WINDOW_TZ, start_time, SIGNAL_BAR_WINDOW_TZ, end_time],
+        [SIGNAL_DECISION_WINDOW_TZ, start_time, SIGNAL_DECISION_WINDOW_TZ, end_time],
     )
 
 

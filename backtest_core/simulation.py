@@ -26,7 +26,6 @@ from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition
 from .market_data import (
     _day_close_ts,
-    _day_decision_ts,
     _day_signal_cutoff_ts,
     _ensure_utc_ts,
     get_bars_range,
@@ -43,6 +42,7 @@ from .market_data import (
     log_cache_stats,
     preload_identity_bars,
     preload_candidate_timelines,
+    signal_bar_close_decisions_for_day,
 )
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
@@ -80,7 +80,6 @@ from .trade_levels import (
 log = logging.getLogger(__name__)
 
 DIRECTIONS = ("LONG", "SHORT")
-REFILL_EXIT_STATUSES = {"HIT_SL", "HIT_TRAILING_STOP", "HIT_TP", "MAX_HOLD"}
 
 
 def _bar_lookback_limit(model: Any, cfg: Any) -> int:
@@ -540,7 +539,7 @@ def simulate_outcome(
 
     Incremental: each call only scans bars newer than pos.last_bar_ts and
     resumes from the stop/trailing state stored on pos, making the loop O(N total)
-    across all daily calls rather than O(N²).
+    across all decision calls rather than O(N²).
     """
     up_to_ts = _ensure_utc_ts(up_to_ts)
     after_ts = pos.last_bar_ts if pos.last_bar_ts is not None else pos.entry_ts - timedelta(microseconds=1)
@@ -615,9 +614,8 @@ def run_backtest(
     def apply_position_events_through(
         positions: list[OpenPosition],
         end_ts: datetime,
-        refill_callback=None,
         closed_identity_blocklist: Optional[set[InstrumentKey]] = None,
-    ) -> tuple[list[OpenPosition], int, float, int]:
+    ) -> tuple[list[OpenPosition], int, float]:
         nonlocal equity
         end_ts = _ensure_utc_ts(end_ts)
         active_positions = list(positions)
@@ -625,7 +623,6 @@ def run_backtest(
         bar_index_by_position: dict[int, int] = {}
         closed_count = 0
         realized_pnl = 0.0
-        refill_opened = 0
         closed_identity_blocklist = closed_identity_blocklist if closed_identity_blocklist is not None else set()
 
         if active_positions:
@@ -689,7 +686,6 @@ def run_backtest(
             if not close_events:
                 continue
 
-            refill_triggered = False
             for position, trade in close_events:
                 if not position_is_active(position):
                     continue
@@ -701,7 +697,6 @@ def run_backtest(
                 closed_count += 1
                 realized_pnl += trade.pnl_usd
                 closed_identity_blocklist.add(position.identity_key)
-                refill_triggered = refill_triggered or trade.outcome_status in REFILL_EXIT_STATUSES
                 log.debug("Closed %-6s %s %s pnl %.0f balance %.0f",
                           position.symbol, position.direction, trade.outcome_status,
                           trade.pnl_usd, equity)
@@ -721,10 +716,6 @@ def run_backtest(
                     closed_identity_blocklist.add(trade.position.identity_key)
                 record_account_curve(next_ts, active_positions)
 
-            if refill_callback is not None and refill_triggered and len(active_positions) < MAX_OPEN_POSITIONS:
-                opened = refill_callback(next_ts, active_positions, closed_identity_blocklist, end_ts)
-                refill_opened += opened
-
         liquidation_trades, equity = _enforce_account_margin_liquidation(
             conn,
             active_positions,
@@ -737,7 +728,7 @@ def run_backtest(
             realized_pnl += sum(t.pnl_usd for t in liquidation_trades)
             record_account_curve(end_ts, active_positions)
 
-        return active_positions, closed_count, realized_pnl, refill_opened
+        return active_positions, closed_count, realized_pnl
 
     def build_intent_plans_for_as_of(
         day: date,
@@ -749,7 +740,11 @@ def run_backtest(
         active_positions: list[OpenPosition],
         *,
         log_progress_today: bool = False,
-        context_label: str = "daily",
+        context_label: str = "signal_bar_close",
+        entry_after_ts: Optional[datetime] = None,
+        earliest_entry_ts: Optional[datetime] = None,
+        latest_entry_ts: Optional[datetime] = None,
+        entry_after_label: str = "decision timestamp",
     ) -> tuple[
         dict[str, list[TradePlan]],
         dict[tuple[str, tuple[str, str, int]], DecisionEvent],
@@ -758,6 +753,9 @@ def run_backtest(
         dict[tuple[str, tuple[str, str, int]], dict[str, Any]],
     ]:
         as_of_ts = _ensure_utc_ts(as_of_ts)
+        entry_after_ts = _ensure_utc_ts(entry_after_ts) if entry_after_ts is not None else as_of_ts
+        earliest_entry_ts = _ensure_utc_ts(earliest_entry_ts) if earliest_entry_ts is not None else None
+        latest_entry_ts = _ensure_utc_ts(latest_entry_ts) if latest_entry_ts is not None else None
         plans_by_direction: dict[str, list[TradePlan]] = {direction: [] for direction in DIRECTIONS}
         plans: list[TradePlan] = []
         decision_events: list[DecisionEvent] = []
@@ -983,9 +981,9 @@ def run_backtest(
                         "bars": bars,
                         "evaluation": evaluation,
                         "intent": intent,
-                        "after_ts": as_of_ts,
+                        "after_ts": entry_after_ts,
                         "missing_reason_text": (
-                            f"No 1h bar after decision timestamp {as_of_ts} was available for next-bar-open entry."
+                            f"No 1h bar after {entry_after_label} {entry_after_ts} was available for next-bar-open entry."
                         ),
                     })
                     continue
@@ -1063,32 +1061,50 @@ def run_backtest(
                     evaluation.reason_text = pending["missing_reason_text"]
                 else:
                     entry_ts, entry_open = next_entry
-                    trade_plan_result = build_trade_plan(
-                        intent,
-                        fundamental,
-                        bars,
-                        _ensure_utc_ts(entry_ts),
-                        entry_open,
-                    )
-                    if not trade_plan_result.accepted:
+                    entry_ts = _ensure_utc_ts(entry_ts)
+                    if earliest_entry_ts is not None and entry_ts < earliest_entry_ts:
                         intent = None
                         evaluation.intent = None
                         evaluation.decision = "rejected"
-                        evaluation.reason_code = trade_plan_result.reason_code
-                        evaluation.reason_text = trade_plan_result.reason_text
+                        evaluation.reason_code = "next_entry_before_decision_timestamp"
+                        evaluation.reason_text = (
+                            f"Next entry bar {entry_ts} is before earliest allowed entry timestamp {earliest_entry_ts}."
+                        )
+                    elif latest_entry_ts is not None and entry_ts > latest_entry_ts:
+                        intent = None
+                        evaluation.intent = None
+                        evaluation.decision = "rejected"
+                        evaluation.reason_code = "next_entry_after_decision_timestamp"
+                        evaluation.reason_text = (
+                            f"Next entry bar {entry_ts} is after latest allowed entry timestamp {latest_entry_ts}."
+                        )
                     else:
-                        plan = trade_plan_result.plan
-                        if plan is None:
+                        trade_plan_result = build_trade_plan(
+                            intent,
+                            fundamental,
+                            bars,
+                            entry_ts,
+                            entry_open,
+                        )
+                        if not trade_plan_result.accepted:
                             intent = None
                             evaluation.intent = None
                             evaluation.decision = "rejected"
-                            evaluation.reason_code = "execution_plan_missing"
-                            evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
+                            evaluation.reason_code = trade_plan_result.reason_code
+                            evaluation.reason_text = trade_plan_result.reason_text
                         else:
-                            plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
-                            apply_shock_overlay(plan, fundamental, regime)
-                            plans.append(plan)
-                            plans_by_direction[direction].append(plan)
+                            plan = trade_plan_result.plan
+                            if plan is None:
+                                intent = None
+                                evaluation.intent = None
+                                evaluation.decision = "rejected"
+                                evaluation.reason_code = "execution_plan_missing"
+                                evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
+                            else:
+                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                                apply_shock_overlay(plan, fundamental, regime)
+                                plans.append(plan)
+                                plans_by_direction[direction].append(plan)
 
                 event = DecisionEvent(
                     run_id=run_id,
@@ -1305,21 +1321,21 @@ def run_backtest(
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
                     event.reason_code = "instrument_already_used_today"
-                    event.reason_text = "Instrument was already opened or closed on this trading day; refill requires another instrument."
+                    event.reason_text = "Instrument was already opened or closed on this trading day."
                 continue
             if require_entry_window and not _is_in_entry_window(plan_entry_ts, conn, plan.identity_key):
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "entry_outside_refill_window"
+                    event.reason_code = "entry_outside_entry_window"
                     event.reason_text = f"Next entry bar {plan_entry_ts} is outside the configured entry window."
                 continue
             if entry_deadline_ts is not None and plan_entry_ts > entry_deadline_ts:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "entry_after_refill_deadline"
-                    event.reason_text = f"Next entry bar {plan_entry_ts} is after refill deadline {entry_deadline_ts}."
+                    event.reason_code = "entry_after_deadline"
+                    event.reason_text = f"Next entry bar {plan_entry_ts} is after entry deadline {entry_deadline_ts}."
                 continue
             if account_equity_current <= 0:
                 if event:
@@ -1441,123 +1457,16 @@ def run_backtest(
 
         return opened_count
 
-    def reprice_daily_plans_for_as_of(
-        day: date,
-        as_of_ts: datetime,
-        regime: Any,
-        daily_plans_by_direction: dict[str, list[TradePlan]],
-        daily_plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent],
-        daily_plan_contexts: dict[tuple[str, tuple[str, str, int]], dict[str, Any]],
-        active_positions: list[OpenPosition],
-        blocked_identities: set[InstrumentKey],
-        *,
-        log_progress_today: bool = False,
-    ) -> tuple[dict[str, list[TradePlan]], dict[tuple[str, tuple[str, str, int]], DecisionEvent]]:
-        as_of_ts = _ensure_utc_ts(as_of_ts)
-        open_identities = {p.identity_key for p in active_positions}
-        pending_daily_plans: list[TradePlan] = []
-        for direction in DIRECTIONS:
-            for source_plan in daily_plans_by_direction.get(direction, []):
-                plan_key = _plan_event_key(source_plan)
-                event = daily_plan_events.get(plan_key)
-                if event is not None and event.opened:
-                    continue
-                if source_plan.identity_key in open_identities or source_plan.identity_key in blocked_identities:
-                    continue
-                if plan_key not in daily_plan_contexts:
-                    continue
-                pending_daily_plans.append(source_plan)
-
-        refill_plans_by_direction: dict[str, list[TradePlan]] = {direction: [] for direction in DIRECTIONS}
-        refill_plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent] = {}
-        if not pending_daily_plans:
-            return refill_plans_by_direction, refill_plan_events
-
-        next_open_started = _time.perf_counter()
-        next_bar_opens = load_next_bar_opens(
-            conn,
-            [(plan.identity_key, as_of_ts) for plan in pending_daily_plans],
-            batch_size=BAR_CACHE_BATCH_SIZE,
-        )
-        next_open_elapsed = _time.perf_counter() - next_open_started
-        if log_progress_today or next_open_elapsed >= 5.0:
-            log.info(
-                "Next refill open batch complete day %s model %s candidates %d found %d in %.1f s",
-                day,
-                runtime.CURRENT_MODEL_FILE,
-                len(pending_daily_plans),
-                len(next_bar_opens),
-                next_open_elapsed,
-            )
-
-        for source_plan in pending_daily_plans:
-            plan_key = _plan_event_key(source_plan)
-            context = daily_plan_contexts[plan_key]
-            event = daily_plan_events.get(plan_key)
-            fundamental = context["fundamental"]
-            intent = context["intent"]
-            bars = context["bars"]
-            next_entry = next_bar_opens.get((source_plan.identity_key, as_of_ts))
-            if next_entry is None:
-                if event:
-                    event.decision_stage = "intent_eval"
-                    event.decision = "rejected"
-                    event.reason_code = "next_refill_entry_bar_missing"
-                    event.reason_text = (
-                        f"No 1h bar after refill timestamp {as_of_ts} was available for next-bar-open entry."
-                    )
-                continue
-
-            entry_ts, entry_open = next_entry
-            trade_plan_result = build_trade_plan(
-                intent,
-                fundamental,
-                bars,
-                _ensure_utc_ts(entry_ts),
-                entry_open,
-            )
-            if not trade_plan_result.accepted or trade_plan_result.plan is None:
-                if event:
-                    event.decision_stage = "intent_eval"
-                    event.decision = "rejected"
-                    event.reason_code = trade_plan_result.reason_code
-                    event.reason_text = trade_plan_result.reason_text
-                continue
-
-            plan = trade_plan_result.plan
-            plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
-            apply_shock_overlay(plan, fundamental, regime)
-            refill_plans_by_direction[plan.direction].append(plan)
-            if event:
-                refill_plan_events[_plan_event_key(plan)] = event
-                event.decision_stage = "intent_eval"
-                event.decision = "intent"
-                event.reason_code = trade_plan_result.reason_code
-                event.reason_text = trade_plan_result.reason_text
-                event.intent_passed = True
-                event.intent_score = plan.intent_score
-                event.intent_reason = plan.intent_reason
-                event.entry_ts = plan.entry_ts
-                event.entry_price = plan.entry_price
-                event.stop_loss = plan.stop_loss
-                event.take_profit = plan.take_profit
-                event.trailing_activation_price = plan.trailing_activation_price
-                event.trailing_distance_pct = plan.trailing_distance_pct
-                _copy_plan_shock_to_event(event, plan)
-
-        for direction, direction_plans in refill_plans_by_direction.items():
-            direction_plans.sort(key=lambda plan: plan.intent_score, reverse=True)
-            for intent_rank, plan in enumerate(direction_plans, start=1):
-                event = refill_plan_events.get(_plan_event_key(plan))
-                if event:
-                    event.intent_rank = intent_rank
-
-        return refill_plans_by_direction, refill_plan_events
-
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
     candidate_score_kwargs = _candidate_score_kwargs(cfg)
     if trading_days:
+        first_signal_decisions = signal_bar_close_decisions_for_day(trading_days[0])
+        preload_as_of_ts = (
+            first_signal_decisions[0][1]
+            if first_signal_decisions
+            else datetime.combine(trading_days[0], datetime.min.time(), tzinfo=timezone.utc)
+        )
         preload_candidate_timelines(
             conn,
             DIRECTIONS,
@@ -1565,7 +1474,7 @@ def run_backtest(
             **candidate_score_kwargs,
             source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
             as_of_date=trading_days[0],
-            as_of_ts=_day_decision_ts(trading_days[0]),
+            as_of_ts=preload_as_of_ts,
             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
             allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
@@ -1603,10 +1512,11 @@ def run_backtest(
         day_pnl = 0.0
         opened_today = 0
         used_identities_today: set[InstrumentKey] = set()
-        day_decision_ts = _day_decision_ts(day)
         entry_deadline_ts = _day_signal_cutoff_ts(day)
         day_close_ts = _day_close_ts(day)
         day_start_ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        signal_decision_points = signal_bar_close_decisions_for_day(day)
+        day_decision_ts = signal_decision_points[0][1] if signal_decision_points else day_start_ts
         day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
 
         # ── 2. Generate model intents and central execution plans ───────────
@@ -1630,7 +1540,7 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
-            open_positions, closed_after_entry, pnl_after_entry, _ = apply_position_events_through(
+            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(
                 open_positions,
                 day_close_ts,
             )
@@ -1685,7 +1595,7 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
-            open_positions, closed_after_entry, pnl_after_entry, _ = apply_position_events_through(
+            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(
                 open_positions,
                 day_close_ts,
             )
@@ -1701,39 +1611,94 @@ def run_backtest(
 
         model = get_model_module()
 
-        # Existing positions are advanced to the morning decision first; the
-        # daily list handles initial entries and can still be used by the
-        # optional daily_list refill mode.
-        open_positions, closed_before_decision, pnl_before_decision, _ = apply_position_events_through(
-            open_positions,
-            day_decision_ts,
-            closed_identity_blocklist=used_identities_today,
-        )
-        closed_today += closed_before_decision
-        day_pnl += pnl_before_decision
+        candidate_counts = {direction: 0 for direction in DIRECTIONS}
+        intent_counts = {direction: 0 for direction in DIRECTIONS}
+        skipped_no_bars = 0
+        total_candidates = 0
+        plans_count = 0
+        decisions_processed = 0
 
-        (
-            daily_plans_by_direction,
-            daily_plan_events,
-            decision_events,
-            daily_stats,
-            daily_plan_contexts,
-        ) = build_intent_plans_for_as_of(
-            day,
-            day_decision_ts,
-            regime,
-            regime_label,
-            regime_exposure,
-            model,
-            open_positions,
-            log_progress_today=log_progress_today,
-            context_label="daily",
-        )
-        candidate_counts = daily_stats["candidate_counts"]
-        intent_counts = daily_stats["intent_counts"]
-        total_candidates = daily_stats["total_candidates"]
-        skipped_no_bars = daily_stats["skipped_no_bars"]
-        plans_count = daily_stats["plans"]
+        valid_signal_decision_points = [
+            (signal_bar_start_ts, signal_decision_ts)
+            for signal_bar_start_ts, signal_decision_ts in signal_decision_points
+            if signal_decision_ts <= day_close_ts
+        ]
+
+        if not valid_signal_decision_points:
+            buffer_decision_events([DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=day_decision_ts,
+                symbol=None,
+                exchange=None,
+                cik=None,
+                direction=None,
+                decision_stage="signal_schedule",
+                decision="skipped_day",
+                reason_code="no_signal_bar_close_decisions",
+                reason_text="No signal-bar-close decision timestamps were configured for this trading day.",
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                open_positions=len(open_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            )])
+
+        for signal_bar_start_ts, signal_decision_ts in valid_signal_decision_points:
+            decisions_processed += 1
+            open_positions, closed_before_decision, pnl_before_decision = apply_position_events_through(
+                open_positions,
+                signal_decision_ts,
+                closed_identity_blocklist=used_identities_today,
+            )
+            closed_today += closed_before_decision
+            day_pnl += pnl_before_decision
+
+            (
+                signal_plans_by_direction,
+                signal_plan_events,
+                signal_decision_events,
+                signal_stats,
+                _signal_plan_contexts,
+            ) = build_intent_plans_for_as_of(
+                day,
+                signal_decision_ts,
+                regime,
+                regime_label,
+                regime_exposure,
+                model,
+                open_positions,
+                log_progress_today=log_progress_today,
+                context_label="signal_bar_close",
+                entry_after_ts=signal_bar_start_ts,
+                earliest_entry_ts=signal_decision_ts,
+                latest_entry_ts=signal_decision_ts,
+                entry_after_label="closed signal bar start",
+            )
+
+            for direction in DIRECTIONS:
+                candidate_counts[direction] += signal_stats["candidate_counts"][direction]
+                intent_counts[direction] += signal_stats["intent_counts"][direction]
+            total_candidates += signal_stats["total_candidates"]
+            skipped_no_bars += signal_stats["skipped_no_bars"]
+            plans_count += signal_stats["plans"]
+
+            signal_entry_deadline_ts = min(entry_deadline_ts, signal_decision_ts)
+            opened_today += open_ranked_plans(
+                day,
+                signal_decision_ts,
+                regime,
+                regime_label,
+                regime_exposure,
+                signal_plans_by_direction,
+                signal_plan_events,
+                open_positions,
+                used_identities_today,
+                require_entry_window=True,
+                entry_deadline_ts=signal_entry_deadline_ts,
+                day_start_equity=day_start_equity,
+            )
+            buffer_decision_events(signal_decision_events)
 
         if total_candidates == 0:
             days_no_candidates += 1
@@ -1742,126 +1707,23 @@ def run_backtest(
         else:
             days_no_intents += 1
 
-        planned_entry_timestamps = [
-            _ensure_utc_ts(plan.entry_ts)
-            for direction in DIRECTIONS
-            for plan in daily_plans_by_direction[direction]
-            if plan.entry_ts is not None
-            and _ensure_utc_ts(plan.entry_ts) <= day_close_ts
-        ]
-        if planned_entry_timestamps:
-            first_entry_ts = min(planned_entry_timestamps)
-            if first_entry_ts > day_decision_ts:
-                open_positions, closed_before_entry, pnl_before_entry, _ = apply_position_events_through(
-                    open_positions,
-                    first_entry_ts,
-                    closed_identity_blocklist=used_identities_today,
-                )
-                closed_today += closed_before_entry
-                day_pnl += pnl_before_entry
-
-        opened_today += open_ranked_plans(
-            day,
-            day_decision_ts,
-            regime,
-            regime_label,
-            regime_exposure,
-            daily_plans_by_direction,
-            daily_plan_events,
-            open_positions,
-            used_identities_today,
-            require_entry_window=True,
-            entry_deadline_ts=entry_deadline_ts,
-            day_start_equity=day_start_equity,
-        )
-
-        def refill_callback(
-            refill_ts: datetime,
-            active_positions: list[OpenPosition],
-            blocked_identities: set[InstrumentKey],
-            refill_deadline_ts: datetime,
-        ) -> int:
-            if REFILL_ANALYSIS_MODE == "fresh_intraday":
-                (
-                    refill_plans_by_direction,
-                    refill_plan_events,
-                    refill_events,
-                    _refill_stats,
-                    _refill_plan_contexts,
-                ) = build_intent_plans_for_as_of(
-                    day,
-                    refill_ts,
-                    regime,
-                    regime_label,
-                    regime_exposure,
-                    model,
-                    active_positions,
-                    log_progress_today=False,
-                    context_label="refill",
-                )
-                opened = open_ranked_plans(
-                    day,
-                    refill_ts,
-                    regime,
-                    regime_label,
-                    regime_exposure,
-                    refill_plans_by_direction,
-                    refill_plan_events,
-                    active_positions,
-                    blocked_identities,
-                    require_entry_window=True,
-                    entry_deadline_ts=refill_deadline_ts,
-                    day_start_equity=day_start_equity,
-                )
-                buffer_decision_events(refill_events)
-                return opened
-
-            refill_plans_by_direction, refill_plan_events = reprice_daily_plans_for_as_of(
-                day,
-                refill_ts,
-                regime,
-                daily_plans_by_direction,
-                daily_plan_events,
-                daily_plan_contexts,
-                active_positions,
-                blocked_identities,
-                log_progress_today=False,
-            )
-            return open_ranked_plans(
-                day,
-                refill_ts,
-                regime,
-                regime_label,
-                regime_exposure,
-                refill_plans_by_direction,
-                refill_plan_events,
-                active_positions,
-                blocked_identities,
-                require_entry_window=True,
-                entry_deadline_ts=refill_deadline_ts,
-                day_start_equity=day_start_equity,
-            )
-
-        open_positions, closed_after_entry, pnl_after_entry, refill_opened = apply_position_events_through(
+        open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(
             open_positions,
             day_close_ts,
-            refill_callback=refill_callback,
             closed_identity_blocklist=used_identities_today,
         )
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
-        opened_today += refill_opened
         record_account_curve(day_close_ts, open_positions)
-
-        buffer_decision_events(decision_events)
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model %s regime label %s score %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
+                "Progress %d/%d %s model %s signal decisions %d regime label %s score %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
+                decisions_processed,
                 regime_label,
                 regime.score,
                 candidate_counts["LONG"],
