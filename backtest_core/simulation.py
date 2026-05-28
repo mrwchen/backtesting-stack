@@ -1641,6 +1641,39 @@ def run_backtest(
             closed_today += closed_before_decision
             day_pnl += pnl_before_decision
 
+            if DECISION_EVENT_MODE != "all" and len(open_positions) >= MAX_OPEN_POSITIONS:
+                buffer_decision_events([DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=signal_decision_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=None,
+                    decision_stage="portfolio_filter",
+                    decision="skipped_day",
+                    reason_code="max_open_positions_reached",
+                    reason_text=(
+                        f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached; "
+                        "skipped signal evaluation for this decision timestamp."
+                    ),
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                )])
+                if log_progress_today:
+                    log.info(
+                        "Signal decision skipped day %s model %s cutoff %s open positions %d max %d",
+                        day,
+                        runtime.CURRENT_MODEL_FILE,
+                        signal_decision_ts,
+                        len(open_positions),
+                        MAX_OPEN_POSITIONS,
+                    )
+                continue
+
             (
                 signal_plans_by_direction,
                 signal_plan_events,

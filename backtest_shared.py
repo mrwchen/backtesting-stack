@@ -173,14 +173,22 @@ def env_list(name: str, default: Iterable[str]) -> list[str]:
 def compute_rsi(closes: list[float], period: int = 14) -> float:
     if len(closes) < period + 2:
         return 50.0
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    gains = [max(d, 0.0) for d in deltas]
-    losses = [max(-d, 0.0) for d in deltas]
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    gain_sum = 0.0
+    loss_sum = 0.0
+    for i in range(1, period + 1):
+        delta = closes[i] - closes[i - 1]
+        if delta >= 0.0:
+            gain_sum += delta
+        else:
+            loss_sum -= delta
+    avg_gain = gain_sum / period
+    avg_loss = loss_sum / period
+    for i in range(period + 1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gain = delta if delta > 0.0 else 0.0
+        loss = -delta if delta < 0.0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
     if avg_loss == 0.0:
         return 100.0
     rs = avg_gain / avg_loss
