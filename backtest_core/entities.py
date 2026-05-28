@@ -36,6 +36,11 @@ class OpenPosition:
     trailing_reference_price: Optional[float] = None
     trailing_stop: Optional[float] = None
     trailing_activated_ts: Optional[datetime] = None
+    regime_risk_stop_tightened: bool = False
+    regime_risk_stop_tighten_count: int = 0
+    regime_risk_stop_tightened_ts: Optional[datetime] = None
+    regime_risk_stop_level: Optional[float] = None
+    regime_risk_stop_state: str = ""
     last_bar_ts: Optional[datetime] = None
     bars_processed: int = 0
 
@@ -47,7 +52,7 @@ class OpenPosition:
 @dataclass
 class ClosedTrade:
     position: OpenPosition
-    outcome_status: str        # HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | REGIME_RISK_CLOSE | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
+    outcome_status: str        # HIT_TP | HIT_TRAILING_STOP | HIT_SL | MAX_HOLD | FORCE_CLOSED | REGIME_RISK_CLOSE | REGIME_RISK_HIT_SL | MARGIN_STOP_OUT | IBKR_MARGIN_LIQUIDATION
     outcome_price: float
     outcome_date: date
     outcome_bars: int

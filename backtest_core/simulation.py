@@ -239,6 +239,16 @@ def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
     return max(stop_price, float(bar_open))
 
 
+def _regime_risk_stop_is_active(pos: OpenPosition) -> bool:
+    if not pos.regime_risk_stop_tightened or pos.regime_risk_stop_level is None:
+        return False
+    if abs(float(pos.effective_sl) - float(pos.regime_risk_stop_level)) > 1e-8:
+        return False
+    if pos.direction == "LONG":
+        return pos.trailing_stop is None or float(pos.regime_risk_stop_level) >= float(pos.trailing_stop) - 1e-8
+    return pos.trailing_stop is None or float(pos.regime_risk_stop_level) <= float(pos.trailing_stop) + 1e-8
+
+
 def _middle_low_reaches(open_: float, close: float, low: float, level: float) -> bool:
     return low <= level and low < min(open_, close)
 
@@ -270,7 +280,10 @@ def _long_stop_trade(
     equity: float,
     ts: datetime,
 ) -> ClosedTrade:
-    status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
+    if _regime_risk_stop_is_active(pos):
+        status = "REGIME_RISK_HIT_SL"
+    else:
+        status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
     return _exit_trade(conn, pos, status, price, bar_date, total_bars, equity, ts)
 
 
@@ -1040,7 +1053,11 @@ def run_backtest(
                 continue
             old_stop = position.effective_sl
             position.effective_sl = new_stop
-            position.stop_loss = max(position.stop_loss, new_stop)
+            position.regime_risk_stop_tightened = True
+            position.regime_risk_stop_tighten_count += 1
+            position.regime_risk_stop_tightened_ts = action_ts
+            position.regime_risk_stop_level = new_stop
+            position.regime_risk_stop_state = snapshot.state
             regime_risk_action_dates[position.identity_key] = day
             bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
