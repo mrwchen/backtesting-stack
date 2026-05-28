@@ -6,7 +6,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_BACKTEST_TABLES_ON_START: false
+      DROP_ALL_BACKTEST_TABLES_ON_START: true
     command:
       - sh
       - -c
@@ -334,7 +334,7 @@ services:
       # Timezone for the once-per-day initial model decision.
       - DAILY_DECISION_TZ=America/New_York
       # Initial daily model decision time; entries still wait for the entry window.
-      - DAILY_DECISION_TIME=15:00
+      - DAILY_DECISION_TIME=09:00
       # Refill mode: daily_list reuses the morning list, fresh_intraday reruns point-in-time analysis.
       - REFILL_ANALYSIS_MODE=fresh_intraday
       # Enables a separate signal-bar analysis window independent from the entry window.
@@ -342,7 +342,7 @@ services:
       # Timezone for filtering signal bars used by model analysis.
       - SIGNAL_BAR_WINDOW_TZ=America/New_York
       # Regular-session signal-bar window; bars must fit fully inside this interval.
-      - SIGNAL_BAR_WINDOW=09:30-16:00
+      - SIGNAL_BAR_WINDOW=07:00-20:00
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true
