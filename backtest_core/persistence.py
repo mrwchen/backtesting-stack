@@ -30,7 +30,7 @@ def create_run(
     if reserved_run_id is not None and reserved_run_id <= 0:
         raise ValueError(f"Invalid reserved run id: {reserved_run_id!r}")
 
-    run_notes = _build_run_notes(notes)
+    run_notes = _build_run_notes(notes, cfg)
     run_id_column = "run_id, " if reserved_run_id is not None else ""
     run_id_placeholder = "%s, " if reserved_run_id is not None else ""
     params = (
