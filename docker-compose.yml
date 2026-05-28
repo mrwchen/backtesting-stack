@@ -176,7 +176,7 @@ services:
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
-      - MAX_OPEN_POSITIONS=5
+      - MAX_OPEN_POSITIONS=10
       - SECTOR_DIVERSIFICATION_ENABLED=true
 
       # ---------------------------------------------------------------------
