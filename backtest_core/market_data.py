@@ -98,6 +98,7 @@ _CANDIDATE_TIMELINE_CACHE_DISABLED = False
 _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
+_DAILY_DECISION_ZONE = ZoneInfo(DAILY_DECISION_TZ)
 _SL_TP_WINDOW_ZONE = ZoneInfo(SL_TP_WINDOW_TZ)
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SIGNAL_BAR_DURATION = timedelta(hours=1)
@@ -1580,6 +1581,12 @@ def _session_ts(d: date, hhmm: str) -> datetime:
     return local_ts.astimezone(timezone.utc)
 
 
+def _daily_decision_session_ts(d: date) -> datetime:
+    hour, minute = _parse_hhmm(DAILY_DECISION_TIME)
+    local_ts = datetime(d.year, d.month, d.day, hour, minute, tzinfo=_DAILY_DECISION_ZONE)
+    return local_ts.astimezone(timezone.utc)
+
+
 def _session_start_ts(d: date) -> datetime:
     return _session_ts(d, ENTRY_WINDOW_START)
 
@@ -1633,6 +1640,10 @@ def _is_stop_loss_active(
 
 def _day_signal_cutoff_ts(d: date) -> datetime:
     return _session_end_ts(d) if ENTRY_WINDOW_ENABLED else _day_close_ts(d)
+
+
+def _day_decision_ts(d: date) -> datetime:
+    return _daily_decision_session_ts(d)
 
 
 def _last_complete_signal_bar_start_ts(up_to_ts: datetime) -> datetime:

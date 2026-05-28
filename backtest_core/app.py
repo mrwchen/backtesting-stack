@@ -155,6 +155,11 @@ def log_backtest_context(model_files: list[str]) -> None:
         ENTRY_WINDOW_END,
     )
     log.info(
+        "Daily decision time tz %s time %s",
+        DAILY_DECISION_TZ,
+        DAILY_DECISION_TIME,
+    )
+    log.info(
         "SL/TP window tz %s start %s end %s",
         SL_TP_WINDOW_TZ,
         SL_TP_WINDOW_START,
