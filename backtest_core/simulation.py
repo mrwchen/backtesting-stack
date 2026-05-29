@@ -140,6 +140,10 @@ def _model_direct_candidate_require_broker_eligibility(model: Any) -> bool:
     return bool(getattr(model, "DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY", True))
 
 
+def _model_allow_multiple_positions_per_instrument(model: Any) -> bool:
+    return bool(getattr(model, "ALLOW_MULTIPLE_POSITIONS_PER_INSTRUMENT", False))
+
+
 def _merge_direct_candidates(candidates: list[Any], direct_candidates: list[Any]) -> list[Any]:
     if not direct_candidates:
         return candidates
@@ -1603,6 +1607,7 @@ def run_backtest(
         direct_candidate_symbols = _model_direct_candidate_symbols(model)
         direct_candidate_mode = _model_direct_candidate_mode(model)
         direct_candidate_require_broker_eligibility = _model_direct_candidate_require_broker_eligibility(model)
+        allow_multiple_positions_per_instrument = _model_allow_multiple_positions_per_instrument(model)
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
@@ -1985,6 +1990,7 @@ def run_backtest(
                                 evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                             else:
                                 plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
+                                plan.allow_multiple_positions_per_instrument = allow_multiple_positions_per_instrument
                                 apply_shock_overlay(plan, fundamental, regime)
                                 plans.append(plan)
                                 plans_by_direction[direction].append(plan)
@@ -2202,14 +2208,14 @@ def run_backtest(
                         f"{plan.direction.lower()} positions in sector {plan.sector or '-'}."
                     )
                 continue
-            if plan.identity_key in open_identities:
+            if not plan.allow_multiple_positions_per_instrument and plan.identity_key in open_identities:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
                     event.reason_code = "instrument_already_open"
                     event.reason_text = "Instrument already had an open position."
                 continue
-            if plan.identity_key in blocked_identities:
+            if not plan.allow_multiple_positions_per_instrument and plan.identity_key in blocked_identities:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"

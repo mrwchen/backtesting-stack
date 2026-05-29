@@ -120,6 +120,7 @@ class TradePlan:
     shock_risk_multiplier: float = 1.0
     shock_base_intent_score: float | None = None
     broker_eligibility_bypassed: bool = False
+    allow_multiple_positions_per_instrument: bool = False
 
     @property
     def identity_key(self) -> InstrumentKey:
