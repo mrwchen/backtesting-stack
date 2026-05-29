@@ -376,7 +376,7 @@ services:
       # Die High-Leverage/Earnings-Filter sind zusaetzliche Qualitaetsfilter.
       # ---------------------------------------------------------------------
       - COMMON_LONG_MIN_FUNDAMENTAL=50.0
-      - COMMON_SHORT_MAX_FUNDAMENTAL=20.0
+      - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
       - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data #value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data #deep_value,quality_value,compounder
       - COMMON_MIN_MARKET_CAP_USD_M=10000.0
@@ -409,10 +409,10 @@ services:
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=6.0
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=5.0
-      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=5.0
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=2.5
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=2.5
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=4.0
+      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=4.0
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=2.0
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=2.0
       - EXECUTION_LONG_MAX_HOLD_DAYS=21.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=21.0
       - COMMON_STOP_LOSS_ENABLED=true 
@@ -420,7 +420,7 @@ services:
       - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=120
       - COMMON_STOP_ATR_MULT=1.5
-      - COMMON_MIN_STOP_PCT=4.0
+      - COMMON_MIN_STOP_PCT=5.0
       - COMMON_MAX_STOP_PCT=8.0
 
       # ---------------------------------------------------------------------
