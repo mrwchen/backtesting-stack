@@ -281,7 +281,7 @@ services:
       # staendig Closings oder Stop-Aenderungen ausloest.
       # ---------------------------------------------------------------------
       - REGIME_RISK_MANAGEMENT_ENABLED=true
-      - REGIME_RISK_NEUTRAL_IS_ELEVATED=true
+      - REGIME_RISK_NEUTRAL_IS_ELEVATED=false
       - REGIME_RISK_ELEVATED_CONFIRM_DAYS=2
       - REGIME_RISK_HIGH_CONFIRM_DAYS=2
       - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
@@ -327,13 +327,13 @@ services:
       - REGIME_RISK_ON_MAX_LONG_POSITIONS=10
       - REGIME_RISK_ON_MAX_SHORT_POSITIONS=0
 
-      # CONSTRUCTIVE: 30 <= score < 45
+      # CONSTRUCTIVE: 30 <= score < 50
       - REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER=0.9
       - REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER=0.0
       - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=10
       - REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS=0
 
-      # NEUTRAL: 45 <= score < 60
+      # NEUTRAL: 50 <= score < 60
       - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.50
       - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.00
       - REGIME_NEUTRAL_MAX_LONG_POSITIONS=5
@@ -365,13 +365,13 @@ services:
       # COMMON_MIN_MARKET_CAP_USD_M ist die Mindest-Marktkapitalisierung in Mio. USD.
       # Die High-Leverage/Earnings-Filter sind zusaetzliche Qualitaetsfilter.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=60.0
-      - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=50.0
+      - COMMON_SHORT_MAX_FUNDAMENTAL=20.0
       - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data #value_trap,overvalued,overvalued_weak
       - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data #deep_value,quality_value,compounder
       - COMMON_MIN_MARKET_CAP_USD_M=10000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
-      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
+      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=true
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
 
       # ---------------------------------------------------------------------
