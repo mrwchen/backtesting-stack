@@ -107,6 +107,10 @@ def _same_direction_sector_open_count(open_positions: list[OpenPosition], plan: 
     )
 
 
+def _entry_hour_bucket(ts: datetime) -> datetime:
+    return _ensure_utc_ts(ts).replace(minute=0, second=0, microsecond=0)
+
+
 def _candidate_score_kwargs(cfg: Any) -> dict:
     return {
         "fundamental_score_mode": getattr(cfg, "fundamental_score_mode", "peer"),
@@ -922,7 +926,7 @@ def run_backtest(
         short_cap = regime_risk_short_target_cap(regime, regime_exposure)
         short_side_reduced = short_risk <= 0.0 or short_cap < short_count
         if snapshot.tier <= 0 or short_side_reduced:
-            return max(0.5, EXECUTION_SHORT_TRAILING_DISTANCE_PCT * 100.0)
+            return max(0.5, EXECUTION_SHORT_TRAILING_DISTANCE_PCT)
         return None
 
     def regime_risk_event(
@@ -2098,8 +2102,9 @@ def run_backtest(
         *,
         require_entry_window: bool = False,
         day_start_equity: Optional[float] = None,
-        day_open_budget: Optional[int] = None,
+        day_open_limit: Optional[int] = None,
         day_open_count: int = 0,
+        hour_open_counts: Optional[dict[datetime, int]] = None,
     ) -> int:
         if SECTOR_DIVERSIFICATION_ENABLED:
             open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
@@ -2141,6 +2146,8 @@ def run_backtest(
         for plan in plans_to_open:
             event = plan_events.get(_plan_event_key(plan))
             plan_entry_ts = _ensure_utc_ts(plan.entry_ts or as_of_ts)
+            entry_hour = _entry_hour_bucket(plan_entry_ts)
+            hour_open_count = hour_open_counts.get(entry_hour, 0) if hour_open_counts is not None else 0
             snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
             account_equity_current = snapshot.equity_with_loan_value
             guard_day_start_equity = day_start_equity if day_start_equity is not None else account_equity_current
@@ -2166,14 +2173,24 @@ def run_backtest(
                 event.available_funds = available_funds
                 event.excess_liquidity = excess_liquidity
 
-            if day_open_budget is not None and day_open_count + opened_count >= day_open_budget:
+            if day_open_limit is not None and day_open_count + opened_count >= day_open_limit:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "same_day_refill_limit_reached"
+                    event.reason_code = "daily_position_open_limit_reached"
                     event.reason_text = (
-                        f"Daily open budget {day_open_budget} was already reached; "
-                        f"this budget includes initial free slots plus MAX_SAME_DAY_REFILLS={MAX_SAME_DAY_REFILLS}."
+                        f"Daily position open limit {day_open_limit} was already reached; "
+                        "this limit includes initial opens and refill opens."
+                    )
+                continue
+            if MAX_POSITION_OPENS_PER_HOUR >= 0 and hour_open_count >= MAX_POSITION_OPENS_PER_HOUR:
+                if event:
+                    event.decision_stage = "portfolio_filter"
+                    event.decision = "blocked"
+                    event.reason_code = "hourly_position_open_limit_reached"
+                    event.reason_text = (
+                        f"Hourly position open limit {MAX_POSITION_OPENS_PER_HOUR} was already reached "
+                        f"for UTC hour {entry_hour:%Y-%m-%d %H:%M}; this limit includes refill opens."
                     )
                 continue
             if direction_risk <= 0.0:
@@ -2362,6 +2379,8 @@ def run_backtest(
             open_identities.add(plan.identity_key)
             blocked_identities.add(plan.identity_key)
             opened_count += 1
+            if hour_open_counts is not None:
+                hour_open_counts[entry_hour] = hour_open_count + 1
             record_account_curve(plan_entry_ts, active_positions)
             if event:
                 event.decision_stage = "order_open"
@@ -2439,10 +2458,9 @@ def run_backtest(
         closed_today = 0
         day_pnl = 0.0
         opened_today = 0
+        opened_by_hour: dict[datetime, int] = {}
         used_identities_today: set[InstrumentKey] = set()
-        day_start_open_positions = len(open_positions)
-        day_initial_open_slots = max(0, MAX_OPEN_POSITIONS - day_start_open_positions)
-        day_open_budget = day_initial_open_slots + MAX_SAME_DAY_REFILLS
+        day_open_limit = MAX_POSITION_OPENS_PER_DAY
         day_close_ts = _day_close_ts(day)
         day_start_ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
         signal_decision_points = signal_bar_close_decisions_for_day(conn, day)
@@ -2671,7 +2689,9 @@ def run_backtest(
                     )
                 continue
 
-            if DECISION_EVENT_MODE != "all" and opened_today >= day_open_budget:
+            decision_hour = _entry_hour_bucket(signal_decision_ts)
+            opened_this_hour = opened_by_hour.get(decision_hour, 0)
+            if DECISION_EVENT_MODE != "all" and opened_today >= day_open_limit:
                 buffer_decision_events([DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -2682,12 +2702,10 @@ def run_backtest(
                     direction=None,
                     decision_stage="portfolio_filter",
                     decision="skipped_day",
-                    reason_code="same_day_refill_limit_reached",
+                    reason_code="daily_position_open_limit_reached",
                     reason_text=(
-                        f"Daily open budget {day_open_budget} was already reached; "
-                        f"day started with {day_start_open_positions} open positions, "
-                        f"initial free slots {day_initial_open_slots}, "
-                        f"MAX_SAME_DAY_REFILLS={MAX_SAME_DAY_REFILLS}."
+                        f"Daily position open limit {day_open_limit} was already reached; "
+                        "skipped signal evaluation for this decision timestamp."
                     ),
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
@@ -2697,12 +2715,45 @@ def run_backtest(
                 )])
                 if log_progress_today:
                     log.info(
-                        "Signal decision skipped day %s model %s cutoff %s opened today %d daily open budget %d",
+                        "Signal decision skipped day %s model %s cutoff %s opened today %d daily open limit %d",
                         day,
                         runtime.CURRENT_MODEL_FILE,
                         signal_decision_ts,
                         opened_today,
-                        day_open_budget,
+                        day_open_limit,
+                    )
+                continue
+
+            if DECISION_EVENT_MODE != "all" and opened_this_hour >= MAX_POSITION_OPENS_PER_HOUR:
+                buffer_decision_events([DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=signal_decision_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=None,
+                    decision_stage="portfolio_filter",
+                    decision="skipped_day",
+                    reason_code="hourly_position_open_limit_reached",
+                    reason_text=(
+                        f"Hourly position open limit {MAX_POSITION_OPENS_PER_HOUR} was already reached "
+                        f"for UTC hour {decision_hour:%Y-%m-%d %H:%M}; skipped signal evaluation for this timestamp."
+                    ),
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(open_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                )])
+                if log_progress_today:
+                    log.info(
+                        "Signal decision skipped day %s model %s cutoff %s opened hour %d hourly open limit %d",
+                        day,
+                        runtime.CURRENT_MODEL_FILE,
+                        signal_decision_ts,
+                        opened_this_hour,
+                        MAX_POSITION_OPENS_PER_HOUR,
                     )
                 continue
 
@@ -2747,8 +2798,9 @@ def run_backtest(
                 used_identities_today,
                 require_entry_window=True,
                 day_start_equity=day_start_equity,
-                day_open_budget=day_open_budget,
+                day_open_limit=day_open_limit,
                 day_open_count=opened_today,
+                hour_open_counts=opened_by_hour,
             )
             buffer_decision_events(signal_decision_events)
 
@@ -2770,7 +2822,7 @@ def run_backtest(
 
         if log_progress_today or opened_today > 0:
             log.info(
-                "Progress %d/%d %s model %s signal decisions %d regime label %s score %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d daily open budget %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
+                "Progress %d/%d %s model %s signal decisions %d regime label %s score %.1f, candidates long %d short %d, intents long %d short %d, skipped no bars %d, opened %d daily open limit %d hourly open limit %d, closed today %d, day pnl %.0f, open %d, equity %.0f, closed total %d",
                 day_idx,
                 len(trading_days),
                 day,
@@ -2784,7 +2836,8 @@ def run_backtest(
                 intent_counts["SHORT"],
                 skipped_no_bars,
                 opened_today,
-                day_open_budget,
+                day_open_limit,
+                MAX_POSITION_OPENS_PER_HOUR,
                 closed_today,
                 day_pnl,
                 len(open_positions),

@@ -112,9 +112,10 @@ def log_backtest_context(model_files: list[str]) -> None:
     )
     log.info("Account profile %s", ACCOUNT_PROFILE)
     log.info(
-        "Portfolio capacity max open positions %d max same day refills %d",
+        "Portfolio capacity max open positions %d max position opens per day %d max position opens per hour %d",
         MAX_OPEN_POSITIONS,
-        MAX_SAME_DAY_REFILLS,
+        MAX_POSITION_OPENS_PER_DAY,
+        MAX_POSITION_OPENS_PER_HOUR,
     )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
@@ -285,7 +286,7 @@ def run_single_model_worker() -> None:
         if reserved_run_id is not None:
             log.info("Model worker using reserved run id %d", reserved_run_id)
         log.info(
-            "Execution policy model %s take profit mode %s long fixed tp %.4f short fixed tp %.4f long trailing activation %.4f distance %.4f short trailing activation %.4f distance %.4f long max hold %.2f short max hold %.2f stop source common",
+            "Execution policy model %s take profit mode %s long fixed tp %.2f%% short fixed tp %.2f%% long trailing activation %.2f%% distance %.2f%% short trailing activation %.2f%% distance %.2f%% long max hold %.2f short max hold %.2f stop source common",
             runtime.CURRENT_MODEL_FILE,
             TAKE_PROFIT_MODE,
             EXECUTION_LONG_TAKE_PROFIT_PCT,

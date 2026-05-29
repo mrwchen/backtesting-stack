@@ -171,15 +171,18 @@ services:
       # RISK_PER_TRADE_EQUITY_PCT ist der Basiseinsatz pro Trade vor Regime-,
       # Shock- und Broker-Anpassungen.
       # MAX_OPEN_POSITIONS begrenzt die Portfolio-Groesse.
-      # MAX_SAME_DAY_REFILLS begrenzt zusaetzliche Opens, die nur durch
-      # intraday geschlossene Positionen am selben Trading-Tag moeglich werden.
+      # MAX_POSITION_OPENS_PER_DAY begrenzt alle Positionseroeffnungen pro
+      # Trading-Tag, inklusive initialer Opens und Refill-Opens nach SL/TP.
+      # MAX_POSITION_OPENS_PER_HOUR begrenzt alle Positionseroeffnungen pro
+      # UTC-Bucket der simulierten Entry-Zeit, inklusive Refill-Opens.
       # SECTOR_DIVERSIFICATION_ENABLED aktiviert sektorale Streuungsregeln.
       # ---------------------------------------------------------------------
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
       - MAX_OPEN_POSITIONS=10
-      - MAX_SAME_DAY_REFILLS=2
+      - MAX_POSITION_OPENS_PER_DAY=4
+      - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
@@ -382,14 +385,14 @@ services:
       #
       # TAKE_PROFIT_MODE:
       # fixed    = harter Take-Profit ab Entry.
-      #            LONG:  entry * (1 + EXECUTION_LONG_TAKE_PROFIT_PCT)
-      #            SHORT: entry * (1 - EXECUTION_SHORT_TAKE_PROFIT_PCT)
+      #            LONG:  entry * (1 + EXECUTION_LONG_TAKE_PROFIT_PCT / 100)
+      #            SHORT: entry * (1 - EXECUTION_SHORT_TAKE_PROFIT_PCT / 100)
       #            Trailing-Parameter werden ignoriert.
       # trailing = kein fixer Take-Profit. Sobald die Aktivierung erreicht ist,
       #            wird der Stop zum Trailing-Stop mit der konfigurierten Distanz.
       #            Fixed-TP-Prozente werden ignoriert.
       #
-      # Prozentwerte sind Dezimalwerte: 0.04 = 4%, 0.02 = 2%.
+      # Prozentwerte sind Prozentpunkte: 4.0 = 4%, 2.0 = 2%.
       # Stop-Loss, Take-Profit und Trailing werden nur innerhalb des jeweiligen
       # SL_TP_WINDOW ausgewertet.
       #
@@ -397,12 +400,12 @@ services:
       # inklusive Mindest- und Maximalabstand.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
-      - EXECUTION_LONG_TAKE_PROFIT_PCT=0.05
-      - EXECUTION_SHORT_TAKE_PROFIT_PCT=0.05
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=0.05
-      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=0.05
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=0.03
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=0.03
+      - EXECUTION_LONG_TAKE_PROFIT_PCT=5.0
+      - EXECUTION_SHORT_TAKE_PROFIT_PCT=5.0
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=5.0
+      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=5.0
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=3.0
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=3.0
       - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=12.0
       - COMMON_STOP_LOSS_ENABLED=true 
@@ -410,7 +413,7 @@ services:
       - COMMON_STOP_BUFFER_RATIO=0.007
       - COMMON_STOP_ATR_LOOKBACK_BARS=120
       - COMMON_STOP_ATR_MULT=1.5
-      - COMMON_MIN_STOP_PCT=4
+      - COMMON_MIN_STOP_PCT=4.0
       - COMMON_MAX_STOP_PCT=8.0
 
       # ---------------------------------------------------------------------
@@ -423,6 +426,7 @@ services:
       # Auskommentierte PS_* Werte sind Code-Defaults:
       # 20% Margin, 0.02 USD/Aktie Kommission, min. 0.02 USD,
       # kein extra Spread-Markup, 1 bps Slippage, Freitag Overnight x3.
+      # *_PCT Werte sind Prozentpunkte: 20.0 = 20%, 5.0 = 5%.
       # ---------------------------------------------------------------------
       - PS_TRADABLE_SYMBOLS_TABLE=public.pepperstone_data
       - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
@@ -450,6 +454,7 @@ services:
       #
       # Auskommentierte IBKR_* Werte sind Code-Defaults fuer Kommission,
       # Spread/Slippage, Fractional Shares und Margin-Finanzierung.
+      # *_PCT Werte sind Prozentpunkte: 50.0 = 50%, 5.14 = 5.14%.
       # ---------------------------------------------------------------------
       - IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
       # - IBKR_ALLOW_FRACTIONAL_SHARES=true

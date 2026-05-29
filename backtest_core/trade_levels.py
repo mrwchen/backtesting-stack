@@ -14,13 +14,13 @@ from .config import (
     COMMON_STOP_LOOKBACK_BARS,
     COMMON_STOP_LOSS_ENABLED,
     EXECUTION_LONG_MAX_HOLD_DAYS,
-    EXECUTION_LONG_TAKE_PROFIT_PCT,
-    EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
-    EXECUTION_LONG_TRAILING_DISTANCE_PCT,
+    EXECUTION_LONG_TAKE_PROFIT_RATIO,
+    EXECUTION_LONG_TRAILING_ACTIVATION_RATIO,
+    EXECUTION_LONG_TRAILING_DISTANCE_RATIO,
     EXECUTION_SHORT_MAX_HOLD_DAYS,
-    EXECUTION_SHORT_TAKE_PROFIT_PCT,
-    EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
-    EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
+    EXECUTION_SHORT_TAKE_PROFIT_RATIO,
+    EXECUTION_SHORT_TRAILING_ACTIVATION_RATIO,
+    EXECUTION_SHORT_TRAILING_DISTANCE_RATIO,
     TAKE_PROFIT_MODE,
 )
 
@@ -68,16 +68,16 @@ def build_trade_plan(
     trailing_distance_pct = None
     if TAKE_PROFIT_MODE == "fixed":
         if intent.direction == "LONG":
-            take_profit = entry_price * (1.0 + EXECUTION_LONG_TAKE_PROFIT_PCT)
+            take_profit = entry_price * (1.0 + EXECUTION_LONG_TAKE_PROFIT_RATIO)
         else:
-            take_profit = entry_price * (1.0 - EXECUTION_SHORT_TAKE_PROFIT_PCT)
+            take_profit = entry_price * (1.0 - EXECUTION_SHORT_TAKE_PROFIT_RATIO)
     elif TAKE_PROFIT_MODE == "trailing":
         if intent.direction == "LONG":
-            trailing_activation_price = entry_price * (1.0 + EXECUTION_LONG_TRAILING_ACTIVATION_PCT)
-            trailing_distance_pct = EXECUTION_LONG_TRAILING_DISTANCE_PCT
+            trailing_activation_price = entry_price * (1.0 + EXECUTION_LONG_TRAILING_ACTIVATION_RATIO)
+            trailing_distance_pct = EXECUTION_LONG_TRAILING_DISTANCE_RATIO
         else:
-            trailing_activation_price = entry_price * (1.0 - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT)
-            trailing_distance_pct = EXECUTION_SHORT_TRAILING_DISTANCE_PCT
+            trailing_activation_price = entry_price * (1.0 - EXECUTION_SHORT_TRAILING_ACTIVATION_RATIO)
+            trailing_distance_pct = EXECUTION_SHORT_TRAILING_DISTANCE_RATIO
     else:
         raise ValueError(f"Unknown take-profit mode: {TAKE_PROFIT_MODE!r}")
 
