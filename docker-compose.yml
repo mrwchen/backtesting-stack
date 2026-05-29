@@ -400,12 +400,12 @@ services:
       # inklusive Mindest- und Maximalabstand.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
-      - EXECUTION_LONG_TAKE_PROFIT_PCT=5.0
-      - EXECUTION_SHORT_TAKE_PROFIT_PCT=5.0
+      - EXECUTION_LONG_TAKE_PROFIT_PCT=6.0
+      - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
       - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=5.0
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=5.0
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=3.0
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=3.0
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=2.5
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=2.5
       - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=12.0
       - COMMON_STOP_LOSS_ENABLED=true 
@@ -423,7 +423,7 @@ services:
       # PS_TRADABLE_SYMBOLS_TABLE liefert das handelbare Pepperstone-Universum.
       # Stop-Out und minimale Entry-Margin-Level bilden Broker-Risikoregeln ab.
       #
-      # Auskommentierte PS_* Werte sind Code-Defaults:
+      # Explizit gesetzte PS_* Werte entsprechen Code-Defaults:
       # 20% Margin, 0.02 USD/Aktie Kommission, min. 0.02 USD,
       # kein extra Spread-Markup, 1 bps Slippage, Freitag Overnight x3.
       # *_PCT Werte sind Prozentpunkte: 20.0 = 20%, 5.0 = 5%.
@@ -431,19 +431,19 @@ services:
       - PS_TRADABLE_SYMBOLS_TABLE=public.pepperstone_data
       - PS_MARGIN_STOP_OUT_LEVEL_PCT=50
       - PS_MIN_ENTRY_MARGIN_LEVEL_PCT=100
-      # - PS_MARGIN_REQUIREMENT_PCT=20
-      # - PS_ALLOW_FRACTIONAL_SHARES=false
-      # - PS_COMMISSION_PER_ORDER_USD=0.0
-      # - PS_COMMISSION_PER_SHARE_USD=0.02
-      # - PS_COMMISSION_MIN_PER_ORDER_USD=0.02
-      # - PS_COMMISSION_MAX_PCT=0.0
-      # - PS_COMMISSION_BPS=0.0
-      # - PS_SPREAD_BPS=0.0
-      # - PS_SLIPPAGE_BPS=1.0
-      # - PS_SHARE_CFD_ARR_PCT=5.0
-      # - PS_SHARE_CFD_ADMIN_FEE_PCT=2.5
-      # - PS_SHARE_CFD_SHORT_BORROW_RATE_PCT=0.0
-      # - PS_SHARE_CFD_OVERNIGHT_DAY_COUNT=360.0
+      - PS_MARGIN_REQUIREMENT_PCT=20
+      - PS_ALLOW_FRACTIONAL_SHARES=false
+      - PS_COMMISSION_PER_ORDER_USD=0.0
+      - PS_COMMISSION_PER_SHARE_USD=0.02
+      - PS_COMMISSION_MIN_PER_ORDER_USD=0.02
+      - PS_COMMISSION_MAX_PCT=0.0
+      - PS_COMMISSION_BPS=0.0
+      - PS_SPREAD_BPS=0.0
+      - PS_SLIPPAGE_BPS=1.0
+      - PS_SHARE_CFD_ARR_PCT=5.0
+      - PS_SHARE_CFD_ADMIN_FEE_PCT=2.5
+      - PS_SHARE_CFD_SHORT_BORROW_RATE_PCT=0.0
+      - PS_SHARE_CFD_OVERNIGHT_DAY_COUNT=360.0
 
       # ---------------------------------------------------------------------
       # Interactive-Brokers-Profil: Margin Account
@@ -452,20 +452,24 @@ services:
       # Die Margin-Anforderungen kommen symbolgenau aus
       # IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE.
       #
-      # Auskommentierte IBKR_* Werte sind Code-Defaults fuer Kommission,
+      # Explizit gesetzte IBKR_* Werte entsprechen Code-Defaults fuer Kommission,
       # Spread/Slippage, Fractional Shares und Margin-Finanzierung.
       # *_PCT Werte sind Prozentpunkte: 50.0 = 50%, 5.14 = 5.14%.
       # ---------------------------------------------------------------------
       - IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
-      # - IBKR_ALLOW_FRACTIONAL_SHARES=true
-      # - IBKR_COMMISSION_PER_ORDER_USD=0.0
-      # - IBKR_COMMISSION_PER_SHARE_USD=0.0035
-      # - IBKR_COMMISSION_MIN_PER_ORDER_USD=0.35
-      # - IBKR_COMMISSION_MAX_PCT=1.0
-      # - IBKR_COMMISSION_BPS=0.0
-      # - IBKR_SPREAD_BPS=0.0
-      # - IBKR_SLIPPAGE_BPS=1.0
-      # - IBKR_MARGIN_FINANCING_RATE_PCT=5.14
+      - IBKR_LONG_INITIAL_MARGIN_PCT=50.0
+      - IBKR_LONG_MAINTENANCE_MARGIN_PCT=25.0
+      - IBKR_SHORT_INITIAL_MARGIN_PCT=50.0
+      - IBKR_SHORT_MAINTENANCE_MARGIN_PCT=50.0
+      - IBKR_ALLOW_FRACTIONAL_SHARES=true
+      - IBKR_COMMISSION_PER_ORDER_USD=0.0
+      - IBKR_COMMISSION_PER_SHARE_USD=0.0035
+      - IBKR_COMMISSION_MIN_PER_ORDER_USD=0.35
+      - IBKR_COMMISSION_MAX_PCT=1.0
+      - IBKR_COMMISSION_BPS=0.0
+      - IBKR_SPREAD_BPS=0.0
+      - IBKR_SLIPPAGE_BPS=1.0
+      - IBKR_MARGIN_FINANCING_RATE_PCT=5.14
 
       # ---------------------------------------------------------------------
       # Trading-Sessions und SL/TP-Auswertungsfenster
