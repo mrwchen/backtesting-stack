@@ -13,7 +13,7 @@ from backtest_shared import TradePlan
 from .config import *
 from .entities import AccountMarginSnapshot, ClosedTrade, OpenPosition
 from .ibkr_margin import get_ibkr_margin_requirement
-from .market_data import _day_close_ts, _ensure_utc_ts, _load_identity_bars_through
+from .market_data import _day_close_ts, _ensure_utc_ts, _is_in_sl_tp_window, _load_identity_bars_through
 
 log = logging.getLogger(__name__)
 _PEPPERSTONE_ROLLOVER_ZONE = ZoneInfo("America/New_York")
@@ -261,8 +261,16 @@ def _enforce_pepperstone_margin_stop_out(
         if margin_level > PS_MARGIN_STOP_OUT_LEVEL_PCT:
             break
 
+        tradable_positions = [
+            position
+            for position in active_positions
+            if _is_in_sl_tp_window(as_of_ts, conn, position.identity_key)
+        ]
+        if not tradable_positions:
+            break
+
         position = min(
-            active_positions,
+            tradable_positions,
             key=lambda p: _position_stop_out_rank(conn, p, as_of_ts),
         )
         mark_price = _latest_close_price_at(conn, position, as_of_ts)
@@ -308,8 +316,16 @@ def _enforce_ibkr_excess_liquidity_liquidation(
         if snapshot.excess_liquidity > 0.0:
             break
 
+        tradable_positions = [
+            position
+            for position in active_positions
+            if _is_in_sl_tp_window(as_of_ts, conn, position.identity_key)
+        ]
+        if not tradable_positions:
+            break
+
         position = min(
-            active_positions,
+            tradable_positions,
             key=lambda p: _position_ibkr_liquidation_rank(conn, p, as_of_ts),
         )
         mark_price = _latest_close_price_at(conn, position, as_of_ts)

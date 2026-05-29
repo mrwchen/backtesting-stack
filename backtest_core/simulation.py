@@ -28,7 +28,6 @@ from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPositio
 from .market_data import (
     _day_close_ts,
     _ensure_utc_ts,
-    get_bars_range,
     get_bars_range_through,
     get_candidates,
     get_direct_symbol_candidates,
@@ -325,6 +324,22 @@ def _exit_trade(
     return _make_trade(conn, pos, status, price, bar_date, total_bars, pnl, equity, ts)
 
 
+def _latest_sl_tp_exit_bar_through(
+    conn: psycopg2.extensions.connection,
+    pos: OpenPosition,
+    after_ts: datetime,
+    end_ts: datetime,
+) -> Optional[tuple[datetime, float, int]]:
+    end_ts = _ensure_utc_ts(end_ts)
+    bars = get_bars_range_through(conn, pos.identity_key, after_ts, end_ts)
+    for idx in range(len(bars) - 1, -1, -1):
+        ts, _open, _high, _low, close = bars[idx]
+        ts = _ensure_utc_ts(ts)
+        if _is_in_sl_tp_window(ts, conn, pos.identity_key):
+            return ts, float(close), idx + 1
+    return None
+
+
 def _long_stop_trade(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -435,7 +450,22 @@ def _simulate_position_bar(
     if trade is not None:
         return trade
 
-    if ts >= pos.valid_until:
+    pending_close_requested_ts = (
+        _ensure_utc_ts(pos.pending_close_requested_ts)
+        if pos.pending_close_requested_ts is not None
+        else None
+    )
+    if (
+        pos.pending_close_status
+        and pending_close_requested_ts is not None
+        and ts >= pending_close_requested_ts
+        and sl_tp_active
+    ):
+        price = float(close)
+        pnl = _pnl_long(pos, price) if is_long else _pnl_short(pos, price)
+        return _make_trade(conn, pos, pos.pending_close_status, price, bar_date, total_bars, pnl, equity, ts)
+
+    if ts >= pos.valid_until and sl_tp_active:
         price = float(close)
         pnl = _pnl_long(pos, price) if is_long else _pnl_short(pos, price)
         return _make_trade(conn, pos, "MAX_HOLD", price, bar_date, total_bars, pnl, equity, ts)
@@ -1285,54 +1315,37 @@ def run_backtest(
         )[:short_stress_fall_or_exposure_reduction_max_closes]
 
         for position in short_stress_fall_or_exposure_reduction_close_candidates:
-            _price_ts, exit_price = price_by_position[id(position)]
-            exit_ts = _ensure_utc_ts(as_of_ts)
             reasons = short_stress_fall_or_exposure_reduction_close_candidates_by_position[id(position)][1]
-            trade = _exit_trade(
-                conn,
-                position,
-                "REGIME_RISK_SHORT_CLOSE",
-                exit_price,
-                day,
-                position.bars_processed,
-                equity,
-                exit_ts,
-            )
-            _remove_position_by_identity(active_positions, position)
-            trade.equity_after = round(equity + trade.pnl_usd, 2)
-            equity = trade.equity_after
-            closed_trades.append(trade)
-            closed_count += 1
-            realized_pnl += trade.pnl_usd
-            closed_identity_blocklist.add(position.identity_key)
+            action_ts = _ensure_utc_ts(as_of_ts)
+            current_price = price_by_position[id(position)][1]
+            position.pending_close_status = "REGIME_RISK_SHORT_CLOSE"
+            position.pending_close_requested_ts = action_ts
             regime_risk_action_dates[position.identity_key] = day
             bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
                 day,
-                exit_ts,
+                action_ts,
                 regime,
                 snapshot,
-                "closed",
-                "regime_risk_short_closed_on_stress_fall_or_exposure_reduction",
+                "scheduled_close",
+                "regime_risk_short_close_scheduled_on_stress_fall_or_exposure_reduction",
                 (
-                    f"Closed existing short after stress fell or current regime reduced short exposure; "
-                    f"reasons={','.join(reasons)}; exit_price={exit_price:.4f}; "
-                    f"pnl_usd={trade.pnl_usd:.2f}."
+                    f"Scheduled existing short to close on the next SL/TP-window bar after stress fell "
+                    f"or current regime reduced short exposure; reasons={','.join(reasons)}; "
+                    f"current_price={current_price:.4f}."
                 ),
                 position,
-                exit_price,
+                current_price,
                 bias,
                 open_position_count=len(active_positions),
             ))
             log.debug(
-                "Regime risk closed %-6s %s state %s pnl %.0f balance %.0f",
+                "Regime risk scheduled close %-6s %s state %s balance %.0f",
                 position.symbol,
                 position.direction,
                 snapshot.state,
-                trade.pnl_usd,
                 equity,
             )
-            record_account_curve(exit_ts, active_positions)
 
         if short_stress_fall_or_exposure_reduction_stop_distance_pct is not None:
             for position in list(active_positions):
@@ -1473,54 +1486,37 @@ def run_backtest(
         )[:long_stress_rise_max_closes]
 
         for position in long_stress_rise_close_candidates:
-            _price_ts, exit_price = price_by_position[id(position)]
-            exit_ts = _ensure_utc_ts(as_of_ts)
             reasons = long_stress_rise_close_candidates_by_position[id(position)][1]
-            trade = _exit_trade(
-                conn,
-                position,
-                "REGIME_RISK_LONG_CLOSE",
-                exit_price,
-                day,
-                position.bars_processed,
-                equity,
-                exit_ts,
-            )
-            _remove_position_by_identity(active_positions, position)
-            trade.equity_after = round(equity + trade.pnl_usd, 2)
-            equity = trade.equity_after
-            closed_trades.append(trade)
-            closed_count += 1
-            realized_pnl += trade.pnl_usd
-            closed_identity_blocklist.add(position.identity_key)
+            action_ts = _ensure_utc_ts(as_of_ts)
+            current_price = price_by_position[id(position)][1]
+            position.pending_close_status = "REGIME_RISK_LONG_CLOSE"
+            position.pending_close_requested_ts = action_ts
             regime_risk_action_dates[position.identity_key] = day
             bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
                 day,
-                exit_ts,
+                action_ts,
                 regime,
                 snapshot,
-                "closed",
-                "regime_risk_long_closed_on_stress_rise",
+                "scheduled_close",
+                "regime_risk_long_close_scheduled_on_stress_rise",
                 (
-                    f"Closed existing long after confirmed stress rise to {snapshot.state}; "
-                    f"reasons={','.join(reasons)}; exit_price={exit_price:.4f}; "
-                    f"pnl_usd={trade.pnl_usd:.2f}."
+                    f"Scheduled existing long to close on the next SL/TP-window bar after confirmed "
+                    f"stress rise to {snapshot.state}; reasons={','.join(reasons)}; "
+                    f"current_price={current_price:.4f}."
                 ),
                 position,
-                exit_price,
+                current_price,
                 bias,
                 open_position_count=len(active_positions),
             ))
             log.debug(
-                "Regime risk closed %-6s %s state %s pnl %.0f balance %.0f",
+                "Regime risk scheduled close %-6s %s state %s balance %.0f",
                 position.symbol,
                 position.direction,
                 snapshot.state,
-                trade.pnl_usd,
                 equity,
             )
-            record_account_curve(exit_ts, active_positions)
 
         for position in list(active_positions):
             if position.direction != "LONG" or id(position) not in price_by_position:
@@ -1611,11 +1607,16 @@ def run_backtest(
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
-            direction_cap = direction_max_positions(regime_exposure, direction)
+            base_direction_cap = direction_max_positions(regime_exposure, direction)
+            direction_cap = shock_stress_direction_cap(regime, direction, base_direction_cap)
+            sleeve_may_expand_direction = (
+                direction_risk <= 0.0
+                and should_evaluate_disabled_direction(regime_label, direction)
+            )
             if (
                 direction_risk <= 0.0
                 and direction_cap <= 0
-                and not should_evaluate_disabled_direction(regime_label, direction)
+                and not sleeve_may_expand_direction
             ):
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
@@ -1629,6 +1630,31 @@ def run_backtest(
                     decision="skipped_direction",
                     reason_code="regime_direction_disabled",
                     reason_text=f"Regime label {regime_label} assigned zero risk and zero max {direction.lower()} positions.",
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    open_positions=len(active_positions),
+                    max_open_positions=MAX_OPEN_POSITIONS,
+                    account_equity=equity,
+                ))
+                continue
+
+            direction_open_count = _direction_open_count(active_positions, direction)
+            if not sleeve_may_expand_direction and direction_open_count >= direction_cap:
+                decision_events.append(DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=as_of_ts,
+                    symbol=None,
+                    exchange=None,
+                    cik=None,
+                    direction=direction,
+                    decision_stage="portfolio_filter",
+                    decision="skipped_direction",
+                    reason_code="max_direction_positions_reached",
+                    reason_text=(
+                        f"Regime label {regime_label} allows {direction_cap} open "
+                        f"{direction.lower()} positions; {direction_open_count} were already open."
+                    ),
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(active_positions),
@@ -2498,8 +2524,11 @@ def run_backtest(
             day_pnl += pnl_by_regime_risk
             buffer_decision_events(regime_risk_events)
             if log_progress_today and regime_risk_snapshot.state != "NORMAL":
+                scheduled_by_regime_risk = sum(
+                    1 for event in regime_risk_events if event.decision == "scheduled_close"
+                )
                 log.info(
-                    "Regime risk day %d/%d %s model %s state %s raw tier %d shock %.1f closed %d day pnl %.0f open %d",
+                    "Regime risk day %d/%d %s model %s state %s raw tier %d shock %.1f closed %d scheduled %d day pnl %.0f open %d",
                     day_idx,
                     len(trading_days),
                     day,
@@ -2508,6 +2537,7 @@ def run_backtest(
                     regime_risk_snapshot.raw_tier,
                     regime_risk_snapshot.shock_score,
                     closed_by_regime_risk,
+                    scheduled_by_regime_risk,
                     day_pnl,
                     len(open_positions),
                 )
@@ -2778,8 +2808,15 @@ def run_backtest(
             log_batches=True,
         )
     for pos in list(open_positions):
-        bars = get_bars_range(conn, pos.identity_key, pos.entry_ts, last_day)
-        last_price = float(bars[-1][4]) if bars else pos.entry_price
+        exit_bar = _latest_sl_tp_exit_bar_through(conn, pos, pos.entry_ts, _day_close_ts(last_day))
+        if exit_bar is None:
+            log.warning(
+                "Skipping force-close for %s because no SL/TP-window bar is available through %s",
+                pos.symbol,
+                last_day,
+            )
+            continue
+        exit_ts, last_price, outcome_bars = exit_bar
         if pos.direction == "LONG":
             pnl = _pnl_long(pos, last_price)
         else:
@@ -2789,17 +2826,17 @@ def run_backtest(
             pos,
             "FORCE_CLOSED",
             last_price,
-            last_day,
-            len(bars) if bars else 0,
+            exit_ts.date(),
+            outcome_bars,
             pnl,
             equity,
-            _day_close_ts(last_day),
+            exit_ts,
         )
         _remove_position_by_identity(open_positions, pos)
         trade.equity_after = round(equity + trade.pnl_usd, 2)
         equity = trade.equity_after
         closed_trades.append(trade)
-        record_account_curve(trade.exit_ts or _day_close_ts(last_day), open_positions)
+        record_account_curve(trade.exit_ts, open_positions)
 
     # ── 6. Persist results ───────────────────────────────────────────────────
     log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)

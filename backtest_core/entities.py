@@ -41,6 +41,8 @@ class OpenPosition:
     regime_risk_stop_overlay_ts: Optional[datetime] = None
     regime_risk_stop_level: Optional[float] = None
     regime_risk_stop_state: str = ""
+    pending_close_status: str = ""
+    pending_close_requested_ts: Optional[datetime] = None
     last_bar_ts: Optional[datetime] = None
     bars_processed: int = 0
 
