@@ -240,7 +240,7 @@ def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
 
 
 def _regime_risk_stop_is_active(pos: OpenPosition) -> bool:
-    if not pos.regime_risk_stop_tightened or pos.regime_risk_stop_level is None:
+    if not pos.regime_risk_stop_overlay_active or pos.regime_risk_stop_level is None:
         return False
     if abs(float(pos.effective_sl) - float(pos.regime_risk_stop_level)) > 1e-8:
         return False
@@ -281,7 +281,7 @@ def _long_stop_trade(
     ts: datetime,
 ) -> ClosedTrade:
     if _regime_risk_stop_is_active(pos):
-        status = "REGIME_RISK_HIT_SL"
+        status = "REGIME_RISK_LONG_HIT_SL"
     else:
         status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
     return _exit_trade(conn, pos, status, price, bar_date, total_bars, equity, ts)
@@ -296,7 +296,10 @@ def _short_stop_trade(
     equity: float,
     ts: datetime,
 ) -> ClosedTrade:
-    status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
+    if _regime_risk_stop_is_active(pos):
+        status = "REGIME_RISK_SHORT_HIT_SL"
+    else:
+        status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
     return _exit_trade(conn, pos, status, price, bar_date, total_bars, equity, ts)
 
 
@@ -774,7 +777,12 @@ def run_backtest(
             return 0.0
         return (current_price / position.entry_price - 1.0) * 100.0
 
-    def regime_risk_stop_distance_pct(snapshot: RegimeRiskSnapshot) -> float | None:
+    def short_unrealized_pct(position: OpenPosition, current_price: float) -> float:
+        if position.entry_price <= 0.0 or current_price <= 0.0:
+            return 0.0
+        return ((position.entry_price - current_price) / position.entry_price) * 100.0
+
+    def regime_risk_long_stress_rise_stop_distance_pct(snapshot: RegimeRiskSnapshot) -> float | None:
         if snapshot.tier >= EXTREME_STRESS:
             return REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT
         if snapshot.tier >= HIGH_STRESS:
@@ -782,6 +790,28 @@ def run_backtest(
         if snapshot.tier >= ELEVATED:
             return REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT
         return None
+
+    def regime_risk_state_tier(state: str) -> int:
+        normalized = str(state or "").strip().upper()
+        if normalized == "EXTREME_STRESS":
+            return EXTREME_STRESS
+        if normalized == "HIGH_STRESS":
+            return HIGH_STRESS
+        if normalized == "ELEVATED":
+            return ELEVATED
+        return 0
+
+    def regime_risk_long_stop_floor(position: OpenPosition) -> float:
+        floor = float(position.stop_loss)
+        if position.trailing_stop is not None:
+            floor = max(floor, float(position.trailing_stop))
+        return floor
+
+    def regime_risk_short_stop_ceiling(position: OpenPosition) -> float:
+        ceiling = float(position.stop_loss)
+        if position.trailing_stop is not None:
+            ceiling = min(ceiling, float(position.trailing_stop))
+        return ceiling
 
     def regime_risk_long_target_cap(regime: Any, regime_exposure: dict, snapshot: RegimeRiskSnapshot) -> int:
         base_cap = direction_max_positions(regime_exposure, "LONG")
@@ -791,6 +821,25 @@ def run_backtest(
         if snapshot.tier >= HIGH_STRESS:
             return min(stress_cap, REGIME_RISK_HIGH_MAX_LONG_POSITIONS)
         return stress_cap
+
+    def regime_risk_short_target_cap(regime: Any, regime_exposure: dict) -> int:
+        base_cap = direction_max_positions(regime_exposure, "SHORT")
+        return shock_stress_direction_cap(regime, "SHORT", base_cap)
+
+    def regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
+        snapshot: RegimeRiskSnapshot,
+        regime: Any,
+        regime_exposure: dict,
+        short_count: int,
+    ) -> float | None:
+        if short_count <= 0:
+            return None
+        short_risk = direction_risk_multiplier(regime_exposure, "SHORT")
+        short_cap = regime_risk_short_target_cap(regime, regime_exposure)
+        short_side_reduced = short_risk <= 0.0 or short_cap < short_count
+        if snapshot.tier <= 0 or short_side_reduced:
+            return max(0.5, EXECUTION_SHORT_TRAILING_DISTANCE_PCT * 100.0)
+        return None
 
     def regime_risk_event(
         day: date,
@@ -873,17 +922,19 @@ def run_backtest(
                 open_position_count=len(active_positions),
             ))
 
-        if not REGIME_RISK_MANAGEMENT_ENABLED or snapshot.tier <= 0:
+        if not REGIME_RISK_MANAGEMENT_ENABLED:
             return active_positions, closed_count, realized_pnl, events
 
         long_positions = [pos for pos in active_positions if pos.direction == "LONG"]
-        if not long_positions:
+        short_positions = [pos for pos in active_positions if pos.direction == "SHORT"]
+        managed_positions = long_positions + short_positions
+        if not managed_positions:
             return active_positions, closed_count, realized_pnl, events
 
-        if long_positions:
+        if managed_positions:
             preload_identity_bars(
                 conn,
-                [pos.identity_key for pos in long_positions],
+                [pos.identity_key for pos in managed_positions],
                 _ensure_utc_ts(as_of_ts),
                 batch_size=BAR_CACHE_BATCH_SIZE,
                 log_batches=False,
@@ -891,13 +942,17 @@ def run_backtest(
 
         price_by_position: dict[int, tuple[datetime, float]] = {}
         bias_by_position: dict[int, float] = {}
-        for position in long_positions:
+        for position in managed_positions:
             latest = latest_close_for_position(position, as_of_ts)
             if latest is None:
                 continue
             price_by_position[id(position)] = latest
             try:
-                bias_by_position[id(position)] = shock_sector_bias_for_sector(position.plan.sector, "LONG", regime)
+                bias_by_position[id(position)] = shock_sector_bias_for_sector(
+                    position.plan.sector,
+                    position.direction,
+                    regime,
+                )
             except Exception as exc:
                 bias_by_position[id(position)] = position.plan.shock_sector_bias
                 log.debug(
@@ -908,88 +963,281 @@ def run_backtest(
                     exc,
                 )
 
+        long_stress_rise_stop_distance_pct = regime_risk_long_stress_rise_stop_distance_pct(snapshot)
+        short_stress_fall_or_exposure_reduction_stop_distance_pct = (
+            regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
+                snapshot,
+                regime,
+                regime_exposure,
+                len(short_positions),
+            )
+        )
+
         if not price_by_position:
+            if snapshot.tier <= 0:
+                for position in long_positions:
+                    if not position.regime_risk_stop_overlay_active:
+                        continue
+                    old_stop = float(position.effective_sl)
+                    restored_stop = regime_risk_long_stop_floor(position)
+                    position.effective_sl = restored_stop
+                    position.regime_risk_stop_overlay_active = False
+                    position.regime_risk_stop_overlay_ts = None
+                    position.regime_risk_stop_level = None
+                    position.regime_risk_stop_state = ""
+                    regime_risk_action_dates[position.identity_key] = day
+                    events.append(regime_risk_event(
+                        day,
+                        _ensure_utc_ts(as_of_ts),
+                        regime,
+                        snapshot,
+                        "relaxed_stop",
+                        "regime_risk_long_stop_relaxed_on_stress_fall",
+                        (
+                            f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
+                            f"old_stop={old_stop:.4f}; restored_stop={restored_stop:.4f}."
+                        ),
+                        position,
+                        None,
+                        None,
+                        open_position_count=len(active_positions),
+                    ))
+            if short_stress_fall_or_exposure_reduction_stop_distance_pct is None:
+                for position in short_positions:
+                    if not position.regime_risk_stop_overlay_active:
+                        continue
+                    old_stop = float(position.effective_sl)
+                    restored_stop = regime_risk_short_stop_ceiling(position)
+                    position.effective_sl = restored_stop
+                    position.regime_risk_stop_overlay_active = False
+                    position.regime_risk_stop_overlay_ts = None
+                    position.regime_risk_stop_level = None
+                    position.regime_risk_stop_state = ""
+                    regime_risk_action_dates[position.identity_key] = day
+                    events.append(regime_risk_event(
+                        day,
+                        _ensure_utc_ts(as_of_ts),
+                        regime,
+                        snapshot,
+                        "relaxed_stop",
+                        "regime_risk_short_stop_relaxed_on_stress_rise",
+                        (
+                            f"Removed regime-risk short stop after stress rose to short-favorable {snapshot.state}; "
+                            f"old_stop={old_stop:.4f}; restored_stop={restored_stop:.4f}."
+                        ),
+                        position,
+                        None,
+                        None,
+                        open_position_count=len(active_positions),
+                    ))
             return active_positions, closed_count, realized_pnl, events
 
-        def close_priority(position: OpenPosition) -> tuple[float, float, float, float, float]:
+        relaxed_regime_stop_position_ids: set[int] = set()
+
+        for position in list(active_positions):
+            if position.direction != "LONG" or not position.regime_risk_stop_overlay_active:
+                continue
+            previous_state = position.regime_risk_stop_state or "regime_risk_overlay"
+            previous_tier = regime_risk_state_tier(position.regime_risk_stop_state)
+            if previous_tier <= snapshot.tier and snapshot.tier > 0:
+                continue
+
+            floor_stop = regime_risk_long_stop_floor(position)
+            if long_stress_rise_stop_distance_pct is None:
+                target_stop = floor_stop
+            else:
+                latest = price_by_position.get(id(position))
+                if latest is None:
+                    continue
+                _price_ts, current_price = latest
+                target_stop = max(floor_stop, current_price * (1.0 - long_stress_rise_stop_distance_pct / 100.0))
+
+            old_stop = float(position.effective_sl)
+            relaxed_regime_stop_position_ids.add(id(position))
+            if target_stop >= old_stop - 1e-8:
+                if long_stress_rise_stop_distance_pct is None:
+                    position.effective_sl = target_stop
+                    position.regime_risk_stop_overlay_active = False
+                    position.regime_risk_stop_overlay_ts = None
+                    position.regime_risk_stop_level = None
+                    position.regime_risk_stop_state = ""
+                    regime_risk_action_dates[position.identity_key] = day
+                    bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+                    latest = price_by_position.get(id(position))
+                    current_price = latest[1] if latest else None
+                    events.append(regime_risk_event(
+                        day,
+                        _ensure_utc_ts(as_of_ts),
+                        regime,
+                        snapshot,
+                        "relaxed_stop",
+                        "regime_risk_long_stop_relaxed_on_stress_fall",
+                        (
+                            f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
+                            f"old_stop={old_stop:.4f}; restored_stop={target_stop:.4f}; "
+                            f"floor_stop={floor_stop:.4f}."
+                        ),
+                        position,
+                        current_price,
+                        bias,
+                        open_position_count=len(active_positions),
+                    ))
+                continue
+
+            position.effective_sl = target_stop
+            action_ts = _ensure_utc_ts(as_of_ts)
+            if abs(target_stop - floor_stop) <= 1e-8:
+                position.regime_risk_stop_overlay_active = False
+                position.regime_risk_stop_overlay_ts = None
+                position.regime_risk_stop_level = None
+                position.regime_risk_stop_state = ""
+            else:
+                position.regime_risk_stop_level = target_stop
+                position.regime_risk_stop_state = snapshot.state
+            regime_risk_action_dates[position.identity_key] = day
+            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+            latest = price_by_position.get(id(position))
+            current_price = latest[1] if latest else None
+            events.append(regime_risk_event(
+                day,
+                action_ts,
+                regime,
+                snapshot,
+                "relaxed_stop",
+                "regime_risk_long_stop_relaxed_on_stress_fall",
+                (
+                    f"Relaxed long stop after stress fell from "
+                    f"{previous_state} to {snapshot.state}; "
+                    f"old_stop={old_stop:.4f}; new_stop={target_stop:.4f}; "
+                    f"floor_stop={floor_stop:.4f}; "
+                    f"max_distance_pct={long_stress_rise_stop_distance_pct:.2f}."
+                    if long_stress_rise_stop_distance_pct is not None
+                    else (
+                        f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
+                        f"old_stop={old_stop:.4f}; restored_stop={target_stop:.4f}; "
+                        f"floor_stop={floor_stop:.4f}."
+                    )
+                ),
+                position,
+                current_price,
+                bias,
+                open_position_count=len(active_positions),
+            ))
+
+        for position in list(active_positions):
+            if position.direction != "SHORT" or not position.regime_risk_stop_overlay_active:
+                continue
+            if short_stress_fall_or_exposure_reduction_stop_distance_pct is not None:
+                continue
+            previous_state = position.regime_risk_stop_state or "regime_risk_overlay"
+            ceiling_stop = regime_risk_short_stop_ceiling(position)
+            old_stop = float(position.effective_sl)
+            position.effective_sl = ceiling_stop
+            position.regime_risk_stop_overlay_active = False
+            position.regime_risk_stop_overlay_ts = None
+            position.regime_risk_stop_level = None
+            position.regime_risk_stop_state = ""
+            regime_risk_action_dates[position.identity_key] = day
+            relaxed_regime_stop_position_ids.add(id(position))
+            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+            latest = price_by_position.get(id(position))
+            current_price = latest[1] if latest else None
+            events.append(regime_risk_event(
+                day,
+                _ensure_utc_ts(as_of_ts),
+                regime,
+                snapshot,
+                "relaxed_stop",
+                "regime_risk_short_stop_relaxed_on_stress_rise",
+                (
+                    f"Removed regime-risk short stop after stress rose and regime became short-favorable "
+                    f"from {previous_state} to {snapshot.state}; "
+                    f"old_stop={old_stop:.4f}; restored_stop={ceiling_stop:.4f}; "
+                    f"ceiling_stop={ceiling_stop:.4f}."
+                ),
+                position,
+                current_price,
+                bias,
+                open_position_count=len(active_positions),
+            ))
+
+        short_stress_fall_or_exposure_reduction_target_cap = regime_risk_short_target_cap(regime, regime_exposure)
+        short_stress_fall_or_exposure_reduction_risk_multiplier = direction_risk_multiplier(
+            regime_exposure,
+            "SHORT",
+        )
+
+        def short_stress_fall_or_exposure_reduction_close_priority(
+            position: OpenPosition,
+        ) -> tuple[float, float, float, float]:
             _ts, current_price = price_by_position[id(position)]
-            valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
-            selected_labels = (
-                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
-            )
-            negative_bias = 1.0 if bias_by_position.get(id(position), 0.0) < 0.0 else 0.0
-            selected_value_label = 1.0 if valuation_label in selected_labels else 0.0
-            losing_pct = max(0.0, -long_unrealized_pct(position, current_price))
+            positive_bias = 1.0 if bias_by_position.get(id(position), 0.0) > 0.0 else 0.0
+            losing_pct = max(0.0, -short_unrealized_pct(position, current_price))
             weak_intent = -float(position.plan.intent_score or 0.0)
             age_days = max(0.0, float((day - position.entry_date).days))
-            return negative_bias, selected_value_label, losing_pct, weak_intent, age_days
+            return positive_bias, losing_pct, weak_intent, age_days
 
-        candidates_by_position: dict[int, tuple[OpenPosition, list[str]]] = {}
+        short_stress_fall_or_exposure_reduction_close_candidates_by_position: dict[
+            int,
+            tuple[OpenPosition, list[str]],
+        ] = {}
 
-        def add_close_candidate(position: OpenPosition, reason: str) -> None:
+        def add_short_stress_fall_or_exposure_reduction_close_candidate(
+            position: OpenPosition,
+            reason: str,
+        ) -> None:
             if id(position) not in price_by_position:
                 return
-            current = candidates_by_position.get(id(position))
+            current = short_stress_fall_or_exposure_reduction_close_candidates_by_position.get(id(position))
             if current is None:
-                candidates_by_position[id(position)] = (position, [reason])
+                short_stress_fall_or_exposure_reduction_close_candidates_by_position[id(position)] = (
+                    position,
+                    [reason],
+                )
             elif reason not in current[1]:
                 current[1].append(reason)
 
-        ranked_longs = sorted(
-            [pos for pos in long_positions if id(pos) in price_by_position],
-            key=close_priority,
+        ranked_shorts_for_stress_fall_or_exposure_reduction_close = sorted(
+            [pos for pos in short_positions if id(pos) in price_by_position],
+            key=short_stress_fall_or_exposure_reduction_close_priority,
             reverse=True,
         )
 
-        if snapshot.tier >= HIGH_STRESS and REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS:
-            target_cap = regime_risk_long_target_cap(regime, regime_exposure, snapshot)
-            excess_longs = max(0, len(long_positions) - target_cap)
-            for position in ranked_longs[:excess_longs]:
-                add_close_candidate(position, f"long_count_above_confirmed_regime_cap_{target_cap}")
-
-        if snapshot.tier >= HIGH_STRESS:
-            label_set = (
-                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
+        excess_shorts = max(0, len(short_positions) - short_stress_fall_or_exposure_reduction_target_cap)
+        for position in ranked_shorts_for_stress_fall_or_exposure_reduction_close[:excess_shorts]:
+            add_short_stress_fall_or_exposure_reduction_close_candidate(
+                position,
+                f"short_count_above_current_regime_cap_{short_stress_fall_or_exposure_reduction_target_cap}",
             )
-            close_negative_bias = (
-                REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS
-            )
-            for position in ranked_longs:
-                valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
-                if valuation_label in label_set:
-                    add_close_candidate(position, f"valuation_label_{valuation_label}_under_{snapshot.state.lower()}")
-                if close_negative_bias and bias_by_position.get(id(position), 0.0) < 0.0:
-                    add_close_candidate(position, f"negative_current_shock_sector_bias_{bias_by_position[id(position)]:.2f}")
 
-        if (
-            snapshot.tier >= EXTREME_STRESS
-            and REGIME_RISK_RISK_OFF_CLOSE_LONGS
-            and str(regime_label or "").strip().upper() == "RISK-OFF"
-        ):
-            for position in ranked_longs:
-                add_close_candidate(position, "risk_off_confirmed_close_longs")
+        if short_stress_fall_or_exposure_reduction_risk_multiplier <= 0.0:
+            for position in ranked_shorts_for_stress_fall_or_exposure_reduction_close:
+                add_short_stress_fall_or_exposure_reduction_close_candidate(
+                    position,
+                    "current_regime_short_risk_multiplier_zero",
+                )
 
-        max_closes = max(1, math.ceil(len(ranked_longs) * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY))
-        close_candidates = sorted(
-            (value[0] for value in candidates_by_position.values()),
-            key=close_priority,
+        short_stress_fall_or_exposure_reduction_max_closes = max(
+            1,
+            math.ceil(
+                len(ranked_shorts_for_stress_fall_or_exposure_reduction_close)
+                * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY
+            ),
+        )
+        short_stress_fall_or_exposure_reduction_close_candidates = sorted(
+            (value[0] for value in short_stress_fall_or_exposure_reduction_close_candidates_by_position.values()),
+            key=short_stress_fall_or_exposure_reduction_close_priority,
             reverse=True,
-        )[:max_closes]
+        )[:short_stress_fall_or_exposure_reduction_max_closes]
 
-        for position in close_candidates:
+        for position in short_stress_fall_or_exposure_reduction_close_candidates:
             _price_ts, exit_price = price_by_position[id(position)]
             exit_ts = _ensure_utc_ts(as_of_ts)
-            reasons = candidates_by_position[id(position)][1]
+            reasons = short_stress_fall_or_exposure_reduction_close_candidates_by_position[id(position)][1]
             trade = _exit_trade(
                 conn,
                 position,
-                "REGIME_RISK_CLOSE",
+                "REGIME_RISK_SHORT_CLOSE",
                 exit_price,
                 day,
                 position.bars_processed,
@@ -1011,9 +1259,9 @@ def run_backtest(
                 regime,
                 snapshot,
                 "closed",
-                "regime_risk_close",
+                "regime_risk_short_closed_on_stress_fall_or_exposure_reduction",
                 (
-                    f"Closed existing long after confirmed {snapshot.state}; "
+                    f"Closed existing short after stress fell or current regime reduced short exposure; "
                     f"reasons={','.join(reasons)}; exit_price={exit_price:.4f}; "
                     f"pnl_usd={trade.pnl_usd:.2f}."
                 ),
@@ -1032,12 +1280,198 @@ def run_backtest(
             )
             record_account_curve(exit_ts, active_positions)
 
-        stop_distance_pct = regime_risk_stop_distance_pct(snapshot)
-        if stop_distance_pct is None:
+        if short_stress_fall_or_exposure_reduction_stop_distance_pct is not None:
+            for position in list(active_positions):
+                if position.direction != "SHORT" or id(position) not in price_by_position:
+                    continue
+                if id(position) in relaxed_regime_stop_position_ids:
+                    continue
+                last_action_date = regime_risk_action_dates.get(position.identity_key)
+                if (
+                    last_action_date is not None
+                    and REGIME_RISK_POSITION_COOLDOWN_DAYS > 0
+                    and (day - last_action_date).days < REGIME_RISK_POSITION_COOLDOWN_DAYS
+                ):
+                    continue
+                _price_ts, current_price = price_by_position[id(position)]
+                action_ts = _ensure_utc_ts(as_of_ts)
+                ceiling_stop = regime_risk_short_stop_ceiling(position)
+                new_stop = min(
+                    ceiling_stop,
+                    current_price * (1.0 + short_stress_fall_or_exposure_reduction_stop_distance_pct / 100.0),
+                )
+                if new_stop >= position.effective_sl or new_stop <= current_price:
+                    continue
+                old_stop = position.effective_sl
+                position.effective_sl = new_stop
+                position.regime_risk_stop_overlay_active = True
+                position.regime_risk_stop_overlay_count += 1
+                position.regime_risk_stop_overlay_ts = action_ts
+                position.regime_risk_stop_level = new_stop
+                position.regime_risk_stop_state = snapshot.state
+                regime_risk_action_dates[position.identity_key] = day
+                bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+                events.append(regime_risk_event(
+                    day,
+                    action_ts,
+                    regime,
+                    snapshot,
+                    "tightened_stop",
+                    "regime_risk_short_stop_tightened_on_stress_fall",
+                    (
+                        f"Tightened short stop after stress fell or current regime reduced short exposure; "
+                        f"old_stop={old_stop:.4f}; new_stop={new_stop:.4f}; "
+                        f"max_distance_pct={short_stress_fall_or_exposure_reduction_stop_distance_pct:.2f}; "
+                        f"current_price={current_price:.4f}; "
+                        f"short_cap={short_stress_fall_or_exposure_reduction_target_cap}; "
+                        f"short_risk_multiplier={short_stress_fall_or_exposure_reduction_risk_multiplier:.2f}."
+                    ),
+                    position,
+                    current_price,
+                    bias,
+                    open_position_count=len(active_positions),
+                ))
+
+        if long_stress_rise_stop_distance_pct is None:
             return active_positions, closed_count, realized_pnl, events
+
+        def long_stress_rise_close_priority(position: OpenPosition) -> tuple[float, float, float, float, float]:
+            _ts, current_price = price_by_position[id(position)]
+            valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
+            selected_labels = (
+                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
+            )
+            negative_bias = 1.0 if bias_by_position.get(id(position), 0.0) < 0.0 else 0.0
+            selected_value_label = 1.0 if valuation_label in selected_labels else 0.0
+            losing_pct = max(0.0, -long_unrealized_pct(position, current_price))
+            weak_intent = -float(position.plan.intent_score or 0.0)
+            age_days = max(0.0, float((day - position.entry_date).days))
+            return negative_bias, selected_value_label, losing_pct, weak_intent, age_days
+
+        long_stress_rise_close_candidates_by_position: dict[int, tuple[OpenPosition, list[str]]] = {}
+
+        def add_long_stress_rise_close_candidate(position: OpenPosition, reason: str) -> None:
+            if id(position) not in price_by_position:
+                return
+            current = long_stress_rise_close_candidates_by_position.get(id(position))
+            if current is None:
+                long_stress_rise_close_candidates_by_position[id(position)] = (position, [reason])
+            elif reason not in current[1]:
+                current[1].append(reason)
+
+        ranked_longs_for_stress_rise_close = sorted(
+            [pos for pos in long_positions if id(pos) in price_by_position],
+            key=long_stress_rise_close_priority,
+            reverse=True,
+        )
+
+        if snapshot.tier >= HIGH_STRESS and REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS:
+            long_stress_rise_target_cap = regime_risk_long_target_cap(regime, regime_exposure, snapshot)
+            excess_longs = max(0, len(long_positions) - long_stress_rise_target_cap)
+            for position in ranked_longs_for_stress_rise_close[:excess_longs]:
+                add_long_stress_rise_close_candidate(
+                    position,
+                    f"long_count_above_confirmed_regime_cap_{long_stress_rise_target_cap}",
+                )
+
+        if snapshot.tier >= HIGH_STRESS:
+            label_set = (
+                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
+            )
+            close_negative_bias = (
+                REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS
+                if snapshot.tier >= EXTREME_STRESS
+                else REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS
+            )
+            for position in ranked_longs_for_stress_rise_close:
+                valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
+                if valuation_label in label_set:
+                    add_long_stress_rise_close_candidate(
+                        position,
+                        f"valuation_label_{valuation_label}_under_{snapshot.state.lower()}",
+                    )
+                if close_negative_bias and bias_by_position.get(id(position), 0.0) < 0.0:
+                    add_long_stress_rise_close_candidate(
+                        position,
+                        f"negative_current_shock_sector_bias_{bias_by_position[id(position)]:.2f}",
+                    )
+
+        if (
+            snapshot.tier >= EXTREME_STRESS
+            and REGIME_RISK_RISK_OFF_CLOSE_LONGS
+            and str(regime_label or "").strip().upper() == "RISK-OFF"
+        ):
+            for position in ranked_longs_for_stress_rise_close:
+                add_long_stress_rise_close_candidate(position, "risk_off_confirmed_close_longs")
+
+        long_stress_rise_max_closes = max(
+            1,
+            math.ceil(len(ranked_longs_for_stress_rise_close) * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY),
+        )
+        long_stress_rise_close_candidates = sorted(
+            (value[0] for value in long_stress_rise_close_candidates_by_position.values()),
+            key=long_stress_rise_close_priority,
+            reverse=True,
+        )[:long_stress_rise_max_closes]
+
+        for position in long_stress_rise_close_candidates:
+            _price_ts, exit_price = price_by_position[id(position)]
+            exit_ts = _ensure_utc_ts(as_of_ts)
+            reasons = long_stress_rise_close_candidates_by_position[id(position)][1]
+            trade = _exit_trade(
+                conn,
+                position,
+                "REGIME_RISK_LONG_CLOSE",
+                exit_price,
+                day,
+                position.bars_processed,
+                equity,
+                exit_ts,
+            )
+            _remove_position_by_identity(active_positions, position)
+            trade.equity_after = round(equity + trade.pnl_usd, 2)
+            equity = trade.equity_after
+            closed_trades.append(trade)
+            closed_count += 1
+            realized_pnl += trade.pnl_usd
+            closed_identity_blocklist.add(position.identity_key)
+            regime_risk_action_dates[position.identity_key] = day
+            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
+            events.append(regime_risk_event(
+                day,
+                exit_ts,
+                regime,
+                snapshot,
+                "closed",
+                "regime_risk_long_closed_on_stress_rise",
+                (
+                    f"Closed existing long after confirmed stress rise to {snapshot.state}; "
+                    f"reasons={','.join(reasons)}; exit_price={exit_price:.4f}; "
+                    f"pnl_usd={trade.pnl_usd:.2f}."
+                ),
+                position,
+                exit_price,
+                bias,
+                open_position_count=len(active_positions),
+            ))
+            log.debug(
+                "Regime risk closed %-6s %s state %s pnl %.0f balance %.0f",
+                position.symbol,
+                position.direction,
+                snapshot.state,
+                trade.pnl_usd,
+                equity,
+            )
+            record_account_curve(exit_ts, active_positions)
 
         for position in list(active_positions):
             if position.direction != "LONG" or id(position) not in price_by_position:
+                continue
+            if id(position) in relaxed_regime_stop_position_ids:
                 continue
             last_action_date = regime_risk_action_dates.get(position.identity_key)
             if (
@@ -1048,14 +1482,14 @@ def run_backtest(
                 continue
             _price_ts, current_price = price_by_position[id(position)]
             action_ts = _ensure_utc_ts(as_of_ts)
-            new_stop = current_price * (1.0 - stop_distance_pct / 100.0)
+            new_stop = current_price * (1.0 - long_stress_rise_stop_distance_pct / 100.0)
             if new_stop <= position.effective_sl or new_stop >= current_price:
                 continue
             old_stop = position.effective_sl
             position.effective_sl = new_stop
-            position.regime_risk_stop_tightened = True
-            position.regime_risk_stop_tighten_count += 1
-            position.regime_risk_stop_tightened_ts = action_ts
+            position.regime_risk_stop_overlay_active = True
+            position.regime_risk_stop_overlay_count += 1
+            position.regime_risk_stop_overlay_ts = action_ts
             position.regime_risk_stop_level = new_stop
             position.regime_risk_stop_state = snapshot.state
             regime_risk_action_dates[position.identity_key] = day
@@ -1066,11 +1500,12 @@ def run_backtest(
                 regime,
                 snapshot,
                 "tightened_stop",
-                "regime_risk_stop_tightened",
+                "regime_risk_long_stop_tightened_on_stress_rise",
                 (
-                    f"Tightened long stop after confirmed {snapshot.state}; "
+                    f"Tightened long stop after confirmed stress rise to {snapshot.state}; "
                     f"old_stop={old_stop:.4f}; new_stop={new_stop:.4f}; "
-                    f"max_distance_pct={stop_distance_pct:.2f}; current_price={current_price:.4f}."
+                    f"max_distance_pct={long_stress_rise_stop_distance_pct:.2f}; "
+                    f"current_price={current_price:.4f}."
                 ),
                 position,
                 current_price,

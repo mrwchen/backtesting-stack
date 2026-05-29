@@ -118,7 +118,7 @@ services:
       # - MODEL_FILES=adaptive_entry_swing_v1.py,deep_pullback_quality_mean_reversion_v1.py,failed_breakout_reversal_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,relative_strength_momentum_v1.py,sector_rotation_long_short_v1.py,statistical_direction_probability_v1.py,trend_pullback_reclaim_v1.py,volatility_contraction_breakout_v1.py,weak_fundamental_breakdown_v1.py
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
       - MODEL_CONFIG_REQUIRED=true
-      - MODEL_PARALLELISM=4
+      - MODEL_PARALLELISM=6
       - MODEL_FAILURE_MODE=continue
 
       # ---------------------------------------------------------------------
@@ -285,7 +285,7 @@ services:
       - REGIME_RISK_ELEVATED_CONFIRM_DAYS=2
       - REGIME_RISK_HIGH_CONFIRM_DAYS=2
       - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
-      - REGIME_RISK_RECOVERY_CONFIRM_DAYS=3
+      - REGIME_RISK_RECOVERY_CONFIRM_DAYS=2
       - REGIME_RISK_ELEVATED_EXIT_SCORE=55.0
       - REGIME_RISK_HIGH_EXIT_SCORE=65.0
       - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.30
@@ -343,13 +343,13 @@ services:
       - REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER=0.30
       - REGIME_DEFENSIVE_SHORT_RISK_MULTIPLIER=0.70
       - REGIME_DEFENSIVE_MAX_LONG_POSITIONS=1
-      - REGIME_DEFENSIVE_MAX_SHORT_POSITIONS=3
+      - REGIME_DEFENSIVE_MAX_SHORT_POSITIONS=2
 
       # RISK-OFF: score >= 75
       - REGIME_RISK_OFF_LONG_RISK_MULTIPLIER=0.0
       - REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER=1.0
       - REGIME_RISK_OFF_MAX_LONG_POSITIONS=0
-      - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=5
+      - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=3
 
       # ---------------------------------------------------------------------
       # Gemeinsame Policy: fundamentale Eligibility

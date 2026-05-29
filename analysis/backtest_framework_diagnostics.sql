@@ -111,7 +111,7 @@ JOIN selected_runs s USING (run_id)
 GROUP BY t.run_id, t.direction, COALESCE(t.sector, '')
 ORDER BY t.run_id, t.direction, pnl_usd;
 
--- 6) Stop-tightening visibility.
+-- 6) Regime-risk close/stop visibility.
 WITH selected_runs AS (
     SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
 )
@@ -127,7 +127,12 @@ SELECT
     ROUND(AVG(t.return_pct)::numeric, 4) AS avg_return_pct
 FROM public.backtest_trades t
 JOIN selected_runs s USING (run_id)
-WHERE t.outcome_status IN ('REGIME_RISK_CLOSE', 'REGIME_RISK_HIT_SL')
+WHERE t.outcome_status IN (
+    'REGIME_RISK_LONG_CLOSE',
+    'REGIME_RISK_SHORT_CLOSE',
+    'REGIME_RISK_LONG_HIT_SL',
+    'REGIME_RISK_SHORT_HIT_SL'
+)
 GROUP BY
     t.run_id,
     t.direction,
