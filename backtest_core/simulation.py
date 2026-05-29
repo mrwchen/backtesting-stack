@@ -147,6 +147,22 @@ def _merge_direct_candidates(candidates: list[Any], direct_candidates: list[Any]
     ]
 
 
+def _entry_window_prefilter_enabled() -> bool:
+    return ENTRY_WINDOW_ENABLED and not (ACCOUNT_PROFILE == "ps_acc" and PS_24_ENTRY_SL_TP_ACTIVE)
+
+
+def _filter_signal_decision_points_for_entry_window(
+    signal_decision_points: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    if not _entry_window_prefilter_enabled():
+        return signal_decision_points
+    return [
+        (signal_bar_start_ts, signal_decision_ts)
+        for signal_bar_start_ts, signal_decision_ts in signal_decision_points
+        if _is_in_entry_window(signal_decision_ts)
+    ]
+
+
 def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
     return fundamental_base_score(
         fundamental,
@@ -2527,11 +2543,23 @@ def run_backtest(
 
         valid_signal_decision_points = [
             (signal_bar_start_ts, signal_decision_ts)
-            for signal_bar_start_ts, signal_decision_ts in signal_decision_points
+            for signal_bar_start_ts, signal_decision_ts in _filter_signal_decision_points_for_entry_window(
+                signal_decision_points
+            )
             if signal_decision_ts <= day_close_ts
         ]
 
         if not valid_signal_decision_points:
+            schedule_reason_code = (
+                "no_signal_decisions_inside_entry_window"
+                if signal_decision_points and _entry_window_prefilter_enabled()
+                else "no_signal_bar_close_decisions"
+            )
+            schedule_reason_text = (
+                "No signal-bar-close decision timestamps fell inside the configured entry window."
+                if signal_decision_points and _entry_window_prefilter_enabled()
+                else "No signal-bar-close decision timestamps were configured for this trading day."
+            )
             buffer_decision_events([DecisionEvent(
                 run_id=run_id,
                 intent_date=day,
@@ -2542,8 +2570,8 @@ def run_backtest(
                 direction=None,
                 decision_stage="signal_schedule",
                 decision="skipped_day",
-                reason_code="no_signal_bar_close_decisions",
-                reason_text="No signal-bar-close decision timestamps were configured for this trading day.",
+                reason_code=schedule_reason_code,
+                reason_text=schedule_reason_text,
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
                 open_positions=len(open_positions),
