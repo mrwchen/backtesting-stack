@@ -239,7 +239,7 @@ services:
       - SHOCK_STRESS_GUARD_ENABLED=true
 
       # Stress-Schwellen auf Basis von world-regime max_shock_type_score.
-      - SHOCK_STRESS_GUARD_ELEVATED_SCORE=60.0
+      - SHOCK_STRESS_GUARD_ELEVATED_SCORE60.0
       - SHOCK_STRESS_GUARD_HIGH_SCORE=70.0
       - SHOCK_STRESS_GUARD_EXTREME_SCORE=80.0
 
