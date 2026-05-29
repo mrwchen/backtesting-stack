@@ -123,7 +123,7 @@ def _require_unique_index(
                 SELECT 1
                 FROM pg_index i
                 CROSS JOIN LATERAL (
-                    SELECT array_agg(a.attname ORDER BY k.ordinality) AS column_names
+                    SELECT array_agg(a.attname::text ORDER BY k.ordinality) AS column_names
                     FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
                     JOIN pg_attribute a
                       ON a.attrelid = i.indrelid
