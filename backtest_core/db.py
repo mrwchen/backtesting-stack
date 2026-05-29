@@ -83,6 +83,67 @@ def _require_columns(conn: psycopg2.extensions.connection, relation_name: str, r
     )
 
 
+def _require_not_null_columns(
+    conn: psycopg2.extensions.connection,
+    relation_name: str,
+    required: set[str],
+) -> None:
+    relation_identifier(relation_name)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.attname
+            FROM pg_attribute a
+            WHERE a.attrelid = to_regclass(%s)
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+              AND a.attnotnull
+            """,
+            (relation_name,),
+        )
+        not_null_columns = {row[0] for row in cur.fetchall()}
+    missing = sorted(required - not_null_columns)
+    if missing:
+        raise RuntimeError(
+            f"Required relation {relation_name} has nullable columns that must be NOT NULL: {', '.join(missing)}"
+        )
+    log.info("Validated relation not-null columns %s count %d", relation_name, len(required))
+
+
+def _require_unique_index(
+    conn: psycopg2.extensions.connection,
+    relation_name: str,
+    columns: list[str],
+) -> None:
+    relation_identifier(relation_name)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_index i
+                CROSS JOIN LATERAL (
+                    SELECT array_agg(a.attname ORDER BY k.ordinality) AS column_names
+                    FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+                    JOIN pg_attribute a
+                      ON a.attrelid = i.indrelid
+                     AND a.attnum = k.attnum
+                ) cols
+                WHERE i.indrelid = to_regclass(%s)
+                  AND i.indisunique
+                  AND cols.column_names = %s::text[]
+            )
+            """,
+            (relation_name, columns),
+        )
+        exists = bool(cur.fetchone()[0])
+    if not exists:
+        raise RuntimeError(
+            f"Required relation {relation_name} is missing unique index on: {', '.join(columns)}"
+        )
+    log.info("Validated relation unique index %s columns %s", relation_name, ",".join(columns))
+
+
 def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
     """Validate source tables/columns and basic date coverage before the run."""
     fundamental_required = {
@@ -177,6 +238,12 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "shock_score_delta", "shock_risk_multiplier", "shock_base_intent_score",
         "sector", "industry",
     })
+    _require_not_null_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"entry_ts"})
+    _require_unique_index(
+        conn,
+        f"{RESULT_SCHEMA}.backtest_trades",
+        ["run_id", "intent_date", "symbol", "exchange", "cik", "direction", "entry_ts"],
+    )
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
         "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score",
         "dominant_shock_type", "shock_sector_bias", "shock_score_delta", "shock_risk_multiplier"

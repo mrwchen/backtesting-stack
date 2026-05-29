@@ -266,7 +266,7 @@ def write_trades(
             pnl_usd, equity_after,
             entry_ts, trailing_activated_ts, exit_ts
         ) VALUES %s
-        ON CONFLICT (run_id, intent_date, symbol, exchange, cik) DO UPDATE SET
+        ON CONFLICT (run_id, intent_date, symbol, exchange, cik, direction, entry_ts) DO UPDATE SET
             world_regime_score = EXCLUDED.world_regime_score,
             dominant_shock_type = EXCLUDED.dominant_shock_type,
             max_shock_type_score = EXCLUDED.max_shock_type_score,
@@ -281,12 +281,15 @@ def write_trades(
             shock_base_intent_score = EXCLUDED.shock_base_intent_score,
             outcome_status = EXCLUDED.outcome_status,
             outcome_price  = EXCLUDED.outcome_price,
+            outcome_date   = EXCLUDED.outcome_date,
+            outcome_bars   = EXCLUDED.outcome_bars,
+            trailing_activated = EXCLUDED.trailing_activated,
+            trailing_stop  = EXCLUDED.trailing_stop,
             return_pct     = EXCLUDED.return_pct,
             margin_hours_usd = EXCLUDED.margin_hours_usd,
             return_per_margin_hour_pct = EXCLUDED.return_per_margin_hour_pct,
             pnl_usd        = EXCLUDED.pnl_usd,
             equity_after   = EXCLUDED.equity_after,
-            entry_ts       = EXCLUDED.entry_ts,
             trailing_activated_ts = EXCLUDED.trailing_activated_ts,
             exit_ts        = EXCLUDED.exit_ts
     """.format(table=_result_table("backtest_trades"))

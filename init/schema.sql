@@ -271,11 +271,11 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     return_per_margin_hour_pct NUMERIC(18,8),
     pnl_usd              NUMERIC(15,2),
     equity_after         NUMERIC(15,2),
-    entry_ts             TIMESTAMPTZ,
+    entry_ts             TIMESTAMPTZ   NOT NULL,
     trailing_activated_ts TIMESTAMPTZ,
     exit_ts              TIMESTAMPTZ,
 
-    UNIQUE (run_id, intent_date, symbol, exchange, cik)
+    UNIQUE (run_id, intent_date, symbol, exchange, cik, direction, entry_ts)
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id
