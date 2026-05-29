@@ -474,6 +474,7 @@ def get_direct_symbol_candidates(
     pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
     required_currency: Optional[str] = "USD",
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    require_broker_eligibility: bool = True,
 ) -> list[FundamentalRow]:
     normalized_symbols = tuple(dict.fromkeys(
         str(symbol).strip().upper()
@@ -483,13 +484,17 @@ def get_direct_symbol_candidates(
     if not normalized_symbols:
         return []
 
-    broker_symbols = _direct_candidate_symbols_for_account(
-        conn,
-        normalized_symbols,
-        direction,
-        pepperstone_table,
-        required_currency,
-        ibkr_margin_table,
+    broker_symbols = (
+        _direct_candidate_symbols_for_account(
+            conn,
+            normalized_symbols,
+            direction,
+            pepperstone_table,
+            required_currency,
+            ibkr_margin_table,
+        )
+        if require_broker_eligibility
+        else normalized_symbols
     )
     if not broker_symbols:
         return []
@@ -551,6 +556,7 @@ def get_direct_symbol_candidates(
             relative_absolute_divergence="",
             long_block_reason="",
             short_block_reason="",
+            broker_eligibility_bypassed=not require_broker_eligibility,
         )
         for row in rows
     ]

@@ -46,6 +46,7 @@ class FundamentalRow:
     relative_absolute_divergence: str = ""
     long_block_reason: str = ""
     short_block_reason: str = ""
+    broker_eligibility_bypassed: bool = False
 
     @property
     def identity_key(self) -> InstrumentKey:
@@ -118,6 +119,7 @@ class TradePlan:
     shock_score_delta: float = 0.0
     shock_risk_multiplier: float = 1.0
     shock_base_intent_score: float | None = None
+    broker_eligibility_bypassed: bool = False
 
     @property
     def identity_key(self) -> InstrumentKey:

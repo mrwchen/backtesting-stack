@@ -17,6 +17,7 @@ from .market_data import _day_close_ts, _ensure_utc_ts, _load_identity_bars_thro
 
 log = logging.getLogger(__name__)
 _PEPPERSTONE_ROLLOVER_ZONE = ZoneInfo("America/New_York")
+_IBKR_FALLBACK_MARGIN_WARNED: set[tuple[str, str]] = set()
 
 def _pnl_long(pos: OpenPosition, exit_price: float) -> float:
     entry = _buy_fill(pos.entry_price)
@@ -88,6 +89,22 @@ def _maintenance_margin_pct(direction: str) -> float:
     if ACCOUNT_PROFILE == "ibkr_acc":
         raise RuntimeError("IBKR margin must be read from symbol margin requirements")
     return float(MARGIN_REQUIREMENT_PCT)
+
+
+def _ibkr_initial_margin_pct(direction: str) -> float:
+    if direction == "LONG":
+        return float(IBKR_LONG_INITIAL_MARGIN_PCT)
+    if direction == "SHORT":
+        return float(IBKR_SHORT_INITIAL_MARGIN_PCT)
+    raise ValueError(f"Unknown direction: {direction!r}")
+
+
+def _ibkr_maintenance_margin_pct(direction: str) -> float:
+    if direction == "LONG":
+        return float(IBKR_LONG_MAINTENANCE_MARGIN_PCT)
+    if direction == "SHORT":
+        return float(IBKR_SHORT_MAINTENANCE_MARGIN_PCT)
+    raise ValueError(f"Unknown direction: {direction!r}")
 
 
 def _margin_level_pct(account_equity: float, used_margin: float) -> float:
@@ -595,9 +612,27 @@ def calc_position(
         return 0.0, 0.0, 0.0, 0.0
     position_size_usd = abs(shares * entry_fill)
     if ACCOUNT_PROFILE == "ibkr_acc":
-        margin_requirement = get_ibkr_margin_requirement(conn, plan.symbol, plan.direction)
-        initial_margin_used = position_size_usd * margin_requirement.initial_margin_pct / 100.0
-        maintenance_margin_used = position_size_usd * margin_requirement.maintenance_margin_pct / 100.0
+        try:
+            margin_requirement = get_ibkr_margin_requirement(conn, plan.symbol, plan.direction)
+            initial_margin_pct = margin_requirement.initial_margin_pct
+            maintenance_margin_pct = margin_requirement.maintenance_margin_pct
+        except RuntimeError:
+            if not plan.broker_eligibility_bypassed:
+                raise
+            initial_margin_pct = _ibkr_initial_margin_pct(plan.direction)
+            maintenance_margin_pct = _ibkr_maintenance_margin_pct(plan.direction)
+            warn_key = (plan.symbol, plan.direction)
+            if warn_key not in _IBKR_FALLBACK_MARGIN_WARNED:
+                log.warning(
+                    "Missing IBKR symbol margin requirement for broker-bypassed direct candidate %s %s; using configured fallback initial %.2f maintenance %.2f",
+                    plan.symbol,
+                    plan.direction,
+                    initial_margin_pct,
+                    maintenance_margin_pct,
+                )
+                _IBKR_FALLBACK_MARGIN_WARNED.add(warn_key)
+        initial_margin_used = position_size_usd * initial_margin_pct / 100.0
+        maintenance_margin_used = position_size_usd * maintenance_margin_pct / 100.0
     else:
         initial_margin_used = position_size_usd * _initial_margin_pct(plan.direction) / 100.0
         maintenance_margin_used = position_size_usd * _maintenance_margin_pct(plan.direction) / 100.0

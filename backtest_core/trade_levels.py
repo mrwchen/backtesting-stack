@@ -99,6 +99,7 @@ def build_trade_plan(
         entry_ts=entry_ts,
         exchange=fundamental.exchange,
         cik=fundamental.cik,
+        broker_eligibility_bypassed=fundamental.broker_eligibility_bypassed,
     )
     return TradePlanResult(
         True,

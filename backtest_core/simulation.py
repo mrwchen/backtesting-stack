@@ -136,6 +136,10 @@ def _model_direct_candidate_mode(model: Any) -> str:
     return mode
 
 
+def _model_direct_candidate_require_broker_eligibility(model: Any) -> bool:
+    return bool(getattr(model, "DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY", True))
+
+
 def _merge_direct_candidates(candidates: list[Any], direct_candidates: list[Any]) -> list[Any]:
     if not direct_candidates:
         return candidates
@@ -1598,6 +1602,7 @@ def run_backtest(
         intent_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
         direct_candidate_symbols = _model_direct_candidate_symbols(model)
         direct_candidate_mode = _model_direct_candidate_mode(model)
+        direct_candidate_require_broker_eligibility = _model_direct_candidate_require_broker_eligibility(model)
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
@@ -1648,6 +1653,7 @@ def run_backtest(
                     pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                     required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
                     ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                    require_broker_eligibility=direct_candidate_require_broker_eligibility,
                 )
             else:
                 candidates = get_candidates(
@@ -1676,6 +1682,7 @@ def run_backtest(
                             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                             required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
                             ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                            require_broker_eligibility=direct_candidate_require_broker_eligibility,
                         ),
                     )
             candidate_elapsed = _time.perf_counter() - candidate_started
@@ -1696,10 +1703,16 @@ def run_backtest(
             if not candidates:
                 if direct_candidate_symbols and direct_candidate_mode == "replace":
                     reason_code = "no_direct_symbol_candidates"
-                    reason_text = (
-                        "No model direct-candidate symbols were available in broker and 1h price data "
-                        "as of the decision timestamp."
-                    )
+                    if direct_candidate_require_broker_eligibility:
+                        reason_text = (
+                            "No model direct-candidate symbols were available in broker and 1h price data "
+                            "as of the decision timestamp."
+                        )
+                    else:
+                        reason_text = (
+                            "No model direct-candidate symbols were available in 1h price data "
+                            "as of the decision timestamp."
+                        )
                 else:
                     reason_code = "no_candidates_after_fundamental_filters"
                     reason_text = (
