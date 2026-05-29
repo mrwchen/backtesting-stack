@@ -387,6 +387,175 @@ def _get_pepperstone_24_symbols(
     return symbols
 
 
+def _direct_candidate_symbols_for_account(
+    conn: psycopg2.extensions.connection,
+    symbols: tuple[str, ...],
+    direction: str,
+    pepperstone_table: str,
+    required_currency: Optional[str],
+    ibkr_margin_table: str,
+) -> tuple[str, ...]:
+    if not symbols:
+        return ()
+    required_currency_norm = required_currency.strip().upper() if required_currency else None
+    if ACCOUNT_PROFILE == "ps_acc":
+        tradable_symbol_filter = (
+            "NULLIF(BTRIM(symbol_ps), '') IS NOT NULL OR NULLIF(BTRIM(symbol_ps24), '') IS NOT NULL"
+            if PS_24_ENTRY_SL_TP_ACTIVE
+            else "NULLIF(BTRIM(symbol_ps), '') IS NOT NULL"
+        )
+        currency_filter = sql.SQL("")
+        params: list[object] = [list(symbols)]
+        if required_currency_norm:
+            currency_filter = sql.SQL("AND UPPER(TRIM(COALESCE(quote_asset, ''))) = %s")
+            params.append(required_currency_norm)
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT DISTINCT UPPER(TRIM(symbol::text)) AS symbol_norm
+                    FROM {}
+                    WHERE UPPER(TRIM(symbol::text)) = ANY(%s::text[])
+                      AND ({})
+                      AND is_trading_enabled IS NOT FALSE
+                      {}
+                    ORDER BY symbol_norm
+                    """
+                ).format(
+                    relation_identifier(pepperstone_table),
+                    sql.SQL(tradable_symbol_filter),
+                    currency_filter,
+                ),
+                params,
+            )
+            allowed = {row[0] for row in cur.fetchall() if row[0]}
+        return tuple(symbol for symbol in symbols if symbol in allowed)
+
+    if ACCOUNT_PROFILE == "ibkr_acc":
+        action = ibkr_action_for_direction(direction)
+        currency_filter = sql.SQL("")
+        params = [list(symbols), action]
+        if required_currency_norm:
+            currency_filter = sql.SQL("AND UPPER(TRIM(COALESCE(currency, ''))) = %s")
+            params.append(required_currency_norm)
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT DISTINCT UPPER(TRIM(source_symbol)) AS symbol_norm
+                    FROM {}
+                    WHERE UPPER(TRIM(source_symbol)) = ANY(%s::text[])
+                      AND UPPER(TRIM(action)) = %s
+                      AND quantity > 0
+                      AND initial_margin_pct > 0
+                      AND maintenance_margin_pct > 0
+                      {}
+                    ORDER BY symbol_norm
+                    """
+                ).format(
+                    relation_identifier(ibkr_margin_table),
+                    currency_filter,
+                ),
+                params,
+            )
+            allowed = {row[0] for row in cur.fetchall() if row[0]}
+        return tuple(symbol for symbol in symbols if symbol in allowed)
+
+    return symbols
+
+
+def get_direct_symbol_candidates(
+    conn: psycopg2.extensions.connection,
+    symbols: tuple[str, ...] | list[str],
+    direction: str,
+    *,
+    as_of_ts: Optional[object],
+    source_table: str = SOURCE_MARKET_DATA_1H_TABLE,
+    pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
+    required_currency: Optional[str] = "USD",
+    ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+) -> list[FundamentalRow]:
+    normalized_symbols = tuple(dict.fromkeys(
+        str(symbol).strip().upper()
+        for symbol in symbols
+        if str(symbol).strip()
+    ))
+    if not normalized_symbols:
+        return []
+
+    broker_symbols = _direct_candidate_symbols_for_account(
+        conn,
+        normalized_symbols,
+        direction,
+        pepperstone_table,
+        required_currency,
+        ibkr_margin_table,
+    )
+    if not broker_symbols:
+        return []
+
+    cutoff_ts = _candidate_as_of_ts(None, as_of_ts)
+    if cutoff_ts is not None:
+        cutoff_ts = _last_complete_signal_bar_start_ts(cutoff_ts)
+
+    cutoff_filter = sql.SQL("")
+    params: list[object] = [list(broker_symbols)]
+    if cutoff_ts is not None:
+        cutoff_filter = sql.SQL("AND b.ts <= %s")
+        params.append(cutoff_ts)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                WITH requested AS (
+                    SELECT symbol, ord
+                    FROM unnest(%s::text[]) WITH ORDINALITY AS u(symbol, ord)
+                )
+                SELECT r.symbol, b.exchange, b.cik
+                FROM requested r
+                JOIN LATERAL (
+                    SELECT b.exchange, b.cik, b.ts
+                    FROM {} b
+                    WHERE b.symbol = r.symbol
+                      {}
+                    ORDER BY b.ts DESC
+                    LIMIT 1
+                ) b ON TRUE
+                ORDER BY r.ord
+                """
+            ).format(
+                relation_identifier(source_table),
+                cutoff_filter,
+            ),
+            params,
+        )
+        rows = cur.fetchall()
+
+    return [
+        FundamentalRow(
+            symbol=row[0],
+            exchange=row[1],
+            cik=int(row[2]),
+            composite_score=100.0,
+            sector="Benchmark",
+            industry="ETF",
+            composite_score_abs=100.0,
+            valuation_label="benchmark",
+            mispricing_score=None,
+            negative_earnings_flag=False,
+            high_leverage_flag=False,
+            market_cap_m=None,
+            long_eligible=True,
+            short_eligible=True,
+            relative_absolute_divergence="",
+            long_block_reason="",
+            short_block_reason="",
+        )
+        for row in rows
+    ]
+
+
 def _is_pepperstone_24_symbol(
     conn: psycopg2.extensions.connection,
     identity: InstrumentKey,

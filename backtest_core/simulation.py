@@ -31,6 +31,7 @@ from .market_data import (
     get_bars_range,
     get_bars_range_through,
     get_candidates,
+    get_direct_symbol_candidates,
     get_trading_days,
     get_world_regime,
     _is_in_entry_window,
@@ -115,6 +116,35 @@ def _candidate_score_kwargs(cfg: Any) -> dict:
         "long_min_absolute_score": getattr(cfg, "long_min_absolute_score", None),
         "short_max_absolute_score": getattr(cfg, "short_max_absolute_score", None),
     }
+
+
+def _model_direct_candidate_symbols(model: Any) -> tuple[str, ...]:
+    raw_symbols = getattr(model, "DIRECT_CANDIDATE_SYMBOLS", ())
+    if isinstance(raw_symbols, str):
+        raw_symbols = (raw_symbols,)
+    return tuple(dict.fromkeys(
+        str(symbol).strip().upper()
+        for symbol in raw_symbols
+        if str(symbol).strip()
+    ))
+
+
+def _model_direct_candidate_mode(model: Any) -> str:
+    mode = str(getattr(model, "DIRECT_CANDIDATE_MODE", "append")).strip().lower()
+    if mode not in {"append", "replace"}:
+        raise ValueError("DIRECT_CANDIDATE_MODE must be one of: append, replace")
+    return mode
+
+
+def _merge_direct_candidates(candidates: list[Any], direct_candidates: list[Any]) -> list[Any]:
+    if not direct_candidates:
+        return candidates
+    direct_identities = {candidate.identity_key for candidate in direct_candidates}
+    return direct_candidates + [
+        candidate
+        for candidate in candidates
+        if candidate.identity_key not in direct_identities
+    ]
 
 
 def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
@@ -1550,6 +1580,8 @@ def run_backtest(
         total_candidates = 0
         candidate_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
         intent_counts: dict[str, int] = {direction: 0 for direction in DIRECTIONS}
+        direct_candidate_symbols = _model_direct_candidate_symbols(model)
+        direct_candidate_mode = _model_direct_candidate_mode(model)
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
@@ -1588,22 +1620,48 @@ def run_backtest(
                     direction,
                     regime_label,
                     as_of_ts,
-                )
-            candidate_started = _time.perf_counter()
-            candidates = get_candidates(
-                conn,
-                direction,
-                **candidate_policy_kwargs(),
-                **candidate_score_kwargs,
-                source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
-                as_of_date=day,
-                as_of_ts=as_of_ts,
-                pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-                required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-                allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-                filter_negative_earnings=direction_filter_negative_earnings(direction),
-                ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
             )
+            candidate_started = _time.perf_counter()
+            if direct_candidate_symbols and direct_candidate_mode == "replace":
+                candidates = get_direct_symbol_candidates(
+                    conn,
+                    direct_candidate_symbols,
+                    direction,
+                    as_of_ts=as_of_ts,
+                    source_table=SOURCE_MARKET_DATA_1H_TABLE,
+                    pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+                    required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                    ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                )
+            else:
+                candidates = get_candidates(
+                    conn,
+                    direction,
+                    **candidate_policy_kwargs(),
+                    **candidate_score_kwargs,
+                    source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
+                    as_of_date=day,
+                    as_of_ts=as_of_ts,
+                    pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+                    required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                    allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
+                    filter_negative_earnings=direction_filter_negative_earnings(direction),
+                    ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                )
+                if direct_candidate_symbols:
+                    candidates = _merge_direct_candidates(
+                        candidates,
+                        get_direct_symbol_candidates(
+                            conn,
+                            direct_candidate_symbols,
+                            direction,
+                            as_of_ts=as_of_ts,
+                            source_table=SOURCE_MARKET_DATA_1H_TABLE,
+                            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+                            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                        ),
+                    )
             candidate_elapsed = _time.perf_counter() - candidate_started
             candidate_counts[direction] = len(candidates)
             total_candidates += len(candidates)
@@ -1620,6 +1678,17 @@ def run_backtest(
                 )
 
             if not candidates:
+                if direct_candidate_symbols and direct_candidate_mode == "replace":
+                    reason_code = "no_direct_symbol_candidates"
+                    reason_text = (
+                        "No model direct-candidate symbols were available in broker and 1h price data "
+                        "as of the decision timestamp."
+                    )
+                else:
+                    reason_code = "no_candidates_after_fundamental_filters"
+                    reason_text = (
+                        "No symbols passed the point-in-time fundamental, currency, market-cap and broker filters."
+                    )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1630,8 +1699,8 @@ def run_backtest(
                     direction=direction,
                     decision_stage="candidate_filter",
                     decision="no_candidates",
-                    reason_code="no_candidates_after_fundamental_filters",
-                    reason_text="No symbols passed the point-in-time fundamental, currency, market-cap and broker filters.",
+                    reason_code=reason_code,
+                    reason_text=reason_text,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(active_positions),
@@ -2248,7 +2317,10 @@ def run_backtest(
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
     candidate_score_kwargs = _candidate_score_kwargs(cfg)
-    if trading_days:
+    run_model = get_model_module()
+    run_direct_candidate_symbols = _model_direct_candidate_symbols(run_model)
+    run_direct_candidate_mode = _model_direct_candidate_mode(run_model)
+    if trading_days and not (run_direct_candidate_symbols and run_direct_candidate_mode == "replace"):
         first_signal_decisions = signal_bar_close_decisions_for_day(conn, trading_days[0])
         preload_as_of_ts = (
             first_signal_decisions[0][1]
@@ -2271,6 +2343,13 @@ def run_backtest(
                 for direction in DIRECTIONS
             },
             ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+        )
+    elif trading_days and run_direct_candidate_symbols:
+        log.info(
+            "Skipping fundamental candidate timeline preload for direct symbol model %s symbols %s mode %s",
+            runtime.CURRENT_MODEL_FILE,
+            ",".join(run_direct_candidate_symbols),
+            run_direct_candidate_mode,
         )
     record_account_curve(datetime.combine(START_DATE, datetime.min.time(), tzinfo=timezone.utc), open_positions)
 

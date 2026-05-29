@@ -15,6 +15,8 @@ from backtest_shared import env_float, env_int, env_optional_float, env_str
 
 MODEL_NAME = "Benchmark-QQQ"
 BENCHMARK_SYMBOL = "QQQ"
+DIRECT_CANDIDATE_SYMBOLS = (BENCHMARK_SYMBOL,)
+DIRECT_CANDIDATE_MODE = "replace"
 
 
 @dataclass
