@@ -90,7 +90,7 @@ _BAR_CACHE: dict[InstrumentKey, _BarCacheEntry] = {}
 _BAR_CACHE_DISABLED = False
 _SIGNAL_BAR_CACHE: dict[InstrumentKey, _SignalBarCacheEntry] = {}
 _SIGNAL_BAR_CACHE_DISABLED = False
-_TRADING_DAYS_CACHE: dict[tuple[str, str, date, date], list[date]] = {}
+_TRADING_DAYS_CACHE: dict[tuple[str, str, tuple[str, ...], date, date], list[date]] = {}
 _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {}
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _CANDIDATE_TIMELINE_CACHE: dict[tuple, _SharedCandidateTimeline] = {}
@@ -105,7 +105,7 @@ _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
 _CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
 _SHARED_CANDIDATE_TIMELINE_VERSION = 1
-_SIGNAL_DECISIONS_CACHE: dict[tuple[str, str, date], list[tuple[datetime, datetime]]] = {}
+_SIGNAL_DECISIONS_CACHE: dict[tuple[str, str, tuple[str, ...], date], list[tuple[datetime, datetime]]] = {}
 _TIMELINE_ROW_BUFFER_SPECS = {
     "available_epoch_us": ("q", np.int64),
     "source_epoch_us": ("q", np.int64),
@@ -1685,21 +1685,46 @@ def preload_candidate_timelines(
 
 def get_trading_days(conn: psycopg2.extensions.connection, start: date, end: date) -> list[date]:
     """Return distinct local trading dates present in the configured 1h source."""
-    cache_key = (SOURCE_MARKET_DATA_1H_TABLE, ENTRY_WINDOW_TZ, start, end)
+    cache_key = (SOURCE_MARKET_DATA_1H_TABLE, ENTRY_WINDOW_TZ, TRADING_CALENDAR_SYMBOLS, start, end)
     if cache_key in _TRADING_DAYS_CACHE:
         return _TRADING_DAYS_CACHE[cache_key]
 
     with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT DISTINCT (ts AT TIME ZONE %s)::date AS d "
-                "FROM {} "
-                "WHERE ts >= %s AND ts < %s "
-                "ORDER BY d"
-            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
-            (ENTRY_WINDOW_TZ, _local_day_start_ts(start), _local_day_end_exclusive_ts(end)),
-        )
-        days = [row[0] for row in cur.fetchall()]
+        days: list[date] = []
+        if TRADING_CALENDAR_SYMBOLS:
+            cur.execute(
+                sql.SQL(
+                    "SELECT DISTINCT (ts AT TIME ZONE %s)::date AS d "
+                    "FROM {} "
+                    "WHERE symbol = ANY(%s::text[]) "
+                    "  AND ts >= %s AND ts < %s "
+                    "ORDER BY d"
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
+                (
+                    ENTRY_WINDOW_TZ,
+                    list(TRADING_CALENDAR_SYMBOLS),
+                    _local_day_start_ts(start),
+                    _local_day_end_exclusive_ts(end),
+                ),
+            )
+            days = [row[0] for row in cur.fetchall()]
+            if not days:
+                log.warning(
+                    "Trading calendar symbols %s produced no days; falling back to all symbols",
+                    ",".join(TRADING_CALENDAR_SYMBOLS),
+                )
+
+        if not days:
+            cur.execute(
+                sql.SQL(
+                    "SELECT DISTINCT (ts AT TIME ZONE %s)::date AS d "
+                    "FROM {} "
+                    "WHERE ts >= %s AND ts < %s "
+                    "ORDER BY d"
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
+                (ENTRY_WINDOW_TZ, _local_day_start_ts(start), _local_day_end_exclusive_ts(end)),
+            )
+            days = [row[0] for row in cur.fetchall()]
     _TRADING_DAYS_CACHE[cache_key] = days
     return days
 
@@ -1791,21 +1816,42 @@ def signal_bar_close_decisions_for_day(
     conn: psycopg2.extensions.connection,
     d: date,
 ) -> list[tuple[datetime, datetime]]:
-    cache_key = (SOURCE_MARKET_DATA_1H_TABLE, ENTRY_WINDOW_TZ, d)
+    cache_key = (SOURCE_MARKET_DATA_1H_TABLE, ENTRY_WINDOW_TZ, TRADING_CALENDAR_SYMBOLS, d)
     if cache_key in _SIGNAL_DECISIONS_CACHE:
         return _SIGNAL_DECISIONS_CACHE[cache_key]
 
     with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT DISTINCT ts "
-                "FROM {} "
-                "WHERE ts >= %s AND ts < %s "
-                "ORDER BY ts"
-            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
-            (_local_day_start_ts(d), _local_day_end_exclusive_ts(d)),
-        )
-        signal_starts = [_ensure_utc_ts(row[0]) for row in cur.fetchall()]
+        signal_starts: list[datetime] = []
+        if TRADING_CALENDAR_SYMBOLS:
+            cur.execute(
+                sql.SQL(
+                    "SELECT DISTINCT ts "
+                    "FROM {} "
+                    "WHERE symbol = ANY(%s::text[]) "
+                    "  AND ts >= %s AND ts < %s "
+                    "ORDER BY ts"
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
+                (list(TRADING_CALENDAR_SYMBOLS), _local_day_start_ts(d), _local_day_end_exclusive_ts(d)),
+            )
+            signal_starts = [_ensure_utc_ts(row[0]) for row in cur.fetchall()]
+            if not signal_starts:
+                log.warning(
+                    "Signal calendar symbols %s produced no bars for %s; falling back to all symbols",
+                    ",".join(TRADING_CALENDAR_SYMBOLS),
+                    d,
+                )
+
+        if not signal_starts:
+            cur.execute(
+                sql.SQL(
+                    "SELECT DISTINCT ts "
+                    "FROM {} "
+                    "WHERE ts >= %s AND ts < %s "
+                    "ORDER BY ts"
+                ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE)),
+                (_local_day_start_ts(d), _local_day_end_exclusive_ts(d)),
+            )
+            signal_starts = [_ensure_utc_ts(row[0]) for row in cur.fetchall()]
 
     decisions = [(ts, ts + _SIGNAL_BAR_DURATION) for ts in signal_starts]
     _SIGNAL_DECISIONS_CACHE[cache_key] = decisions

@@ -592,6 +592,7 @@ def _build_run_notes(notes: Optional[str], cfg=None) -> str:
 
     pairs.extend([
         ("SOURCE_MARKET_DATA_1H_TABLE", SOURCE_MARKET_DATA_1H_TABLE),
+        ("TRADING_CALENDAR_SYMBOLS", TRADING_CALENDAR_SYMBOLS),
         ("SOURCE_FUNDAMENTAL_SCORES_TABLE", SOURCE_FUNDAMENTAL_SCORES_TABLE),
         ("SOURCE_WORLD_REGIME_TABLE", SOURCE_WORLD_REGIME_TABLE),
         ("REQUIRE_USD_FUNDAMENTALS", REQUIRE_USD_FUNDAMENTALS),
@@ -755,6 +756,9 @@ SL_TP_WINDOW_TZ = _account_setting("SL_TP_WINDOW_TZ", "America/New_York")
 SL_TP_WINDOW_START, SL_TP_WINDOW_END = _account_window_setting("SL_TP_WINDOW")
 
 SOURCE_MARKET_DATA_1H_TABLE = os.getenv("SOURCE_MARKET_DATA_1H_TABLE", "alpaca_market_data_1h")
+TRADING_CALENDAR_SYMBOLS = tuple(
+    dict.fromkeys(symbol.upper() for symbol in env_list("TRADING_CALENDAR_SYMBOLS", ["AAPL", "NVDA", "GOOG"]))
+)
 SOURCE_FUNDAMENTAL_SCORES_TABLE = os.getenv("SOURCE_FUNDAMENTAL_SCORES_TABLE", "stock_scorer_fundamental_scores")
 SOURCE_WORLD_REGIME_TABLE = os.getenv("SOURCE_WORLD_REGIME_TABLE", "world_regime_daily_scores_mv")
 PS_TRADABLE_SYMBOLS_TABLE = os.getenv("PS_TRADABLE_SYMBOLS_TABLE", "public.pepperstone_data")
