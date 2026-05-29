@@ -117,6 +117,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         MAX_POSITION_OPENS_PER_DAY,
         MAX_POSITION_OPENS_PER_HOUR,
     )
+    log.info(
+        "Intent score clustering enabled %s delta %.4f min size %d random seed %d",
+        INTENT_SCORE_CLUSTERING_ENABLED,
+        INTENT_SCORE_CLUSTER_DELTA,
+        INTENT_SCORE_CLUSTER_MIN_SIZE,
+        INTENT_SCORE_CLUSTER_RANDOM_SEED,
+    )
     if ACCOUNT_PROFILE == "ps_acc":
         log.info(
             "Pepperstone margin policy margin requirement %.2f stop-out margin level %.2f min entry margin level %.2f",

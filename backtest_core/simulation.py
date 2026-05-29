@@ -1,10 +1,12 @@
 """Core point-in-time portfolio simulation loop."""
 
+import hashlib
 import logging
 import math
+import random
 import time as _time
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import psycopg2
 
@@ -109,6 +111,90 @@ def _same_direction_sector_open_count(open_positions: list[OpenPosition], plan: 
 
 def _entry_hour_bucket(ts: datetime) -> datetime:
     return _ensure_utc_ts(ts).replace(minute=0, second=0, microsecond=0)
+
+
+def _plan_stable_sort_key(plan: TradePlan) -> tuple[str, str, int, str, str]:
+    entry_ts = _ensure_utc_ts(plan.entry_ts).isoformat() if plan.entry_ts else ""
+    return (plan.symbol, plan.exchange, plan.cik, plan.direction, entry_ts)
+
+
+def _intent_cluster_seed(
+    day: date,
+    as_of_ts: datetime,
+    direction: str,
+    group_key: object,
+    cluster_index: int,
+) -> int:
+    payload = "|".join(
+        (
+            str(INTENT_SCORE_CLUSTER_RANDOM_SEED),
+            runtime.CURRENT_MODEL_FILE,
+            ACCOUNT_PROFILE,
+            day.isoformat(),
+            _ensure_utc_ts(as_of_ts).isoformat(),
+            direction,
+            repr(group_key),
+            str(cluster_index),
+        )
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
+
+
+def _ranked_plans_for_direction(
+    plans: list[TradePlan],
+    *,
+    day: date,
+    as_of_ts: datetime,
+    direction: str,
+    group_key_fn: Optional[Callable[[TradePlan], object]] = None,
+) -> list[TradePlan]:
+    def group_key(plan: TradePlan) -> object:
+        return group_key_fn(plan) if group_key_fn is not None else 0
+
+    ordered = sorted(
+        plans,
+        key=lambda plan: (group_key(plan), -float(plan.intent_score), _plan_stable_sort_key(plan)),
+    )
+    if (
+        not INTENT_SCORE_CLUSTERING_ENABLED
+        or INTENT_SCORE_CLUSTER_DELTA <= 0.0
+        or len(ordered) < INTENT_SCORE_CLUSTER_MIN_SIZE
+    ):
+        return ordered
+
+    ranked: list[TradePlan] = []
+    i = 0
+    cluster_index = 0
+    while i < len(ordered):
+        current_group_key = group_key(ordered[i])
+        group_end = i + 1
+        while group_end < len(ordered) and group_key(ordered[group_end]) == current_group_key:
+            group_end += 1
+
+        group_plans = ordered[i:group_end]
+        j = 0
+        while j < len(group_plans):
+            cluster_top_score = float(group_plans[j].intent_score)
+            cluster = [group_plans[j]]
+            j += 1
+            while (
+                j < len(group_plans)
+                and cluster_top_score - float(group_plans[j].intent_score) <= INTENT_SCORE_CLUSTER_DELTA + 1e-12
+            ):
+                cluster.append(group_plans[j])
+                j += 1
+            if len(cluster) >= INTENT_SCORE_CLUSTER_MIN_SIZE:
+                cluster = sorted(cluster, key=_plan_stable_sort_key)
+                rng = random.Random(
+                    _intent_cluster_seed(day, as_of_ts, direction, current_group_key, cluster_index)
+                )
+                rng.shuffle(cluster)
+                cluster_index += 1
+            ranked.extend(cluster)
+        i = group_end
+
+    return ranked
 
 
 def _candidate_score_kwargs(cfg: Any) -> dict:
@@ -2073,7 +2159,12 @@ def run_backtest(
                     }
 
         for direction, direction_plans in plans_by_direction.items():
-            direction_plans.sort(key=lambda plan: plan.intent_score, reverse=True)
+            direction_plans[:] = _ranked_plans_for_direction(
+                direction_plans,
+                day=day,
+                as_of_ts=as_of_ts,
+                direction=direction,
+            )
             intent_counts[direction] = len(direction_plans)
             for intent_rank, plan in enumerate(direction_plans, start=1):
                 event = plan_events.get(_plan_event_key(plan))
@@ -2122,7 +2213,13 @@ def run_backtest(
                 return 2
 
             for direction, direction_plans in plans_by_direction.items():
-                direction_plans.sort(key=lambda plan: (_sector_tier(plan), -plan.intent_score))
+                direction_plans[:] = _ranked_plans_for_direction(
+                    direction_plans,
+                    day=day,
+                    as_of_ts=as_of_ts,
+                    direction=direction,
+                    group_key_fn=_sector_tier,
+                )
                 for intent_rank, plan in enumerate(direction_plans, start=1):
                     event = plan_events.get(_plan_event_key(plan))
                     if event:
