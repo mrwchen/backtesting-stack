@@ -245,7 +245,7 @@ def log_backtest_context(model_files: list[str]) -> None:
         MARKET_REGIME_HEDGE_SYMBOL,
     )
     log.info(
-        "Portfolio drawdown circuit breaker enabled %s thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d",
+        "Portfolio drawdown circuit breaker enabled %s thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d reset on regime %s label %s consecutive days %d",
         PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED,
         PORTFOLIO_DRAWDOWN_WARN_PCT,
         PORTFOLIO_DRAWDOWN_STRESS_PCT,
@@ -256,6 +256,9 @@ def log_backtest_context(model_files: list[str]) -> None:
         PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN,
         PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS,
         PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME,
+        PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED,
+        PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL,
+        PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS,
     )
     log.info(
         "Regime risk management enabled %s neutral elevated %s confirm days elevated/high/extreme/recovery %d/%d/%d/%d exit scores %.1f/%.1f max close fraction %.2f cooldown days %d long stop distances %.2f/%.2f/%.2f long caps high/extreme %d/%d close excess %s close risk-off longs %s",

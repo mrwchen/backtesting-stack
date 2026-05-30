@@ -787,6 +787,8 @@ def run_backtest(
     regime_risk_tracker = RegimeRiskTracker()
     regime_risk_action_dates: dict[InstrumentKey, date] = {}
     portfolio_peak_equity = INITIAL_EQUITY
+    portfolio_drawdown_peak_equity = INITIAL_EQUITY
+    portfolio_drawdown_reset_regime_days = 0
 
     def flush_decision_events(force: bool = False) -> None:
         if not decision_event_buffer:
@@ -809,6 +811,27 @@ def run_backtest(
             portfolio_peak_equity = equity_value
         return portfolio_peak_equity
 
+    def update_portfolio_drawdown_peak(equity_value: float) -> float:
+        nonlocal portfolio_drawdown_peak_equity
+        if equity_value > portfolio_drawdown_peak_equity:
+            portfolio_drawdown_peak_equity = equity_value
+        return portfolio_drawdown_peak_equity
+
+    def reset_portfolio_drawdown_peak(equity_value: float) -> float:
+        nonlocal portfolio_drawdown_peak_equity
+        portfolio_drawdown_peak_equity = float(equity_value)
+        return portfolio_drawdown_peak_equity
+
+    def update_portfolio_drawdown_reset_regime_days(regime_label: str) -> int:
+        nonlocal portfolio_drawdown_reset_regime_days
+        if not PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED:
+            return 0
+        if str(regime_label or "").strip().upper() == PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL:
+            portfolio_drawdown_reset_regime_days += 1
+        else:
+            portfolio_drawdown_reset_regime_days = 0
+        return portfolio_drawdown_reset_regime_days
+
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
         account_curve_seq += 1
@@ -820,6 +843,7 @@ def run_backtest(
             as_of_ts,
         )
         update_portfolio_peak(snapshot.equity_with_loan_value)
+        update_portfolio_drawdown_peak(snapshot.equity_with_loan_value)
         account_curve.append(AccountCurvePoint(
             run_id=run_id,
             ts=as_of_ts,
@@ -2699,10 +2723,11 @@ def run_backtest(
             hour_open_count = hour_open_counts.get(entry_hour, 0) if hour_open_counts is not None else 0
             snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
             account_equity_current = snapshot.equity_with_loan_value
-            current_peak_equity = update_portfolio_peak(account_equity_current)
+            update_portfolio_peak(account_equity_current)
+            current_drawdown_peak_equity = update_portfolio_drawdown_peak(account_equity_current)
             portfolio_drawdown_snapshot = get_portfolio_drawdown_snapshot(
                 account_equity_current,
-                current_peak_equity,
+                current_drawdown_peak_equity,
             )
             plan_regime_exposure = apply_portfolio_drawdown_exposure_overlay(
                 regime_exposure,
@@ -3061,11 +3086,13 @@ def run_backtest(
         day_decision_ts = signal_decision_points[0][1] if signal_decision_points else day_start_ts
         day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
         update_portfolio_peak(day_start_equity)
+        update_portfolio_drawdown_peak(day_start_equity)
 
         # ── 2. Generate model intents and central execution plans ───────────
         regime_as_of_date = day - timedelta(days=1)
         regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=regime_as_of_date)
         if not regime:
+            portfolio_drawdown_reset_regime_days = 0
             days_no_regime += 1
             buffer_decision_events([DecisionEvent(
                 run_id=run_id,
@@ -3098,6 +3125,7 @@ def run_backtest(
             continue
 
         regime_label, regime_exposure = regime_exposure_for_label(regime.label)
+        reset_regime_days = update_portfolio_drawdown_reset_regime_days(regime_label)
         day_market_regime_snapshot = get_market_regime_snapshot(conn, day_decision_ts)
         day_regime_exposure = apply_market_regime_exposure_overlay(
             regime_exposure,
@@ -3163,6 +3191,24 @@ def run_backtest(
                     day_pnl,
                     len(open_positions),
                 )
+
+        if (
+            PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED
+            and PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED
+            and reset_regime_days == PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS
+        ):
+            reset_equity = _account_snapshot_values(conn, open_positions, equity, day_decision_ts).equity_with_loan_value
+            update_portfolio_peak(reset_equity)
+            previous_drawdown_peak = portfolio_drawdown_peak_equity
+            reset_drawdown_peak = reset_portfolio_drawdown_peak(reset_equity)
+            log.info(
+                "Portfolio drawdown circuit breaker reset peak from %.2f to %.2f after %d consecutive %s regime days on %s",
+                previous_drawdown_peak,
+                reset_drawdown_peak,
+                reset_regime_days,
+                PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL,
+                day,
+            )
 
         if all(
             direction_risk_multiplier(day_regime_exposure, direction) <= 0.0
