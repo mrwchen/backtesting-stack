@@ -295,7 +295,7 @@ services:
       # Portfolio-Drawdown-Circuit-Breaker arbeitet auf Equity inkl. Open-PnL
       # relativ zum bisherigen Run-Peak und reduziert nur neue LONG-Entries.
       # ---------------------------------------------------------------------
-      - MARKET_REGIME_GUARD_ENABLED=true
+      - MARKET_REGIME_GUARD_ENABLED=false
       - MARKET_REGIME_SYMBOL=QQQ
       - MARKET_REGIME_TZ=America/New_York
       - MARKET_REGIME_LOOKBACK_DAYS=60
