@@ -194,7 +194,151 @@ services:
       - INTENT_SCORE_CLUSTER_RANDOM_SEED=12345
 
       # ---------------------------------------------------------------------
-      # Shock-Overlay-Policy
+      # Gemeinsame Policy: Direction-Budget nach World-Regime
+      #
+      # Diese Regeln sind modellunabhaengig und wirken nach der Modelllogik.
+      # Sie bestimmen je Regime-Label, ob Long/Short erlaubt ist, wie stark
+      # das Trade-Risiko multipliziert wird und wie viele Long-/Short-Positionen
+      # maximal offen sein duerfen.
+      #
+      # Die Labels kommen direkt aus SOURCE_WORLD_REGIME_TABLE.
+      # Wichtig: Das ist Portfolio-/Risk-Policy, keine Entry-Signal-Logik.
+      # ---------------------------------------------------------------------
+      # RISK-ON: score < 30
+      - REGIME_RISK_ON_LONG_RISK_MULTIPLIER=1.0
+      - REGIME_RISK_ON_SHORT_RISK_MULTIPLIER=0.0
+      - REGIME_RISK_ON_MAX_LONG_POSITIONS=10
+      - REGIME_RISK_ON_MAX_SHORT_POSITIONS=0
+
+      # CONSTRUCTIVE: 30 <= score < 50
+      - REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER=0.9
+      - REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER=0.0
+      - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=6
+      - REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS=0
+
+      # NEUTRAL: 50 <= score < 60
+      - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.50
+      - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.00
+      - REGIME_NEUTRAL_MAX_LONG_POSITIONS=3
+      - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=0
+
+      # DEFENSIVE: 60 <= score < 75
+      - REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER=0.30
+      - REGIME_DEFENSIVE_SHORT_RISK_MULTIPLIER=0.70
+      - REGIME_DEFENSIVE_MAX_LONG_POSITIONS=1
+      - REGIME_DEFENSIVE_MAX_SHORT_POSITIONS=2
+
+      # RISK-OFF: score >= 75
+      - REGIME_RISK_OFF_LONG_RISK_MULTIPLIER=0.0
+      - REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER=1.0
+      - REGIME_RISK_OFF_MAX_LONG_POSITIONS=0
+      - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=3
+
+      # ---------------------------------------------------------------------
+      # Schnelles Market-Regime.
+      #
+      # Market-Regime nutzt QQQ 1h-Daten point-in-time und reagiert auf den
+      # 60-Tage-Drawdown deutlich schneller als das Macro-/World-Regime.
+      # Bei Stress werden Long-Budgets gekappt und Short-Hedge-Budgets aktiviert.
+      # Der Hedge-Generator erzeugt maximal einen offenen SHORT-Hedge je Symbol,
+      # darf aber gegen bestehende LONG-Positionen auf demselben Instrument laufen.
+      # ---------------------------------------------------------------------
+      - MARKET_REGIME_GUARD_ENABLED=true
+      - MARKET_REGIME_SYMBOL=QQQ
+      - MARKET_REGIME_TZ=America/New_York
+      - MARKET_REGIME_LOOKBACK_DAYS=60
+      - MARKET_REGIME_MIN_HISTORY_DAYS=20
+      - MARKET_REGIME_ELEVATED_DRAWDOWN_PCT=5.0
+      - MARKET_REGIME_HIGH_DRAWDOWN_PCT=10.0
+      - MARKET_REGIME_EXTREME_DRAWDOWN_PCT=15.0
+      - MARKET_REGIME_MA_CONFIRM_ENABLED=true
+      - MARKET_REGIME_MA_SHORT_DAYS=20
+      - MARKET_REGIME_MA_LONG_DAYS=50
+      - MARKET_REGIME_MA_CONFIRM_TIER=1
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED=0.50
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_HIGH=0.20
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME=0.0
+      - MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED=2
+      - MARKET_REGIME_MAX_LONG_POSITIONS_HIGH=1
+      - MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME=0
+      - MARKET_REGIME_SHORT_HEDGE_ENABLED=true
+      - MARKET_REGIME_SHORT_HEDGE_MIN_TIER=1
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED=0.50
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH=0.75
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME=1.0
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED=1
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH=2
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME=3
+      - MARKET_REGIME_GENERATE_HEDGE_ENABLED=true
+      - MARKET_REGIME_HEDGE_SYMBOL=QQQ
+      - MARKET_REGIME_HEDGE_MIN_TIER=1
+      - MARKET_REGIME_HEDGE_INTENT_SCORE=100.0
+      - MARKET_REGIME_HEDGE_REQUIRE_BROKER_ELIGIBILITY=false
+      - MARKET_REGIME_HEDGE_ALLOW_MULTIPLE_POSITIONS=false
+
+      # ---------------------------------------------------------------------
+      # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
+      #
+      # Wirkt einmal pro Trading-Tag vor neuen Entries, nutzt nur das World-
+      # Regime as-of Vortag und reagiert erst nach bestaetigten Stress-Tagen.
+      # Recovery wird langsamer bestaetigt, damit taegliches Score-Zappeln nicht
+      # staendig Closings oder Stop-Aenderungen ausloest.
+      # ---------------------------------------------------------------------
+      - REGIME_RISK_MANAGEMENT_ENABLED=true
+      - REGIME_RISK_NEUTRAL_IS_ELEVATED=true
+      - REGIME_RISK_ELEVATED_CONFIRM_DAYS=2
+      - REGIME_RISK_HIGH_CONFIRM_DAYS=2
+      - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
+      - REGIME_RISK_RECOVERY_CONFIRM_DAYS=2
+      - REGIME_RISK_ELEVATED_EXIT_SCORE=55.0
+      - REGIME_RISK_HIGH_EXIT_SCORE=65.0
+      - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.50
+      - REGIME_RISK_POSITION_COOLDOWN_DAYS=0
+
+      # Long-Stops werden in Stress-Phasen auf maximalen Abstand zum aktuellen
+      # Tages-Entscheidungspreis gezogen. Es wird nie gelockert, nur enger.
+      - REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT=3.0
+      - REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT=2.0
+      - REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT=1.0
+
+      # Ziel-Caps fuer bestehende Long-Exposures in bestaetigtem Stress.
+      - REGIME_RISK_HIGH_MAX_LONG_POSITIONS=4
+      - REGIME_RISK_EXTREME_MAX_LONG_POSITIONS=2
+      - REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS=true
+      - REGIME_RISK_RISK_OFF_CLOSE_LONGS=true
+
+      # Selektive Reduktion: Value-Labels und aktuelle negative Shock-Biases
+      # werden zuerst geschlossen, begrenzt durch MAX_CLOSE_FRACTION_PER_DAY.
+      - REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS=true
+      - REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS=true
+      - REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
+      - REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
+
+      # ---------------------------------------------------------------------
+      # Portfolio-Drawdown-Circuit-Breaker.
+      #
+      # Arbeitet auf Equity inkl. Open-PnL relativ zum bisherigen Drawdown-Peak
+      # im Run und reduziert nur neue LONG-Entries. Der Reset-Mechanismus setzt
+      # diesen Drawdown-Peak nach bestaetigter Regime-Erholung neu.
+      # ---------------------------------------------------------------------
+      - PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED=true
+      - PORTFOLIO_DRAWDOWN_WARN_PCT=6.0
+      - PORTFOLIO_DRAWDOWN_STRESS_PCT=10.0
+      - PORTFOLIO_DRAWDOWN_EXTREME_PCT=15.0
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_WARN=0.50
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_STRESS=0.20
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_EXTREME=0.0
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN=2
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS=1
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
+      - PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED=true
+      - PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL=CONSTRUCTIVE
+      - PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS=12
+
+      # ---------------------------------------------------------------------
+      # Shock-Overlay-Policy.
+      #
       # Modellunabhaengige Zusatzlogik auf Basis der World-Regime-Shock-Scores.
       # off = deaktiviert, score_only = nur Intent-Score-Anpassung,
       # risk_only = nur Positionsgroessen-Anpassung,
@@ -245,6 +389,13 @@ services:
       - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE=8.0
       - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER=0.15
 
+      # ---------------------------------------------------------------------
+      # Shock-Stress-Guard.
+      #
+      # Zusaetzlicher Schutz auf Basis von max_shock_type_score. Diese Guards
+      # greifen nach Portfolio-Drawdown auf konkrete Entry-Plans und Caps.
+      # ---------------------------------------------------------------------
+
       # Hauptschalter fuer den zusaetzlichen max_shock_type_score Stress-Guard.
       # false deaktiviert alle SHOCK_STRESS_* Risk-Cuts, Caps und Blocks darunter.
       - SHOCK_STRESS_GUARD_ENABLED=true
@@ -282,145 +433,6 @@ services:
       - SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED=true
       - SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT=1.5
       - SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT=1.5
-
-      # ---------------------------------------------------------------------
-      # Schnelles Market-Regime und Portfolio-Drawdown-Circuit-Breaker.
-      #
-      # Market-Regime nutzt QQQ 1h-Daten point-in-time und reagiert auf den
-      # 60-Tage-Drawdown deutlich schneller als das Macro-/World-Regime.
-      # Bei Stress werden Long-Budgets gekappt und Short-Hedge-Budgets aktiviert.
-      # Der Hedge-Generator erzeugt maximal einen offenen SHORT-Hedge je Symbol,
-      # darf aber gegen bestehende LONG-Positionen auf demselben Instrument laufen.
-      #
-      # Portfolio-Drawdown-Circuit-Breaker arbeitet auf Equity inkl. Open-PnL
-      # relativ zum bisherigen Run-Peak und reduziert nur neue LONG-Entries.
-      # ---------------------------------------------------------------------
-      - MARKET_REGIME_GUARD_ENABLED=true
-      - MARKET_REGIME_SYMBOL=QQQ
-      - MARKET_REGIME_TZ=America/New_York
-      - MARKET_REGIME_LOOKBACK_DAYS=60
-      - MARKET_REGIME_MIN_HISTORY_DAYS=20
-      - MARKET_REGIME_ELEVATED_DRAWDOWN_PCT=5.0
-      - MARKET_REGIME_HIGH_DRAWDOWN_PCT=10.0
-      - MARKET_REGIME_EXTREME_DRAWDOWN_PCT=15.0
-      - MARKET_REGIME_MA_CONFIRM_ENABLED=true
-      - MARKET_REGIME_MA_SHORT_DAYS=20
-      - MARKET_REGIME_MA_LONG_DAYS=50
-      - MARKET_REGIME_MA_CONFIRM_TIER=1
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED=0.50
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_HIGH=0.20
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME=0.0
-      - MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED=2
-      - MARKET_REGIME_MAX_LONG_POSITIONS_HIGH=1
-      - MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME=0
-      - MARKET_REGIME_SHORT_HEDGE_ENABLED=true
-      - MARKET_REGIME_SHORT_HEDGE_MIN_TIER=1
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED=0.50
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH=0.75
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME=1.0
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED=1
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH=2
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME=3
-      - MARKET_REGIME_GENERATE_HEDGE_ENABLED=true
-      - MARKET_REGIME_HEDGE_SYMBOL=QQQ
-      - MARKET_REGIME_HEDGE_MIN_TIER=1
-      - MARKET_REGIME_HEDGE_INTENT_SCORE=100.0
-      - MARKET_REGIME_HEDGE_REQUIRE_BROKER_ELIGIBILITY=false
-      - MARKET_REGIME_HEDGE_ALLOW_MULTIPLE_POSITIONS=false
-
-      - PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED=true
-      - PORTFOLIO_DRAWDOWN_WARN_PCT=6.0
-      - PORTFOLIO_DRAWDOWN_STRESS_PCT=10.0
-      - PORTFOLIO_DRAWDOWN_EXTREME_PCT=15.0
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_WARN=0.50
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_STRESS=0.20
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_EXTREME=0.0
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN=2
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS=1
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
-      - PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED=true
-      - PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL=CONSTRUCTIVE
-      - PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS=12
-
-      # ---------------------------------------------------------------------
-      # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
-      #
-      # Wirkt einmal pro Trading-Tag vor neuen Entries, nutzt nur das World-
-      # Regime as-of Vortag und reagiert erst nach bestaetigten Stress-Tagen.
-      # Recovery wird langsamer bestaetigt, damit taegliches Score-Zappeln nicht
-      # staendig Closings oder Stop-Aenderungen ausloest.
-      # ---------------------------------------------------------------------
-      - REGIME_RISK_MANAGEMENT_ENABLED=true
-      - REGIME_RISK_NEUTRAL_IS_ELEVATED=true
-      - REGIME_RISK_ELEVATED_CONFIRM_DAYS=2
-      - REGIME_RISK_HIGH_CONFIRM_DAYS=2
-      - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
-      - REGIME_RISK_RECOVERY_CONFIRM_DAYS=2
-      - REGIME_RISK_ELEVATED_EXIT_SCORE=55.0
-      - REGIME_RISK_HIGH_EXIT_SCORE=65.0
-      - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.50
-      - REGIME_RISK_POSITION_COOLDOWN_DAYS=0
-
-      # Long-Stops werden in Stress-Phasen auf maximalen Abstand zum aktuellen
-      # Tages-Entscheidungspreis gezogen. Es wird nie gelockert, nur enger.
-      - REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT=3.0
-      - REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT=2.0
-      - REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT=1.0
-
-      # Ziel-Caps fuer bestehende Long-Exposures in bestaetigtem Stress.
-      - REGIME_RISK_HIGH_MAX_LONG_POSITIONS=4
-      - REGIME_RISK_EXTREME_MAX_LONG_POSITIONS=2
-      - REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS=true
-      - REGIME_RISK_RISK_OFF_CLOSE_LONGS=true
-
-      # Selektive Reduktion: Value-Labels und aktuelle negative Shock-Biases
-      # werden zuerst geschlossen, begrenzt durch MAX_CLOSE_FRACTION_PER_DAY.
-      - REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS=true
-      - REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS=true
-      - REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
-      - REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
-
-      # ---------------------------------------------------------------------
-      # Gemeinsame Policy: Direction-Budget nach World-Regime
-      #
-      # Diese Regeln sind modellunabhaengig und wirken nach der Modelllogik.
-      # Sie bestimmen je Regime-Label, ob Long/Short erlaubt ist, wie stark
-      # das Trade-Risiko multipliziert wird und wie viele Long-/Short-Positionen
-      # maximal offen sein duerfen.
-      #
-      # Die Labels kommen direkt aus SOURCE_WORLD_REGIME_TABLE.
-      # Wichtig: Das ist Portfolio-/Risk-Policy, keine Entry-Signal-Logik.
-      # ---------------------------------------------------------------------
-      # RISK-ON: score < 30
-      - REGIME_RISK_ON_LONG_RISK_MULTIPLIER=1.0
-      - REGIME_RISK_ON_SHORT_RISK_MULTIPLIER=0.0
-      - REGIME_RISK_ON_MAX_LONG_POSITIONS=10
-      - REGIME_RISK_ON_MAX_SHORT_POSITIONS=0
-
-      # CONSTRUCTIVE: 30 <= score < 50
-      - REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER=0.9
-      - REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER=0.0
-      - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=6
-      - REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS=0
-
-      # NEUTRAL: 50 <= score < 60
-      - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.50
-      - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.00
-      - REGIME_NEUTRAL_MAX_LONG_POSITIONS=3
-      - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=0
-
-      # DEFENSIVE: 60 <= score < 75
-      - REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER=0.30
-      - REGIME_DEFENSIVE_SHORT_RISK_MULTIPLIER=0.70
-      - REGIME_DEFENSIVE_MAX_LONG_POSITIONS=1
-      - REGIME_DEFENSIVE_MAX_SHORT_POSITIONS=2
-
-      # RISK-OFF: score >= 75
-      - REGIME_RISK_OFF_LONG_RISK_MULTIPLIER=0.0
-      - REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER=1.0
-      - REGIME_RISK_OFF_MAX_LONG_POSITIONS=0
-      - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=3
 
       # ---------------------------------------------------------------------
       # Gemeinsame Policy: fundamentale Eligibility
