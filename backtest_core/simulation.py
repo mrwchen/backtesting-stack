@@ -45,6 +45,13 @@ from .market_data import (
     preload_candidate_timelines,
     signal_bar_close_decisions_for_day,
 )
+from .market_regime import (
+    apply_market_regime_exposure_overlay,
+    apply_portfolio_drawdown_exposure_overlay,
+    get_market_regime_snapshot,
+    get_portfolio_drawdown_snapshot,
+    market_regime_generated_hedge_active,
+)
 from .model_loader import get_model_module
 from .monte_carlo import run_monte_carlo
 from .policy import (
@@ -328,6 +335,14 @@ def _copy_regime_shock_to_event(event: DecisionEvent, regime: Any, shock_sector_
     event.credit_banking_stress_score = regime.credit_banking_stress_score
     event.policy_geopolitical_score = regime.policy_geopolitical_score
     event.shock_sector_bias = shock_sector_bias
+
+
+def _market_regime_active(snapshot: Any) -> bool:
+    return bool(
+        snapshot is not None
+        and getattr(snapshot, "enabled", False)
+        and getattr(snapshot, "tier", 0) > 0
+    )
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -771,6 +786,7 @@ def run_backtest(
     decision_event_buffer: list[DecisionEvent] = []
     regime_risk_tracker = RegimeRiskTracker()
     regime_risk_action_dates: dict[InstrumentKey, date] = {}
+    portfolio_peak_equity = INITIAL_EQUITY
 
     def flush_decision_events(force: bool = False) -> None:
         if not decision_event_buffer:
@@ -787,6 +803,12 @@ def run_backtest(
         decision_event_buffer.extend(events)
         flush_decision_events()
 
+    def update_portfolio_peak(equity_value: float) -> float:
+        nonlocal portfolio_peak_equity
+        if equity_value > portfolio_peak_equity:
+            portfolio_peak_equity = equity_value
+        return portfolio_peak_equity
+
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
         account_curve_seq += 1
@@ -797,6 +819,7 @@ def run_backtest(
             equity,
             as_of_ts,
         )
+        update_portfolio_peak(snapshot.equity_with_loan_value)
         account_curve.append(AccountCurvePoint(
             run_id=run_id,
             ts=as_of_ts,
@@ -1664,6 +1687,7 @@ def run_backtest(
         model: Any,
         active_positions: list[OpenPosition],
         *,
+        market_regime_snapshot: Any = None,
         log_progress_today: bool = False,
         context_label: str = "signal_bar_close",
         entry_after_ts: Optional[datetime] = None,
@@ -1708,6 +1732,18 @@ def run_backtest(
                 and direction_cap <= 0
                 and not sleeve_may_expand_direction
             ):
+                if direction == "LONG" and _market_regime_active(market_regime_snapshot):
+                    reason_code = "market_regime_long_direction_disabled"
+                    reason_text = (
+                        f"Market regime {market_regime_snapshot.state} adjusted long risk and max long "
+                        f"positions to zero; {market_regime_snapshot.reason}"
+                    )
+                else:
+                    reason_code = "regime_direction_disabled"
+                    reason_text = (
+                        f"Regime label {regime_label} assigned zero risk and zero max "
+                        f"{direction.lower()} positions."
+                    )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1718,8 +1754,8 @@ def run_backtest(
                     direction=direction,
                     decision_stage="regime_filter",
                     decision="skipped_direction",
-                    reason_code="regime_direction_disabled",
-                    reason_text=f"Regime label {regime_label} assigned zero risk and zero max {direction.lower()} positions.",
+                    reason_code=reason_code,
+                    reason_text=reason_text,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(active_positions),
@@ -1730,6 +1766,19 @@ def run_backtest(
 
             direction_open_count = _direction_open_count(active_positions, direction)
             if not sleeve_may_expand_direction and direction_open_count >= direction_cap:
+                if direction == "LONG" and _market_regime_active(market_regime_snapshot):
+                    reason_code = "market_regime_long_cap_reached"
+                    reason_text = (
+                        f"Market regime {market_regime_snapshot.state} allows {direction_cap} open "
+                        f"long positions; {direction_open_count} were already open. "
+                        f"{market_regime_snapshot.reason}"
+                    )
+                else:
+                    reason_code = "max_direction_positions_reached"
+                    reason_text = (
+                        f"Regime label {regime_label} allows {direction_cap} open "
+                        f"{direction.lower()} positions; {direction_open_count} were already open."
+                    )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1740,11 +1789,8 @@ def run_backtest(
                     direction=direction,
                     decision_stage="portfolio_filter",
                     decision="skipped_direction",
-                    reason_code="max_direction_positions_reached",
-                    reason_text=(
-                        f"Regime label {regime_label} allows {direction_cap} open "
-                        f"{direction.lower()} positions; {direction_open_count} were already open."
-                    ),
+                    reason_code=reason_code,
+                    reason_text=reason_text,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(active_positions),
@@ -2180,6 +2226,406 @@ def run_backtest(
         }
         return plans_by_direction, plan_events, decision_events, stats, plan_entry_contexts
 
+    def add_market_regime_hedge_plan(
+        day: date,
+        as_of_ts: datetime,
+        entry_after_ts: datetime,
+        earliest_entry_ts: Optional[datetime],
+        latest_entry_ts: Optional[datetime],
+        regime: Any,
+        market_regime_snapshot: Any,
+        plans_by_direction: dict[str, list[TradePlan]],
+        plan_events: dict[tuple[str, tuple[str, str, int]], DecisionEvent],
+        decision_events: list[DecisionEvent],
+        active_positions: list[OpenPosition],
+        *,
+        entry_after_label: str,
+    ) -> int:
+        if not market_regime_generated_hedge_active(market_regime_snapshot):
+            return 0
+
+        as_of_ts = _ensure_utc_ts(as_of_ts)
+        entry_after_ts = _ensure_utc_ts(entry_after_ts)
+        earliest_entry_ts = _ensure_utc_ts(earliest_entry_ts) if earliest_entry_ts is not None else None
+        latest_entry_ts = _ensure_utc_ts(latest_entry_ts) if latest_entry_ts is not None else None
+        hedge_symbol = MARKET_REGIME_HEDGE_SYMBOL.strip().upper()
+        if not hedge_symbol:
+            return 0
+
+        candidates = get_direct_symbol_candidates(
+            conn,
+            (hedge_symbol,),
+            "SHORT",
+            as_of_ts=as_of_ts,
+            source_table=SOURCE_MARKET_DATA_1H_TABLE,
+            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            require_broker_eligibility=MARKET_REGIME_HEDGE_REQUIRE_BROKER_ELIGIBILITY,
+        )
+        if not candidates:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=hedge_symbol,
+                exchange=None,
+                cik=None,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code="market_regime_hedge_candidate_missing",
+                reason_text=(
+                    f"Market regime {market_regime_snapshot.state} requested a hedge, but "
+                    f"{hedge_symbol} was not available as a direct short candidate."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        fundamental = candidates[0]
+        existing_short_hedge = any(
+            pos.identity_key == fundamental.identity_key and pos.direction == "SHORT"
+            for pos in active_positions
+        )
+        if existing_short_hedge and not MARKET_REGIME_HEDGE_ALLOW_MULTIPLE_POSITIONS:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="skipped",
+                reason_code="market_regime_hedge_already_open",
+                reason_text=(
+                    f"Market regime {market_regime_snapshot.state} requested a hedge, but an "
+                    f"open short hedge already existed for {fundamental.symbol}."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        required_bars = common_stop_required_lookback()
+        recent_bars_by_identity = load_recent_bars_for_identities(
+            conn,
+            [fundamental.identity_key],
+            required_bars,
+            as_of_ts,
+            batch_size=BAR_CACHE_BATCH_SIZE,
+            log_batches=False,
+        )
+        bars = recent_bars_by_identity.get(fundamental.identity_key, [])
+        if len(bars) < required_bars:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code="market_regime_hedge_insufficient_bars",
+                reason_text=(
+                    f"Only {len(bars)} cached 1h bars were available for market-regime hedge; "
+                    f"{required_bars} required."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        staleness_rejection = _signal_bar_recency_rejection(bars, as_of_ts)
+        if staleness_rejection is not None:
+            reason_code, reason_text = staleness_rejection
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code=reason_code,
+                reason_text=reason_text,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        next_entry = load_next_bar_opens(
+            conn,
+            [(fundamental.identity_key, entry_after_ts)],
+            batch_size=BAR_CACHE_BATCH_SIZE,
+        ).get((fundamental.identity_key, entry_after_ts))
+        if next_entry is None:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code="next_entry_bar_missing",
+                reason_text=(
+                    f"No 1h bar after {entry_after_label} {entry_after_ts} was available "
+                    "for market-regime hedge entry."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        entry_ts, entry_open = next_entry
+        entry_ts = _ensure_utc_ts(entry_ts)
+        if earliest_entry_ts is not None and entry_ts < earliest_entry_ts:
+            reason_code = "next_entry_before_decision_timestamp"
+            reason_text = f"Next hedge entry bar {entry_ts} is before earliest allowed entry timestamp {earliest_entry_ts}."
+        elif latest_entry_ts is not None and entry_ts > latest_entry_ts:
+            reason_code = "next_entry_after_decision_timestamp"
+            reason_text = f"Next hedge entry bar {entry_ts} is after latest allowed entry timestamp {latest_entry_ts}."
+        else:
+            reason_code = ""
+            reason_text = ""
+        if reason_code:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code=reason_code,
+                reason_text=reason_text,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        intent = TradeIntent(
+            symbol=fundamental.symbol,
+            direction="SHORT",
+            score=MARKET_REGIME_HEDGE_INTENT_SCORE,
+            reason=f"Market-regime hedge {market_regime_snapshot.state}: {market_regime_snapshot.reason}",
+        )
+        intent_check = validate_intent_for_candidate(intent, fundamental, "SHORT")
+        if not intent_check.accepted:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code=intent_check.reason_code,
+                reason_text=intent_check.reason_text,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                intent_score=intent.score,
+                intent_reason=intent.reason,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        trade_plan_result = build_trade_plan(
+            intent,
+            fundamental,
+            bars,
+            entry_ts,
+            entry_open,
+        )
+        plan = trade_plan_result.plan
+        if not trade_plan_result.accepted or plan is None:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="rejected",
+                reason_code=trade_plan_result.reason_code,
+                reason_text=trade_plan_result.reason_text,
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                intent_score=intent.score,
+                intent_reason=intent.reason,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        plan.fundamental_score = fundamental.composite_score
+        plan.allow_multiple_positions_per_instrument = True
+        apply_shock_overlay(plan, fundamental, regime)
+        plan_key = _plan_event_key(plan)
+        if plan_key in plan_events:
+            decision_events.append(DecisionEvent(
+                run_id=run_id,
+                intent_date=day,
+                as_of_ts=as_of_ts,
+                symbol=fundamental.symbol,
+                exchange=fundamental.exchange,
+                cik=fundamental.cik,
+                direction="SHORT",
+                decision_stage="market_regime_hedge",
+                decision="skipped",
+                reason_code="market_regime_hedge_already_planned",
+                reason_text=(
+                    f"Market regime {market_regime_snapshot.state} requested a hedge, but a "
+                    f"short plan already existed for {fundamental.symbol} at this timestamp."
+                ),
+                world_regime_label=regime.label,
+                world_regime_score=regime.score,
+                valuation_label=fundamental.valuation_label,
+                sector=fundamental.sector,
+                industry=fundamental.industry,
+                fundamental_score=fundamental.composite_score,
+                bar_count=len(bars),
+                min_bars=required_bars,
+                intent_score=plan.intent_score,
+                intent_reason=plan.intent_reason,
+                open_positions=len(active_positions),
+                max_open_positions=MAX_OPEN_POSITIONS,
+                account_equity=equity,
+            ))
+            return 0
+
+        event = DecisionEvent(
+            run_id=run_id,
+            intent_date=day,
+            as_of_ts=as_of_ts,
+            symbol=fundamental.symbol,
+            exchange=fundamental.exchange,
+            cik=fundamental.cik,
+            direction="SHORT",
+            decision_stage="market_regime_hedge",
+            decision="intent",
+            reason_code="market_regime_hedge_intent",
+            reason_text=(
+                f"Market regime {market_regime_snapshot.state} generated a short hedge; "
+                f"{market_regime_snapshot.reason}"
+            ),
+            intent_passed=True,
+            candidate_rank=1,
+            world_regime_label=regime.label,
+            world_regime_score=regime.score,
+            valuation_label=fundamental.valuation_label,
+            sector=fundamental.sector,
+            industry=fundamental.industry,
+            fundamental_score=fundamental.composite_score,
+            mispricing_score=fundamental.mispricing_score,
+            market_cap_m=fundamental.market_cap_m,
+            bar_count=len(bars),
+            min_bars=required_bars,
+            intent_score=plan.intent_score,
+            intent_reason=plan.intent_reason,
+            entry_ts=plan.entry_ts,
+            entry_price=plan.entry_price,
+            stop_loss=plan.stop_loss,
+            take_profit=plan.take_profit,
+            trailing_activation_price=plan.trailing_activation_price,
+            trailing_distance_pct=plan.trailing_distance_pct,
+            open_positions=len(active_positions),
+            max_open_positions=MAX_OPEN_POSITIONS,
+            account_equity=equity,
+        )
+        _copy_plan_shock_to_event(event, plan)
+        plans_by_direction["SHORT"].append(plan)
+        plans_by_direction["SHORT"][:] = _ranked_plans_for_direction(
+            plans_by_direction["SHORT"],
+            day=day,
+            as_of_ts=as_of_ts,
+            direction="SHORT",
+        )
+        plan_events[plan_key] = event
+        decision_events.append(event)
+        for intent_rank, ranked_plan in enumerate(plans_by_direction["SHORT"], start=1):
+            ranked_event = plan_events.get(_plan_event_key(ranked_plan))
+            if ranked_event:
+                ranked_event.intent_rank = intent_rank
+        return 1
+
     def open_ranked_plans(
         day: date,
         as_of_ts: datetime,
@@ -2196,6 +2642,7 @@ def run_backtest(
         day_open_limit: Optional[int] = None,
         day_open_count: int = 0,
         hour_open_counts: Optional[dict[datetime, int]] = None,
+        market_regime_snapshot: Any = None,
     ) -> int:
         if SECTOR_DIVERSIFICATION_ENABLED:
             open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
@@ -2228,6 +2675,11 @@ def run_backtest(
         direction_order = sorted(
             DIRECTIONS,
             key=lambda d: (
+                1
+                if d == "SHORT"
+                and _market_regime_active(market_regime_snapshot)
+                and direction_risk_multiplier(regime_exposure, "SHORT") > 0.0
+                else 0,
                 direction_risk_multiplier(regime_exposure, d),
                 direction_max_positions(regime_exposure, d),
             ),
@@ -2247,13 +2699,22 @@ def run_backtest(
             hour_open_count = hour_open_counts.get(entry_hour, 0) if hour_open_counts is not None else 0
             snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
             account_equity_current = snapshot.equity_with_loan_value
+            current_peak_equity = update_portfolio_peak(account_equity_current)
+            portfolio_drawdown_snapshot = get_portfolio_drawdown_snapshot(
+                account_equity_current,
+                current_peak_equity,
+            )
+            plan_regime_exposure = apply_portfolio_drawdown_exposure_overlay(
+                regime_exposure,
+                portfolio_drawdown_snapshot,
+            )
             guard_day_start_equity = day_start_equity if day_start_equity is not None else account_equity_current
             initial_margin = sum(_active_margin_used(p) for p in active_positions)
             maintenance_margin = sum(_active_maintenance_margin_used(p) for p in active_positions)
             available_funds = account_equity_current - initial_margin
             excess_liquidity = account_equity_current - maintenance_margin
-            direction_risk = direction_risk_multiplier(regime_exposure, plan.direction)
-            direction_cap = direction_max_positions(regime_exposure, plan.direction)
+            direction_risk = direction_risk_multiplier(plan_regime_exposure, plan.direction)
+            direction_cap = direction_max_positions(plan_regime_exposure, plan.direction)
             sleeve_risk = risk_off_long_sleeve_risk(plan, regime_label)
             if sleeve_risk is not None and direction_risk <= 0.0:
                 direction_risk = sleeve_risk
@@ -2294,8 +2755,25 @@ def run_backtest(
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "regime_direction_risk_zero"
-                    event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
+                    if plan.direction == "LONG" and _market_regime_active(market_regime_snapshot):
+                        event.reason_code = "market_regime_long_risk_zero"
+                        event.reason_text = (
+                            f"Market regime {market_regime_snapshot.state} adjusted long risk to zero; "
+                            f"{market_regime_snapshot.reason}"
+                        )
+                    elif (
+                        plan.direction == "LONG"
+                        and portfolio_drawdown_snapshot.enabled
+                        and portfolio_drawdown_snapshot.tier > 0
+                    ):
+                        event.reason_code = "portfolio_drawdown_long_risk_zero"
+                        event.reason_text = (
+                            f"Portfolio drawdown circuit breaker {portfolio_drawdown_snapshot.state} "
+                            f"adjusted long risk to zero; {portfolio_drawdown_snapshot.reason}"
+                        )
+                    else:
+                        event.reason_code = "regime_direction_risk_zero"
+                        event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                 continue
             stress_plan_block = shock_stress_plan_block_reason(plan, regime)
             if stress_plan_block is not None:
@@ -2324,11 +2802,30 @@ def run_backtest(
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "max_direction_positions_reached"
-                    event.reason_text = (
-                        f"Regime label {regime_label} allows {direction_cap} open "
-                        f"{plan.direction.lower()} positions; this limit was already reached."
-                    )
+                    if plan.direction == "LONG" and _market_regime_active(market_regime_snapshot):
+                        event.reason_code = "market_regime_long_cap_reached"
+                        event.reason_text = (
+                            f"Market regime {market_regime_snapshot.state} allows {direction_cap} open "
+                            f"long positions; this limit was already reached. "
+                            f"{market_regime_snapshot.reason}"
+                        )
+                    elif (
+                        plan.direction == "LONG"
+                        and portfolio_drawdown_snapshot.enabled
+                        and portfolio_drawdown_snapshot.tier > 0
+                    ):
+                        event.reason_code = "portfolio_drawdown_long_cap_reached"
+                        event.reason_text = (
+                            f"Portfolio drawdown circuit breaker {portfolio_drawdown_snapshot.state} "
+                            f"allows {direction_cap} open long positions; this limit was already reached. "
+                            f"{portfolio_drawdown_snapshot.reason}"
+                        )
+                    else:
+                        event.reason_code = "max_direction_positions_reached"
+                        event.reason_text = (
+                            f"Regime label {regime_label} allows {direction_cap} open "
+                            f"{plan.direction.lower()} positions; this limit was already reached."
+                        )
                 continue
             if len(active_positions) >= MAX_OPEN_POSITIONS:
                 if event:
@@ -2563,6 +3060,7 @@ def run_backtest(
         signal_decision_points = signal_bar_close_decisions_for_day(conn, day)
         day_decision_ts = signal_decision_points[0][1] if signal_decision_points else day_start_ts
         day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
+        update_portfolio_peak(day_start_equity)
 
         # ── 2. Generate model intents and central execution plans ───────────
         regime_as_of_date = day - timedelta(days=1)
@@ -2600,19 +3098,28 @@ def run_backtest(
             continue
 
         regime_label, regime_exposure = regime_exposure_for_label(regime.label)
+        day_market_regime_snapshot = get_market_regime_snapshot(conn, day_decision_ts)
+        day_regime_exposure = apply_market_regime_exposure_overlay(
+            regime_exposure,
+            day_market_regime_snapshot,
+        )
         if log_progress_today:
             log.info(
-                "Regime exposure day %d/%d %s model %s label %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
+                "Regime exposure day %d/%d %s model %s label %s score %.1f market state %s market drawdown %.2f long risk %.2f short risk %.2f max long %d max short %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 regime_label,
                 regime.score,
-                direction_risk_multiplier(regime_exposure, "LONG"),
-                direction_risk_multiplier(regime_exposure, "SHORT"),
-                direction_max_positions(regime_exposure, "LONG"),
-                direction_max_positions(regime_exposure, "SHORT"),
+                day_market_regime_snapshot.state,
+                day_market_regime_snapshot.drawdown_pct
+                if day_market_regime_snapshot.drawdown_pct is not None
+                else 0.0,
+                direction_risk_multiplier(day_regime_exposure, "LONG"),
+                direction_risk_multiplier(day_regime_exposure, "SHORT"),
+                direction_max_positions(day_regime_exposure, "LONG"),
+                direction_max_positions(day_regime_exposure, "SHORT"),
             )
 
         open_positions, closed_before_regime_risk, pnl_before_regime_risk = apply_position_events_through(
@@ -2658,8 +3165,8 @@ def run_backtest(
                 )
 
         if all(
-            direction_risk_multiplier(regime_exposure, direction) <= 0.0
-            and direction_max_positions(regime_exposure, direction) <= 0
+            direction_risk_multiplier(day_regime_exposure, direction) <= 0.0
+            and direction_max_positions(day_regime_exposure, direction) <= 0
             and not should_evaluate_disabled_direction(regime_label, direction)
             for direction in DIRECTIONS
         ):
@@ -2675,7 +3182,10 @@ def run_backtest(
                 decision_stage="regime_filter",
                 decision="skipped_day",
                 reason_code="no_regime_exposure_budget",
-                reason_text=f"Regime label {regime_label} assigned zero risk and zero max positions to both directions.",
+                reason_text=(
+                    f"Regime label {regime_label} and market regime {day_market_regime_snapshot.state} "
+                    "assigned zero risk and zero max positions to both directions."
+                ),
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
                 open_positions=len(open_positions),
@@ -2851,9 +3361,14 @@ def run_backtest(
                         signal_decision_ts,
                         opened_this_hour,
                         MAX_POSITION_OPENS_PER_HOUR,
-                    )
+                )
                 continue
 
+            signal_market_regime_snapshot = get_market_regime_snapshot(conn, signal_decision_ts)
+            signal_regime_exposure = apply_market_regime_exposure_overlay(
+                regime_exposure,
+                signal_market_regime_snapshot,
+            )
             (
                 signal_plans_by_direction,
                 signal_plan_events,
@@ -2865,9 +3380,10 @@ def run_backtest(
                 signal_decision_ts,
                 regime,
                 regime_label,
-                regime_exposure,
+                signal_regime_exposure,
                 model,
                 open_positions,
+                market_regime_snapshot=signal_market_regime_snapshot,
                 log_progress_today=log_progress_today,
                 context_label="signal_bar_close",
                 entry_after_ts=signal_bar_start_ts,
@@ -2875,6 +3391,26 @@ def run_backtest(
                 latest_entry_ts=signal_decision_ts,
                 entry_after_label="closed signal bar start",
             )
+
+            hedge_plan_count = add_market_regime_hedge_plan(
+                day,
+                signal_decision_ts,
+                signal_bar_start_ts,
+                signal_decision_ts,
+                signal_decision_ts,
+                regime,
+                signal_market_regime_snapshot,
+                signal_plans_by_direction,
+                signal_plan_events,
+                signal_decision_events,
+                open_positions,
+                entry_after_label="closed signal bar start",
+            )
+            if hedge_plan_count:
+                signal_stats["candidate_counts"]["SHORT"] += hedge_plan_count
+                signal_stats["total_candidates"] += hedge_plan_count
+                signal_stats["intent_counts"]["SHORT"] += hedge_plan_count
+                signal_stats["plans"] += hedge_plan_count
 
             for direction in DIRECTIONS:
                 candidate_counts[direction] += signal_stats["candidate_counts"][direction]
@@ -2888,7 +3424,7 @@ def run_backtest(
                 signal_decision_ts,
                 regime,
                 regime_label,
-                regime_exposure,
+                signal_regime_exposure,
                 signal_plans_by_direction,
                 signal_plan_events,
                 open_positions,
@@ -2898,6 +3434,7 @@ def run_backtest(
                 day_open_limit=day_open_limit,
                 day_open_count=opened_today,
                 hour_open_counts=opened_by_hour,
+                market_regime_snapshot=signal_market_regime_snapshot,
             )
             buffer_decision_events(signal_decision_events)
 

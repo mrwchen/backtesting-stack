@@ -65,7 +65,7 @@ services:
       # ---------------------------------------------------------------------
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
-      - RUN_NOTES_EXTRA=shock_stress_guard_v1
+      - RUN_NOTES_EXTRA=market_regime_drawdown_breaker_v1
 
       # ---------------------------------------------------------------------
       # Quelltabellen und Point-in-Time-Sicherheit
@@ -250,7 +250,7 @@ services:
       - SHOCK_STRESS_GUARD_ENABLED=true
 
       # Stress-Schwellen auf Basis von world-regime max_shock_type_score.
-      - SHOCK_STRESS_GUARD_ELEVATED_SCORE60.0
+      - SHOCK_STRESS_GUARD_ELEVATED_SCORE=60.0
       - SHOCK_STRESS_GUARD_HIGH_SCORE=70.0
       - SHOCK_STRESS_GUARD_EXTREME_SCORE=80.0
 
@@ -282,6 +282,62 @@ services:
       - SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED=true
       - SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT=1.5
       - SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT=1.5
+
+      # ---------------------------------------------------------------------
+      # Schnelles Market-Regime und Portfolio-Drawdown-Circuit-Breaker.
+      #
+      # Market-Regime nutzt QQQ 1h-Daten point-in-time und reagiert auf den
+      # 60-Tage-Drawdown deutlich schneller als das Macro-/World-Regime.
+      # Bei Stress werden Long-Budgets gekappt und Short-Hedge-Budgets aktiviert.
+      # Der Hedge-Generator erzeugt maximal einen offenen SHORT-Hedge je Symbol,
+      # darf aber gegen bestehende LONG-Positionen auf demselben Instrument laufen.
+      #
+      # Portfolio-Drawdown-Circuit-Breaker arbeitet auf Equity inkl. Open-PnL
+      # relativ zum bisherigen Run-Peak und reduziert nur neue LONG-Entries.
+      # ---------------------------------------------------------------------
+      - MARKET_REGIME_GUARD_ENABLED=true
+      - MARKET_REGIME_SYMBOL=QQQ
+      - MARKET_REGIME_TZ=America/New_York
+      - MARKET_REGIME_LOOKBACK_DAYS=60
+      - MARKET_REGIME_MIN_HISTORY_DAYS=20
+      - MARKET_REGIME_ELEVATED_DRAWDOWN_PCT=5.0
+      - MARKET_REGIME_HIGH_DRAWDOWN_PCT=10.0
+      - MARKET_REGIME_EXTREME_DRAWDOWN_PCT=15.0
+      - MARKET_REGIME_MA_CONFIRM_ENABLED=true
+      - MARKET_REGIME_MA_SHORT_DAYS=20
+      - MARKET_REGIME_MA_LONG_DAYS=50
+      - MARKET_REGIME_MA_CONFIRM_TIER=1
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED=0.50
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_HIGH=0.20
+      - MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME=0.0
+      - MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED=2
+      - MARKET_REGIME_MAX_LONG_POSITIONS_HIGH=1
+      - MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME=0
+      - MARKET_REGIME_SHORT_HEDGE_ENABLED=true
+      - MARKET_REGIME_SHORT_HEDGE_MIN_TIER=1
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED=0.50
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH=0.75
+      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME=1.0
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED=1
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH=2
+      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME=3
+      - MARKET_REGIME_GENERATE_HEDGE_ENABLED=true
+      - MARKET_REGIME_HEDGE_SYMBOL=QQQ
+      - MARKET_REGIME_HEDGE_MIN_TIER=1
+      - MARKET_REGIME_HEDGE_INTENT_SCORE=100.0
+      - MARKET_REGIME_HEDGE_REQUIRE_BROKER_ELIGIBILITY=false
+      - MARKET_REGIME_HEDGE_ALLOW_MULTIPLE_POSITIONS=false
+
+      - PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED=true
+      - PORTFOLIO_DRAWDOWN_WARN_PCT=6.0
+      - PORTFOLIO_DRAWDOWN_STRESS_PCT=10.0
+      - PORTFOLIO_DRAWDOWN_EXTREME_PCT=15.0
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_WARN=0.50
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_STRESS=0.20
+      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_EXTREME=0.0
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN=2
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS=1
+      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
 
       # ---------------------------------------------------------------------
       # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
