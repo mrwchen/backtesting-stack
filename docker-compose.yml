@@ -181,7 +181,7 @@ services:
       # ---------------------------------------------------------------------
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=1.5
+      - RISK_PER_TRADE_EQUITY_PCT=2
       - MAX_OPEN_POSITIONS=7
       - MAX_POSITION_OPENS_PER_DAY=2
       - MAX_POSITION_OPENS_PER_HOUR=1
