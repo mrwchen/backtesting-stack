@@ -63,6 +63,7 @@ SHOCK_SCORE_ATTRS = {
     "RATES_INFLATION_USD_SHOCK": "rates_inflation_usd_shock_score",
     "CREDIT_BANKING_STRESS": "credit_banking_stress_score",
     "POLICY_GEOPOLITICAL_EVENT": "policy_geopolitical_score",
+    "METALS_MINING_SHOCK": "metals_mining_shock_score",
 }
 
 _SCORE_MODES = {"score_only", "score_and_risk", "full"}
@@ -452,6 +453,10 @@ def _copy_regime_to_plan(plan: TradePlan, regime: WorldRegime) -> None:
     plan.rates_inflation_usd_shock_score = regime.rates_inflation_usd_shock_score
     plan.credit_banking_stress_score = regime.credit_banking_stress_score
     plan.policy_geopolitical_score = regime.policy_geopolitical_score
+    plan.precious_metals_score = regime.precious_metals_score
+    plan.industrial_metals_score = regime.industrial_metals_score
+    plan.metals_mining_shock_score = regime.metals_mining_shock_score
+    plan.metals_mining_subtype = regime.metals_mining_subtype
 
 
 def shock_sector_bias_for_sector(sector: str, direction: str, regime: WorldRegime) -> float:

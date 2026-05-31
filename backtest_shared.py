@@ -25,6 +25,10 @@ class WorldRegime:
     rates_inflation_usd_shock_score: float | None = None
     credit_banking_stress_score: float | None = None
     policy_geopolitical_score: float | None = None
+    precious_metals_score: float | None = None
+    industrial_metals_score: float | None = None
+    metals_mining_shock_score: float | None = None
+    metals_mining_subtype: str = ""
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,10 @@ class TradePlan:
     rates_inflation_usd_shock_score: float | None = None
     credit_banking_stress_score: float | None = None
     policy_geopolitical_score: float | None = None
+    precious_metals_score: float | None = None
+    industrial_metals_score: float | None = None
+    metals_mining_shock_score: float | None = None
+    metals_mining_subtype: str = ""
     shock_sector_bias: float = 0.0
     shock_score_delta: float = 0.0
     shock_risk_multiplier: float = 1.0
