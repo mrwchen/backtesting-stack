@@ -94,7 +94,7 @@ services:
       # Die Datenquelle muss fuer diesen Zeitraum 1h-Bars, Fundamentals und
       # Regime-Daten liefern koennen.
       # ---------------------------------------------------------------------
-      - START_DATE=2026-01-01
+      - START_DATE=2020-01-01
       - END_DATE=2026-05-01
 
       # ---------------------------------------------------------------------
