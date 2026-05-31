@@ -54,6 +54,10 @@ services:
       - DB_STATEMENT_TIMEOUT_MS=60000
       - DB_LOCK_TIMEOUT_MS=5000
       - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000
+      # Bei einem TimescaleDB-Restart darf ein paralleler Worker mit reservierter
+      # run_id den eigenen unvollstaendigen Run bereinigen und neu starten.
+      - BACKTEST_WORKER_DB_RETRY_ATTEMPTS=2
+      - BACKTEST_WORKER_DB_RETRY_DELAY_SECONDS=10.0
 
       # ---------------------------------------------------------------------
       # Run-Metadaten und Logging

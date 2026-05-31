@@ -3,7 +3,10 @@
 import logging
 import os
 import signal
+import time as _time
 from pathlib import Path
+
+import psycopg2
 
 from . import runtime
 from .config import *
@@ -17,6 +20,7 @@ from .model_loader import (
     load_model_module,
     model_requires_fundamental_sources,
 )
+from .persistence import delete_run_results
 from .policy import COMMON_POLICY, candidate_policy_kwargs
 from .simulation import run_backtest
 
@@ -43,6 +47,35 @@ def _reserved_run_id_from_env() -> int | None:
     if run_id <= 0:
         raise ValueError(f"BACKTEST_RUN_ID must be a positive integer, got {raw!r}")
     return run_id
+
+
+def _close_connection(conn: psycopg2.extensions.connection | None) -> None:
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception as exc:
+        log.warning("DB connection close failed %s", exc)
+
+
+def _cleanup_reserved_run_for_retry(run_id: int) -> None:
+    conn = connect_with_retry()
+    try:
+        delete_run_results(conn, run_id)
+    finally:
+        _close_connection(conn)
+
+
+def _worker_db_retry_attempts(reserved_run_id: int | None) -> int:
+    if GRID_SEARCH_ENABLED or reserved_run_id is None:
+        if BACKTEST_WORKER_DB_RETRY_ATTEMPTS > 1:
+            log.info(
+                "DB retry disabled for worker grid search %s reserved run id %s",
+                GRID_SEARCH_ENABLED,
+                str(reserved_run_id) if reserved_run_id is not None else "-",
+            )
+        return 1
+    return BACKTEST_WORKER_DB_RETRY_ATTEMPTS
 
 
 def run_shared_candidate_timeline_prebuilder() -> None:
@@ -314,60 +347,82 @@ def run_single_model_worker() -> None:
     runtime.CURRENT_MODEL_FILE = model_file
     set_log_process_name(f"bt-{Path(model_file).stem}-{ACCOUNT_PROFILE}")
     _install_worker_shutdown_handler()
-    conn = connect_with_retry()
-    try:
+    runtime.MODEL_MODULE = load_model_module(model_file)
+    load_model_config_env(model_file)
+    cfg = runtime.MODEL_MODULE.intent_config_from_env()
+    require_fundamental_sources = model_requires_fundamental_sources(runtime.MODEL_MODULE)
+    max_attempts = _worker_db_retry_attempts(reserved_run_id)
+
+    for attempt in range(1, max_attempts + 1):
+        conn = connect_with_retry()
         log.info(
-            "Connected starting backtest model %s %s to %s equity %.0f application name %s",
+            "Connected starting backtest model %s %s to %s equity %.0f application name %s attempt %d/%d",
             runtime.CURRENT_MODEL_FILE,
             START_DATE,
             END_DATE,
             INITIAL_EQUITY,
             DB["application_name"],
+            attempt,
+            max_attempts,
         )
-        runtime.MODEL_MODULE = load_model_module(model_file)
-        load_model_config_env(model_file)
-        cfg = runtime.MODEL_MODULE.intent_config_from_env()
-        require_fundamental_sources = model_requires_fundamental_sources(runtime.MODEL_MODULE)
-        log.info(
-            "Model source requirements fundamentals %s",
-            require_fundamental_sources,
-        )
-        validate_source_schema(
-            conn,
-            require_fundamental_sources=require_fundamental_sources,
-        )
-        validate_result_schema(conn)
-        log_backtest_context(model_files)
-        log.info(
-            "Model worker file %s grid search %s min bars %d",
-            runtime.CURRENT_MODEL_FILE,
-            GRID_SEARCH_ENABLED,
-            cfg.min_bars,
-        )
-        if reserved_run_id is not None:
-            log.info("Model worker using reserved run id %d", reserved_run_id)
-        log.info(
-            "Execution policy model %s take profit mode %s long fixed tp %.2f%% short fixed tp %.2f%% long trailing activation %.2f%% distance %.2f%% short trailing activation %.2f%% distance %.2f%% long max hold %.2f short max hold %.2f stop source common",
-            runtime.CURRENT_MODEL_FILE,
-            TAKE_PROFIT_MODE,
-            EXECUTION_LONG_TAKE_PROFIT_PCT,
-            EXECUTION_SHORT_TAKE_PROFIT_PCT,
-            EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
-            EXECUTION_LONG_TRAILING_DISTANCE_PCT,
-            EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
-            EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
-            EXECUTION_LONG_MAX_HOLD_DAYS,
-            EXECUTION_SHORT_MAX_HOLD_DAYS,
-        )
-        if GRID_SEARCH_ENABLED:
+        try:
+            log.info(
+                "Model source requirements fundamentals %s",
+                require_fundamental_sources,
+            )
+            validate_source_schema(
+                conn,
+                require_fundamental_sources=require_fundamental_sources,
+            )
+            validate_result_schema(conn)
+            log_backtest_context(model_files)
+            log.info(
+                "Model worker file %s grid search %s min bars %d",
+                runtime.CURRENT_MODEL_FILE,
+                GRID_SEARCH_ENABLED,
+                cfg.min_bars,
+            )
             if reserved_run_id is not None:
-                raise ValueError("BACKTEST_RUN_ID cannot be used with GRID_SEARCH_ENABLED=true")
-            results = run_grid_search(conn, cfg)
-            _print_grid_summary(results)
-        else:
-            try:
-                run_backtest(conn, cfg, reserved_run_id=reserved_run_id)
-            finally:
-                clear_market_data_caches("single_run")
-    finally:
-        conn.close()
+                log.info("Model worker using reserved run id %d", reserved_run_id)
+            log.info(
+                "Execution policy model %s take profit mode %s long fixed tp %.2f%% short fixed tp %.2f%% long trailing activation %.2f%% distance %.2f%% short trailing activation %.2f%% distance %.2f%% long max hold %.2f short max hold %.2f stop source common",
+                runtime.CURRENT_MODEL_FILE,
+                TAKE_PROFIT_MODE,
+                EXECUTION_LONG_TAKE_PROFIT_PCT,
+                EXECUTION_SHORT_TAKE_PROFIT_PCT,
+                EXECUTION_LONG_TRAILING_ACTIVATION_PCT,
+                EXECUTION_LONG_TRAILING_DISTANCE_PCT,
+                EXECUTION_SHORT_TRAILING_ACTIVATION_PCT,
+                EXECUTION_SHORT_TRAILING_DISTANCE_PCT,
+                EXECUTION_LONG_MAX_HOLD_DAYS,
+                EXECUTION_SHORT_MAX_HOLD_DAYS,
+            )
+            if GRID_SEARCH_ENABLED:
+                if reserved_run_id is not None:
+                    raise ValueError("BACKTEST_RUN_ID cannot be used with GRID_SEARCH_ENABLED=true")
+                results = run_grid_search(conn, cfg)
+                _print_grid_summary(results)
+            else:
+                try:
+                    run_backtest(conn, cfg, reserved_run_id=reserved_run_id)
+                finally:
+                    clear_market_data_caches("single_run")
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+            _close_connection(conn)
+            if attempt >= max_attempts or reserved_run_id is None:
+                raise
+            log.warning(
+                "DB connection lost during worker attempt %d/%d model %s account profile %s retry in %.1f seconds error %s",
+                attempt,
+                max_attempts,
+                runtime.CURRENT_MODEL_FILE,
+                ACCOUNT_PROFILE,
+                BACKTEST_WORKER_DB_RETRY_DELAY_SECONDS,
+                exc,
+            )
+            _time.sleep(BACKTEST_WORKER_DB_RETRY_DELAY_SECONDS)
+            _cleanup_reserved_run_for_retry(reserved_run_id)
+        finally:
+            if not conn.closed:
+                _close_connection(conn)

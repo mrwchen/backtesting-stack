@@ -184,6 +184,23 @@ def reserve_run_ids(conn: psycopg2.extensions.connection, count: int) -> list[in
     return run_ids
 
 
+def delete_run_results(conn: psycopg2.extensions.connection, run_id: int) -> None:
+    if run_id <= 0:
+        raise ValueError(f"Invalid run id cleanup target: {run_id!r}")
+
+    with conn.cursor() as cur:
+        for table_name in (
+            "backtest_monte_carlo",
+            "backtest_account_curve",
+            "backtest_decision_events",
+            "backtest_trades",
+            "backtest_runs",
+        ):
+            cur.execute(f"DELETE FROM {_result_table(table_name)} WHERE run_id = %s", (run_id,))
+    conn.commit()
+    log.warning("Deleted partial run results for retry run %d", run_id)
+
+
 def write_trades(
     conn: psycopg2.extensions.connection,
     run_id: int,
