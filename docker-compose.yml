@@ -273,7 +273,7 @@ services:
       # staendig Closings oder Stop-Aenderungen ausloest.
       # ---------------------------------------------------------------------
       - REGIME_RISK_MANAGEMENT_ENABLED=true
-      - REGIME_RISK_NEUTRAL_IS_ELEVATED=true
+      - REGIME_RISK_NEUTRAL_IS_ELEVATED=false
       - REGIME_RISK_ELEVATED_CONFIRM_DAYS=1
       - REGIME_RISK_HIGH_CONFIRM_DAYS=1
       - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
