@@ -115,11 +115,11 @@ services:
       # MODEL_FAILURE_MODE=continue bedeutet: ein fehlerhafter Worker stoppt
       # nicht automatisch alle anderen Worker.
       # ---------------------------------------------------------------------
-      #- MODEL_SELECTION=all
+      - MODEL_SELECTION=all
       #- MODEL_SELECTION=single
       #- MODEL_FILE=benchmark_qqq.py
-      - MODEL_SELECTION=multi
-      - MODEL_FILES=benchmark_qqq.py,qqq_engine_probe.py
+      #- MODEL_SELECTION=multi
+      #- MODEL_FILES=benchmark_qqq.py,qqq_engine_probe.py
       #- MODEL_FILES=adaptive_entry_swing_v1.py,sector_rotation_long_short_v1.py,filing_aware_fundamental_momentum_v1.py,relative_strength_momentum_v1.py
       # - MODEL_FILES=adaptive_entry_swing_v1.py,deep_pullback_quality_mean_reversion_v1.py,failed_breakout_reversal_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,relative_strength_momentum_v1.py,sector_rotation_long_short_v1.py,statistical_direction_probability_v1.py,trend_pullback_reclaim_v1.py,volatility_contraction_breakout_v1.py,weak_fundamental_breakdown_v1.py
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
@@ -186,7 +186,7 @@ services:
       - ACCOUNT_PROFILE=all
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
-      - MAX_OPEN_POSITIONS=5
+      - MAX_OPEN_POSITIONS=7
       - MAX_POSITION_OPENS_PER_DAY=2
       - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
@@ -217,14 +217,14 @@ services:
       # CONSTRUCTIVE: 30 <= score < 50
       - REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER=0.9
       - REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER=0.0
-      - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=5
+      - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=6
       - REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS=0
 
       # NEUTRAL: 50 <= score < 60
       - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.50
       - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.00
-      - REGIME_NEUTRAL_MAX_LONG_POSITIONS=1
-      - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=0
+      - REGIME_NEUTRAL_MAX_LONG_POSITIONS=3
+      - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=1
 
       # DEFENSIVE: 60 <= score < 75
       - REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER=0.30
