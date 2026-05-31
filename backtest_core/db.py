@@ -160,6 +160,7 @@ def validate_source_schema(
             "rates_inflation_usd_shock_score",
             "credit_banking_stress_score",
             "policy_geopolitical_score",
+            "tech_stress_shock_score",
             "precious_metals_score",
             "industrial_metals_score",
             "metals_mining_shock_score",
@@ -252,6 +253,7 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "trailing_activated", "trailing_stop", "trailing_activated_ts",
         "dominant_shock_type", "max_shock_type_score", "shock_sector_bias",
         "shock_score_delta", "shock_risk_multiplier", "shock_base_intent_score",
+        "tech_stress_shock_score",
         "precious_metals_score", "industrial_metals_score", "metals_mining_shock_score",
         "metals_mining_subtype",
         "sector", "industry",
@@ -265,6 +267,7 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
         "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score",
         "dominant_shock_type", "shock_sector_bias", "shock_score_delta", "shock_risk_multiplier",
+        "tech_stress_shock_score",
         "precious_metals_score", "industrial_metals_score", "metals_mining_shock_score",
         "metals_mining_subtype"
     })

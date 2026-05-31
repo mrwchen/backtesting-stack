@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     rates_inflation_usd_shock_score NUMERIC(5,2),
     credit_banking_stress_score NUMERIC(5,2),
     policy_geopolitical_score NUMERIC(5,2),
+    tech_stress_shock_score NUMERIC(5,2),
     precious_metals_score NUMERIC(5,2),
     industrial_metals_score NUMERIC(5,2),
     metals_mining_shock_score NUMERIC(5,2),
@@ -233,6 +234,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     rates_inflation_usd_shock_score NUMERIC(5,2),
     credit_banking_stress_score NUMERIC(5,2),
     policy_geopolitical_score NUMERIC(5,2),
+    tech_stress_shock_score NUMERIC(5,2),
     precious_metals_score NUMERIC(5,2),
     industrial_metals_score NUMERIC(5,2),
     metals_mining_shock_score NUMERIC(5,2),
@@ -367,13 +369,14 @@ BEGIN
                   'rates_inflation_usd_shock_score',
                   'credit_banking_stress_score',
                   'policy_geopolitical_score',
+                  'tech_stress_shock_score',
                   'precious_metals_score',
                   'industrial_metals_score',
                   'metals_mining_shock_score',
                   'metals_mining_subtype'
               )
             GROUP BY table_schema, table_name
-            HAVING COUNT(DISTINCT column_name) = 11
+            HAVING COUNT(DISTINCT column_name) = 12
         ) THEN
             EXECUTE '
                 CREATE INDEX IF NOT EXISTS idx_backtest_world_regime_day_score
@@ -388,6 +391,7 @@ BEGIN
                         rates_inflation_usd_shock_score,
                         credit_banking_stress_score,
                         policy_geopolitical_score,
+                        tech_stress_shock_score,
                         precious_metals_score,
                         industrial_metals_score,
                         metals_mining_shock_score,

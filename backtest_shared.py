@@ -25,6 +25,7 @@ class WorldRegime:
     rates_inflation_usd_shock_score: float | None = None
     credit_banking_stress_score: float | None = None
     policy_geopolitical_score: float | None = None
+    tech_stress_shock_score: float | None = None
     precious_metals_score: float | None = None
     industrial_metals_score: float | None = None
     metals_mining_shock_score: float | None = None
@@ -119,6 +120,7 @@ class TradePlan:
     rates_inflation_usd_shock_score: float | None = None
     credit_banking_stress_score: float | None = None
     policy_geopolitical_score: float | None = None
+    tech_stress_shock_score: float | None = None
     precious_metals_score: float | None = None
     industrial_metals_score: float | None = None
     metals_mining_shock_score: float | None = None

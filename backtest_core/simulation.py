@@ -314,6 +314,7 @@ def _copy_plan_shock_to_event(event: DecisionEvent, plan: TradePlan) -> None:
     event.rates_inflation_usd_shock_score = plan.rates_inflation_usd_shock_score
     event.credit_banking_stress_score = plan.credit_banking_stress_score
     event.policy_geopolitical_score = plan.policy_geopolitical_score
+    event.tech_stress_shock_score = plan.tech_stress_shock_score
     event.precious_metals_score = plan.precious_metals_score
     event.industrial_metals_score = plan.industrial_metals_score
     event.metals_mining_shock_score = plan.metals_mining_shock_score
@@ -332,6 +333,7 @@ def _copy_regime_shock_to_event(event: DecisionEvent, regime: Any, shock_sector_
     event.rates_inflation_usd_shock_score = regime.rates_inflation_usd_shock_score
     event.credit_banking_stress_score = regime.credit_banking_stress_score
     event.policy_geopolitical_score = regime.policy_geopolitical_score
+    event.tech_stress_shock_score = regime.tech_stress_shock_score
     event.precious_metals_score = regime.precious_metals_score
     event.industrial_metals_score = regime.industrial_metals_score
     event.metals_mining_shock_score = regime.metals_mining_shock_score

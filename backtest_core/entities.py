@@ -142,6 +142,7 @@ class DecisionEvent:
     rates_inflation_usd_shock_score: Optional[float] = None
     credit_banking_stress_score: Optional[float] = None
     policy_geopolitical_score: Optional[float] = None
+    tech_stress_shock_score: Optional[float] = None
     precious_metals_score: Optional[float] = None
     industrial_metals_score: Optional[float] = None
     metals_mining_shock_score: Optional[float] = None

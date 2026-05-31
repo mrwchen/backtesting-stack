@@ -588,7 +588,7 @@ def get_world_regime(
     selected_columns = (
         "day, regime_label, composite_score, dominant_shock_type, max_shock_type_score, "
         "defensive_risk_off_score, energy_commodity_shock_score, rates_inflation_usd_shock_score, "
-        "credit_banking_stress_score, policy_geopolitical_score, precious_metals_score, "
+        "credit_banking_stress_score, policy_geopolitical_score, tech_stress_shock_score, precious_metals_score, "
         "industrial_metals_score, metals_mining_shock_score, metals_mining_subtype"
         if WORLD_REGIME_SHOCK_FIELDS_ACTIVE
         else "day, regime_label, composite_score"
@@ -624,10 +624,11 @@ def get_world_regime(
             rates_inflation_usd_shock_score=float(row[7]) if row[7] is not None else None,
             credit_banking_stress_score=float(row[8]) if row[8] is not None else None,
             policy_geopolitical_score=float(row[9]) if row[9] is not None else None,
-            precious_metals_score=float(row[10]) if row[10] is not None else None,
-            industrial_metals_score=float(row[11]) if row[11] is not None else None,
-            metals_mining_shock_score=float(row[12]) if row[12] is not None else None,
-            metals_mining_subtype=row[13] or "",
+            tech_stress_shock_score=float(row[10]) if row[10] is not None else None,
+            precious_metals_score=float(row[11]) if row[11] is not None else None,
+            industrial_metals_score=float(row[12]) if row[12] is not None else None,
+            metals_mining_shock_score=float(row[13]) if row[13] is not None else None,
+            metals_mining_subtype=row[14] or "",
         )
     else:
         regime = WorldRegime(day=row[0], label=row[1], score=float(row[2]))
