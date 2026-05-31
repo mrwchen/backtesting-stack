@@ -281,7 +281,7 @@ services:
       - REGIME_RISK_ELEVATED_EXIT_SCORE=55.0
       - REGIME_RISK_HIGH_EXIT_SCORE=65.0
       - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.50
-      - REGIME_RISK_POSITION_COOLDOWN_DAYS=0
+      - REGIME_RISK_POSITION_COOLDOWN_DAYS=1
 
       # Long-Stops werden in Stress-Phasen auf maximalen Abstand zum aktuellen
       # Tages-Entscheidungspreis gezogen. Es wird nie gelockert, nur enger.
