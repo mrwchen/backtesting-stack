@@ -8,7 +8,15 @@ from pathlib import Path
 from types import ModuleType
 
 from . import runtime
-from .config import MODEL_CONFIG_DIR, MODEL_CONFIG_REQUIRED, MODEL_DIR, MODEL_FILE, MODEL_FILES, MODEL_SELECTION
+from .config import (
+    FUNDAMENTAL_RELATIVE_SCORE_ONLY,
+    MODEL_CONFIG_DIR,
+    MODEL_CONFIG_REQUIRED,
+    MODEL_DIR,
+    MODEL_FILE,
+    MODEL_FILES,
+    MODEL_SELECTION,
+)
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +129,20 @@ def _parse_env_value(raw: str) -> str:
     return value
 
 
+def _apply_global_model_config_overrides(model_file: str) -> None:
+    if not FUNDAMENTAL_RELATIVE_SCORE_ONLY:
+        return
+    os.environ["FUNDAMENTAL_SCORE_MODE"] = "peer"
+    os.environ["FUNDAMENTAL_PEER_WEIGHT"] = "1.0"
+    os.environ["FUNDAMENTAL_ABS_WEIGHT"] = "0.0"
+    os.environ["LONG_MIN_ABSOLUTE_SCORE"] = ""
+    os.environ["SHORT_MAX_ABSOLUTE_SCORE"] = ""
+    log.info(
+        "Applied global model override model %s fundamental relative score only true mode peer peer weight 1.0 abs weight 0.0 absolute score filters disabled",
+        model_file,
+    )
+
+
 def load_model_config_env(model_file: str) -> Path | None:
     """Load backtest_model_configs/<model_stem>.env into this worker process."""
     _validate_model_filename(model_file)
@@ -129,6 +151,7 @@ def load_model_config_env(model_file: str) -> Path | None:
         if MODEL_CONFIG_REQUIRED:
             raise FileNotFoundError(f"Model config file not found: {config_path}")
         log.info("No model config file found model %s path %s", model_file, config_path)
+        _apply_global_model_config_overrides(model_file)
         return None
 
     loaded = 0
@@ -147,6 +170,7 @@ def load_model_config_env(model_file: str) -> Path | None:
         os.environ[key] = _parse_env_value(raw_value)
         loaded += 1
 
+    _apply_global_model_config_overrides(model_file)
     log.info("Loaded model config model %s path %s variables %d", model_file, config_path, loaded)
     return config_path
 

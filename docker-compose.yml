@@ -124,6 +124,9 @@ services:
       # - MODEL_FILES=adaptive_entry_swing_v1.py,deep_pullback_quality_mean_reversion_v1.py,failed_breakout_reversal_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,relative_strength_momentum_v1.py,sector_rotation_long_short_v1.py,statistical_direction_probability_v1.py,trend_pullback_reclaim_v1.py,volatility_contraction_breakout_v1.py,weak_fundamental_breakdown_v1.py
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
       - MODEL_CONFIG_REQUIRED=true
+      # true = alle Modell-Configs nutzen nur composite_score (rel/peer).
+      #        composite_score_abs-Mix und absolute Score-Filter werden ignoriert.
+      - FUNDAMENTAL_RELATIVE_SCORE_ONLY=true
       - MODEL_PARALLELISM=4
       - MODEL_FAILURE_MODE=continue
 
@@ -437,9 +440,9 @@ services:
       # ---------------------------------------------------------------------
       - COMMON_LONG_MIN_FUNDAMENTAL=50.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
-      - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data #value_trap,overvalued,overvalued_weak
-      - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data #deep_value,quality_value,compounder
-      - COMMON_MIN_MARKET_CAP_USD_M=10000.0
+      - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data, value_trap,overvalued,overvalued_weak,expensive_quality
+      - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data, deep_value,quality_value,compounder,undervalued
+      - COMMON_MIN_MARKET_CAP_USD_M=50000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false

@@ -148,6 +148,7 @@ def log_backtest_context(model_files: list[str]) -> None:
         MODEL_CONFIG_REQUIRED,
         MODEL_PARALLELISM,
     )
+    log.info("Fundamental relative score only %s", FUNDAMENTAL_RELATIVE_SCORE_ONLY)
     log.info("Account profile %s", ACCOUNT_PROFILE)
     log.info(
         "Portfolio capacity max open positions %d max position opens per day %d max position opens per hour %d",
