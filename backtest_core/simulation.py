@@ -52,7 +52,12 @@ from .market_regime import (
     get_portfolio_drawdown_snapshot,
     market_regime_generated_hedge_active,
 )
-from .model_loader import get_model_module
+from .model_loader import (
+    get_model_module,
+    model_direct_candidate_mode,
+    model_direct_candidate_require_broker_eligibility,
+    model_direct_candidate_symbols,
+)
 from .monte_carlo import run_monte_carlo
 from .policy import (
     candidate_policy_kwargs,
@@ -215,25 +220,15 @@ def _candidate_score_kwargs(cfg: Any) -> dict:
 
 
 def _model_direct_candidate_symbols(model: Any) -> tuple[str, ...]:
-    raw_symbols = getattr(model, "DIRECT_CANDIDATE_SYMBOLS", ())
-    if isinstance(raw_symbols, str):
-        raw_symbols = (raw_symbols,)
-    return tuple(dict.fromkeys(
-        str(symbol).strip().upper()
-        for symbol in raw_symbols
-        if str(symbol).strip()
-    ))
+    return model_direct_candidate_symbols(model)
 
 
 def _model_direct_candidate_mode(model: Any) -> str:
-    mode = str(getattr(model, "DIRECT_CANDIDATE_MODE", "append")).strip().lower()
-    if mode not in {"append", "replace"}:
-        raise ValueError("DIRECT_CANDIDATE_MODE must be one of: append, replace")
-    return mode
+    return model_direct_candidate_mode(model)
 
 
 def _model_direct_candidate_require_broker_eligibility(model: Any) -> bool:
-    return bool(getattr(model, "DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY", True))
+    return model_direct_candidate_require_broker_eligibility(model)
 
 
 def _model_allow_multiple_positions_per_instrument(model: Any) -> bool:

@@ -14,7 +14,7 @@ from .config import *
 from .db import connect_with_retry, validate_result_schema
 from .logging_utils import set_log_process_name
 from .market_data import reset_shared_candidate_timeline_cache
-from .model_loader import select_model_files
+from .model_loader import load_model_module, model_requires_fundamental_sources, select_model_files
 from .persistence import reserve_run_ids
 
 log = logging.getLogger(__name__)
@@ -112,6 +112,16 @@ def _reserve_run_ids_for_jobs(jobs: list[BacktestJob]) -> dict[BacktestJob, int]
 def _prebuild_shared_candidate_timelines(jobs: list[BacktestJob], script_path: Path) -> None:
     profiles = sorted({job.account_profile for job in jobs})
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not profiles:
+        return
+    model_files = tuple(dict.fromkeys(job.model_file for job in jobs))
+    needs_fundamental_timeline = any(
+        model_requires_fundamental_sources(load_model_module(model_file))
+        for model_file in model_files
+    )
+    if not needs_fundamental_timeline:
+        log.info(
+            "Skipping shared candidate timeline prebuild because selected models use direct replace candidates only"
+        )
         return
 
     reset_shared_candidate_timeline_cache()

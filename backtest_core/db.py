@@ -144,32 +144,12 @@ def _require_unique_index(
     log.info("Validated relation unique index %s columns %s", relation_name, ",".join(columns))
 
 
-def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
+def validate_source_schema(
+    conn: psycopg2.extensions.connection,
+    *,
+    require_fundamental_sources: bool = True,
+) -> None:
     """Validate source tables/columns and basic date coverage before the run."""
-    fundamental_required = {
-        "time",
-        "symbol",
-        "exchange",
-        "cik",
-        "data_available_at",
-        "fundamental_data_available_at",
-        "composite_score",
-        "sector",
-        "industry",
-        "valuation_label",
-        "mispricing_score",
-        "negative_earnings_flag",
-        "high_leverage_flag",
-        "market_cap_m",
-    }
-    if REQUIRE_USD_FUNDAMENTALS:
-        fundamental_required.update({
-            "current_price_currency",
-            "market_cap_currency",
-            "currency",
-            "financial_currency",
-        })
-
     world_regime_required = {"day", "regime_label", "composite_score"}
     if WORLD_REGIME_SHOCK_FIELDS_ACTIVE:
         world_regime_required.update({
@@ -183,7 +163,36 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
         })
 
     _require_columns(conn, SOURCE_MARKET_DATA_1H_TABLE, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
-    _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
+    if require_fundamental_sources:
+        fundamental_required = {
+            "time",
+            "symbol",
+            "exchange",
+            "cik",
+            "data_available_at",
+            "fundamental_data_available_at",
+            "composite_score",
+            "sector",
+            "industry",
+            "valuation_label",
+            "mispricing_score",
+            "negative_earnings_flag",
+            "high_leverage_flag",
+            "market_cap_m",
+        }
+        if REQUIRE_USD_FUNDAMENTALS:
+            fundamental_required.update({
+                "current_price_currency",
+                "market_cap_currency",
+                "currency",
+                "financial_currency",
+            })
+        _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
+    else:
+        log.info(
+            "Skipping fundamental source schema validation table %s because selected model uses direct replace candidates",
+            SOURCE_FUNDAMENTAL_SCORES_TABLE,
+        )
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
     if ACCOUNT_PROFILE == "ps_acc":
@@ -201,7 +210,10 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
             "fetched_at",
         })
 
-    _validate_source_coverage(conn)
+    _validate_source_coverage(
+        conn,
+        require_fundamental_sources=require_fundamental_sources,
+    )
 
 
 def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
@@ -266,7 +278,11 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     })
 
 
-def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
+def _validate_source_coverage(
+    conn: psycopg2.extensions.connection,
+    *,
+    require_fundamental_sources: bool = True,
+) -> None:
     start_ts = datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
     end_ts = _day_close_ts(END_DATE)
 
@@ -285,44 +301,50 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
         )
     log.info("Source coverage bars %s min ts %s max ts %s", SOURCE_MARKET_DATA_1H_TABLE, bar_min_ts, bar_max_ts)
 
-    fundamental_where = [
-        sql.SQL("time <= %s"),
-        sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %s"),
-    ]
-    fundamental_params: list[object] = [end_ts, end_ts]
-    if REQUIRE_USD_FUNDAMENTALS:
-        fundamental_where.append(sql.SQL(
-            "COALESCE(NULLIF(current_price_currency, ''), "
-            "NULLIF(market_cap_currency, ''), "
-            "NULLIF(currency, ''), "
-            "NULLIF(financial_currency, ''), "
-            "%s) = %s"
-        ))
-        fundamental_params.extend(["USD", "USD"])
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT MIN(time), MAX(time), "
-                "MAX(COALESCE(data_available_at, fundamental_data_available_at)) "
-                "FROM {} WHERE {}"
-            ).format(
-                relation_identifier(SOURCE_FUNDAMENTAL_SCORES_TABLE),
-                sql.SQL(" AND ").join(fundamental_where),
-            ),
-            fundamental_params,
+    if require_fundamental_sources:
+        fundamental_where = [
+            sql.SQL("time <= %s"),
+            sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %s"),
+        ]
+        fundamental_params: list[object] = [end_ts, end_ts]
+        if REQUIRE_USD_FUNDAMENTALS:
+            fundamental_where.append(sql.SQL(
+                "COALESCE(NULLIF(current_price_currency, ''), "
+                "NULLIF(market_cap_currency, ''), "
+                "NULLIF(currency, ''), "
+                "NULLIF(financial_currency, ''), "
+                "%s) = %s"
+            ))
+            fundamental_params.extend(["USD", "USD"])
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "SELECT MIN(time), MAX(time), "
+                    "MAX(COALESCE(data_available_at, fundamental_data_available_at)) "
+                    "FROM {} WHERE {}"
+                ).format(
+                    relation_identifier(SOURCE_FUNDAMENTAL_SCORES_TABLE),
+                    sql.SQL(" AND ").join(fundamental_where),
+                ),
+                fundamental_params,
+            )
+            fund_min_ts, fund_max_ts, fund_max_available_ts = cur.fetchone()
+        if fund_min_ts is None:
+            raise RuntimeError(
+                f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL_SCORES_TABLE} up to {end_ts}"
+            )
+        log.info(
+            "Source coverage fundamentals %s min time %s max time %s max available at %s",
+            SOURCE_FUNDAMENTAL_SCORES_TABLE,
+            fund_min_ts,
+            fund_max_ts,
+            fund_max_available_ts,
         )
-        fund_min_ts, fund_max_ts, fund_max_available_ts = cur.fetchone()
-    if fund_min_ts is None:
-        raise RuntimeError(
-            f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL_SCORES_TABLE} up to {end_ts}"
+    else:
+        log.info(
+            "Skipping fundamental source coverage validation table %s because selected model uses direct replace candidates",
+            SOURCE_FUNDAMENTAL_SCORES_TABLE,
         )
-    log.info(
-        "Source coverage fundamentals %s min time %s max time %s max available at %s",
-        SOURCE_FUNDAMENTAL_SCORES_TABLE,
-        fund_min_ts,
-        fund_max_ts,
-        fund_max_available_ts,
-    )
 
     with conn.cursor() as cur:
         cur.execute(

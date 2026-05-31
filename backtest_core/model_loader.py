@@ -85,6 +85,35 @@ def load_model_module(model_file: str) -> ModuleType:
     return module
 
 
+def model_direct_candidate_symbols(model: ModuleType) -> tuple[str, ...]:
+    raw_symbols = getattr(model, "DIRECT_CANDIDATE_SYMBOLS", ())
+    if isinstance(raw_symbols, str):
+        raw_symbols = (raw_symbols,)
+    return tuple(dict.fromkeys(
+        str(symbol).strip().upper()
+        for symbol in raw_symbols
+        if str(symbol).strip()
+    ))
+
+
+def model_direct_candidate_mode(model: ModuleType) -> str:
+    mode = str(getattr(model, "DIRECT_CANDIDATE_MODE", "append")).strip().lower()
+    if mode not in {"append", "replace"}:
+        raise ValueError("DIRECT_CANDIDATE_MODE must be one of: append, replace")
+    return mode
+
+
+def model_direct_candidate_require_broker_eligibility(model: ModuleType) -> bool:
+    return bool(getattr(model, "DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY", True))
+
+
+def model_requires_fundamental_sources(model: ModuleType) -> bool:
+    return not (
+        model_direct_candidate_symbols(model)
+        and model_direct_candidate_mode(model) == "replace"
+    )
+
+
 def _parse_env_value(raw: str) -> str:
     value = raw.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:

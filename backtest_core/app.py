@@ -11,7 +11,12 @@ from .db import connect_with_retry, validate_result_schema, validate_source_sche
 from .grid_search import _print_grid_summary, run_grid_search
 from .logging_utils import set_log_process_name
 from .market_data import clear_market_data_caches, preload_candidate_timelines
-from .model_loader import _validate_model_filename, load_model_config_env, load_model_module
+from .model_loader import (
+    _validate_model_filename,
+    load_model_config_env,
+    load_model_module,
+    model_requires_fundamental_sources,
+)
 from .policy import COMMON_POLICY, candidate_policy_kwargs
 from .simulation import run_backtest
 
@@ -319,12 +324,20 @@ def run_single_model_worker() -> None:
             INITIAL_EQUITY,
             DB["application_name"],
         )
-        validate_source_schema(conn)
-        validate_result_schema(conn)
-        log_backtest_context(model_files)
         runtime.MODEL_MODULE = load_model_module(model_file)
         load_model_config_env(model_file)
         cfg = runtime.MODEL_MODULE.intent_config_from_env()
+        require_fundamental_sources = model_requires_fundamental_sources(runtime.MODEL_MODULE)
+        log.info(
+            "Model source requirements fundamentals %s",
+            require_fundamental_sources,
+        )
+        validate_source_schema(
+            conn,
+            require_fundamental_sources=require_fundamental_sources,
+        )
+        validate_result_schema(conn)
+        log_backtest_context(model_files)
         log.info(
             "Model worker file %s grid search %s min bars %d",
             runtime.CURRENT_MODEL_FILE,
