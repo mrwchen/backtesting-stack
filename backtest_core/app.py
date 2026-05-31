@@ -258,7 +258,7 @@ def log_backtest_context(model_files: list[str]) -> None:
         SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT,
     )
     log.info(
-        "Market regime guard enabled %s symbol %s lookback days %d drawdown thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d short hedge %s min tier %d short risk %.2f/%.2f/%.2f short caps %d/%d/%d generate hedge %s hedge symbol %s",
+        "Market regime guard enabled %s symbol %s lookback days %d drawdown thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d",
         MARKET_REGIME_GUARD_ENABLED,
         MARKET_REGIME_SYMBOL,
         MARKET_REGIME_LOOKBACK_DAYS,
@@ -271,16 +271,6 @@ def log_backtest_context(model_files: list[str]) -> None:
         MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED,
         MARKET_REGIME_MAX_LONG_POSITIONS_HIGH,
         MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME,
-        MARKET_REGIME_SHORT_HEDGE_ENABLED,
-        MARKET_REGIME_SHORT_HEDGE_MIN_TIER,
-        MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED,
-        MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH,
-        MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME,
-        MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED,
-        MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH,
-        MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME,
-        MARKET_REGIME_GENERATE_HEDGE_ENABLED,
-        MARKET_REGIME_HEDGE_SYMBOL,
     )
     log.info(
         "Portfolio drawdown circuit breaker enabled %s thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d reset on regime %s label %s consecutive days %d",

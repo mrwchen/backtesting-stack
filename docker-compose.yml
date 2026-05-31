@@ -243,9 +243,7 @@ services:
       #
       # Market-Regime nutzt QQQ 1h-Daten point-in-time und reagiert auf den
       # 60-Tage-Drawdown deutlich schneller als das Macro-/World-Regime.
-      # Bei Stress werden Long-Budgets gekappt und Short-Hedge-Budgets aktiviert.
-      # Der Hedge-Generator erzeugt maximal einen offenen SHORT-Hedge je Symbol,
-      # darf aber gegen bestehende LONG-Positionen auf demselben Instrument laufen.
+      # Bei Stress werden Long-Budgets gekappt.
       # ---------------------------------------------------------------------
       - MARKET_REGIME_GUARD_ENABLED=true
       - MARKET_REGIME_SYMBOL=QQQ
@@ -265,20 +263,6 @@ services:
       - MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED=2
       - MARKET_REGIME_MAX_LONG_POSITIONS_HIGH=1
       - MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME=0
-      - MARKET_REGIME_SHORT_HEDGE_ENABLED=false
-      - MARKET_REGIME_SHORT_HEDGE_MIN_TIER=1
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED=0.50
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH=0.75
-      - MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME=1.0
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED=1
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH=2
-      - MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME=3
-      - MARKET_REGIME_GENERATE_HEDGE_ENABLED=false
-      - MARKET_REGIME_HEDGE_SYMBOL=QQQ
-      - MARKET_REGIME_HEDGE_MIN_TIER=1
-      - MARKET_REGIME_HEDGE_INTENT_SCORE=100.0
-      - MARKET_REGIME_HEDGE_REQUIRE_BROKER_ELIGIBILITY=false
-      - MARKET_REGIME_HEDGE_ALLOW_MULTIPLE_POSITIONS=false
 
       # ---------------------------------------------------------------------
       # Regimewechsel-Risikomanagement fuer bereits offene Positionen.

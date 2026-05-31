@@ -12,9 +12,7 @@ from psycopg2 import sql
 from .config import (
     MARKET_REGIME_ELEVATED_DRAWDOWN_PCT,
     MARKET_REGIME_EXTREME_DRAWDOWN_PCT,
-    MARKET_REGIME_GENERATE_HEDGE_ENABLED,
     MARKET_REGIME_GUARD_ENABLED,
-    MARKET_REGIME_HEDGE_MIN_TIER,
     MARKET_REGIME_HIGH_DRAWDOWN_PCT,
     MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED,
     MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME,
@@ -28,14 +26,6 @@ from .config import (
     MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME,
     MARKET_REGIME_MAX_LONG_POSITIONS_HIGH,
     MARKET_REGIME_MIN_HISTORY_DAYS,
-    MARKET_REGIME_SHORT_HEDGE_ENABLED,
-    MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED,
-    MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME,
-    MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH,
-    MARKET_REGIME_SHORT_HEDGE_MIN_TIER,
-    MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED,
-    MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME,
-    MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH,
     MARKET_REGIME_SYMBOL,
     MARKET_REGIME_TZ,
     PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED,
@@ -289,33 +279,7 @@ def apply_market_regime_exposure_overlay(
     adjusted["long_risk_multiplier"] *= long_multiplier
     adjusted["max_long_positions"] = min(adjusted["max_long_positions"], long_cap)
 
-    if MARKET_REGIME_SHORT_HEDGE_ENABLED and snapshot.tier >= MARKET_REGIME_SHORT_HEDGE_MIN_TIER:
-        short_risk = _tier_float(
-            snapshot.tier,
-            MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_ELEVATED,
-            MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_HIGH,
-            MARKET_REGIME_SHORT_HEDGE_RISK_MULTIPLIER_EXTREME,
-            0.0,
-        )
-        short_cap = _tier_int(
-            snapshot.tier,
-            MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_ELEVATED,
-            MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_HIGH,
-            MARKET_REGIME_SHORT_HEDGE_MAX_POSITIONS_EXTREME,
-            0,
-        )
-        adjusted["short_risk_multiplier"] = max(adjusted["short_risk_multiplier"], short_risk)
-        adjusted["max_short_positions"] = max(adjusted["max_short_positions"], short_cap)
-
     return adjusted
-
-
-def market_regime_generated_hedge_active(snapshot: MarketRegimeSnapshot) -> bool:
-    return (
-        MARKET_REGIME_GENERATE_HEDGE_ENABLED
-        and snapshot.enabled
-        and snapshot.tier >= MARKET_REGIME_HEDGE_MIN_TIER
-    )
 
 
 def get_portfolio_drawdown_snapshot(
