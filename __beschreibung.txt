@@ -1,0 +1,35 @@
+Mache alle Parameter, die ich unten erwähne, konfigurierbar.
+
+Umgang mit neuen Positionen:
+- Pro Tag dürfen maximal 2 neue Positionen geöffnet werden. 
+- wenn eine Position geöffnet ist, müssen mindestens 3 Stunden vergangen sein, bis eine weitere Position geöffnet wird. 
+- wenn an einem Tag innerhalb von 2 Stunden mehr als 3 Positionen wegen SL geschlossen werden, dürfen nach dem 3. SL gar keine Positionen mehr an dem Tag geöffnet werden. 
+- Standard risk ist 1.5 prozent
+
+Umgang mit Gesamtpositionen:
+- es dürfen höchstens 5 Positionen zeitgleich offen sein. 
+
+Zu Beginn des Tages:
+    - In diesem Schritt soll der World regime Score des Vortages zur Bewertung von maximalen Positionen des heutigen Tages geprüft werden. 
+    - Wenn world Regime Score des Vortages <= 50 Punkte, maximal zeitlgeich 5 long Positionen und 0 Short gleichzeitig.
+    - Wenn World Regime Scores des Vortagstages >= 45
+        - risk = standard risk - 0.5
+        - Nutze den 5 Tage Moving Average vom World Regime Score des Vortages um festzustellen, welche Marktphase gerade zutrifft.
+            - Phase "Stress baut sich auf": World Regime Score 5 Tage Moving Average ist < 60 und  in den letzten 2 Handelstagen an beiden Tagen gestiegen
+                maximale Long Positionen heute = maximale Positionen vom Vortag  - 1
+                maximale Short Positionen heute = 0
+            - Phase "Stress hoch": World Regime Score 5 Tage Moving Average ist über 60 oder war in den letzten 3 Tagen 60
+                maximale Position heute = 2
+                kein Long, nur 1 Short Position
+            - Phase "Stress nimmt ab": World Regime Score 5 Tage Moving Average ist unter 60 und in den letzten 2 Handelstagen an beiden Tagen gefallen
+                maximale Long Positionen heute = maximale Positionen vom Vortag  + 1
+                maximale Short Position = 0 
+    - Sonderregeln
+        - wenn in den letzten 3 Handelstagen jemals ein Tech Stress Wert von >= 60 vorkam, dürfen keine Long Positionen aus dem Sektor Technology geöffnet werden
+        - wenn an allen letzten 3 Handelstagen Energy Commodity Shock Score  von >= 60 vorkam  Oil & Gas Integrated, soll Oil & Gas Integrated as bevorzugte Industry an das jeweilige Modell weitergegeben werden. 
+
+
+
+Umgang mit offenen Positionen
+Nachdem zu Beginn des Tages die maximale Anzahl der Long oder Short Positionen festgelegt wurde, wird um 11:00 Uhr geprüft, ob mehr Positionen offen sind, als erlaubt. Wenn dies der Fall ist, wird die Position mit dem größten Verlust geschlossen. 
+
