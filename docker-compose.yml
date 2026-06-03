@@ -249,7 +249,7 @@ services:
 
       # Portfolio-Drop-Halt: stoppt neue Entries, wenn in den letzten
       # Handelstagen ein Portfolio-Tagesverlust die Schwelle erreicht.
-      - DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS=2
+      - DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS=1
       - DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT=5.0
 
       # Intraday-Market-Drop-Halt: prueft VOO ab NY-Regular-Open gegen das
@@ -269,7 +269,9 @@ services:
       - DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD=close
 
       # Tages-Prune: schliesst zur Uhrzeit die schlechtesten Positionen, bis
-      # Tages-Caps fuer Long/Short/Total wieder eingehalten werden.
+      # Tages-Caps fuer Long/Short/Total wieder eingehalten werden. ENABLED
+      # schaltet diese Zwangsreduktion komplett ein oder aus.
+      - DAILY_POLICY_PRUNE_ENABLED=true
       - DAILY_POLICY_PRUNE_TIME_TZ=America/New_York
       - DAILY_POLICY_PRUNE_TIME=11:00
 

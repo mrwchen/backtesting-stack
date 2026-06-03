@@ -1905,7 +1905,7 @@ def run_backtest(
                 daily_policy_state.record_closed_trades(closed_trades[before_closed_count:])
             return active, closed_count, realized_pnl
 
-        day_policy_prune_ts = daily_prune_ts(day) if daily_policy_state is not None else None
+        day_policy_prune_ts = daily_prune_ts(day) if daily_policy_state is not None and DAILY_POLICY_PRUNE_ENABLED else None
 
         def daily_limits_violated(active_positions: list[OpenPosition]) -> bool:
             total_cap = min(MAX_OPEN_POSITIONS, exposure_max_total_positions(day_regime_exposure))
