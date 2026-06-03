@@ -147,3 +147,59 @@ class DecisionEvent:
     excess_liquidity_after: Optional[float] = None
     position_size_usd: Optional[float] = None
     shares: Optional[float] = None
+
+
+@dataclass
+class DailyPolicySnapshot:
+    run_id: int
+    day: date
+    as_of_ts: Optional[datetime]
+    policy_available: bool
+    model_file: str
+    account_profile: str
+    world_regime_label: str = ""
+    world_regime_score: Optional[float] = None
+    daily_policy_phase: str = ""
+    world_regime_ma_score: Optional[float] = None
+    max_long_positions: Optional[int] = None
+    max_short_positions: Optional[int] = None
+    max_total_positions: Optional[int] = None
+    long_risk_multiplier: Optional[float] = None
+    short_risk_multiplier: Optional[float] = None
+    risk_per_trade_pct: Optional[float] = None
+    halted: bool = False
+    halt_reason_code: str = ""
+    halt_reason_text: str = ""
+    prune_enabled: bool = False
+    prune_checked: bool = False
+    prune_triggered: bool = False
+    prune_closed_positions: int = 0
+    prune_pnl_usd: float = 0.0
+    opens_today: int = 0
+    refill_opens_today: int = 0
+    sl_closes_today: int = 0
+    closed_today: int = 0
+    policy_block_events: int = 0
+    daily_policy_block_events: int = 0
+    portfolio_block_events: int = 0
+    signal_decisions: int = 0
+    candidate_count_long: int = 0
+    candidate_count_short: int = 0
+    intent_count_long: int = 0
+    intent_count_short: int = 0
+    open_positions_start: int = 0
+    long_positions_start: int = 0
+    short_positions_start: int = 0
+    open_positions_before_prune: Optional[int] = None
+    long_positions_before_prune: Optional[int] = None
+    short_positions_before_prune: Optional[int] = None
+    open_positions_after_prune: Optional[int] = None
+    long_positions_after_prune: Optional[int] = None
+    short_positions_after_prune: Optional[int] = None
+    open_positions_end: int = 0
+    long_positions_end: int = 0
+    short_positions_end: int = 0
+    day_start_equity: Optional[float] = None
+    day_end_equity: Optional[float] = None
+    day_return_pct: Optional[float] = None
+    day_pnl_usd: float = 0.0

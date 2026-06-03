@@ -26,7 +26,7 @@ from .broker import (
     initial_stop_cash_risk,
 )
 from .config import *
-from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent, OpenPosition
+from .entities import AccountCurvePoint, ClosedTrade, DailyPolicySnapshot, DecisionEvent, OpenPosition
 from .market_data import (
     _day_close_ts,
     _ensure_utc_ts,
@@ -74,6 +74,7 @@ from .persistence import (
     update_run_duration,
     update_run_summary,
     write_account_curve,
+    write_daily_policy_snapshots,
     write_decision_events,
     write_trades,
 )
@@ -696,7 +697,24 @@ def run_backtest(
     account_curve_seq = 0
     decision_event_buffer: list[DecisionEvent] = []
     daily_portfolio_returns: list[PortfolioDailyReturn] = []
+    daily_policy_snapshots: list[DailyPolicySnapshot] = []
+    daily_policy_event_counts: dict[date, dict[str, int]] = {}
     portfolio_peak_equity = INITIAL_EQUITY
+
+    def track_daily_policy_event(event: DecisionEvent) -> None:
+        if event.decision not in {"blocked", "closed", "rejected", "skipped_day"}:
+            return
+        if event.decision_stage not in {"daily_position_policy", "portfolio_filter"}:
+            return
+        counts = daily_policy_event_counts.setdefault(
+            event.intent_date,
+            {"policy": 0, "daily_policy": 0, "portfolio": 0},
+        )
+        counts["policy"] += 1
+        if event.decision_stage == "daily_position_policy":
+            counts["daily_policy"] += 1
+        elif event.decision_stage == "portfolio_filter":
+            counts["portfolio"] += 1
 
     def flush_decision_events(force: bool = False) -> None:
         if not decision_event_buffer:
@@ -710,6 +728,8 @@ def run_backtest(
     def buffer_decision_events(events: list[DecisionEvent]) -> None:
         if not events:
             return
+        for event in events:
+            track_daily_policy_event(event)
         decision_event_buffer.extend(events)
         flush_decision_events()
 
@@ -736,6 +756,91 @@ def run_backtest(
         )
         daily_portfolio_returns.append(daily_return)
         return daily_return
+
+    def append_daily_policy_snapshot(
+        *,
+        day: date,
+        as_of_ts: datetime,
+        daily_policy_context: Optional[DailyPositionPolicyContext],
+        daily_policy_state: Optional[DailyPolicyRuntimeState],
+        daily_return: Optional[PortfolioDailyReturn],
+        opened_today: int,
+        closed_today: int,
+        signal_decisions: int,
+        candidate_counts: dict[str, int],
+        intent_counts: dict[str, int],
+        open_positions_start: int,
+        long_positions_start: int,
+        short_positions_start: int,
+        open_positions_before_prune: Optional[int],
+        long_positions_before_prune: Optional[int],
+        short_positions_before_prune: Optional[int],
+        open_positions_after_prune: Optional[int],
+        long_positions_after_prune: Optional[int],
+        short_positions_after_prune: Optional[int],
+        prune_closed_positions: int,
+        prune_pnl_usd: float,
+        open_positions_end: list[OpenPosition],
+        day_start_equity: float,
+        day_pnl: float,
+    ) -> None:
+        exposure = daily_policy_context.exposure if daily_policy_context is not None else {}
+        counts = daily_policy_event_counts.get(day, {})
+        phase = daily_policy_context.phase if daily_policy_context is not None else "NO_REGIME"
+        daily_policy_snapshots.append(DailyPolicySnapshot(
+            run_id=run_id,
+            day=day,
+            as_of_ts=_ensure_utc_ts(as_of_ts),
+            policy_available=daily_policy_context is not None,
+            model_file=runtime.CURRENT_MODEL_FILE,
+            account_profile=ACCOUNT_PROFILE,
+            world_regime_label=daily_policy_context.regime_label if daily_policy_context is not None else "",
+            world_regime_score=daily_policy_context.regime.score if daily_policy_context is not None else None,
+            daily_policy_phase=phase,
+            world_regime_ma_score=daily_policy_context.world_regime_ma_score if daily_policy_context is not None else None,
+            max_long_positions=exposure.get("max_long_positions"),
+            max_short_positions=exposure.get("max_short_positions"),
+            max_total_positions=exposure.get("max_total_positions"),
+            long_risk_multiplier=exposure.get("long_risk_multiplier"),
+            short_risk_multiplier=exposure.get("short_risk_multiplier"),
+            risk_per_trade_pct=RISK_PER_TRADE_PCT,
+            halted=bool(daily_policy_state.halted) if daily_policy_state is not None else False,
+            halt_reason_code=daily_policy_state.halt_reason_code if daily_policy_state is not None else "",
+            halt_reason_text=daily_policy_state.halt_reason_text if daily_policy_state is not None else "",
+            prune_enabled=DAILY_POLICY_PRUNE_ENABLED,
+            prune_checked=bool(daily_policy_state.prune_done) if daily_policy_state is not None else False,
+            prune_triggered=prune_closed_positions > 0,
+            prune_closed_positions=prune_closed_positions,
+            prune_pnl_usd=prune_pnl_usd,
+            opens_today=opened_today,
+            refill_opens_today=daily_policy_state.refill_open_count if daily_policy_state is not None else 0,
+            sl_closes_today=len(daily_policy_state.sl_close_timestamps) if daily_policy_state is not None else 0,
+            closed_today=closed_today,
+            policy_block_events=counts.get("policy", 0),
+            daily_policy_block_events=counts.get("daily_policy", 0),
+            portfolio_block_events=counts.get("portfolio", 0),
+            signal_decisions=signal_decisions,
+            candidate_count_long=candidate_counts.get("LONG", 0),
+            candidate_count_short=candidate_counts.get("SHORT", 0),
+            intent_count_long=intent_counts.get("LONG", 0),
+            intent_count_short=intent_counts.get("SHORT", 0),
+            open_positions_start=open_positions_start,
+            long_positions_start=long_positions_start,
+            short_positions_start=short_positions_start,
+            open_positions_before_prune=open_positions_before_prune,
+            long_positions_before_prune=long_positions_before_prune,
+            short_positions_before_prune=short_positions_before_prune,
+            open_positions_after_prune=open_positions_after_prune,
+            long_positions_after_prune=long_positions_after_prune,
+            short_positions_after_prune=short_positions_after_prune,
+            open_positions_end=len(open_positions_end),
+            long_positions_end=_direction_open_count(open_positions_end, "LONG"),
+            short_positions_end=_direction_open_count(open_positions_end, "SHORT"),
+            day_start_equity=day_start_equity,
+            day_end_equity=daily_return.end_equity if daily_return is not None else None,
+            day_return_pct=daily_return.return_pct if daily_return is not None else None,
+            day_pnl_usd=day_pnl,
+        ))
 
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
@@ -1107,7 +1212,7 @@ def run_backtest(
                         direction=direction,
                         decision_stage="daily_position_policy",
                         decision="rejected",
-                        reason_code="daily_policy_blocked_long_sector",
+                        reason_code="daily_policy_tech_sector_block",
                         reason_text=(
                             f"Daily policy blocked long entries in sector {fundamental.sector}; "
                             f"blocked sectors: {', '.join(daily_policy_context.blocked_long_sectors)}."
@@ -1811,6 +1916,23 @@ def run_backtest(
         opened_by_hour: dict[datetime, int] = {}
         used_identities_today: set[InstrumentKey] = set()
         day_open_limit = MAX_POSITION_OPENS_PER_DAY
+        candidate_counts = {direction: 0 for direction in DIRECTIONS}
+        intent_counts = {direction: 0 for direction in DIRECTIONS}
+        skipped_no_bars = 0
+        total_candidates = 0
+        plans_count = 0
+        decisions_processed = 0
+        open_positions_start = len(open_positions)
+        long_positions_start = _direction_open_count(open_positions, "LONG")
+        short_positions_start = _direction_open_count(open_positions, "SHORT")
+        open_positions_before_prune: Optional[int] = None
+        long_positions_before_prune: Optional[int] = None
+        short_positions_before_prune: Optional[int] = None
+        open_positions_after_prune: Optional[int] = None
+        long_positions_after_prune: Optional[int] = None
+        short_positions_after_prune: Optional[int] = None
+        prune_closed_positions = 0
+        prune_pnl_usd = 0.0
         day_close_ts = _day_close_ts(day)
         day_start_ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
         signal_decision_points = signal_bar_close_decisions_for_day(conn, day)
@@ -1851,7 +1973,33 @@ def run_backtest(
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
-            record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+            daily_return = record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+            append_daily_policy_snapshot(
+                day=day,
+                as_of_ts=day_decision_ts,
+                daily_policy_context=daily_policy_context,
+                daily_policy_state=daily_policy_state,
+                daily_return=daily_return,
+                opened_today=opened_today,
+                closed_today=closed_today,
+                signal_decisions=decisions_processed,
+                candidate_counts=candidate_counts,
+                intent_counts=intent_counts,
+                open_positions_start=open_positions_start,
+                long_positions_start=long_positions_start,
+                short_positions_start=short_positions_start,
+                open_positions_before_prune=open_positions_before_prune,
+                long_positions_before_prune=long_positions_before_prune,
+                short_positions_before_prune=short_positions_before_prune,
+                open_positions_after_prune=open_positions_after_prune,
+                long_positions_after_prune=long_positions_after_prune,
+                short_positions_after_prune=short_positions_after_prune,
+                prune_closed_positions=prune_closed_positions,
+                prune_pnl_usd=prune_pnl_usd,
+                open_positions_end=open_positions,
+                day_start_equity=day_start_equity,
+                day_pnl=day_pnl,
+            )
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s no regime, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -1919,6 +2067,9 @@ def run_backtest(
 
         def apply_daily_prune_if_due(as_of_ts: datetime) -> None:
             nonlocal open_positions, closed_today, day_pnl, equity
+            nonlocal open_positions_before_prune, long_positions_before_prune, short_positions_before_prune
+            nonlocal open_positions_after_prune, long_positions_after_prune, short_positions_after_prune
+            nonlocal prune_closed_positions, prune_pnl_usd
             if daily_policy_state is None or day_policy_prune_ts is None or daily_policy_state.prune_done:
                 return
             as_of_ts = _ensure_utc_ts(as_of_ts)
@@ -1931,8 +2082,14 @@ def run_backtest(
             )
             closed_today += closed_before_prune
             day_pnl += pnl_before_prune
+            open_positions_before_prune = len(open_positions)
+            long_positions_before_prune = _direction_open_count(open_positions, "LONG")
+            short_positions_before_prune = _direction_open_count(open_positions, "SHORT")
             daily_policy_state.prune_done = True
             if not daily_limits_violated(open_positions):
+                open_positions_after_prune = len(open_positions)
+                long_positions_after_prune = _direction_open_count(open_positions, "LONG")
+                short_positions_after_prune = _direction_open_count(open_positions, "SHORT")
                 return
 
             next_opens = load_next_bar_opens(
@@ -2002,8 +2159,46 @@ def run_backtest(
                 closed_trades.append(trade)
                 closed_today += 1
                 day_pnl += trade.pnl_usd
+                prune_closed_positions += 1
+                prune_pnl_usd += trade.pnl_usd
                 used_identities_today.add(position.identity_key)
                 record_account_curve(day_policy_prune_ts, open_positions)
+                buffer_decision_events([DecisionEvent(
+                    run_id=run_id,
+                    intent_date=day,
+                    as_of_ts=day_policy_prune_ts,
+                    symbol=position.symbol,
+                    exchange=position.exchange,
+                    cik=position.cik,
+                    direction=position.direction,
+                    decision_stage="daily_position_policy",
+                    decision="closed",
+                    reason_code="daily_policy_prune_close",
+                    reason_text=(
+                        f"Daily policy prune closed one of the worst positions to enforce "
+                        f"limits total {total_cap}, long {long_cap}, short {short_cap}."
+                    ),
+                    intent_passed=True,
+                    world_regime_label=regime.label,
+                    world_regime_score=regime.score,
+                    valuation_label=position.valuation_label,
+                    sector=position.plan.sector,
+                    industry=position.plan.industry,
+                    fundamental_score=position.plan.fundamental_score,
+                    intent_score=position.plan.intent_score,
+                    intent_reason=position.plan.intent_reason,
+                    entry_ts=position.entry_ts,
+                    entry_price=position.entry_price,
+                    stop_loss=position.stop_loss,
+                    take_profit=position.take_profit,
+                    trailing_activation_price=position.trailing_activation_price,
+                    trailing_distance_pct=position.trailing_distance_pct,
+                    open_positions=len(open_positions),
+                    max_open_positions=total_cap,
+                    account_equity=equity,
+                    position_size_usd=position.position_size_usd,
+                    shares=position.shares,
+                )])
                 log.info(
                     "Daily policy prune closed %s %s pnl %.0f at %.2f day %s limits total %d long %d short %d",
                     position.symbol,
@@ -2015,6 +2210,9 @@ def run_backtest(
                     long_cap,
                     short_cap,
                 )
+            open_positions_after_prune = len(open_positions)
+            long_positions_after_prune = _direction_open_count(open_positions, "LONG")
+            short_positions_after_prune = _direction_open_count(open_positions, "SHORT")
 
         open_positions, closed_before_entries, pnl_before_entries = apply_day_position_events(
             open_positions,
@@ -2060,7 +2258,33 @@ def run_backtest(
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
-            record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+            daily_return = record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+            append_daily_policy_snapshot(
+                day=day,
+                as_of_ts=day_decision_ts,
+                daily_policy_context=daily_policy_context,
+                daily_policy_state=daily_policy_state,
+                daily_return=daily_return,
+                opened_today=opened_today,
+                closed_today=closed_today,
+                signal_decisions=decisions_processed,
+                candidate_counts=candidate_counts,
+                intent_counts=intent_counts,
+                open_positions_start=open_positions_start,
+                long_positions_start=long_positions_start,
+                short_positions_start=short_positions_start,
+                open_positions_before_prune=open_positions_before_prune,
+                long_positions_before_prune=long_positions_before_prune,
+                short_positions_before_prune=short_positions_before_prune,
+                open_positions_after_prune=open_positions_after_prune,
+                long_positions_after_prune=long_positions_after_prune,
+                short_positions_after_prune=short_positions_after_prune,
+                prune_closed_positions=prune_closed_positions,
+                prune_pnl_usd=prune_pnl_usd,
+                open_positions_end=open_positions,
+                day_start_equity=day_start_equity,
+                day_pnl=day_pnl,
+            )
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s regime label %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -2069,13 +2293,6 @@ def run_backtest(
             continue
 
         model = get_model_module()
-
-        candidate_counts = {direction: 0 for direction in DIRECTIONS}
-        intent_counts = {direction: 0 for direction in DIRECTIONS}
-        skipped_no_bars = 0
-        total_candidates = 0
-        plans_count = 0
-        decisions_processed = 0
 
         valid_signal_decision_points = [
             (signal_bar_start_ts, signal_decision_ts)
@@ -2326,7 +2543,33 @@ def run_backtest(
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
         record_account_curve(day_close_ts, open_positions)
-        record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+        daily_return = record_daily_portfolio_return(day, day_start_equity, day_close_ts)
+        append_daily_policy_snapshot(
+            day=day,
+            as_of_ts=day_decision_ts,
+            daily_policy_context=daily_policy_context,
+            daily_policy_state=daily_policy_state,
+            daily_return=daily_return,
+            opened_today=opened_today,
+            closed_today=closed_today,
+            signal_decisions=decisions_processed,
+            candidate_counts=candidate_counts,
+            intent_counts=intent_counts,
+            open_positions_start=open_positions_start,
+            long_positions_start=long_positions_start,
+            short_positions_start=short_positions_start,
+            open_positions_before_prune=open_positions_before_prune,
+            long_positions_before_prune=long_positions_before_prune,
+            short_positions_before_prune=short_positions_before_prune,
+            open_positions_after_prune=open_positions_after_prune,
+            long_positions_after_prune=long_positions_after_prune,
+            short_positions_after_prune=short_positions_after_prune,
+            prune_closed_positions=prune_closed_positions,
+            prune_pnl_usd=prune_pnl_usd,
+            open_positions_end=open_positions,
+            day_start_equity=day_start_equity,
+            day_pnl=day_pnl,
+        )
 
         if log_progress_today or opened_today > 0:
             log.info(
@@ -2400,13 +2643,20 @@ def run_backtest(
         record_account_curve(trade.exit_ts, open_positions)
 
     # ── 6. Persist results ───────────────────────────────────────────────────
-    log.info("Writing %d trades and %d account snapshots for run %d", len(closed_trades), len(account_curve), run_id)
+    log.info(
+        "Writing %d trades, %d account snapshots, %d daily policy snapshots for run %d",
+        len(closed_trades),
+        len(account_curve),
+        len(daily_policy_snapshots),
+        run_id,
+    )
 
     flush_decision_events(force=True)
     max_dd = _max_drawdown_pct_from_equity([point.equity_usd for point in account_curve])
 
     # Trade rows read world-regime and intent context from each open position.
     write_account_curve(conn, run_id, account_curve)
+    write_daily_policy_snapshots(conn, daily_policy_snapshots)
     write_trades(conn, run_id, closed_trades)
     update_run_summary(conn, run_id, closed_trades, equity, max_drawdown_pct=max_dd)
     if MONTE_CARLO_ENABLED:

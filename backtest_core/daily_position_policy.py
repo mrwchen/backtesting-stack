@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -120,6 +120,8 @@ class DailyPolicyRuntimeState:
     context: DailyPositionPolicyContext
     opened_timestamps: list[datetime]
     sl_close_timestamps: list[datetime]
+    closed_trade_timestamps: list[datetime] = field(default_factory=list)
+    refill_open_count: int = 0
     halted: bool = False
     halt_reason_code: str = ""
     halt_reason_text: str = ""
@@ -128,25 +130,30 @@ class DailyPolicyRuntimeState:
     prune_done: bool = False
 
     def record_open(self, ts: datetime) -> None:
-        self.opened_timestamps.append(_ensure_utc_ts(ts))
+        ts = _ensure_utc_ts(ts)
+        if any(close_ts < ts for close_ts in self.closed_trade_timestamps):
+            self.refill_open_count += 1
+        self.opened_timestamps.append(ts)
 
     def record_closed_trades(self, closed_trades: list) -> None:
-        if self.halted or not closed_trades:
+        if not closed_trades:
             return
         local_zone = ZoneInfo(DAILY_POLICY_TZ)
         halt_statuses = {status.strip().upper() for status in DAILY_POLICY_SL_HALT_STATUSES}
         for trade in closed_trades:
             status = str(getattr(trade, "outcome_status", "") or "").strip().upper()
-            if status not in halt_statuses:
-                continue
             exit_ts = getattr(trade, "exit_ts", None)
             if exit_ts is None:
                 continue
             exit_ts = _ensure_utc_ts(exit_ts)
             if exit_ts.astimezone(local_zone).date() != self.context.day:
                 continue
+            self.closed_trade_timestamps.append(exit_ts)
+            if status not in halt_statuses:
+                continue
             self.sl_close_timestamps.append(exit_ts)
-        self._refresh_sl_halt()
+        if not self.halted:
+            self._refresh_sl_halt()
 
     def refresh_market_drop_halt(self, conn: psycopg2.extensions.connection, as_of_ts: datetime) -> None:
         if self.halted or DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT <= 0.0:

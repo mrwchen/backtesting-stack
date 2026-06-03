@@ -12,7 +12,7 @@ from psycopg2.extras import execute_values
 
 from . import runtime
 from .config import *
-from .entities import AccountCurvePoint, ClosedTrade, DecisionEvent
+from .entities import AccountCurvePoint, ClosedTrade, DailyPolicySnapshot, DecisionEvent
 from .policy import COMMON_POLICY
 
 log = logging.getLogger(__name__)
@@ -171,6 +171,7 @@ def delete_run_results(conn: psycopg2.extensions.connection, run_id: int) -> Non
         for table_name in (
             "backtest_monte_carlo",
             "backtest_account_curve",
+            "backtest_daily_policy_snapshots",
             "backtest_decision_events",
             "backtest_trades",
             "backtest_runs",
@@ -331,10 +332,17 @@ def _decimal_or_none(value: Optional[float], digits: int) -> Optional[Decimal]:
 
 
 def _should_write_decision_event(event: DecisionEvent) -> bool:
-    if DECISION_EVENT_MODE == "all":
-        return True
     if DECISION_EVENT_MODE == "none":
         return False
+    if event.decision_stage in {"daily_position_policy", "portfolio_filter"} and event.decision in {
+        "blocked",
+        "closed",
+        "rejected",
+        "skipped_day",
+    }:
+        return True
+    if DECISION_EVENT_MODE == "all":
+        return True
     if DECISION_EVENT_MODE == "signals":
         if event.intent_passed or event.opened:
             return True
@@ -432,6 +440,92 @@ def write_decision_events(
             position_size_usd, shares
         ) VALUES %s
     """.format(table=_result_table("backtest_decision_events"))
+    with conn.cursor() as cur:
+        execute_values(cur, query, rows, page_size=DECISION_EVENT_INSERT_PAGE_SIZE)
+    conn.commit()
+
+
+def write_daily_policy_snapshots(
+    conn: psycopg2.extensions.connection,
+    snapshots: list[DailyPolicySnapshot],
+) -> None:
+    if not snapshots:
+        return
+    rows = [
+        (
+            snapshot.run_id,
+            snapshot.day,
+            snapshot.as_of_ts,
+            snapshot.policy_available,
+            snapshot.model_file or None,
+            snapshot.account_profile or None,
+            snapshot.world_regime_label or None,
+            _decimal_or_none(snapshot.world_regime_score, 2),
+            snapshot.daily_policy_phase or None,
+            _decimal_or_none(snapshot.world_regime_ma_score, 2),
+            snapshot.max_long_positions,
+            snapshot.max_short_positions,
+            snapshot.max_total_positions,
+            _decimal_or_none(snapshot.long_risk_multiplier, 4),
+            _decimal_or_none(snapshot.short_risk_multiplier, 4),
+            _decimal_or_none(snapshot.risk_per_trade_pct, 4),
+            snapshot.halted,
+            snapshot.halt_reason_code or None,
+            snapshot.halt_reason_text or None,
+            snapshot.prune_enabled,
+            snapshot.prune_checked,
+            snapshot.prune_triggered,
+            snapshot.prune_closed_positions,
+            _decimal_or_none(snapshot.prune_pnl_usd, 2),
+            snapshot.opens_today,
+            snapshot.refill_opens_today,
+            snapshot.sl_closes_today,
+            snapshot.closed_today,
+            snapshot.policy_block_events,
+            snapshot.daily_policy_block_events,
+            snapshot.portfolio_block_events,
+            snapshot.signal_decisions,
+            snapshot.candidate_count_long,
+            snapshot.candidate_count_short,
+            snapshot.intent_count_long,
+            snapshot.intent_count_short,
+            snapshot.open_positions_start,
+            snapshot.long_positions_start,
+            snapshot.short_positions_start,
+            snapshot.open_positions_before_prune,
+            snapshot.long_positions_before_prune,
+            snapshot.short_positions_before_prune,
+            snapshot.open_positions_after_prune,
+            snapshot.long_positions_after_prune,
+            snapshot.short_positions_after_prune,
+            snapshot.open_positions_end,
+            snapshot.long_positions_end,
+            snapshot.short_positions_end,
+            _decimal_or_none(snapshot.day_start_equity, 2),
+            _decimal_or_none(snapshot.day_end_equity, 2),
+            _decimal_or_none(snapshot.day_return_pct, 4),
+            _decimal_or_none(snapshot.day_pnl_usd, 2),
+        )
+        for snapshot in snapshots
+    ]
+    query = """
+        INSERT INTO {table} (
+            run_id, day, as_of_ts, policy_available, model_file, account_profile,
+            world_regime_label, world_regime_score, daily_policy_phase, world_regime_ma_score,
+            max_long_positions, max_short_positions, max_total_positions,
+            long_risk_multiplier, short_risk_multiplier, risk_per_trade_pct,
+            halted, halt_reason_code, halt_reason_text,
+            prune_enabled, prune_checked, prune_triggered, prune_closed_positions, prune_pnl_usd,
+            opens_today, refill_opens_today, sl_closes_today, closed_today,
+            policy_block_events, daily_policy_block_events, portfolio_block_events,
+            signal_decisions, candidate_count_long, candidate_count_short, intent_count_long, intent_count_short,
+            open_positions_start, long_positions_start, short_positions_start,
+            open_positions_before_prune, long_positions_before_prune, short_positions_before_prune,
+            open_positions_after_prune, long_positions_after_prune, short_positions_after_prune,
+            open_positions_end, long_positions_end, short_positions_end,
+            day_start_equity, day_end_equity, day_return_pct, day_pnl_usd
+        ) VALUES %s
+    """.format(table=_result_table("backtest_daily_policy_snapshots"))
     with conn.cursor() as cur:
         execute_values(cur, query, rows, page_size=DECISION_EVENT_INSERT_PAGE_SIZE)
     conn.commit()

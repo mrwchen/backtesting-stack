@@ -14,6 +14,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 \if :drop_backtest_tables_on_start
 DROP TABLE IF EXISTS backtest_monte_carlo CASCADE;
 DROP TABLE IF EXISTS backtest_account_curve CASCADE;
+DROP TABLE IF EXISTS backtest_daily_policy_snapshots CASCADE;
 DROP TABLE IF EXISTS backtest_decision_events CASCADE;
 DROP TABLE IF EXISTS backtest_trades CASCADE;
 DROP TABLE IF EXISTS backtest_runs CASCADE;
@@ -187,6 +188,82 @@ CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_identity_day
 
 CREATE INDEX IF NOT EXISTS idx_backtest_decision_events_reason
     ON backtest_decision_events (run_id, reason_code, intent_date);
+
+-- ── Per-day Daily Policy snapshot ────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS backtest_daily_policy_snapshots (
+    run_id                     INTEGER       NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
+    day                        DATE          NOT NULL,
+    created_at                 TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    as_of_ts                   TIMESTAMPTZ,
+    policy_available           BOOLEAN       NOT NULL DEFAULT FALSE,
+    model_file                 TEXT          NOT NULL,
+    account_profile            TEXT          NOT NULL,
+
+    world_regime_label         TEXT,
+    world_regime_score         NUMERIC(5,2),
+    daily_policy_phase         TEXT,
+    world_regime_ma_score      NUMERIC(5,2),
+    max_long_positions         INTEGER,
+    max_short_positions        INTEGER,
+    max_total_positions        INTEGER,
+    long_risk_multiplier       NUMERIC(8,4),
+    short_risk_multiplier      NUMERIC(8,4),
+    risk_per_trade_pct         NUMERIC(8,4),
+
+    halted                     BOOLEAN       NOT NULL DEFAULT FALSE,
+    halt_reason_code           TEXT,
+    halt_reason_text           TEXT,
+
+    prune_enabled              BOOLEAN       NOT NULL DEFAULT FALSE,
+    prune_checked              BOOLEAN       NOT NULL DEFAULT FALSE,
+    prune_triggered            BOOLEAN       NOT NULL DEFAULT FALSE,
+    prune_closed_positions     INTEGER       NOT NULL DEFAULT 0,
+    prune_pnl_usd              NUMERIC(15,2) NOT NULL DEFAULT 0,
+
+    opens_today                INTEGER       NOT NULL DEFAULT 0,
+    refill_opens_today         INTEGER       NOT NULL DEFAULT 0,
+    sl_closes_today            INTEGER       NOT NULL DEFAULT 0,
+    closed_today               INTEGER       NOT NULL DEFAULT 0,
+    policy_block_events        INTEGER       NOT NULL DEFAULT 0,
+    daily_policy_block_events  INTEGER       NOT NULL DEFAULT 0,
+    portfolio_block_events     INTEGER       NOT NULL DEFAULT 0,
+
+    signal_decisions           INTEGER       NOT NULL DEFAULT 0,
+    candidate_count_long       INTEGER       NOT NULL DEFAULT 0,
+    candidate_count_short      INTEGER       NOT NULL DEFAULT 0,
+    intent_count_long          INTEGER       NOT NULL DEFAULT 0,
+    intent_count_short         INTEGER       NOT NULL DEFAULT 0,
+
+    open_positions_start       INTEGER       NOT NULL DEFAULT 0,
+    long_positions_start       INTEGER       NOT NULL DEFAULT 0,
+    short_positions_start      INTEGER       NOT NULL DEFAULT 0,
+    open_positions_before_prune INTEGER,
+    long_positions_before_prune INTEGER,
+    short_positions_before_prune INTEGER,
+    open_positions_after_prune INTEGER,
+    long_positions_after_prune INTEGER,
+    short_positions_after_prune INTEGER,
+    open_positions_end         INTEGER       NOT NULL DEFAULT 0,
+    long_positions_end         INTEGER       NOT NULL DEFAULT 0,
+    short_positions_end        INTEGER       NOT NULL DEFAULT 0,
+
+    day_start_equity           NUMERIC(15,2),
+    day_end_equity             NUMERIC(15,2),
+    day_return_pct             NUMERIC(12,4),
+    day_pnl_usd                NUMERIC(15,2) NOT NULL DEFAULT 0,
+
+    PRIMARY KEY (run_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_daily_policy_snapshots_run_day
+    ON backtest_daily_policy_snapshots (run_id, day);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_daily_policy_snapshots_phase
+    ON backtest_daily_policy_snapshots (run_id, daily_policy_phase, day);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_daily_policy_snapshots_halt
+    ON backtest_daily_policy_snapshots (run_id, halted, halt_reason_code, day);
 
 -- ── Individual trades ─────────────────────────────────────────────────────────
 
@@ -545,6 +622,7 @@ CREATE TABLE IF NOT EXISTS backtest_monte_carlo (
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_runs  TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_decision_events TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_daily_policy_snapshots TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_trades TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_account_curve TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_monte_carlo TO "market-data-account";

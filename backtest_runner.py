@@ -3,7 +3,8 @@ Swing trade backtester.
 
 Generates swing signals day-by-day on historical data, simulates a margin
 account, and writes results to backtest_runs / backtest_trades /
-backtest_decision_events / backtest_account_curve / backtest_monte_carlo.
+backtest_decision_events / backtest_daily_policy_snapshots /
+backtest_account_curve / backtest_monte_carlo.
 
 Point-in-time data used:
   - world_regime_daily_scores_mv : as_of each simulated day (filtered by available_at only)

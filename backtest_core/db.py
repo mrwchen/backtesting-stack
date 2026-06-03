@@ -258,6 +258,25 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
         "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score",
     })
+    _require_columns(conn, f"{RESULT_SCHEMA}.backtest_daily_policy_snapshots", {
+        "run_id",
+        "day",
+        "policy_available",
+        "daily_policy_phase",
+        "world_regime_ma_score",
+        "max_long_positions",
+        "max_short_positions",
+        "max_total_positions",
+        "halted",
+        "halt_reason_code",
+        "prune_enabled",
+        "prune_triggered",
+        "opens_today",
+        "refill_opens_today",
+        "policy_block_events",
+        "open_positions_end",
+        "day_return_pct",
+    })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",
         "ts",
