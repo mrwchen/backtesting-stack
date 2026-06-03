@@ -176,8 +176,8 @@ services:
       # all      = jedes ausgewaehlte Modell einmal fuer ps_acc und ibkr_acc.
       #
       # INITIAL_EQUITY_USD ist das Startkapital je Run.
-      # RISK_PER_TRADE_EQUITY_PCT ist der Basiseinsatz pro Trade vor Regime-,
-      # Shock- und Broker-Anpassungen.
+      # RISK_PER_TRADE_EQUITY_PCT ist der Basiseinsatz pro Trade vor Daily-
+      # Policy- und Broker-Anpassungen.
       # MAX_OPEN_POSITIONS begrenzt die Portfolio-Groesse.
       # MAX_POSITION_OPENS_PER_DAY begrenzt alle Positionseroeffnungen pro
       # Trading-Tag, inklusive initialer Opens und Refill-Opens nach SL/TP.
@@ -193,9 +193,26 @@ services:
       - MAX_POSITION_OPENS_PER_DAY=2
       - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
+
+      # ---------------------------------------------------------------------
+      # Daily Position Policy: Tageslimits, World-Regime-Steuerung und Halts.
+      #
+      # Nutzt den World-Regime-5-Tage-MA des Vortags; der Rohscore wird nicht
+      # fuer die Tageslimits verwendet. BUILDING/RECEDING_TREND_DAYS zaehlen
+      # die steigenden bzw. fallenden MA-Schritte fuer die Stressphase.
+      #
+      # Daily-Halts stoppen neue Entries fuer den restlichen Trading-Tag:
+      # SL-Cluster, VOO-Drop ab NY-Regular-Open und Portfolio-Tagesverlust.
+      # PRUNE_TIME schliesst um 11:00 NY die schlechtesten Positionen, falls
+      # mehr Positionen offen sind als das Tageslimit erlaubt.
+      #
+      # Tech-Stress blockiert Technology-Longs; Energy-Shock kann Oil & Gas
+      # Integrated als bevorzugte Industry an Modelle weitergeben.
+      # ---------------------------------------------------------------------
       - DAILY_POLICY_TZ=America/New_York
       - DAILY_POLICY_WORLD_REGIME_MA_DAYS=5
-      - DAILY_POLICY_WORLD_REGIME_TREND_DAYS=2
+      - DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS=2
+      - DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS=2
       - DAILY_POLICY_WORLD_REGIME_STRESS_THRESHOLD=45.0
       - DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD=60.0
       - DAILY_POLICY_LOW_STRESS_MAX_LONG_POSITIONS=5
@@ -210,9 +227,11 @@ services:
       - DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS=3.0
       - DAILY_POLICY_SL_HALT_WINDOW_HOURS=2.0
       - DAILY_POLICY_SL_HALT_COUNT=3
-      - DAILY_POLICY_SL_HALT_STATUSES=HIT_SL,REGIME_RISK_LONG_HIT_SL,REGIME_RISK_SHORT_HIT_SL
+      - DAILY_POLICY_SL_HALT_STATUSES=HIT_SL
+      - DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS=2
+      - DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT=5.0
       - DAILY_POLICY_MARKET_DROP_SYMBOL=VOO
-      - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=3.5
+      - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=4
       - DAILY_POLICY_MARKET_DROP_TZ=America/New_York
       - DAILY_POLICY_MARKET_DROP_SESSION_START=09:30
       - DAILY_POLICY_MARKET_DROP_SESSION_END=16:00
@@ -233,40 +252,6 @@ services:
       - INTENT_SCORE_CLUSTER_DELTA=0.50
       - INTENT_SCORE_CLUSTER_MIN_SIZE=2
       - INTENT_SCORE_CLUSTER_RANDOM_SEED=12345
-
-      # ---------------------------------------------------------------------
-      # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
-      #
-      # Wirkt einmal pro Trading-Tag vor neuen Entries, nutzt nur das World-
-      # Regime as-of Vortag und reagiert erst nach bestaetigten Stress-Tagen.
-      # Recovery wird langsamer bestaetigt, damit taegliches Regime-Zappeln nicht
-      # staendig Closings oder Stop-Aenderungen ausloest.
-      # ---------------------------------------------------------------------
-      - REGIME_RISK_MANAGEMENT_ENABLED=false
-      - REGIME_RISK_NEUTRAL_IS_ELEVATED=false
-      - REGIME_RISK_ELEVATED_CONFIRM_DAYS=1
-      - REGIME_RISK_HIGH_CONFIRM_DAYS=1
-      - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
-      - REGIME_RISK_RECOVERY_CONFIRM_DAYS=2
-      - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.50
-      - REGIME_RISK_POSITION_COOLDOWN_DAYS=1
-
-      # Long-Stops werden in Stress-Phasen auf maximalen Abstand zum aktuellen
-      # Tages-Entscheidungspreis gezogen. Es wird nie gelockert, nur enger.
-      - REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT=3.0
-      - REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT=2.0
-      - REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT=1.0
-
-      # Ziel-Caps fuer bestehende Long-Exposures in bestaetigtem Stress.
-      - REGIME_RISK_HIGH_MAX_LONG_POSITIONS=1
-      - REGIME_RISK_EXTREME_MAX_LONG_POSITIONS=0
-      - REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS=true
-      - REGIME_RISK_RISK_OFF_CLOSE_LONGS=true
-
-      # Selektive Reduktion: Value-Labels werden zuerst geschlossen,
-      # begrenzt durch MAX_CLOSE_FRACTION_PER_DAY.
-      - REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
-      - REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
 
       # ---------------------------------------------------------------------
       # Gemeinsame Policy: fundamentale Eligibility

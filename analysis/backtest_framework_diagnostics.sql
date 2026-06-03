@@ -110,63 +110,7 @@ JOIN selected_runs s USING (run_id)
 GROUP BY t.run_id, t.direction, COALESCE(t.sector, '')
 ORDER BY t.run_id, t.direction, pnl_usd;
 
--- 6) Regime-risk close/stop visibility.
-WITH selected_runs AS (
-    SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
-)
-SELECT
-    t.run_id,
-    t.direction,
-    t.outcome_status,
-    COALESCE(t.world_regime_label, '') AS entry_regime,
-    COALESCE(t.valuation_label, '') AS valuation_label,
-    COALESCE(t.sector, '') AS sector,
-    COUNT(*) AS trades,
-    ROUND(SUM(t.pnl_usd)::numeric, 2) AS pnl_usd,
-    ROUND(AVG(t.return_pct)::numeric, 4) AS avg_return_pct
-FROM public.backtest_trades t
-JOIN selected_runs s USING (run_id)
-WHERE t.outcome_status IN (
-    'REGIME_RISK_LONG_CLOSE',
-    'REGIME_RISK_SHORT_CLOSE',
-    'REGIME_RISK_LONG_HIT_SL',
-    'REGIME_RISK_SHORT_HIT_SL'
-)
-GROUP BY
-    t.run_id,
-    t.direction,
-    t.outcome_status,
-    COALESCE(t.world_regime_label, ''),
-    COALESCE(t.valuation_label, ''),
-    COALESCE(t.sector, '')
-ORDER BY t.run_id, pnl_usd;
-
--- 7) Regime-risk decision events. Requires DECISION_EVENT_MODE != 'none'.
-WITH selected_runs AS (
-    SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
-)
-SELECT
-    e.run_id,
-    e.decision,
-    e.reason_code,
-    COALESCE(e.world_regime_label, '') AS regime_label,
-    COALESCE(e.valuation_label, '') AS valuation_label,
-    COALESCE(e.sector, '') AS sector,
-    COUNT(*) AS events,
-    ROUND(AVG(e.world_regime_score)::numeric, 2) AS avg_regime_score
-FROM public.backtest_decision_events e
-JOIN selected_runs s USING (run_id)
-WHERE e.decision_stage = 'regime_risk'
-GROUP BY
-    e.run_id,
-    e.decision,
-    e.reason_code,
-    COALESCE(e.world_regime_label, ''),
-    COALESCE(e.valuation_label, ''),
-    COALESCE(e.sector, '')
-ORDER BY e.run_id, events DESC;
-
--- 8) Worst monthly periods.
+-- 6) Worst monthly periods.
 WITH selected_runs AS (
     SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
 )

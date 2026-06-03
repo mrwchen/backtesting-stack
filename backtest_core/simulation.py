@@ -47,6 +47,7 @@ from .market_data import (
 from .daily_position_policy import (
     DailyPolicyRuntimeState,
     DailyPositionPolicyContext,
+    PortfolioDailyReturn,
     apply_daily_policy_context_to_config,
     build_daily_position_policy_context,
     daily_prune_ts,
@@ -76,7 +77,6 @@ from .persistence import (
     write_decision_events,
     write_trades,
 )
-from .regime_risk import ELEVATED, EXTREME_STRESS, HIGH_STRESS, RegimeRiskTracker, RegimeRiskSnapshot
 from .trade_levels import (
     build_trade_plan,
     common_stop_required_lookback,
@@ -339,16 +339,6 @@ def _short_stop_fill_price(stop_price: float, bar_open: object) -> float:
     return max(stop_price, float(bar_open))
 
 
-def _regime_risk_stop_is_active(pos: OpenPosition) -> bool:
-    if not pos.regime_risk_stop_overlay_active or pos.regime_risk_stop_level is None:
-        return False
-    if abs(float(pos.effective_sl) - float(pos.regime_risk_stop_level)) > 1e-8:
-        return False
-    if pos.direction == "LONG":
-        return pos.trailing_stop is None or float(pos.regime_risk_stop_level) >= float(pos.trailing_stop) - 1e-8
-    return pos.trailing_stop is None or float(pos.regime_risk_stop_level) <= float(pos.trailing_stop) + 1e-8
-
-
 def _middle_low_reaches(open_: float, close: float, low: float, level: float) -> bool:
     return low <= level and low < min(open_, close)
 
@@ -396,10 +386,7 @@ def _long_stop_trade(
     equity: float,
     ts: datetime,
 ) -> ClosedTrade:
-    if _regime_risk_stop_is_active(pos):
-        status = "REGIME_RISK_LONG_HIT_SL"
-    else:
-        status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
+    status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
     return _exit_trade(conn, pos, status, price, bar_date, total_bars, equity, ts)
 
 
@@ -412,10 +399,7 @@ def _short_stop_trade(
     equity: float,
     ts: datetime,
 ) -> ClosedTrade:
-    if _regime_risk_stop_is_active(pos):
-        status = "REGIME_RISK_SHORT_HIT_SL"
-    else:
-        status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
+    status = "HIT_TRAILING_STOP" if pos.trailing_activated else "HIT_SL"
     return _exit_trade(conn, pos, status, price, bar_date, total_bars, equity, ts)
 
 
@@ -496,21 +480,6 @@ def _simulate_position_bar(
         )
     if trade is not None:
         return trade
-
-    pending_close_requested_ts = (
-        _ensure_utc_ts(pos.pending_close_requested_ts)
-        if pos.pending_close_requested_ts is not None
-        else None
-    )
-    if (
-        pos.pending_close_status
-        and pending_close_requested_ts is not None
-        and ts >= pending_close_requested_ts
-        and sl_tp_active
-    ):
-        price = float(close)
-        pnl = _pnl_long(pos, price) if is_long else _pnl_short(pos, price)
-        return _make_trade(conn, pos, pos.pending_close_status, price, bar_date, total_bars, pnl, equity, ts)
 
     if ts >= pos.valid_until and sl_tp_active:
         price = float(close)
@@ -726,8 +695,7 @@ def run_backtest(
     account_curve: list[AccountCurvePoint] = []
     account_curve_seq = 0
     decision_event_buffer: list[DecisionEvent] = []
-    regime_risk_tracker = RegimeRiskTracker()
-    regime_risk_action_dates: dict[InstrumentKey, date] = {}
+    daily_portfolio_returns: list[PortfolioDailyReturn] = []
     portfolio_peak_equity = INITIAL_EQUITY
 
     def flush_decision_events(force: bool = False) -> None:
@@ -750,6 +718,24 @@ def run_backtest(
         if equity_value > portfolio_peak_equity:
             portfolio_peak_equity = equity_value
         return portfolio_peak_equity
+
+    def record_daily_portfolio_return(day: date, start_equity: float, end_ts: datetime) -> PortfolioDailyReturn | None:
+        if start_equity <= 0.0:
+            return None
+        end_equity = _account_snapshot_values(
+            conn,
+            open_positions,
+            equity,
+            _ensure_utc_ts(end_ts),
+        ).equity_with_loan_value
+        daily_return = PortfolioDailyReturn(
+            day=day,
+            start_equity=float(start_equity),
+            end_equity=float(end_equity),
+            return_pct=(float(end_equity) / float(start_equity) - 1.0) * 100.0,
+        )
+        daily_portfolio_returns.append(daily_return)
+        return daily_return
 
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
@@ -897,680 +883,6 @@ def run_backtest(
             record_account_curve(end_ts, active_positions)
 
         return active_positions, closed_count, realized_pnl
-
-    def latest_close_for_position(position: OpenPosition, end_ts: datetime) -> tuple[datetime, float] | None:
-        end_ts = _ensure_utc_ts(end_ts)
-        after_ts = (
-            position.last_bar_ts - timedelta(microseconds=1)
-            if position.last_bar_ts is not None
-            else position.entry_ts - timedelta(microseconds=1)
-        )
-        bars = get_bars_range_through(conn, position.identity_key, after_ts, end_ts)
-        if not bars:
-            return None
-        ts, _open, _high, _low, close = bars[-1]
-        return _ensure_utc_ts(ts), float(close)
-
-    def long_unrealized_pct(position: OpenPosition, current_price: float) -> float:
-        if position.entry_price <= 0.0:
-            return 0.0
-        return (current_price / position.entry_price - 1.0) * 100.0
-
-    def short_unrealized_pct(position: OpenPosition, current_price: float) -> float:
-        if position.entry_price <= 0.0 or current_price <= 0.0:
-            return 0.0
-        return ((position.entry_price - current_price) / position.entry_price) * 100.0
-
-    def regime_risk_long_stress_rise_stop_distance_pct(snapshot: RegimeRiskSnapshot) -> float | None:
-        if snapshot.tier >= EXTREME_STRESS:
-            return REGIME_RISK_EXTREME_LONG_MAX_STOP_DISTANCE_PCT
-        if snapshot.tier >= HIGH_STRESS:
-            return REGIME_RISK_HIGH_LONG_MAX_STOP_DISTANCE_PCT
-        if snapshot.tier >= ELEVATED:
-            return REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT
-        return None
-
-    def regime_risk_state_tier(state: str) -> int:
-        normalized = str(state or "").strip().upper()
-        if normalized == "EXTREME_STRESS":
-            return EXTREME_STRESS
-        if normalized == "HIGH_STRESS":
-            return HIGH_STRESS
-        if normalized == "ELEVATED":
-            return ELEVATED
-        return 0
-
-    def regime_risk_long_stop_floor(position: OpenPosition) -> float:
-        floor = float(position.stop_loss)
-        if position.trailing_stop is not None:
-            floor = max(floor, float(position.trailing_stop))
-        return floor
-
-    def regime_risk_short_stop_ceiling(position: OpenPosition) -> float:
-        ceiling = float(position.stop_loss)
-        if position.trailing_stop is not None:
-            ceiling = min(ceiling, float(position.trailing_stop))
-        return ceiling
-
-    def regime_risk_long_target_cap(regime_exposure: dict, snapshot: RegimeRiskSnapshot) -> int:
-        base_cap = direction_max_positions(regime_exposure, "LONG")
-        if snapshot.tier >= EXTREME_STRESS:
-            return min(base_cap, REGIME_RISK_EXTREME_MAX_LONG_POSITIONS)
-        if snapshot.tier >= HIGH_STRESS:
-            return min(base_cap, REGIME_RISK_HIGH_MAX_LONG_POSITIONS)
-        return base_cap
-
-    def regime_risk_short_target_cap(regime_exposure: dict) -> int:
-        return direction_max_positions(regime_exposure, "SHORT")
-
-    def regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
-        snapshot: RegimeRiskSnapshot,
-        regime_exposure: dict,
-        short_count: int,
-    ) -> float | None:
-        if short_count <= 0:
-            return None
-        short_risk = direction_risk_multiplier(regime_exposure, "SHORT")
-        short_cap = regime_risk_short_target_cap(regime_exposure)
-        short_side_reduced = short_risk <= 0.0 or short_cap < short_count
-        if snapshot.tier <= 0 or short_side_reduced:
-            return max(0.5, EXECUTION_SHORT_TRAILING_DISTANCE_PCT)
-        return None
-
-    def regime_risk_event(
-        day: date,
-        as_of_ts: datetime,
-        regime: Any,
-        snapshot: RegimeRiskSnapshot,
-        decision: str,
-        reason_code: str,
-        reason_text: str,
-        position: OpenPosition | None = None,
-        current_price: float | None = None,
-        open_position_count: int | None = None,
-    ) -> DecisionEvent:
-        event = DecisionEvent(
-            run_id=run_id,
-            intent_date=day,
-            as_of_ts=as_of_ts,
-            symbol=position.symbol if position else None,
-            exchange=position.exchange if position else None,
-            cik=position.cik if position else None,
-            direction=position.direction if position else None,
-            decision_stage="regime_risk",
-            decision=decision,
-            reason_code=reason_code,
-            reason_text=reason_text,
-            intent_passed=False,
-            opened=False,
-            world_regime_label=regime.label,
-            world_regime_score=regime.score,
-            valuation_label=position.valuation_label if position else "",
-            sector=position.plan.sector if position else "",
-            industry=position.plan.industry if position else "",
-            fundamental_score=position.plan.fundamental_score if position else None,
-            intent_score=position.plan.intent_score if position else None,
-            intent_reason=position.plan.intent_reason if position else "",
-            entry_ts=position.entry_ts if position else None,
-            entry_price=position.entry_price if position else None,
-            stop_loss=position.effective_sl if position else None,
-            take_profit=position.take_profit if position else None,
-            trailing_activation_price=position.trailing_activation_price if position else None,
-            trailing_distance_pct=position.trailing_distance_pct if position else None,
-            open_positions=len(open_positions) if open_position_count is None else open_position_count,
-            max_open_positions=MAX_OPEN_POSITIONS,
-            account_equity=equity,
-            position_size_usd=position.position_size_usd if position else None,
-            shares=position.shares if position else None,
-        )
-        return event
-
-    def apply_regime_risk_management(
-        day: date,
-        as_of_ts: datetime,
-        regime: Any,
-        regime_label: str,
-        regime_exposure: dict,
-        snapshot: RegimeRiskSnapshot,
-        positions: list[OpenPosition],
-        closed_identity_blocklist: set[InstrumentKey],
-    ) -> tuple[list[OpenPosition], int, float, list[DecisionEvent]]:
-        nonlocal equity
-        events: list[DecisionEvent] = []
-        active_positions = list(positions)
-        closed_count = 0
-        realized_pnl = 0.0
-
-        if snapshot.state != "NORMAL" or snapshot.raw_tier > 0:
-            events.append(regime_risk_event(
-                day,
-                as_of_ts,
-                regime,
-                snapshot,
-                "state",
-                f"regime_risk_{snapshot.state.lower()}",
-                (
-                    f"{snapshot.state}: {snapshot.reason}; raw_tier={snapshot.raw_tier}; "
-                    f"recovery_count={snapshot.recovery_count}."
-                ),
-                open_position_count=len(active_positions),
-            ))
-
-        if not REGIME_RISK_MANAGEMENT_ENABLED:
-            return active_positions, closed_count, realized_pnl, events
-
-        long_positions = [pos for pos in active_positions if pos.direction == "LONG"]
-        short_positions = [pos for pos in active_positions if pos.direction == "SHORT"]
-        managed_positions = long_positions + short_positions
-        if not managed_positions:
-            return active_positions, closed_count, realized_pnl, events
-
-        if managed_positions:
-            preload_identity_bars(
-                conn,
-                [pos.identity_key for pos in managed_positions],
-                _ensure_utc_ts(as_of_ts),
-                batch_size=BAR_CACHE_BATCH_SIZE,
-                log_batches=False,
-            )
-
-        price_by_position: dict[int, tuple[datetime, float]] = {}
-        for position in managed_positions:
-            latest = latest_close_for_position(position, as_of_ts)
-            if latest is None:
-                continue
-            price_by_position[id(position)] = latest
-
-        long_stress_rise_stop_distance_pct = regime_risk_long_stress_rise_stop_distance_pct(snapshot)
-        short_stress_fall_or_exposure_reduction_stop_distance_pct = (
-            regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
-                snapshot,
-                regime_exposure,
-                len(short_positions),
-            )
-        )
-
-        if not price_by_position:
-            if snapshot.tier <= 0:
-                for position in long_positions:
-                    if not position.regime_risk_stop_overlay_active:
-                        continue
-                    old_stop = float(position.effective_sl)
-                    restored_stop = regime_risk_long_stop_floor(position)
-                    position.effective_sl = restored_stop
-                    position.regime_risk_stop_overlay_active = False
-                    position.regime_risk_stop_overlay_ts = None
-                    position.regime_risk_stop_level = None
-                    position.regime_risk_stop_state = ""
-                    regime_risk_action_dates[position.identity_key] = day
-                    events.append(regime_risk_event(
-                        day,
-                        _ensure_utc_ts(as_of_ts),
-                        regime,
-                        snapshot,
-                        "relaxed_stop",
-                        "regime_risk_long_stop_relaxed_on_stress_fall",
-                        (
-                            f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
-                            f"old_stop={old_stop:.4f}; restored_stop={restored_stop:.4f}."
-                        ),
-                        position,
-                        None,
-                        None,
-                        open_position_count=len(active_positions),
-                    ))
-            if short_stress_fall_or_exposure_reduction_stop_distance_pct is None:
-                for position in short_positions:
-                    if not position.regime_risk_stop_overlay_active:
-                        continue
-                    old_stop = float(position.effective_sl)
-                    restored_stop = regime_risk_short_stop_ceiling(position)
-                    position.effective_sl = restored_stop
-                    position.regime_risk_stop_overlay_active = False
-                    position.regime_risk_stop_overlay_ts = None
-                    position.regime_risk_stop_level = None
-                    position.regime_risk_stop_state = ""
-                    regime_risk_action_dates[position.identity_key] = day
-                    events.append(regime_risk_event(
-                        day,
-                        _ensure_utc_ts(as_of_ts),
-                        regime,
-                        snapshot,
-                        "relaxed_stop",
-                        "regime_risk_short_stop_relaxed_on_stress_rise",
-                        (
-                            f"Removed regime-risk short stop after stress rose to short-favorable {snapshot.state}; "
-                            f"old_stop={old_stop:.4f}; restored_stop={restored_stop:.4f}."
-                        ),
-                        position,
-                        None,
-                        None,
-                        open_position_count=len(active_positions),
-                    ))
-            return active_positions, closed_count, realized_pnl, events
-
-        relaxed_regime_stop_position_ids: set[int] = set()
-
-        for position in list(active_positions):
-            if position.direction != "LONG" or not position.regime_risk_stop_overlay_active:
-                continue
-            previous_state = position.regime_risk_stop_state or "regime_risk_overlay"
-            previous_tier = regime_risk_state_tier(position.regime_risk_stop_state)
-            if previous_tier <= snapshot.tier and snapshot.tier > 0:
-                continue
-
-            floor_stop = regime_risk_long_stop_floor(position)
-            if long_stress_rise_stop_distance_pct is None:
-                target_stop = floor_stop
-            else:
-                latest = price_by_position.get(id(position))
-                if latest is None:
-                    continue
-                _price_ts, current_price = latest
-                target_stop = max(floor_stop, current_price * (1.0 - long_stress_rise_stop_distance_pct / 100.0))
-
-            old_stop = float(position.effective_sl)
-            relaxed_regime_stop_position_ids.add(id(position))
-            if target_stop >= old_stop - 1e-8:
-                if long_stress_rise_stop_distance_pct is None:
-                    position.effective_sl = target_stop
-                    position.regime_risk_stop_overlay_active = False
-                    position.regime_risk_stop_overlay_ts = None
-                    position.regime_risk_stop_level = None
-                    position.regime_risk_stop_state = ""
-                    regime_risk_action_dates[position.identity_key] = day
-                    latest = price_by_position.get(id(position))
-                    current_price = latest[1] if latest else None
-                    events.append(regime_risk_event(
-                        day,
-                        _ensure_utc_ts(as_of_ts),
-                        regime,
-                        snapshot,
-                        "relaxed_stop",
-                        "regime_risk_long_stop_relaxed_on_stress_fall",
-                        (
-                            f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
-                            f"old_stop={old_stop:.4f}; restored_stop={target_stop:.4f}; "
-                            f"floor_stop={floor_stop:.4f}."
-                        ),
-                        position,
-                        current_price,
-                        open_position_count=len(active_positions),
-                    ))
-                continue
-
-            position.effective_sl = target_stop
-            action_ts = _ensure_utc_ts(as_of_ts)
-            if abs(target_stop - floor_stop) <= 1e-8:
-                position.regime_risk_stop_overlay_active = False
-                position.regime_risk_stop_overlay_ts = None
-                position.regime_risk_stop_level = None
-                position.regime_risk_stop_state = ""
-            else:
-                position.regime_risk_stop_level = target_stop
-                position.regime_risk_stop_state = snapshot.state
-            regime_risk_action_dates[position.identity_key] = day
-            latest = price_by_position.get(id(position))
-            current_price = latest[1] if latest else None
-            events.append(regime_risk_event(
-                day,
-                action_ts,
-                regime,
-                snapshot,
-                "relaxed_stop",
-                "regime_risk_long_stop_relaxed_on_stress_fall",
-                (
-                    f"Relaxed long stop after stress fell from "
-                    f"{previous_state} to {snapshot.state}; "
-                    f"old_stop={old_stop:.4f}; new_stop={target_stop:.4f}; "
-                    f"floor_stop={floor_stop:.4f}; "
-                    f"max_distance_pct={long_stress_rise_stop_distance_pct:.2f}."
-                    if long_stress_rise_stop_distance_pct is not None
-                    else (
-                        f"Removed regime-risk long stop after stress fell to {snapshot.state}; "
-                        f"old_stop={old_stop:.4f}; restored_stop={target_stop:.4f}; "
-                        f"floor_stop={floor_stop:.4f}."
-                    )
-                ),
-                position,
-                current_price,
-                open_position_count=len(active_positions),
-            ))
-
-        for position in list(active_positions):
-            if position.direction != "SHORT" or not position.regime_risk_stop_overlay_active:
-                continue
-            if short_stress_fall_or_exposure_reduction_stop_distance_pct is not None:
-                continue
-            previous_state = position.regime_risk_stop_state or "regime_risk_overlay"
-            ceiling_stop = regime_risk_short_stop_ceiling(position)
-            old_stop = float(position.effective_sl)
-            position.effective_sl = ceiling_stop
-            position.regime_risk_stop_overlay_active = False
-            position.regime_risk_stop_overlay_ts = None
-            position.regime_risk_stop_level = None
-            position.regime_risk_stop_state = ""
-            regime_risk_action_dates[position.identity_key] = day
-            relaxed_regime_stop_position_ids.add(id(position))
-            latest = price_by_position.get(id(position))
-            current_price = latest[1] if latest else None
-            events.append(regime_risk_event(
-                day,
-                _ensure_utc_ts(as_of_ts),
-                regime,
-                snapshot,
-                "relaxed_stop",
-                "regime_risk_short_stop_relaxed_on_stress_rise",
-                (
-                    f"Removed regime-risk short stop after stress rose and regime became short-favorable "
-                    f"from {previous_state} to {snapshot.state}; "
-                    f"old_stop={old_stop:.4f}; restored_stop={ceiling_stop:.4f}; "
-                    f"ceiling_stop={ceiling_stop:.4f}."
-                ),
-                position,
-                current_price,
-                open_position_count=len(active_positions),
-            ))
-
-        short_stress_fall_or_exposure_reduction_target_cap = regime_risk_short_target_cap(regime_exposure)
-        short_stress_fall_or_exposure_reduction_risk_multiplier = direction_risk_multiplier(
-            regime_exposure,
-            "SHORT",
-        )
-
-        def short_stress_fall_or_exposure_reduction_close_priority(
-            position: OpenPosition,
-        ) -> tuple[float, float, float, float]:
-            _ts, current_price = price_by_position[id(position)]
-            losing_pct = max(0.0, -short_unrealized_pct(position, current_price))
-            weak_intent = -float(position.plan.intent_score or 0.0)
-            age_days = max(0.0, float((day - position.entry_date).days))
-            return losing_pct, weak_intent, age_days, 0.0
-
-        short_stress_fall_or_exposure_reduction_close_candidates_by_position: dict[
-            int,
-            tuple[OpenPosition, list[str]],
-        ] = {}
-
-        def add_short_stress_fall_or_exposure_reduction_close_candidate(
-            position: OpenPosition,
-            reason: str,
-        ) -> None:
-            if id(position) not in price_by_position:
-                return
-            current = short_stress_fall_or_exposure_reduction_close_candidates_by_position.get(id(position))
-            if current is None:
-                short_stress_fall_or_exposure_reduction_close_candidates_by_position[id(position)] = (
-                    position,
-                    [reason],
-                )
-            elif reason not in current[1]:
-                current[1].append(reason)
-
-        ranked_shorts_for_stress_fall_or_exposure_reduction_close = sorted(
-            [pos for pos in short_positions if id(pos) in price_by_position],
-            key=short_stress_fall_or_exposure_reduction_close_priority,
-            reverse=True,
-        )
-
-        excess_shorts = max(0, len(short_positions) - short_stress_fall_or_exposure_reduction_target_cap)
-        for position in ranked_shorts_for_stress_fall_or_exposure_reduction_close[:excess_shorts]:
-            add_short_stress_fall_or_exposure_reduction_close_candidate(
-                position,
-                f"short_count_above_current_regime_cap_{short_stress_fall_or_exposure_reduction_target_cap}",
-            )
-
-        if short_stress_fall_or_exposure_reduction_risk_multiplier <= 0.0:
-            for position in ranked_shorts_for_stress_fall_or_exposure_reduction_close:
-                add_short_stress_fall_or_exposure_reduction_close_candidate(
-                    position,
-                    "current_regime_short_risk_multiplier_zero",
-                )
-
-        short_stress_fall_or_exposure_reduction_max_closes = max(
-            1,
-            math.ceil(
-                len(ranked_shorts_for_stress_fall_or_exposure_reduction_close)
-                * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY
-            ),
-        )
-        short_stress_fall_or_exposure_reduction_close_candidates = sorted(
-            (value[0] for value in short_stress_fall_or_exposure_reduction_close_candidates_by_position.values()),
-            key=short_stress_fall_or_exposure_reduction_close_priority,
-            reverse=True,
-        )[:short_stress_fall_or_exposure_reduction_max_closes]
-
-        for position in short_stress_fall_or_exposure_reduction_close_candidates:
-            reasons = short_stress_fall_or_exposure_reduction_close_candidates_by_position[id(position)][1]
-            action_ts = _ensure_utc_ts(as_of_ts)
-            current_price = price_by_position[id(position)][1]
-            position.pending_close_status = "REGIME_RISK_SHORT_CLOSE"
-            position.pending_close_requested_ts = action_ts
-            regime_risk_action_dates[position.identity_key] = day
-            events.append(regime_risk_event(
-                day,
-                action_ts,
-                regime,
-                snapshot,
-                "scheduled_close",
-                "regime_risk_short_close_scheduled_on_stress_fall_or_exposure_reduction",
-                (
-                    f"Scheduled existing short to close on the next SL/TP-window bar after stress fell "
-                    f"or current regime reduced short exposure; reasons={','.join(reasons)}; "
-                    f"current_price={current_price:.4f}."
-                ),
-                position,
-                current_price,
-                open_position_count=len(active_positions),
-            ))
-            log.debug(
-                "Regime risk scheduled close %-6s %s state %s balance %.0f",
-                position.symbol,
-                position.direction,
-                snapshot.state,
-                equity,
-            )
-
-        if short_stress_fall_or_exposure_reduction_stop_distance_pct is not None:
-            for position in list(active_positions):
-                if position.direction != "SHORT" or id(position) not in price_by_position:
-                    continue
-                if id(position) in relaxed_regime_stop_position_ids:
-                    continue
-                last_action_date = regime_risk_action_dates.get(position.identity_key)
-                if (
-                    last_action_date is not None
-                    and REGIME_RISK_POSITION_COOLDOWN_DAYS > 0
-                    and (day - last_action_date).days < REGIME_RISK_POSITION_COOLDOWN_DAYS
-                ):
-                    continue
-                _price_ts, current_price = price_by_position[id(position)]
-                action_ts = _ensure_utc_ts(as_of_ts)
-                ceiling_stop = regime_risk_short_stop_ceiling(position)
-                new_stop = min(
-                    ceiling_stop,
-                    current_price * (1.0 + short_stress_fall_or_exposure_reduction_stop_distance_pct / 100.0),
-                )
-                if new_stop >= position.effective_sl or new_stop <= current_price:
-                    continue
-                old_stop = position.effective_sl
-                position.effective_sl = new_stop
-                position.regime_risk_stop_overlay_active = True
-                position.regime_risk_stop_overlay_count += 1
-                position.regime_risk_stop_overlay_ts = action_ts
-                position.regime_risk_stop_level = new_stop
-                position.regime_risk_stop_state = snapshot.state
-                regime_risk_action_dates[position.identity_key] = day
-                events.append(regime_risk_event(
-                    day,
-                    action_ts,
-                    regime,
-                    snapshot,
-                    "tightened_stop",
-                    "regime_risk_short_stop_tightened_on_stress_fall",
-                    (
-                        f"Tightened short stop after stress fell or current regime reduced short exposure; "
-                        f"old_stop={old_stop:.4f}; new_stop={new_stop:.4f}; "
-                        f"max_distance_pct={short_stress_fall_or_exposure_reduction_stop_distance_pct:.2f}; "
-                        f"current_price={current_price:.4f}; "
-                        f"short_cap={short_stress_fall_or_exposure_reduction_target_cap}; "
-                        f"short_risk_multiplier={short_stress_fall_or_exposure_reduction_risk_multiplier:.2f}."
-                    ),
-                    position,
-                    current_price,
-                    open_position_count=len(active_positions),
-                ))
-
-        if long_stress_rise_stop_distance_pct is None:
-            return active_positions, closed_count, realized_pnl, events
-
-        def long_stress_rise_close_priority(position: OpenPosition) -> tuple[float, float, float, float, float]:
-            _ts, current_price = price_by_position[id(position)]
-            valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
-            selected_labels = (
-                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
-            )
-            selected_value_label = 1.0 if valuation_label in selected_labels else 0.0
-            losing_pct = max(0.0, -long_unrealized_pct(position, current_price))
-            weak_intent = -float(position.plan.intent_score or 0.0)
-            age_days = max(0.0, float((day - position.entry_date).days))
-            return selected_value_label, losing_pct, weak_intent, age_days, 0.0
-
-        long_stress_rise_close_candidates_by_position: dict[int, tuple[OpenPosition, list[str]]] = {}
-
-        def add_long_stress_rise_close_candidate(position: OpenPosition, reason: str) -> None:
-            if id(position) not in price_by_position:
-                return
-            current = long_stress_rise_close_candidates_by_position.get(id(position))
-            if current is None:
-                long_stress_rise_close_candidates_by_position[id(position)] = (position, [reason])
-            elif reason not in current[1]:
-                current[1].append(reason)
-
-        ranked_longs_for_stress_rise_close = sorted(
-            [pos for pos in long_positions if id(pos) in price_by_position],
-            key=long_stress_rise_close_priority,
-            reverse=True,
-        )
-
-        if snapshot.tier >= HIGH_STRESS and REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS:
-            long_stress_rise_target_cap = regime_risk_long_target_cap(regime_exposure, snapshot)
-            excess_longs = max(0, len(long_positions) - long_stress_rise_target_cap)
-            for position in ranked_longs_for_stress_rise_close[:excess_longs]:
-                add_long_stress_rise_close_candidate(
-                    position,
-                    f"long_count_above_confirmed_regime_cap_{long_stress_rise_target_cap}",
-                )
-
-        if snapshot.tier >= HIGH_STRESS:
-            label_set = (
-                REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
-            )
-            for position in ranked_longs_for_stress_rise_close:
-                valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
-                if valuation_label in label_set:
-                    add_long_stress_rise_close_candidate(
-                        position,
-                        f"valuation_label_{valuation_label}_under_{snapshot.state.lower()}",
-                    )
-
-        if (
-            snapshot.tier >= EXTREME_STRESS
-            and REGIME_RISK_RISK_OFF_CLOSE_LONGS
-            and str(regime_label or "").strip().upper() == "RISK-OFF"
-        ):
-            for position in ranked_longs_for_stress_rise_close:
-                add_long_stress_rise_close_candidate(position, "risk_off_confirmed_close_longs")
-
-        long_stress_rise_max_closes = max(
-            1,
-            math.ceil(len(ranked_longs_for_stress_rise_close) * REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY),
-        )
-        long_stress_rise_close_candidates = sorted(
-            (value[0] for value in long_stress_rise_close_candidates_by_position.values()),
-            key=long_stress_rise_close_priority,
-            reverse=True,
-        )[:long_stress_rise_max_closes]
-
-        for position in long_stress_rise_close_candidates:
-            reasons = long_stress_rise_close_candidates_by_position[id(position)][1]
-            action_ts = _ensure_utc_ts(as_of_ts)
-            current_price = price_by_position[id(position)][1]
-            position.pending_close_status = "REGIME_RISK_LONG_CLOSE"
-            position.pending_close_requested_ts = action_ts
-            regime_risk_action_dates[position.identity_key] = day
-            events.append(regime_risk_event(
-                day,
-                action_ts,
-                regime,
-                snapshot,
-                "scheduled_close",
-                "regime_risk_long_close_scheduled_on_stress_rise",
-                (
-                    f"Scheduled existing long to close on the next SL/TP-window bar after confirmed "
-                    f"stress rise to {snapshot.state}; reasons={','.join(reasons)}; "
-                    f"current_price={current_price:.4f}."
-                ),
-                position,
-                current_price,
-                open_position_count=len(active_positions),
-            ))
-            log.debug(
-                "Regime risk scheduled close %-6s %s state %s balance %.0f",
-                position.symbol,
-                position.direction,
-                snapshot.state,
-                equity,
-            )
-
-        for position in list(active_positions):
-            if position.direction != "LONG" or id(position) not in price_by_position:
-                continue
-            if id(position) in relaxed_regime_stop_position_ids:
-                continue
-            last_action_date = regime_risk_action_dates.get(position.identity_key)
-            if (
-                last_action_date is not None
-                and REGIME_RISK_POSITION_COOLDOWN_DAYS > 0
-                and (day - last_action_date).days < REGIME_RISK_POSITION_COOLDOWN_DAYS
-            ):
-                continue
-            _price_ts, current_price = price_by_position[id(position)]
-            action_ts = _ensure_utc_ts(as_of_ts)
-            new_stop = current_price * (1.0 - long_stress_rise_stop_distance_pct / 100.0)
-            if new_stop <= position.effective_sl or new_stop >= current_price:
-                continue
-            old_stop = position.effective_sl
-            position.effective_sl = new_stop
-            position.regime_risk_stop_overlay_active = True
-            position.regime_risk_stop_overlay_count += 1
-            position.regime_risk_stop_overlay_ts = action_ts
-            position.regime_risk_stop_level = new_stop
-            position.regime_risk_stop_state = snapshot.state
-            regime_risk_action_dates[position.identity_key] = day
-            events.append(regime_risk_event(
-                day,
-                action_ts,
-                regime,
-                snapshot,
-                "tightened_stop",
-                "regime_risk_long_stop_tightened_on_stress_rise",
-                (
-                    f"Tightened long stop after confirmed stress rise to {snapshot.state}; "
-                    f"old_stop={old_stop:.4f}; new_stop={new_stop:.4f}; "
-                    f"max_distance_pct={long_stress_rise_stop_distance_pct:.2f}; "
-                    f"current_price={current_price:.4f}."
-                ),
-                position,
-                current_price,
-                open_position_count=len(active_positions),
-            ))
-
-        return active_positions, closed_count, realized_pnl, events
 
     def build_intent_plans_for_as_of(
         day: date,
@@ -2539,6 +1851,7 @@ def run_backtest(
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
+            record_daily_portfolio_return(day, day_start_equity, day_close_ts)
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s no regime, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -2553,6 +1866,7 @@ def run_backtest(
             opened_timestamps=[],
             sl_close_timestamps=[],
         )
+        daily_policy_state.refresh_portfolio_drop_halt(daily_portfolio_returns)
         regime_label = daily_policy_context.regime_label
         regime_exposure = daily_policy_context.exposure
         day_regime_exposure = regime_exposure
@@ -2701,46 +2015,13 @@ def run_backtest(
                     short_cap,
                 )
 
-        open_positions, closed_before_regime_risk, pnl_before_regime_risk = apply_day_position_events(
+        open_positions, closed_before_entries, pnl_before_entries = apply_day_position_events(
             open_positions,
             day_decision_ts,
             closed_identity_blocklist=used_identities_today,
         )
-        closed_today += closed_before_regime_risk
-        day_pnl += pnl_before_regime_risk
-
-        if REGIME_RISK_MANAGEMENT_ENABLED:
-            regime_risk_snapshot = regime_risk_tracker.update(regime_label)
-            open_positions, closed_by_regime_risk, pnl_by_regime_risk, regime_risk_events = apply_regime_risk_management(
-                day,
-                day_decision_ts,
-                regime,
-                regime_label,
-                regime_exposure,
-                regime_risk_snapshot,
-                open_positions,
-                used_identities_today,
-            )
-            closed_today += closed_by_regime_risk
-            day_pnl += pnl_by_regime_risk
-            buffer_decision_events(regime_risk_events)
-            if log_progress_today and regime_risk_snapshot.state != "NORMAL":
-                scheduled_by_regime_risk = sum(
-                    1 for event in regime_risk_events if event.decision == "scheduled_close"
-                )
-                log.info(
-                    "Regime risk day %d/%d %s model %s state %s raw tier %d closed %d scheduled %d day pnl %.0f open %d",
-                    day_idx,
-                    len(trading_days),
-                    day,
-                    runtime.CURRENT_MODEL_FILE,
-                    regime_risk_snapshot.state,
-                    regime_risk_snapshot.raw_tier,
-                    closed_by_regime_risk,
-                    scheduled_by_regime_risk,
-                    day_pnl,
-                    len(open_positions),
-                )
+        closed_today += closed_before_entries
+        day_pnl += pnl_before_entries
 
         if all(
             direction_risk_multiplier(day_regime_exposure, direction) <= 0.0
@@ -2778,6 +2059,7 @@ def run_backtest(
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
             record_account_curve(day_close_ts, open_positions)
+            record_daily_portfolio_return(day, day_start_equity, day_close_ts)
             if log_progress_today:
                 log.info(
                     "Progress %d/%d %s model %s regime label %s had no exposure budget, day pnl %.0f, equity %.0f, open %d, closed today %d, closed total %d",
@@ -3043,6 +2325,7 @@ def run_backtest(
         closed_today += closed_after_entry
         day_pnl += pnl_after_entry
         record_account_curve(day_close_ts, open_positions)
+        record_daily_portfolio_return(day, day_start_equity, day_close_ts)
 
         if log_progress_today or opened_today > 0:
             log.info(

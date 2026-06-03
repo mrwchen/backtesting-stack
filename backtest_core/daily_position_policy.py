@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -30,6 +30,8 @@ from .config import (
     DAILY_POLICY_MARKET_DROP_TZ,
     DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS,
     DAILY_POLICY_PREFERRED_INDUSTRY,
+    DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS,
+    DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT,
     DAILY_POLICY_PRUNE_TIME,
     DAILY_POLICY_PRUNE_TIME_TZ,
     DAILY_POLICY_SL_HALT_COUNT,
@@ -44,8 +46,9 @@ from .config import (
     DAILY_POLICY_TZ,
     DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD,
     DAILY_POLICY_WORLD_REGIME_MA_DAYS,
+    DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS,
+    DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS,
     DAILY_POLICY_WORLD_REGIME_STRESS_THRESHOLD,
-    DAILY_POLICY_WORLD_REGIME_TREND_DAYS,
     MAX_OPEN_POSITIONS,
     MAX_POSITION_OPENS_PER_DAY,
     RISK_PER_TRADE_PCT,
@@ -64,7 +67,8 @@ class DailyPositionPolicyContext:
     phase: str
     world_regime_ma_score: float
     world_regime_ma_days: tuple[date, ...]
-    world_regime_trend_ma_scores: tuple[float, ...]
+    world_regime_stress_building_trend_ma_scores: tuple[float, ...]
+    world_regime_stress_receding_trend_ma_scores: tuple[float, ...]
     exposure: dict
     calculated_max_long_positions: int
     blocked_long_sectors: tuple[str, ...]
@@ -79,6 +83,14 @@ class DailyPolicyEntryCheck:
     accepted: bool
     reason_code: str = ""
     reason_text: str = ""
+
+
+@dataclass(frozen=True)
+class PortfolioDailyReturn:
+    day: date
+    start_equity: float
+    end_equity: float
+    return_pct: float
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,30 @@ class DailyPolicyRuntimeState:
                 f"{DAILY_POLICY_MARKET_DROP_SYMBOL} fell {snapshot.drop_pct:.2f}% from the daily "
                 f"open {snapshot.open_price:.4f}; threshold is > {DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT:.2f}%."
             )
+
+    def refresh_portfolio_drop_halt(self, previous_daily_returns: Sequence[PortfolioDailyReturn]) -> None:
+        if (
+            self.halted
+            or DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS <= 0
+            or DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT <= 0.0
+        ):
+            return
+        recent_returns = list(previous_daily_returns)[-DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS:]
+        breaches = [
+            daily_return
+            for daily_return in recent_returns
+            if daily_return.return_pct <= -DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT
+        ]
+        if not breaches:
+            return
+        worst = min(breaches, key=lambda daily_return: daily_return.return_pct)
+        self.halted = True
+        self.halt_reason_code = "daily_policy_portfolio_drop_halt"
+        self.halt_reason_text = (
+            f"Portfolio fell {abs(worst.return_pct):.2f}% on {worst.day}; threshold is >= "
+            f"{DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT:.2f}% within the last "
+            f"{DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS} trading days."
+        )
 
     def entry_check(self, entry_ts: datetime) -> DailyPolicyEntryCheck:
         entry_ts = _ensure_utc_ts(entry_ts)
@@ -209,20 +245,31 @@ def build_daily_position_policy_context(
     if ma_score is None:
         return None
 
-    trend_scores = []
-    for idx in range(latest_idx - DAILY_POLICY_WORLD_REGIME_TREND_DAYS, latest_idx + 1):
-        trend_score = _moving_average_score(previous_days, regimes_by_day, idx)
-        if trend_score is None:
-            trend_scores = []
-            break
-        trend_scores.append(trend_score)
+    building_trend_scores = _world_regime_trend_scores(
+        previous_days,
+        regimes_by_day,
+        latest_idx,
+        DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS,
+    )
+    receding_trend_scores = _world_regime_trend_scores(
+        previous_days,
+        regimes_by_day,
+        latest_idx,
+        DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS,
+    )
     rising = (
-        len(trend_scores) == DAILY_POLICY_WORLD_REGIME_TREND_DAYS + 1
-        and all(trend_scores[idx] > trend_scores[idx - 1] for idx in range(1, len(trend_scores)))
+        len(building_trend_scores) == DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS + 1
+        and all(
+            building_trend_scores[idx] > building_trend_scores[idx - 1]
+            for idx in range(1, len(building_trend_scores))
+        )
     )
     falling = (
-        len(trend_scores) == DAILY_POLICY_WORLD_REGIME_TREND_DAYS + 1
-        and all(trend_scores[idx] < trend_scores[idx - 1] for idx in range(1, len(trend_scores)))
+        len(receding_trend_scores) == DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS + 1
+        and all(
+            receding_trend_scores[idx] < receding_trend_scores[idx - 1]
+            for idx in range(1, len(receding_trend_scores))
+        )
     )
 
     phase, max_long_positions, max_short_positions, max_total_positions, risk_multiplier = _daily_exposure_numbers(
@@ -252,7 +299,8 @@ def build_daily_position_policy_context(
         phase=phase,
         world_regime_ma_score=ma_score,
         world_regime_ma_days=ma_days,
-        world_regime_trend_ma_scores=tuple(trend_scores),
+        world_regime_stress_building_trend_ma_scores=tuple(building_trend_scores),
+        world_regime_stress_receding_trend_ma_scores=tuple(receding_trend_scores),
         exposure=exposure,
         calculated_max_long_positions=max_long_positions,
         blocked_long_sectors=blocked_long_sectors,
@@ -412,6 +460,21 @@ def _moving_average_score(
     if len(scores) != DAILY_POLICY_WORLD_REGIME_MA_DAYS:
         return None
     return sum(scores) / len(scores)
+
+
+def _world_regime_trend_scores(
+    previous_days: list[date],
+    regimes_by_day: dict[date, Optional[WorldRegime]],
+    latest_idx: int,
+    trend_days: int,
+) -> list[float]:
+    scores = []
+    for idx in range(latest_idx - trend_days, latest_idx + 1):
+        score = _moving_average_score(previous_days, regimes_by_day, idx)
+        if score is None:
+            return []
+        scores.append(score)
+    return scores
 
 
 def _tech_stress_active(

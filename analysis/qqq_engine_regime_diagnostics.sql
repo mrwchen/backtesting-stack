@@ -152,7 +152,6 @@ SELECT
   round(avg(t.position_size_usd / NULLIF(t.equity_before, 0.0) * 100.0)::numeric, 1) AS avg_notional_pct_equity,
   round(max(t.position_size_usd / NULLIF(t.equity_before, 0.0) * 100.0)::numeric, 1) AS max_notional_pct_equity,
   count(*) FILTER (WHERE t.outcome_status = 'HIT_SL') AS hit_sl,
-  count(*) FILTER (WHERE t.outcome_status LIKE 'REGIME_RISK%') AS regime_risk_exits,
   count(*) FILTER (WHERE t.outcome_status = 'MAX_HOLD') AS max_hold
 FROM params p
 JOIN public.backtest_trades t ON t.run_id = p.run_id

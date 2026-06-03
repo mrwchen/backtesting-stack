@@ -335,8 +335,6 @@ def _should_write_decision_event(event: DecisionEvent) -> bool:
         return True
     if DECISION_EVENT_MODE == "none":
         return False
-    if event.decision_stage == "regime_risk":
-        return True
     if DECISION_EVENT_MODE == "signals":
         if event.intent_passed or event.opened:
             return True
