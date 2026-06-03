@@ -290,6 +290,19 @@ def write_account_curve(
             Decimal(str(round(p.available_funds_usd, 2))),
             Decimal(str(round(p.excess_liquidity_usd, 2))),
             p.open_positions,
+            p.long_positions,
+            p.short_positions,
+            Decimal(str(round(p.gross_notional_usd, 2))),
+            Decimal(str(round(p.long_notional_usd, 2))),
+            Decimal(str(round(p.short_notional_usd, 2))),
+            Decimal(str(round(p.net_notional_usd, 2))),
+            _decimal_or_none(p.gross_exposure_pct, 4),
+            _decimal_or_none(p.net_exposure_pct, 4),
+            _decimal_or_none(p.margin_level_pct, 4),
+            _decimal_or_none(p.position_budget_utilization_pct, 4),
+            Decimal(str(round(p.total_open_cash_risk_usd, 2))),
+            _decimal_or_none(p.total_open_cash_risk_pct, 4),
+            _decimal_or_none(p.largest_position_weight_pct, 4),
             Decimal(str(round(p.realized_pnl_usd, 2))),
             p.closed_trades,
         )
@@ -302,7 +315,11 @@ def write_account_curve(
             balance_usd, open_pnl_usd, equity_usd,
             initial_margin_usd, maintenance_margin_usd,
             available_funds_usd, excess_liquidity_usd,
-            open_positions, realized_pnl_usd, closed_trades
+            open_positions, long_positions, short_positions,
+            gross_notional_usd, long_notional_usd, short_notional_usd, net_notional_usd,
+            gross_exposure_pct, net_exposure_pct, margin_level_pct, position_budget_utilization_pct,
+            total_open_cash_risk_usd, total_open_cash_risk_pct, largest_position_weight_pct,
+            realized_pnl_usd, closed_trades
         ) VALUES %s
         ON CONFLICT (run_id, ts, seq_in_run) DO UPDATE SET
             trade_date       = EXCLUDED.trade_date,
@@ -314,6 +331,19 @@ def write_account_curve(
             available_funds_usd = EXCLUDED.available_funds_usd,
             excess_liquidity_usd = EXCLUDED.excess_liquidity_usd,
             open_positions   = EXCLUDED.open_positions,
+            long_positions   = EXCLUDED.long_positions,
+            short_positions  = EXCLUDED.short_positions,
+            gross_notional_usd = EXCLUDED.gross_notional_usd,
+            long_notional_usd = EXCLUDED.long_notional_usd,
+            short_notional_usd = EXCLUDED.short_notional_usd,
+            net_notional_usd = EXCLUDED.net_notional_usd,
+            gross_exposure_pct = EXCLUDED.gross_exposure_pct,
+            net_exposure_pct = EXCLUDED.net_exposure_pct,
+            margin_level_pct = EXCLUDED.margin_level_pct,
+            position_budget_utilization_pct = EXCLUDED.position_budget_utilization_pct,
+            total_open_cash_risk_usd = EXCLUDED.total_open_cash_risk_usd,
+            total_open_cash_risk_pct = EXCLUDED.total_open_cash_risk_pct,
+            largest_position_weight_pct = EXCLUDED.largest_position_weight_pct,
             realized_pnl_usd = EXCLUDED.realized_pnl_usd,
             closed_trades    = EXCLUDED.closed_trades
     """.format(table=_result_table("backtest_account_curve"))

@@ -102,6 +102,15 @@ def _direction_open_count(open_positions: list[OpenPosition], direction: str) ->
     return sum(1 for pos in open_positions if pos.direction == direction)
 
 
+def _safe_pct(numerator: float, denominator: float) -> Optional[float]:
+    if denominator <= 0.0:
+        return None
+    value = numerator / denominator * 100.0
+    if not math.isfinite(value):
+        return None
+    return value
+
+
 def _entry_hour_bucket(ts: datetime) -> datetime:
     return _ensure_utc_ts(ts).replace(minute=0, second=0, microsecond=0)
 
@@ -853,6 +862,18 @@ def run_backtest(
             as_of_ts,
         )
         update_portfolio_peak(snapshot.equity_with_loan_value)
+        long_positions = _direction_open_count(active_positions, "LONG")
+        short_positions = _direction_open_count(active_positions, "SHORT")
+        long_notional = sum(abs(pos.position_size_usd) for pos in active_positions if pos.direction == "LONG")
+        short_notional = sum(abs(pos.position_size_usd) for pos in active_positions if pos.direction == "SHORT")
+        gross_notional = long_notional + short_notional
+        net_notional = long_notional - short_notional
+        equity_with_loan = snapshot.equity_with_loan_value
+        margin_level_pct = _margin_level_pct(equity_with_loan, snapshot.initial_margin)
+        if not math.isfinite(margin_level_pct):
+            margin_level_pct = None
+        total_open_cash_risk = sum(max(0.0, initial_stop_cash_risk(pos)) for pos in active_positions)
+        largest_position_notional = max((abs(pos.position_size_usd) for pos in active_positions), default=0.0)
         account_curve.append(AccountCurvePoint(
             run_id=run_id,
             ts=as_of_ts,
@@ -866,6 +887,19 @@ def run_backtest(
             available_funds_usd=round(snapshot.available_funds, 2),
             excess_liquidity_usd=round(snapshot.excess_liquidity, 2),
             open_positions=len(active_positions),
+            long_positions=long_positions,
+            short_positions=short_positions,
+            gross_notional_usd=round(gross_notional, 2),
+            long_notional_usd=round(long_notional, 2),
+            short_notional_usd=round(short_notional, 2),
+            net_notional_usd=round(net_notional, 2),
+            gross_exposure_pct=_safe_pct(gross_notional, equity_with_loan),
+            net_exposure_pct=_safe_pct(net_notional, equity_with_loan),
+            margin_level_pct=margin_level_pct,
+            position_budget_utilization_pct=_safe_pct(len(active_positions), float(MAX_OPEN_POSITIONS)),
+            total_open_cash_risk_usd=round(total_open_cash_risk, 2),
+            total_open_cash_risk_pct=_safe_pct(total_open_cash_risk, equity_with_loan),
+            largest_position_weight_pct=_safe_pct(largest_position_notional, equity_with_loan),
             realized_pnl_usd=round(equity - INITIAL_EQUITY, 2),
             closed_trades=len(closed_trades),
         ))

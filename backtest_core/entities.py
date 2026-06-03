@@ -76,6 +76,19 @@ class AccountCurvePoint:
     available_funds_usd: float
     excess_liquidity_usd: float
     open_positions: int
+    long_positions: int
+    short_positions: int
+    gross_notional_usd: float
+    long_notional_usd: float
+    short_notional_usd: float
+    net_notional_usd: float
+    gross_exposure_pct: Optional[float]
+    net_exposure_pct: Optional[float]
+    margin_level_pct: Optional[float]
+    position_budget_utilization_pct: Optional[float]
+    total_open_cash_risk_usd: float
+    total_open_cash_risk_pct: Optional[float]
+    largest_position_weight_pct: Optional[float]
     realized_pnl_usd: float
     closed_trades: int
 
