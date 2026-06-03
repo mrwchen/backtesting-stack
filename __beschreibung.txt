@@ -4,6 +4,7 @@ Umgang mit neuen Positionen:
 - Pro Tag dürfen maximal 2 neue Positionen geöffnet werden. 
 - wenn eine Position geöffnet ist, müssen mindestens 3 Stunden vergangen sein, bis eine weitere Position geöffnet wird. 
 - wenn an einem Tag innerhalb von 2 Stunden mehr als 3 Positionen wegen SL geschlossen werden, dürfen nach dem 3. SL gar keine Positionen mehr an dem Tag geöffnet werden. 
+- wenn VOO an einem Tag seit Opening um 9:30 NYC Zeit mehr als 3.5 Prozent fällt, gar keine neue Positionen mehr an dem Tag geöffnet werden. 
 - Standard risk ist 1.5 prozent
 
 Umgang mit Gesamtpositionen:

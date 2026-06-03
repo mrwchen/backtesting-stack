@@ -45,10 +45,8 @@ from .market_data import (
     preload_candidate_timelines,
     signal_bar_close_decisions_for_day,
 )
-from .market_regime import (
-    apply_market_regime_exposure_overlay,
+from .portfolio_drawdown import (
     apply_portfolio_drawdown_exposure_overlay,
-    get_market_regime_snapshot,
     get_portfolio_drawdown_snapshot,
 )
 from .model_loader import (
@@ -76,13 +74,7 @@ from .persistence import (
 from .regime_risk import ELEVATED, EXTREME_STRESS, HIGH_STRESS, RegimeRiskTracker, RegimeRiskSnapshot
 from .shock_overlay import (
     apply_shock_overlay,
-    should_evaluate_disabled_direction,
-    risk_off_long_sleeve_risk,
     shock_sector_bias_for_sector,
-    shock_stress_direction_cap,
-    shock_stress_plan_block_reason,
-    shock_stress_portfolio_block_reason,
-    shock_stress_sector_limit,
 )
 from .trade_levels import (
     build_trade_plan,
@@ -106,18 +98,6 @@ def _bar_lookback_limit(model: Any, cfg: Any) -> int:
 
 def _direction_open_count(open_positions: list[OpenPosition], direction: str) -> int:
     return sum(1 for pos in open_positions if pos.direction == direction)
-
-
-def _same_direction_sector_open_count(open_positions: list[OpenPosition], plan: TradePlan) -> int:
-    sector = str(plan.sector or "").strip().lower()
-    if not sector:
-        return 0
-    return sum(
-        1
-        for pos in open_positions
-        if pos.direction == plan.direction
-        and str(pos.plan.sector or "").strip().lower() == sector
-    )
 
 
 def _entry_hour_bucket(ts: datetime) -> datetime:
@@ -339,14 +319,6 @@ def _copy_regime_shock_to_event(event: DecisionEvent, regime: Any, shock_sector_
     event.metals_mining_shock_score = regime.metals_mining_shock_score
     event.metals_mining_subtype = regime.metals_mining_subtype
     event.shock_sector_bias = shock_sector_bias
-
-
-def _market_regime_active(snapshot: Any) -> bool:
-    return bool(
-        snapshot is not None
-        and getattr(snapshot, "enabled", False)
-        and getattr(snapshot, "tier", 0) > 0
-    )
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -1038,29 +1010,26 @@ def run_backtest(
             ceiling = min(ceiling, float(position.trailing_stop))
         return ceiling
 
-    def regime_risk_long_target_cap(regime: Any, regime_exposure: dict, snapshot: RegimeRiskSnapshot) -> int:
+    def regime_risk_long_target_cap(regime_exposure: dict, snapshot: RegimeRiskSnapshot) -> int:
         base_cap = direction_max_positions(regime_exposure, "LONG")
-        stress_cap = shock_stress_direction_cap(regime, "LONG", base_cap)
         if snapshot.tier >= EXTREME_STRESS:
-            return min(stress_cap, REGIME_RISK_EXTREME_MAX_LONG_POSITIONS)
+            return min(base_cap, REGIME_RISK_EXTREME_MAX_LONG_POSITIONS)
         if snapshot.tier >= HIGH_STRESS:
-            return min(stress_cap, REGIME_RISK_HIGH_MAX_LONG_POSITIONS)
-        return stress_cap
+            return min(base_cap, REGIME_RISK_HIGH_MAX_LONG_POSITIONS)
+        return base_cap
 
-    def regime_risk_short_target_cap(regime: Any, regime_exposure: dict) -> int:
-        base_cap = direction_max_positions(regime_exposure, "SHORT")
-        return shock_stress_direction_cap(regime, "SHORT", base_cap)
+    def regime_risk_short_target_cap(regime_exposure: dict) -> int:
+        return direction_max_positions(regime_exposure, "SHORT")
 
     def regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
         snapshot: RegimeRiskSnapshot,
-        regime: Any,
         regime_exposure: dict,
         short_count: int,
     ) -> float | None:
         if short_count <= 0:
             return None
         short_risk = direction_risk_multiplier(regime_exposure, "SHORT")
-        short_cap = regime_risk_short_target_cap(regime, regime_exposure)
+        short_cap = regime_risk_short_target_cap(regime_exposure)
         short_side_reduced = short_risk <= 0.0 or short_cap < short_count
         if snapshot.tier <= 0 or short_side_reduced:
             return max(0.5, EXECUTION_SHORT_TRAILING_DISTANCE_PCT)
@@ -1142,7 +1111,7 @@ def run_backtest(
                 f"regime_risk_{snapshot.state.lower()}",
                 (
                     f"{snapshot.state}: {snapshot.reason}; raw_tier={snapshot.raw_tier}; "
-                    f"shock_score={snapshot.shock_score:.2f}; recovery_count={snapshot.recovery_count}."
+                    f"recovery_count={snapshot.recovery_count}."
                 ),
                 open_position_count=len(active_positions),
             ))
@@ -1192,7 +1161,6 @@ def run_backtest(
         short_stress_fall_or_exposure_reduction_stop_distance_pct = (
             regime_risk_short_stress_fall_or_exposure_reduction_stop_distance_pct(
                 snapshot,
-                regime,
                 regime_exposure,
                 len(short_positions),
             )
@@ -1386,7 +1354,7 @@ def run_backtest(
                 open_position_count=len(active_positions),
             ))
 
-        short_stress_fall_or_exposure_reduction_target_cap = regime_risk_short_target_cap(regime, regime_exposure)
+        short_stress_fall_or_exposure_reduction_target_cap = regime_risk_short_target_cap(regime_exposure)
         short_stress_fall_or_exposure_reduction_risk_multiplier = direction_risk_multiplier(
             regime_exposure,
             "SHORT",
@@ -1576,7 +1544,7 @@ def run_backtest(
         )
 
         if snapshot.tier >= HIGH_STRESS and REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS:
-            long_stress_rise_target_cap = regime_risk_long_target_cap(regime, regime_exposure, snapshot)
+            long_stress_rise_target_cap = regime_risk_long_target_cap(regime_exposure, snapshot)
             excess_longs = max(0, len(long_positions) - long_stress_rise_target_cap)
             for position in ranked_longs_for_stress_rise_close[:excess_longs]:
                 add_long_stress_rise_close_candidate(
@@ -1715,7 +1683,6 @@ def run_backtest(
         model: Any,
         active_positions: list[OpenPosition],
         *,
-        market_regime_snapshot: Any = None,
         log_progress_today: bool = False,
         context_label: str = "signal_bar_close",
         entry_after_ts: Optional[datetime] = None,
@@ -1749,29 +1716,16 @@ def run_backtest(
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
-            base_direction_cap = direction_max_positions(regime_exposure, direction)
-            direction_cap = shock_stress_direction_cap(regime, direction, base_direction_cap)
-            sleeve_may_expand_direction = (
-                direction_risk <= 0.0
-                and should_evaluate_disabled_direction(regime_label, direction)
-            )
+            direction_cap = direction_max_positions(regime_exposure, direction)
             if (
                 direction_risk <= 0.0
                 and direction_cap <= 0
-                and not sleeve_may_expand_direction
             ):
-                if direction == "LONG" and _market_regime_active(market_regime_snapshot):
-                    reason_code = "market_regime_long_direction_disabled"
-                    reason_text = (
-                        f"Market regime {market_regime_snapshot.state} adjusted long risk and max long "
-                        f"positions to zero; {market_regime_snapshot.reason}"
-                    )
-                else:
-                    reason_code = "regime_direction_disabled"
-                    reason_text = (
-                        f"Regime label {regime_label} assigned zero risk and zero max "
-                        f"{direction.lower()} positions."
-                    )
+                reason_code = "regime_direction_disabled"
+                reason_text = (
+                    f"Regime label {regime_label} assigned zero risk and zero max "
+                    f"{direction.lower()} positions."
+                )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1793,20 +1747,12 @@ def run_backtest(
                 continue
 
             direction_open_count = _direction_open_count(active_positions, direction)
-            if not sleeve_may_expand_direction and direction_open_count >= direction_cap:
-                if direction == "LONG" and _market_regime_active(market_regime_snapshot):
-                    reason_code = "market_regime_long_cap_reached"
-                    reason_text = (
-                        f"Market regime {market_regime_snapshot.state} allows {direction_cap} open "
-                        f"long positions; {direction_open_count} were already open. "
-                        f"{market_regime_snapshot.reason}"
-                    )
-                else:
-                    reason_code = "max_direction_positions_reached"
-                    reason_text = (
-                        f"Regime label {regime_label} allows {direction_cap} open "
-                        f"{direction.lower()} positions; {direction_open_count} were already open."
-                    )
+            if direction_open_count >= direction_cap:
+                reason_code = "max_direction_positions_reached"
+                reason_text = (
+                    f"Regime label {regime_label} allows {direction_cap} open "
+                    f"{direction.lower()} positions; {direction_open_count} were already open."
+                )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -2266,11 +2212,9 @@ def run_backtest(
         blocked_identities: set[InstrumentKey],
         *,
         require_entry_window: bool = False,
-        day_start_equity: Optional[float] = None,
         day_open_limit: Optional[int] = None,
         day_open_count: int = 0,
         hour_open_counts: Optional[dict[datetime, int]] = None,
-        market_regime_snapshot: Any = None,
     ) -> int:
         if SECTOR_DIVERSIFICATION_ENABLED:
             open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
@@ -2303,11 +2247,6 @@ def run_backtest(
         direction_order = sorted(
             DIRECTIONS,
             key=lambda d: (
-                1
-                if d == "SHORT"
-                and _market_regime_active(market_regime_snapshot)
-                and direction_risk_multiplier(regime_exposure, "SHORT") > 0.0
-                else 0,
                 direction_risk_multiplier(regime_exposure, d),
                 direction_max_positions(regime_exposure, d),
             ),
@@ -2337,20 +2276,13 @@ def run_backtest(
                 regime_exposure,
                 portfolio_drawdown_snapshot,
             )
-            guard_day_start_equity = day_start_equity if day_start_equity is not None else account_equity_current
             initial_margin = sum(_active_margin_used(p) for p in active_positions)
             maintenance_margin = sum(_active_maintenance_margin_used(p) for p in active_positions)
             available_funds = account_equity_current - initial_margin
             excess_liquidity = account_equity_current - maintenance_margin
             direction_risk = direction_risk_multiplier(plan_regime_exposure, plan.direction)
             direction_cap = direction_max_positions(plan_regime_exposure, plan.direction)
-            sleeve_risk = risk_off_long_sleeve_risk(plan, regime_label)
-            if sleeve_risk is not None and direction_risk <= 0.0:
-                direction_risk = sleeve_risk
-                direction_cap = max(direction_cap, SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS)
-            else:
-                direction_risk *= plan.shock_risk_multiplier
-            direction_cap = shock_stress_direction_cap(regime, plan.direction, direction_cap)
+            direction_risk *= plan.shock_risk_multiplier
             if event:
                 event.open_positions = len(active_positions)
                 event.max_open_positions = MAX_OPEN_POSITIONS
@@ -2384,13 +2316,7 @@ def run_backtest(
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    if plan.direction == "LONG" and _market_regime_active(market_regime_snapshot):
-                        event.reason_code = "market_regime_long_risk_zero"
-                        event.reason_text = (
-                            f"Market regime {market_regime_snapshot.state} adjusted long risk to zero; "
-                            f"{market_regime_snapshot.reason}"
-                        )
-                    elif (
+                    if (
                         plan.direction == "LONG"
                         and portfolio_drawdown_snapshot.enabled
                         and portfolio_drawdown_snapshot.tier > 0
@@ -2404,41 +2330,11 @@ def run_backtest(
                         event.reason_code = "regime_direction_risk_zero"
                         event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                 continue
-            stress_plan_block = shock_stress_plan_block_reason(plan, regime)
-            if stress_plan_block is not None:
-                reason_code, reason_text = stress_plan_block
-                if event:
-                    event.decision_stage = "portfolio_filter"
-                    event.decision = "blocked"
-                    event.reason_code = reason_code
-                    event.reason_text = reason_text
-                continue
-            stress_portfolio_block = shock_stress_portfolio_block_reason(
-                regime,
-                account_equity_current,
-                guard_day_start_equity,
-                snapshot.open_pnl,
-            )
-            if stress_portfolio_block is not None:
-                reason_code, reason_text = stress_portfolio_block
-                if event:
-                    event.decision_stage = "portfolio_filter"
-                    event.decision = "blocked"
-                    event.reason_code = reason_code
-                    event.reason_text = reason_text
-                continue
             if _direction_open_count(active_positions, plan.direction) >= direction_cap:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    if plan.direction == "LONG" and _market_regime_active(market_regime_snapshot):
-                        event.reason_code = "market_regime_long_cap_reached"
-                        event.reason_text = (
-                            f"Market regime {market_regime_snapshot.state} allows {direction_cap} open "
-                            f"long positions; this limit was already reached. "
-                            f"{market_regime_snapshot.reason}"
-                        )
-                    elif (
+                    if (
                         plan.direction == "LONG"
                         and portfolio_drawdown_snapshot.enabled
                         and portfolio_drawdown_snapshot.tier > 0
@@ -2462,17 +2358,6 @@ def run_backtest(
                     event.decision = "blocked"
                     event.reason_code = "max_open_positions_reached"
                     event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
-                continue
-            sector_limit = shock_stress_sector_limit(regime)
-            if sector_limit is not None and _same_direction_sector_open_count(active_positions, plan) >= sector_limit:
-                if event:
-                    event.decision_stage = "portfolio_filter"
-                    event.decision = "blocked"
-                    event.reason_code = "shock_stress_sector_cap_reached"
-                    event.reason_text = (
-                        f"max_shock_type_score stress guard allows {sector_limit} open "
-                        f"{plan.direction.lower()} positions in sector {plan.sector or '-'}."
-                    )
                 continue
             if not plan.allow_multiple_positions_per_instrument and plan.identity_key in open_identities:
                 if event:
@@ -2730,24 +2615,16 @@ def run_backtest(
 
         regime_label, regime_exposure = regime_exposure_for_label(regime.label)
         reset_regime_days = update_portfolio_drawdown_reset_regime_days(regime_label)
-        day_market_regime_snapshot = get_market_regime_snapshot(conn, day_decision_ts)
-        day_regime_exposure = apply_market_regime_exposure_overlay(
-            regime_exposure,
-            day_market_regime_snapshot,
-        )
+        day_regime_exposure = regime_exposure
         if log_progress_today:
             log.info(
-                "Regime exposure day %d/%d %s model %s label %s score %.1f market state %s market drawdown %.2f long risk %.2f short risk %.2f max long %d max short %d",
+                "Regime exposure day %d/%d %s model %s label %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 regime_label,
                 regime.score,
-                day_market_regime_snapshot.state,
-                day_market_regime_snapshot.drawdown_pct
-                if day_market_regime_snapshot.drawdown_pct is not None
-                else 0.0,
                 direction_risk_multiplier(day_regime_exposure, "LONG"),
                 direction_risk_multiplier(day_regime_exposure, "SHORT"),
                 direction_max_positions(day_regime_exposure, "LONG"),
@@ -2763,7 +2640,7 @@ def run_backtest(
         day_pnl += pnl_before_regime_risk
 
         if REGIME_RISK_MANAGEMENT_ENABLED:
-            regime_risk_snapshot = regime_risk_tracker.update(regime_label, regime)
+            regime_risk_snapshot = regime_risk_tracker.update(regime_label)
             open_positions, closed_by_regime_risk, pnl_by_regime_risk, regime_risk_events = apply_regime_risk_management(
                 day,
                 day_decision_ts,
@@ -2782,14 +2659,13 @@ def run_backtest(
                     1 for event in regime_risk_events if event.decision == "scheduled_close"
                 )
                 log.info(
-                    "Regime risk day %d/%d %s model %s state %s raw tier %d shock %.1f closed %d scheduled %d day pnl %.0f open %d",
+                    "Regime risk day %d/%d %s model %s state %s raw tier %d closed %d scheduled %d day pnl %.0f open %d",
                     day_idx,
                     len(trading_days),
                     day,
                     runtime.CURRENT_MODEL_FILE,
                     regime_risk_snapshot.state,
                     regime_risk_snapshot.raw_tier,
-                    regime_risk_snapshot.shock_score,
                     closed_by_regime_risk,
                     scheduled_by_regime_risk,
                     day_pnl,
@@ -2817,7 +2693,6 @@ def run_backtest(
         if all(
             direction_risk_multiplier(day_regime_exposure, direction) <= 0.0
             and direction_max_positions(day_regime_exposure, direction) <= 0
-            and not should_evaluate_disabled_direction(regime_label, direction)
             for direction in DIRECTIONS
         ):
             days_no_active_budget += 1
@@ -2833,8 +2708,8 @@ def run_backtest(
                 decision="skipped_day",
                 reason_code="no_regime_exposure_budget",
                 reason_text=(
-                    f"Regime label {regime_label} and market regime {day_market_regime_snapshot.state} "
-                    "assigned zero risk and zero max positions to both directions."
+                    f"Regime label {regime_label} assigned zero risk and zero max positions "
+                    "to both directions."
                 ),
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
@@ -3014,11 +2889,7 @@ def run_backtest(
                 )
                 continue
 
-            signal_market_regime_snapshot = get_market_regime_snapshot(conn, signal_decision_ts)
-            signal_regime_exposure = apply_market_regime_exposure_overlay(
-                regime_exposure,
-                signal_market_regime_snapshot,
-            )
+            signal_regime_exposure = regime_exposure
             (
                 signal_plans_by_direction,
                 signal_plan_events,
@@ -3033,7 +2904,6 @@ def run_backtest(
                 signal_regime_exposure,
                 model,
                 open_positions,
-                market_regime_snapshot=signal_market_regime_snapshot,
                 log_progress_today=log_progress_today,
                 context_label="signal_bar_close",
                 entry_after_ts=signal_bar_start_ts,
@@ -3060,11 +2930,9 @@ def run_backtest(
                 open_positions,
                 used_identities_today,
                 require_entry_window=True,
-                day_start_equity=day_start_equity,
                 day_open_limit=day_open_limit,
                 day_open_count=opened_today,
                 hour_open_counts=opened_by_hour,
-                market_regime_snapshot=signal_market_regime_snapshot,
             )
             buffer_decision_events(signal_decision_events)
 

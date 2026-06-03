@@ -77,15 +77,12 @@ def create_run(
         COMMON_STOP_ATR_MULT,
         COMMON_MIN_STOP_PCT,
         COMMON_MAX_STOP_PCT,
-        SHOCK_OVERLAY_MODE,
         SHOCK_OVERLAY_POLICY_FILE,
         SHOCK_OVERLAY_MIN_SHOCK_SCORE,
         SHOCK_OVERLAY_FULL_SHOCK_SCORE,
         SHOCK_OVERLAY_MAX_INTENT_SCORE_DELTA,
         SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT,
         SHOCK_OVERLAY_MAX_RISK_CUT_PCT,
-        SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED,
-        SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS,
     )
     if reserved_run_id is not None:
         params = (reserved_run_id, *params)
@@ -118,12 +115,10 @@ def create_run(
                 common_stop_loss_enabled, common_stop_lookback_bars, common_stop_buffer,
                 common_stop_atr_lookback_bars, common_stop_atr_mult,
                 common_min_stop_pct, common_max_stop_pct,
-                shock_overlay_mode, shock_overlay_policy_file,
+                shock_overlay_policy_file,
                 shock_overlay_min_shock_score, shock_overlay_full_shock_score,
                 shock_overlay_max_intent_score_delta,
-                shock_overlay_max_risk_uplift_pct, shock_overlay_max_risk_cut_pct,
-                shock_overlay_risk_off_long_sleeve_enabled,
-                shock_overlay_risk_off_long_sleeve_max_positions
+                shock_overlay_max_risk_uplift_pct, shock_overlay_max_risk_cut_pct
             ) VALUES (
                 {run_id_placeholder}%s, %s, %s, to_char(NOW() AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI'), %s,
                 %s,
@@ -147,8 +142,6 @@ def create_run(
                 %s, %s,
                 %s, %s, %s,
                 %s, %s,
-                %s, %s,
-                %s,
                 %s, %s,
                 %s,
                 %s

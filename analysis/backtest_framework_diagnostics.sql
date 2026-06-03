@@ -21,8 +21,7 @@ SELECT
     r.win_rate_pct,
     r.profit_factor,
     r.risk_per_trade_pct,
-    r.max_open_positions,
-    r.shock_overlay_mode
+    r.max_open_positions
 FROM public.backtest_runs r
 JOIN selected_runs s USING (run_id)
 ORDER BY r.run_id;

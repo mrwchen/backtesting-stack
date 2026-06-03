@@ -241,10 +241,7 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "ps_share_cfd_admin_fee_pct",
         "ps_share_cfd_short_borrow_rate_pct",
         "ps_share_cfd_overnight_day_count",
-        "shock_overlay_mode",
         "shock_overlay_policy_file",
-        "shock_overlay_risk_off_long_sleeve_enabled",
-        "shock_overlay_risk_off_long_sleeve_max_positions",
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
         "run_id", "symbol", "exchange", "cik", "entry_ts", "margin_hours_usd",

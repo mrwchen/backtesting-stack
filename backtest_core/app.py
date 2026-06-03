@@ -239,41 +239,6 @@ def log_backtest_context(model_files: list[str]) -> None:
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
     log.info(
-        "Shock stress guard enabled %s elevated %.1f high %.1f extreme %.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d sector cap enabled %s sector caps %d/%d/%d portfolio guard %s daily loss %.2f open loss %.2f",
-        SHOCK_STRESS_GUARD_ENABLED,
-        SHOCK_STRESS_GUARD_ELEVATED_SCORE,
-        SHOCK_STRESS_GUARD_HIGH_SCORE,
-        SHOCK_STRESS_GUARD_EXTREME_SCORE,
-        SHOCK_STRESS_LONG_RISK_MULTIPLIER_ELEVATED,
-        SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH,
-        SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME,
-        SHOCK_STRESS_MAX_LONG_POSITIONS_ELEVATED,
-        SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH,
-        SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME,
-        SHOCK_STRESS_SECTOR_CAP_ENABLED,
-        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_ELEVATED,
-        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH,
-        SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME,
-        SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED,
-        SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT,
-        SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT,
-    )
-    log.info(
-        "Market regime guard enabled %s symbol %s lookback days %d drawdown thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d",
-        MARKET_REGIME_GUARD_ENABLED,
-        MARKET_REGIME_SYMBOL,
-        MARKET_REGIME_LOOKBACK_DAYS,
-        MARKET_REGIME_ELEVATED_DRAWDOWN_PCT,
-        MARKET_REGIME_HIGH_DRAWDOWN_PCT,
-        MARKET_REGIME_EXTREME_DRAWDOWN_PCT,
-        MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED,
-        MARKET_REGIME_LONG_RISK_MULTIPLIER_HIGH,
-        MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME,
-        MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED,
-        MARKET_REGIME_MAX_LONG_POSITIONS_HIGH,
-        MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME,
-    )
-    log.info(
         "Portfolio drawdown circuit breaker enabled %s thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d reset on regime %s label %s consecutive days %d",
         PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED,
         PORTFOLIO_DRAWDOWN_WARN_PCT,
@@ -290,15 +255,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS,
     )
     log.info(
-        "Regime risk management enabled %s neutral elevated %s confirm days elevated/high/extreme/recovery %d/%d/%d/%d exit scores %.1f/%.1f max close fraction %.2f cooldown days %d long stop distances %.2f/%.2f/%.2f long caps high/extreme %d/%d close excess %s close risk-off longs %s",
+        "Regime risk management enabled %s neutral elevated %s confirm days elevated/high/extreme/recovery %d/%d/%d/%d max close fraction %.2f cooldown days %d long stop distances %.2f/%.2f/%.2f long caps high/extreme %d/%d close excess %s close risk-off longs %s",
         REGIME_RISK_MANAGEMENT_ENABLED,
         REGIME_RISK_NEUTRAL_IS_ELEVATED,
         REGIME_RISK_ELEVATED_CONFIRM_DAYS,
         REGIME_RISK_HIGH_CONFIRM_DAYS,
         REGIME_RISK_EXTREME_CONFIRM_DAYS,
         REGIME_RISK_RECOVERY_CONFIRM_DAYS,
-        REGIME_RISK_ELEVATED_EXIT_SCORE,
-        REGIME_RISK_HIGH_EXIT_SCORE,
         REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY,
         REGIME_RISK_POSITION_COOLDOWN_DAYS,
         REGIME_RISK_ELEVATED_LONG_MAX_STOP_DISTANCE_PCT,

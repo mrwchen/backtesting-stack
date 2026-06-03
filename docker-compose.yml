@@ -69,7 +69,6 @@ services:
       # ---------------------------------------------------------------------
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
-      - RUN_NOTES_EXTRA=market_regime_drawdown_breaker_v1
 
       # ---------------------------------------------------------------------
       # Quelltabellen und Point-in-Time-Sicherheit
@@ -243,37 +242,11 @@ services:
       - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=3
 
       # ---------------------------------------------------------------------
-      # Schnelles Market-Regime.
-      #
-      # Market-Regime nutzt QQQ 1h-Daten point-in-time und reagiert auf den
-      # 60-Tage-Drawdown deutlich schneller als das Macro-/World-Regime.
-      # Bei Stress werden Long-Budgets gekappt.
-      # ---------------------------------------------------------------------
-      - MARKET_REGIME_GUARD_ENABLED=true
-      - MARKET_REGIME_SYMBOL=QQQ
-      - MARKET_REGIME_TZ=America/New_York
-      - MARKET_REGIME_LOOKBACK_DAYS=30
-      - MARKET_REGIME_MIN_HISTORY_DAYS=20
-      - MARKET_REGIME_ELEVATED_DRAWDOWN_PCT=5.0
-      - MARKET_REGIME_HIGH_DRAWDOWN_PCT=10.0
-      - MARKET_REGIME_EXTREME_DRAWDOWN_PCT=15.0
-      - MARKET_REGIME_MA_CONFIRM_ENABLED=true
-      - MARKET_REGIME_MA_SHORT_DAYS=20
-      - MARKET_REGIME_MA_LONG_DAYS=50
-      - MARKET_REGIME_MA_CONFIRM_TIER=1
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_ELEVATED=0.50
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_HIGH=0.20
-      - MARKET_REGIME_LONG_RISK_MULTIPLIER_EXTREME=0.0
-      - MARKET_REGIME_MAX_LONG_POSITIONS_ELEVATED=2
-      - MARKET_REGIME_MAX_LONG_POSITIONS_HIGH=1
-      - MARKET_REGIME_MAX_LONG_POSITIONS_EXTREME=0
-
-      # ---------------------------------------------------------------------
       # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
       #
       # Wirkt einmal pro Trading-Tag vor neuen Entries, nutzt nur das World-
       # Regime as-of Vortag und reagiert erst nach bestaetigten Stress-Tagen.
-      # Recovery wird langsamer bestaetigt, damit taegliches Score-Zappeln nicht
+      # Recovery wird langsamer bestaetigt, damit taegliches Regime-Zappeln nicht
       # staendig Closings oder Stop-Aenderungen ausloest.
       # ---------------------------------------------------------------------
       - REGIME_RISK_MANAGEMENT_ENABLED=true
@@ -282,8 +255,6 @@ services:
       - REGIME_RISK_HIGH_CONFIRM_DAYS=1
       - REGIME_RISK_EXTREME_CONFIRM_DAYS=1
       - REGIME_RISK_RECOVERY_CONFIRM_DAYS=2
-      - REGIME_RISK_ELEVATED_EXIT_SCORE=55.0
-      - REGIME_RISK_HIGH_EXIT_SCORE=65.0
       - REGIME_RISK_MAX_CLOSE_FRACTION_PER_DAY=0.50
       - REGIME_RISK_POSITION_COOLDOWN_DAYS=1
 
@@ -331,13 +302,9 @@ services:
       # Shock-Overlay-Policy.
       #
       # Modellunabhaengige Zusatzlogik auf Basis der World-Regime-Shock-Scores.
-      # off = deaktiviert, score_only = nur Intent-Score-Anpassung,
-      # risk_only = nur Positionsgroessen-Anpassung,
-      # score_and_risk = Score und Risiko, full = inklusive Risk-Off-Long-Sleeve.
+      # Das Overlay passt Intent-Score und Positionsgroesse anhand der Excel-
+      # Policy an.
       # ---------------------------------------------------------------------
-
-      # Hauptmodus des klassischen Shock-Overlays.
-      - SHOCK_OVERLAY_MODE=score_and_risk
 
       # Excel-Policy mit Sektor-Bias und Sonderregeln.
       - SHOCK_OVERLAY_POLICY_FILE=backtest_policy_configs/shock_overlay_policy.xlsx
@@ -359,10 +326,6 @@ services:
       # Maximaler Risikoschnitt bei negativem Shock-Sektor-Bias.
       - SHOCK_OVERLAY_MAX_RISK_CUT_PCT=10.0
 
-      # false bedeutet: das Overlay darf nur bestehende Modell-Intents veraendern,
-      # aber keine neuen Intents erzeugen, die das Modell selbst nicht erzeugt hat.
-      - SHOCK_OVERLAY_ALLOW_NEW_INTENTS=false
-
       # Bewertungslabels, bei denen Long-Boosts bzw. Short-Boosts blockiert werden.
       - SHOCK_OVERLAY_BLOCK_LONG_LABELS=insufficient_data,value_trap
       - SHOCK_OVERLAY_BLOCK_SHORT_LABELS=
@@ -371,59 +334,6 @@ services:
       # negativen Earnings verhindern.
       - SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_HIGH_LEVERAGE_CREDIT=true
       - SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_NEGATIVE_EARNINGS=true
-
-      # Optionaler Sondermodus fuer sehr kleine Long-Positionen in Risk-Off.
-      # Greift nur im SHOCK_OVERLAY_MODE=full.
-      - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_ENABLED=false
-      - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MAX_POSITIONS=1
-      - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_BIAS=0.60
-      - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_MIN_INTENT_SCORE=8.0
-      - SHOCK_OVERLAY_RISK_OFF_LONG_SLEEVE_RISK_MULTIPLIER=0.15
-
-      # ---------------------------------------------------------------------
-      # Shock-Stress-Guard.
-      #
-      # Zusaetzlicher Schutz auf Basis von max_shock_type_score. Diese Guards
-      # greifen nach Portfolio-Drawdown auf konkrete Entry-Plans und Caps.
-      # ---------------------------------------------------------------------
-
-      # Hauptschalter fuer den zusaetzlichen max_shock_type_score Stress-Guard.
-      # false deaktiviert alle SHOCK_STRESS_* Risk-Cuts, Caps und Blocks darunter.
-      - SHOCK_STRESS_GUARD_ENABLED=true
-
-      # Stress-Schwellen auf Basis von world-regime max_shock_type_score.
-      - SHOCK_STRESS_GUARD_ELEVATED_SCORE=60.0
-      - SHOCK_STRESS_GUARD_HIGH_SCORE=70.0
-      - SHOCK_STRESS_GUARD_EXTREME_SCORE=80.0
-
-      # Long-Risiko-Multiplikatoren je Stress-Stufe.
-      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_ELEVATED=0.85
-      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_HIGH=0.65
-      - SHOCK_STRESS_LONG_RISK_MULTIPLIER_EXTREME=0.35
-
-      # Maximale offene Long-Positionen je Stress-Stufe.
-      - SHOCK_STRESS_MAX_LONG_POSITIONS_ELEVATED=2
-      - SHOCK_STRESS_MAX_LONG_POSITIONS_HIGH=1
-      - SHOCK_STRESS_MAX_LONG_POSITIONS_EXTREME=0
-
-      # Sektor-Konzentrationsbremse waehrend Stress-Phasen.
-      - SHOCK_STRESS_SECTOR_CAP_ENABLED=true
-      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_ELEVATED=2
-      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_HIGH=1
-      - SHOCK_STRESS_MAX_POSITIONS_PER_SECTOR_EXTREME=1
-
-      # Blockt Long-Entries, wenn der Shock-Sektor-Bias negativ ist.
-      - SHOCK_STRESS_BLOCK_NEGATIVE_BIAS_LONGS=true
-
-      # Begrenzt Short-Risiko-Uplifts bei hohem Credit-/Banking-Stress.
-      - SHOCK_STRESS_CREDIT_STRESS_MIN_SCORE=70.0
-      - SHOCK_STRESS_SHORT_MAX_RISK_MULTIPLIER_CREDIT=1.0
-
-      # Portfolio-Selbstschutz waehrend Stress-Phasen.
-      # Blockt neue Entries, wenn Tagesverlust oder Open-PnL-Verlust zu gross wird.
-      - SHOCK_STRESS_PORTFOLIO_GUARD_ENABLED=true
-      - SHOCK_STRESS_PORTFOLIO_DAILY_LOSS_LIMIT_PCT=1.5
-      - SHOCK_STRESS_PORTFOLIO_OPEN_LOSS_LIMIT_PCT=1.5
 
       # ---------------------------------------------------------------------
       # Gemeinsame Policy: fundamentale Eligibility

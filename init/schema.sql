@@ -95,15 +95,12 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     common_stop_atr_mult NUMERIC(8,4) NOT NULL,
     common_min_stop_pct NUMERIC(6,3) NOT NULL,
     common_max_stop_pct NUMERIC(6,3) NOT NULL,
-    shock_overlay_mode TEXT NOT NULL DEFAULT 'off',
     shock_overlay_policy_file TEXT,
     shock_overlay_min_shock_score NUMERIC(5,2),
     shock_overlay_full_shock_score NUMERIC(5,2),
     shock_overlay_max_intent_score_delta NUMERIC(8,4),
     shock_overlay_max_risk_uplift_pct NUMERIC(6,2),
     shock_overlay_max_risk_cut_pct NUMERIC(6,2),
-    shock_overlay_risk_off_long_sleeve_enabled BOOLEAN,
-    shock_overlay_risk_off_long_sleeve_max_positions INTEGER,
 
     -- Results summary (filled after run completes)
     run_duration_seconds NUMERIC(12,3),
