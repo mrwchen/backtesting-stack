@@ -1867,6 +1867,7 @@ def run_backtest(
             sl_close_timestamps=[],
         )
         daily_policy_state.refresh_portfolio_drop_halt(daily_portfolio_returns)
+        daily_policy_state.refresh_previous_market_drop_halt(conn)
         regime_label = daily_policy_context.regime_label
         regime_exposure = daily_policy_context.exposure
         day_regime_exposure = regime_exposure

@@ -14,6 +14,7 @@ Umgang mit neuen Positionen:
     - wenn an einem Tag innerhalb von 2 Stunden 3 Positionen wegen SL geschlossen wurden.
     - wenn VOO an einem Tag seit Opening um 9:30 NYC Zeit mehr als 3.5 Prozent fällt. Tages-Open ist das Open der ersten NY-Regular-Session-1h-Kerze. Nimm zur Prüfung die Low bar. 
     - wenn in den letzten 2 Handelstagen das Portfolio an einem Tag um 5% oder mehr gefallen ist
+    - wenn im vorherigen Handelstag VOO mehr als 4 Prozent gefallen ist
 - Standard risk ist 1.5 prozent
 
 

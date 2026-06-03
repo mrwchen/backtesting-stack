@@ -32,6 +32,9 @@ from .config import (
     DAILY_POLICY_PREFERRED_INDUSTRY,
     DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS,
     DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT,
+    DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD,
+    DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL,
+    DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT,
     DAILY_POLICY_PRUNE_TIME,
     DAILY_POLICY_PRUNE_TIME_TZ,
     DAILY_POLICY_SL_HALT_COUNT,
@@ -102,6 +105,16 @@ class MarketDropSnapshot:
     drop_pct: float = 0.0
 
 
+@dataclass(frozen=True)
+class PreviousMarketDropSnapshot:
+    available: bool
+    day: Optional[date] = None
+    open_ts: Optional[datetime] = None
+    open_price: Optional[float] = None
+    comparison_price: Optional[float] = None
+    drop_pct: float = 0.0
+
+
 @dataclass
 class DailyPolicyRuntimeState:
     context: DailyPositionPolicyContext
@@ -111,6 +124,7 @@ class DailyPolicyRuntimeState:
     halt_reason_code: str = ""
     halt_reason_text: str = ""
     market_drop_snapshot: Optional[MarketDropSnapshot] = None
+    previous_market_drop_snapshot: Optional[PreviousMarketDropSnapshot] = None
     prune_done: bool = False
 
     def record_open(self, ts: datetime) -> None:
@@ -172,6 +186,26 @@ class DailyPolicyRuntimeState:
             f"{DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT:.2f}% within the last "
             f"{DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS} trading days."
         )
+
+    def refresh_previous_market_drop_halt(self, conn: psycopg2.extensions.connection) -> None:
+        if self.halted or DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT <= 0.0:
+            return
+        if not self.context.previous_trading_days:
+            return
+        previous_day = self.context.previous_trading_days[-1]
+        snapshot = previous_market_drop_snapshot(conn, previous_day)
+        self.previous_market_drop_snapshot = snapshot
+        if not snapshot.available or snapshot.open_price is None:
+            return
+        if snapshot.drop_pct > DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT:
+            self.halted = True
+            self.halt_reason_code = "daily_policy_previous_market_drop_halt"
+            self.halt_reason_text = (
+                f"{DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL} fell {snapshot.drop_pct:.2f}% on "
+                f"previous trading day {previous_day} from the regular-session open "
+                f"{snapshot.open_price:.4f}; threshold is > "
+                f"{DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT:.2f}%."
+            )
 
     def entry_check(self, entry_ts: datetime) -> DailyPolicyEntryCheck:
         entry_ts = _ensure_utc_ts(entry_ts)
@@ -389,6 +423,62 @@ def market_drop_snapshot(
         min_price = min(bar[2] for bar in completed_bars)
     drop_pct = max(0.0, (open_price - min_price) / open_price * 100.0)
     return MarketDropSnapshot(True, open_ts=open_ts, open_price=open_price, min_price=min_price, drop_pct=drop_pct)
+
+
+def previous_market_drop_snapshot(
+    conn: psycopg2.extensions.connection,
+    day: date,
+) -> PreviousMarketDropSnapshot:
+    symbol = DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL.strip().upper()
+    if not symbol:
+        return PreviousMarketDropSnapshot(False)
+    zone = ZoneInfo(DAILY_POLICY_MARKET_DROP_TZ)
+    local_start = datetime(day.year, day.month, day.day, tzinfo=zone)
+    local_end = local_start + timedelta(days=1)
+    with conn.cursor() as cur:
+        cur.execute(
+            (
+                "SELECT ts, open, low, close "
+                "FROM {} "
+                "WHERE symbol = %s AND ts >= %s AND ts < %s "
+                "ORDER BY ts"
+            ).format(relation_identifier(SOURCE_MARKET_DATA_1H_TABLE).as_string(conn)),
+            (symbol, local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return PreviousMarketDropSnapshot(False, day=day)
+
+    session_start = _parse_time(DAILY_POLICY_MARKET_DROP_SESSION_START)
+    session_end = _parse_time(DAILY_POLICY_MARKET_DROP_SESSION_END)
+    bars = [(_ensure_utc_ts(ts), float(open_), float(low), float(close)) for ts, open_, low, close in rows]
+    open_bar = _first_session_open_bar(bars, zone, day, session_start)
+    if open_bar is None:
+        return PreviousMarketDropSnapshot(False, day=day)
+
+    open_ts, open_price, _open_low, _open_close = open_bar
+    if open_price <= 0.0:
+        return PreviousMarketDropSnapshot(False, day=day)
+    session_bars = [
+        bar
+        for bar in bars
+        if bar[0] >= open_ts and _bar_local_time_in_session(bar[0], zone, session_start, session_end)
+    ]
+    if not session_bars:
+        return PreviousMarketDropSnapshot(False, day=day)
+    if DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD == "low":
+        comparison_price = min(bar[2] for bar in session_bars)
+    else:
+        comparison_price = session_bars[-1][3]
+    drop_pct = max(0.0, (open_price - comparison_price) / open_price * 100.0)
+    return PreviousMarketDropSnapshot(
+        True,
+        day=day,
+        open_ts=open_ts,
+        open_price=open_price,
+        comparison_price=comparison_price,
+        drop_pct=drop_pct,
+    )
 
 
 def _daily_exposure_numbers(

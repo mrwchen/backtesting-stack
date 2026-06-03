@@ -202,34 +202,58 @@ services:
       # die steigenden bzw. fallenden MA-Schritte fuer die Stressphase.
       #
       # Daily-Halts stoppen neue Entries fuer den restlichen Trading-Tag:
-      # SL-Cluster, VOO-Drop ab NY-Regular-Open und Portfolio-Tagesverlust.
+      # SL-Cluster, VOO-Drop ab NY-Regular-Open, Portfolio-Tagesverlust und
+      # VOO-Rueckgang am vorherigen Handelstag.
       # PRUNE_TIME schliesst um 11:00 NY die schlechtesten Positionen, falls
       # mehr Positionen offen sind als das Tageslimit erlaubt.
       #
       # Tech-Stress blockiert Technology-Longs; Energy-Shock kann Oil & Gas
       # Integrated als bevorzugte Industry an Modelle weitergeben.
       # ---------------------------------------------------------------------
+      # Basis der Tageslogik: Zeitzone, World-Regime-MA und getrennte Trend-
+      # Laengen fuer die Phasen Stress baut sich auf / Stress nimmt ab.
       - DAILY_POLICY_TZ=America/New_York
       - DAILY_POLICY_WORLD_REGIME_MA_DAYS=5
       - DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS=2
       - DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS=2
+
+      # World-Regime-Schwellen: bis STRESS_THRESHOLD gilt Low Stress; ueber
+      # HIGH_STRESS_THRESHOLD gilt harte High-Stress-Positionierung.
       - DAILY_POLICY_WORLD_REGIME_STRESS_THRESHOLD=45.0
       - DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD=60.0
+
+      # Low-Stress-Budget und Startwert: legt Long/Short-Caps ohne Stress fest
+      # und initialisiert den Vortagswert fuer berechnete Long-Caps.
       - DAILY_POLICY_LOW_STRESS_MAX_LONG_POSITIONS=5
       - DAILY_POLICY_LOW_STRESS_MAX_SHORT_POSITIONS=0
       - DAILY_POLICY_INITIAL_PREVIOUS_MAX_LONG_POSITIONS=5
+
+      # Stress-Anpassungen: reduziert Risk pro Trade und verschiebt die
+      # berechneten Long-Caps je nach Stressphase relativ zum Vortag.
       - DAILY_POLICY_STRESS_RISK_REDUCTION_PCT=0.5
       - DAILY_POLICY_STRESS_BUILD_MAX_LONG_DELTA=-1
       - DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA=1
       - DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA=0
+
+      # High-Stress-Budget: harte Direction-Caps, wenn der World-Regime-MA
+      # oberhalb der High-Stress-Schwelle liegt.
       - DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS=0
       - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=2
+
+      # Entry-Taktung und SL-Cluster-Halt: begrenzt Abstand zwischen Opens und
+      # stoppt neue Entries nach zu vielen SL-Closes im Zeitfenster.
       - DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS=3.0
       - DAILY_POLICY_SL_HALT_WINDOW_HOURS=2.0
       - DAILY_POLICY_SL_HALT_COUNT=3
       - DAILY_POLICY_SL_HALT_STATUSES=HIT_SL
+
+      # Portfolio-Drop-Halt: stoppt neue Entries, wenn in den letzten
+      # Handelstagen ein Portfolio-Tagesverlust die Schwelle erreicht.
       - DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS=2
       - DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT=5.0
+
+      # Intraday-Market-Drop-Halt: prueft VOO ab NY-Regular-Open gegen das
+      # Low/Close der 1h-Bars und stoppt neue Entries am selben Tag.
       - DAILY_POLICY_MARKET_DROP_SYMBOL=VOO
       - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=4
       - DAILY_POLICY_MARKET_DROP_TZ=America/New_York
@@ -237,15 +261,34 @@ services:
       - DAILY_POLICY_MARKET_DROP_SESSION_END=16:00
       - DAILY_POLICY_MARKET_DROP_OPEN_BAR_MODE=at_or_after
       - DAILY_POLICY_MARKET_DROP_PRICE_FIELD=low
+
+      # Previous-Day-Market-Drop-Halt: prueft den vorherigen Handelstag und
+      # blockiert den heutigen Tag, wenn VOO Open->Close/Low stark fiel.
+      - DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL=VOO
+      - DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT=4.0
+      - DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD=close
+
+      # Tages-Prune: schliesst zur Uhrzeit die schlechtesten Positionen, bis
+      # Tages-Caps fuer Long/Short/Total wieder eingehalten werden.
       - DAILY_POLICY_PRUNE_TIME_TZ=America/New_York
       - DAILY_POLICY_PRUNE_TIME=11:00
+
+      # Tech-Stress-Sektorblock: blockiert Long-Entries im konfigurierten
+      # Sektor, wenn Tech-Stress im Lookback ueber der Schwelle lag.
       - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=3
       - DAILY_POLICY_TECH_STRESS_THRESHOLD=60.0
       - DAILY_POLICY_BLOCK_LONG_SECTOR=Technology
+
+      # Energy-Shock-Industry-Praeferenz: gibt eine bevorzugte Industry an die
+      # Modelle weiter, wenn Energy-Shock an allen Lookback-Tagen hoch war.
       - DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS=3
       - DAILY_POLICY_ENERGY_SHOCK_THRESHOLD=60.0
       - DAILY_POLICY_PREFERRED_INDUSTRY=Oil & Gas Integrated
+
+      # Historischer Lookback: Kalenderfenster, aus dem vorherige Handelstage
+      # fuer Regime-MA, Trend und Sonderregeln geladen werden.
       - DAILY_POLICY_LOOKBACK_CALENDAR_DAYS=45
+
       # INTENT_SCORE_CLUSTERING_ENABLED mischt Kandidaten nur innerhalb naher
       # Intent-Score-Cluster. Der Seed macht einzelne Runs reproduzierbar.
       - INTENT_SCORE_CLUSTERING_ENABLED=true
