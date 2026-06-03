@@ -34,7 +34,6 @@ from .market_data import (
     get_candidates,
     get_direct_symbol_candidates,
     get_trading_days,
-    get_world_regime,
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
@@ -45,9 +44,15 @@ from .market_data import (
     preload_candidate_timelines,
     signal_bar_close_decisions_for_day,
 )
-from .portfolio_drawdown import (
-    apply_portfolio_drawdown_exposure_overlay,
-    get_portfolio_drawdown_snapshot,
+from .daily_position_policy import (
+    DailyPolicyRuntimeState,
+    DailyPositionPolicyContext,
+    apply_daily_policy_context_to_config,
+    build_daily_position_policy_context,
+    daily_prune_ts,
+    initial_previous_max_long_positions,
+    long_sector_blocked,
+    preferred_industry_tier,
 )
 from .model_loader import (
     get_model_module,
@@ -61,7 +66,7 @@ from .policy import (
     direction_filter_negative_earnings,
     direction_max_positions,
     direction_risk_multiplier,
-    regime_exposure_for_label,
+    exposure_max_total_positions,
 )
 from .persistence import (
     create_run,
@@ -72,10 +77,6 @@ from .persistence import (
     write_trades,
 )
 from .regime_risk import ELEVATED, EXTREME_STRESS, HIGH_STRESS, RegimeRiskTracker, RegimeRiskSnapshot
-from .shock_overlay import (
-    apply_shock_overlay,
-    shock_sector_bias_for_sector,
-)
 from .trade_levels import (
     build_trade_plan,
     common_stop_required_lookback,
@@ -284,41 +285,6 @@ def _signal_bar_recency_rejection(
 
 def _plan_event_key(plan: TradePlan) -> tuple[str, tuple[str, str, int]]:
     return (plan.direction, plan.identity_key)
-
-
-def _copy_plan_shock_to_event(event: DecisionEvent, plan: TradePlan) -> None:
-    event.dominant_shock_type = plan.dominant_shock_type
-    event.max_shock_type_score = plan.max_shock_type_score
-    event.defensive_risk_off_score = plan.defensive_risk_off_score
-    event.energy_commodity_shock_score = plan.energy_commodity_shock_score
-    event.rates_inflation_usd_shock_score = plan.rates_inflation_usd_shock_score
-    event.credit_banking_stress_score = plan.credit_banking_stress_score
-    event.policy_geopolitical_score = plan.policy_geopolitical_score
-    event.tech_stress_shock_score = plan.tech_stress_shock_score
-    event.precious_metals_score = plan.precious_metals_score
-    event.industrial_metals_score = plan.industrial_metals_score
-    event.metals_mining_shock_score = plan.metals_mining_shock_score
-    event.metals_mining_subtype = plan.metals_mining_subtype
-    event.shock_sector_bias = plan.shock_sector_bias
-    event.shock_score_delta = plan.shock_score_delta
-    event.shock_risk_multiplier = plan.shock_risk_multiplier
-    event.shock_base_intent_score = plan.shock_base_intent_score
-
-
-def _copy_regime_shock_to_event(event: DecisionEvent, regime: Any, shock_sector_bias: float | None = None) -> None:
-    event.dominant_shock_type = regime.dominant_shock_type or ""
-    event.max_shock_type_score = regime.max_shock_type_score
-    event.defensive_risk_off_score = regime.defensive_risk_off_score
-    event.energy_commodity_shock_score = regime.energy_commodity_shock_score
-    event.rates_inflation_usd_shock_score = regime.rates_inflation_usd_shock_score
-    event.credit_banking_stress_score = regime.credit_banking_stress_score
-    event.policy_geopolitical_score = regime.policy_geopolitical_score
-    event.tech_stress_shock_score = regime.tech_stress_shock_score
-    event.precious_metals_score = regime.precious_metals_score
-    event.industrial_metals_score = regime.industrial_metals_score
-    event.metals_mining_shock_score = regime.metals_mining_shock_score
-    event.metals_mining_subtype = regime.metals_mining_subtype
-    event.shock_sector_bias = shock_sector_bias
 
 
 def _max_drawdown_pct_from_equity(equity_values: list[float]) -> float:
@@ -763,8 +729,6 @@ def run_backtest(
     regime_risk_tracker = RegimeRiskTracker()
     regime_risk_action_dates: dict[InstrumentKey, date] = {}
     portfolio_peak_equity = INITIAL_EQUITY
-    portfolio_drawdown_peak_equity = INITIAL_EQUITY
-    portfolio_drawdown_reset_regime_days = 0
 
     def flush_decision_events(force: bool = False) -> None:
         if not decision_event_buffer:
@@ -787,27 +751,6 @@ def run_backtest(
             portfolio_peak_equity = equity_value
         return portfolio_peak_equity
 
-    def update_portfolio_drawdown_peak(equity_value: float) -> float:
-        nonlocal portfolio_drawdown_peak_equity
-        if equity_value > portfolio_drawdown_peak_equity:
-            portfolio_drawdown_peak_equity = equity_value
-        return portfolio_drawdown_peak_equity
-
-    def reset_portfolio_drawdown_peak(equity_value: float) -> float:
-        nonlocal portfolio_drawdown_peak_equity
-        portfolio_drawdown_peak_equity = float(equity_value)
-        return portfolio_drawdown_peak_equity
-
-    def update_portfolio_drawdown_reset_regime_days(regime_label: str) -> int:
-        nonlocal portfolio_drawdown_reset_regime_days
-        if not PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED:
-            return 0
-        if str(regime_label or "").strip().upper() == PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL:
-            portfolio_drawdown_reset_regime_days += 1
-        else:
-            portfolio_drawdown_reset_regime_days = 0
-        return portfolio_drawdown_reset_regime_days
-
     def record_account_curve(as_of_ts: datetime, active_positions: list[OpenPosition]) -> None:
         nonlocal account_curve_seq
         account_curve_seq += 1
@@ -819,7 +762,6 @@ def run_backtest(
             as_of_ts,
         )
         update_portfolio_peak(snapshot.equity_with_loan_value)
-        update_portfolio_drawdown_peak(snapshot.equity_with_loan_value)
         account_curve.append(AccountCurvePoint(
             run_id=run_id,
             ts=as_of_ts,
@@ -1045,7 +987,6 @@ def run_backtest(
         reason_text: str,
         position: OpenPosition | None = None,
         current_price: float | None = None,
-        shock_sector_bias: float | None = None,
         open_position_count: int | None = None,
     ) -> DecisionEvent:
         event = DecisionEvent(
@@ -1082,7 +1023,6 @@ def run_backtest(
             position_size_usd=position.position_size_usd if position else None,
             shares=position.shares if position else None,
         )
-        _copy_regime_shock_to_event(event, regime, shock_sector_bias)
         return event
 
     def apply_regime_risk_management(
@@ -1135,27 +1075,11 @@ def run_backtest(
             )
 
         price_by_position: dict[int, tuple[datetime, float]] = {}
-        bias_by_position: dict[int, float] = {}
         for position in managed_positions:
             latest = latest_close_for_position(position, as_of_ts)
             if latest is None:
                 continue
             price_by_position[id(position)] = latest
-            try:
-                bias_by_position[id(position)] = shock_sector_bias_for_sector(
-                    position.plan.sector,
-                    position.direction,
-                    regime,
-                )
-            except Exception as exc:
-                bias_by_position[id(position)] = position.plan.shock_sector_bias
-                log.debug(
-                    "Regime risk sector bias fallback %s %s %s: %s",
-                    day,
-                    position.symbol,
-                    position.plan.sector,
-                    exc,
-                )
 
         long_stress_rise_stop_distance_pct = regime_risk_long_stress_rise_stop_distance_pct(snapshot)
         short_stress_fall_or_exposure_reduction_stop_distance_pct = (
@@ -1255,7 +1179,6 @@ def run_backtest(
                     position.regime_risk_stop_level = None
                     position.regime_risk_stop_state = ""
                     regime_risk_action_dates[position.identity_key] = day
-                    bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
                     latest = price_by_position.get(id(position))
                     current_price = latest[1] if latest else None
                     events.append(regime_risk_event(
@@ -1272,7 +1195,6 @@ def run_backtest(
                         ),
                         position,
                         current_price,
-                        bias,
                         open_position_count=len(active_positions),
                     ))
                 continue
@@ -1288,7 +1210,6 @@ def run_backtest(
                 position.regime_risk_stop_level = target_stop
                 position.regime_risk_stop_state = snapshot.state
             regime_risk_action_dates[position.identity_key] = day
-            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             latest = price_by_position.get(id(position))
             current_price = latest[1] if latest else None
             events.append(regime_risk_event(
@@ -1313,7 +1234,6 @@ def run_backtest(
                 ),
                 position,
                 current_price,
-                bias,
                 open_position_count=len(active_positions),
             ))
 
@@ -1332,7 +1252,6 @@ def run_backtest(
             position.regime_risk_stop_state = ""
             regime_risk_action_dates[position.identity_key] = day
             relaxed_regime_stop_position_ids.add(id(position))
-            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             latest = price_by_position.get(id(position))
             current_price = latest[1] if latest else None
             events.append(regime_risk_event(
@@ -1350,7 +1269,6 @@ def run_backtest(
                 ),
                 position,
                 current_price,
-                bias,
                 open_position_count=len(active_positions),
             ))
 
@@ -1364,11 +1282,10 @@ def run_backtest(
             position: OpenPosition,
         ) -> tuple[float, float, float, float]:
             _ts, current_price = price_by_position[id(position)]
-            positive_bias = 1.0 if bias_by_position.get(id(position), 0.0) > 0.0 else 0.0
             losing_pct = max(0.0, -short_unrealized_pct(position, current_price))
             weak_intent = -float(position.plan.intent_score or 0.0)
             age_days = max(0.0, float((day - position.entry_date).days))
-            return positive_bias, losing_pct, weak_intent, age_days
+            return losing_pct, weak_intent, age_days, 0.0
 
         short_stress_fall_or_exposure_reduction_close_candidates_by_position: dict[
             int,
@@ -1430,7 +1347,6 @@ def run_backtest(
             position.pending_close_status = "REGIME_RISK_SHORT_CLOSE"
             position.pending_close_requested_ts = action_ts
             regime_risk_action_dates[position.identity_key] = day
-            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
                 day,
                 action_ts,
@@ -1445,7 +1361,6 @@ def run_backtest(
                 ),
                 position,
                 current_price,
-                bias,
                 open_position_count=len(active_positions),
             ))
             log.debug(
@@ -1486,7 +1401,6 @@ def run_backtest(
                 position.regime_risk_stop_level = new_stop
                 position.regime_risk_stop_state = snapshot.state
                 regime_risk_action_dates[position.identity_key] = day
-                bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
                 events.append(regime_risk_event(
                     day,
                     action_ts,
@@ -1504,7 +1418,6 @@ def run_backtest(
                     ),
                     position,
                     current_price,
-                    bias,
                     open_position_count=len(active_positions),
                 ))
 
@@ -1519,12 +1432,11 @@ def run_backtest(
                 if snapshot.tier >= EXTREME_STRESS
                 else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
             )
-            negative_bias = 1.0 if bias_by_position.get(id(position), 0.0) < 0.0 else 0.0
             selected_value_label = 1.0 if valuation_label in selected_labels else 0.0
             losing_pct = max(0.0, -long_unrealized_pct(position, current_price))
             weak_intent = -float(position.plan.intent_score or 0.0)
             age_days = max(0.0, float((day - position.entry_date).days))
-            return negative_bias, selected_value_label, losing_pct, weak_intent, age_days
+            return selected_value_label, losing_pct, weak_intent, age_days, 0.0
 
         long_stress_rise_close_candidates_by_position: dict[int, tuple[OpenPosition, list[str]]] = {}
 
@@ -1558,22 +1470,12 @@ def run_backtest(
                 if snapshot.tier >= EXTREME_STRESS
                 else REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS
             )
-            close_negative_bias = (
-                REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS
-                if snapshot.tier >= EXTREME_STRESS
-                else REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS
-            )
             for position in ranked_longs_for_stress_rise_close:
                 valuation_label = str(position.valuation_label or position.plan.valuation_label or "").strip().lower()
                 if valuation_label in label_set:
                     add_long_stress_rise_close_candidate(
                         position,
                         f"valuation_label_{valuation_label}_under_{snapshot.state.lower()}",
-                    )
-                if close_negative_bias and bias_by_position.get(id(position), 0.0) < 0.0:
-                    add_long_stress_rise_close_candidate(
-                        position,
-                        f"negative_current_shock_sector_bias_{bias_by_position[id(position)]:.2f}",
                     )
 
         if (
@@ -1601,7 +1503,6 @@ def run_backtest(
             position.pending_close_status = "REGIME_RISK_LONG_CLOSE"
             position.pending_close_requested_ts = action_ts
             regime_risk_action_dates[position.identity_key] = day
-            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
                 day,
                 action_ts,
@@ -1616,7 +1517,6 @@ def run_backtest(
                 ),
                 position,
                 current_price,
-                bias,
                 open_position_count=len(active_positions),
             ))
             log.debug(
@@ -1652,7 +1552,6 @@ def run_backtest(
             position.regime_risk_stop_level = new_stop
             position.regime_risk_stop_state = snapshot.state
             regime_risk_action_dates[position.identity_key] = day
-            bias = bias_by_position.get(id(position), position.plan.shock_sector_bias)
             events.append(regime_risk_event(
                 day,
                 action_ts,
@@ -1668,7 +1567,6 @@ def run_backtest(
                 ),
                 position,
                 current_price,
-                bias,
                 open_position_count=len(active_positions),
             ))
 
@@ -1682,6 +1580,7 @@ def run_backtest(
         regime_exposure: dict,
         model: Any,
         active_positions: list[OpenPosition],
+        daily_policy_context: Optional[DailyPositionPolicyContext] = None,
         *,
         log_progress_today: bool = False,
         context_label: str = "signal_bar_close",
@@ -1879,7 +1778,45 @@ def run_backtest(
                 ))
                 continue
 
-            candidate_identities = [fundamental.identity_key for fundamental in candidates]
+            eligible_candidates: list[tuple[int, Any]] = []
+            for candidate_rank, fundamental in enumerate(candidates, start=1):
+                if (
+                    direction == "LONG"
+                    and daily_policy_context is not None
+                    and long_sector_blocked(daily_policy_context, fundamental.sector)
+                ):
+                    decision_events.append(DecisionEvent(
+                        run_id=run_id,
+                        intent_date=day,
+                        as_of_ts=as_of_ts,
+                        symbol=fundamental.symbol,
+                        exchange=fundamental.exchange,
+                        cik=fundamental.cik,
+                        direction=direction,
+                        decision_stage="daily_position_policy",
+                        decision="rejected",
+                        reason_code="daily_policy_blocked_long_sector",
+                        reason_text=(
+                            f"Daily policy blocked long entries in sector {fundamental.sector}; "
+                            f"blocked sectors: {', '.join(daily_policy_context.blocked_long_sectors)}."
+                        ),
+                        candidate_rank=candidate_rank,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        valuation_label=fundamental.valuation_label,
+                        sector=fundamental.sector,
+                        industry=fundamental.industry,
+                        fundamental_score=_model_fundamental_score(fundamental, cfg),
+                        mispricing_score=fundamental.mispricing_score,
+                        market_cap_m=fundamental.market_cap_m,
+                        open_positions=len(active_positions),
+                        max_open_positions=exposure_max_total_positions(regime_exposure),
+                        account_equity=equity,
+                    ))
+                    continue
+                eligible_candidates.append((candidate_rank, fundamental))
+
+            candidate_identities = [fundamental.identity_key for _, fundamental in eligible_candidates]
             bar_lookback_limit = _bar_lookback_limit(model, cfg)
             bar_load_started = _time.perf_counter()
             recent_bars_by_identity = load_recent_bars_for_identities(
@@ -1909,7 +1846,7 @@ def run_backtest(
             evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
             pending_intents: list[dict[str, Any]] = []
 
-            for candidate_rank, fundamental in enumerate(candidates, start=1):
+            for candidate_rank, fundamental in eligible_candidates:
                 bars = recent_bars_by_identity.get(fundamental.identity_key, [])
                 if len(bars) < cfg.min_bars:
                     skipped_no_bars += 1
@@ -2127,7 +2064,6 @@ def run_backtest(
                             else:
                                 plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
                                 plan.allow_multiple_positions_per_instrument = allow_multiple_positions_per_instrument
-                                apply_shock_overlay(plan, fundamental, regime)
                                 plans.append(plan)
                                 plans_by_direction[direction].append(plan)
 
@@ -2169,7 +2105,6 @@ def run_backtest(
                 )
                 decision_events.append(event)
                 if plan:
-                    _copy_plan_shock_to_event(event, plan)
                     plan_key = _plan_event_key(plan)
                     plan_events[plan_key] = event
                     plan_entry_contexts[plan_key] = {
@@ -2215,8 +2150,13 @@ def run_backtest(
         day_open_limit: Optional[int] = None,
         day_open_count: int = 0,
         hour_open_counts: Optional[dict[datetime, int]] = None,
+        daily_policy_state: Optional[DailyPolicyRuntimeState] = None,
+        daily_policy_context: Optional[DailyPositionPolicyContext] = None,
     ) -> int:
-        if SECTOR_DIVERSIFICATION_ENABLED:
+        preferred_industry_active = bool(
+            daily_policy_context is not None and daily_policy_context.preferred_industry
+        )
+        if SECTOR_DIVERSIFICATION_ENABLED or preferred_industry_active:
             open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
             open_sector_industries: set[tuple[str, str]] = {
                 (p.plan.sector, p.plan.industry)
@@ -2231,13 +2171,22 @@ def run_backtest(
                     return 1
                 return 2
 
+            def _daily_policy_tier(plan: TradePlan) -> tuple[int, int]:
+                preferred_tier = (
+                    preferred_industry_tier(daily_policy_context, plan.industry)
+                    if daily_policy_context is not None
+                    else 0
+                )
+                sector_tier = _sector_tier(plan) if SECTOR_DIVERSIFICATION_ENABLED else 0
+                return (preferred_tier, sector_tier)
+
             for direction, direction_plans in plans_by_direction.items():
                 direction_plans[:] = _ranked_plans_for_direction(
                     direction_plans,
                     day=day,
                     as_of_ts=as_of_ts,
                     direction=direction,
-                    group_key_fn=_sector_tier,
+                    group_key_fn=_daily_policy_tier,
                 )
                 for intent_rank, plan in enumerate(direction_plans, start=1):
                     event = plan_events.get(_plan_event_key(plan))
@@ -2267,31 +2216,32 @@ def run_backtest(
             snapshot = _account_snapshot_values(conn, active_positions, equity, plan_entry_ts)
             account_equity_current = snapshot.equity_with_loan_value
             update_portfolio_peak(account_equity_current)
-            current_drawdown_peak_equity = update_portfolio_drawdown_peak(account_equity_current)
-            portfolio_drawdown_snapshot = get_portfolio_drawdown_snapshot(
-                account_equity_current,
-                current_drawdown_peak_equity,
-            )
-            plan_regime_exposure = apply_portfolio_drawdown_exposure_overlay(
-                regime_exposure,
-                portfolio_drawdown_snapshot,
-            )
+            plan_regime_exposure = regime_exposure
+            total_position_cap = min(MAX_OPEN_POSITIONS, exposure_max_total_positions(plan_regime_exposure))
             initial_margin = sum(_active_margin_used(p) for p in active_positions)
             maintenance_margin = sum(_active_maintenance_margin_used(p) for p in active_positions)
             available_funds = account_equity_current - initial_margin
             excess_liquidity = account_equity_current - maintenance_margin
             direction_risk = direction_risk_multiplier(plan_regime_exposure, plan.direction)
             direction_cap = direction_max_positions(plan_regime_exposure, plan.direction)
-            direction_risk *= plan.shock_risk_multiplier
             if event:
                 event.open_positions = len(active_positions)
-                event.max_open_positions = MAX_OPEN_POSITIONS
+                event.max_open_positions = total_position_cap
                 event.account_equity = account_equity_current
                 event.initial_margin = initial_margin
                 event.maintenance_margin = maintenance_margin
                 event.available_funds = available_funds
                 event.excess_liquidity = excess_liquidity
 
+            if daily_policy_state is not None:
+                policy_entry_check = daily_policy_state.entry_check(plan_entry_ts)
+                if not policy_entry_check.accepted:
+                    if event:
+                        event.decision_stage = "daily_position_policy"
+                        event.decision = "blocked"
+                        event.reason_code = policy_entry_check.reason_code
+                        event.reason_text = policy_entry_check.reason_text
+                    continue
             if day_open_limit is not None and day_open_count + opened_count >= day_open_limit:
                 if event:
                     event.decision_stage = "portfolio_filter"
@@ -2316,48 +2266,25 @@ def run_backtest(
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    if (
-                        plan.direction == "LONG"
-                        and portfolio_drawdown_snapshot.enabled
-                        and portfolio_drawdown_snapshot.tier > 0
-                    ):
-                        event.reason_code = "portfolio_drawdown_long_risk_zero"
-                        event.reason_text = (
-                            f"Portfolio drawdown circuit breaker {portfolio_drawdown_snapshot.state} "
-                            f"adjusted long risk to zero; {portfolio_drawdown_snapshot.reason}"
-                        )
-                    else:
-                        event.reason_code = "regime_direction_risk_zero"
-                        event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
+                    event.reason_code = "regime_direction_risk_zero"
+                    event.reason_text = f"Regime label {regime_label} assigned zero {plan.direction.lower()} risk."
                 continue
             if _direction_open_count(active_positions, plan.direction) >= direction_cap:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    if (
-                        plan.direction == "LONG"
-                        and portfolio_drawdown_snapshot.enabled
-                        and portfolio_drawdown_snapshot.tier > 0
-                    ):
-                        event.reason_code = "portfolio_drawdown_long_cap_reached"
-                        event.reason_text = (
-                            f"Portfolio drawdown circuit breaker {portfolio_drawdown_snapshot.state} "
-                            f"allows {direction_cap} open long positions; this limit was already reached. "
-                            f"{portfolio_drawdown_snapshot.reason}"
-                        )
-                    else:
-                        event.reason_code = "max_direction_positions_reached"
-                        event.reason_text = (
-                            f"Regime label {regime_label} allows {direction_cap} open "
-                            f"{plan.direction.lower()} positions; this limit was already reached."
-                        )
+                    event.reason_code = "max_direction_positions_reached"
+                    event.reason_text = (
+                        f"Regime label {regime_label} allows {direction_cap} open "
+                        f"{plan.direction.lower()} positions; this limit was already reached."
+                    )
                 continue
-            if len(active_positions) >= MAX_OPEN_POSITIONS:
+            if len(active_positions) >= total_position_cap:
                 if event:
                     event.decision_stage = "portfolio_filter"
                     event.decision = "blocked"
-                    event.reason_code = "max_open_positions_reached"
-                    event.reason_text = f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached."
+                    event.reason_code = "max_total_positions_reached"
+                    event.reason_text = f"Maximum open positions {total_position_cap} was already reached."
                 continue
             if not plan.allow_multiple_positions_per_instrument and plan.identity_key in open_identities:
                 if event:
@@ -2487,6 +2414,8 @@ def run_backtest(
             open_identities.add(plan.identity_key)
             blocked_identities.add(plan.identity_key)
             opened_count += 1
+            if daily_policy_state is not None:
+                daily_policy_state.record_open(plan_entry_ts)
             if hour_open_counts is not None:
                 hour_open_counts[entry_hour] = hour_open_count + 1
             record_account_curve(plan_entry_ts, active_positions)
@@ -2547,6 +2476,7 @@ def run_backtest(
     days_no_candidates = 0
     days_no_intents    = 0
     days_with_intents  = 0
+    previous_daily_max_long_positions = initial_previous_max_long_positions()
 
     for day_idx, day in enumerate(trading_days, start=1):
         log_progress_today = day_idx == 1 or day_idx == len(trading_days) or day_idx % PROGRESS_LOG_EVERY_DAYS == 0
@@ -2575,13 +2505,16 @@ def run_backtest(
         day_decision_ts = signal_decision_points[0][1] if signal_decision_points else day_start_ts
         day_start_equity = _account_snapshot_values(conn, open_positions, equity, day_start_ts).equity_with_loan_value
         update_portfolio_peak(day_start_equity)
-        update_portfolio_drawdown_peak(day_start_equity)
 
         # ── 2. Generate model intents and central execution plans ───────────
-        regime_as_of_date = day - timedelta(days=1)
-        regime = get_world_regime(conn, source_table=SOURCE_WORLD_REGIME_TABLE, as_of_date=regime_as_of_date)
+        daily_policy_context = build_daily_position_policy_context(
+            conn,
+            day,
+            previous_daily_max_long_positions,
+        )
+        daily_policy_state: Optional[DailyPolicyRuntimeState] = None
+        regime = daily_policy_context.regime if daily_policy_context is not None else None
         if not regime:
-            portfolio_drawdown_reset_regime_days = 0
             days_no_regime += 1
             buffer_decision_events([DecisionEvent(
                 run_id=run_id,
@@ -2594,7 +2527,7 @@ def run_backtest(
                 decision_stage="regime_filter",
                 decision="skipped_day",
                 reason_code="no_regime",
-                reason_text=f"No world-regime row was available as of {regime_as_of_date}.",
+                reason_text="No daily world-regime 5-day MA policy context was available.",
                 open_positions=len(open_positions),
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
@@ -2613,25 +2546,162 @@ def run_backtest(
                 )
             continue
 
-        regime_label, regime_exposure = regime_exposure_for_label(regime.label)
-        reset_regime_days = update_portfolio_drawdown_reset_regime_days(regime_label)
+        previous_daily_max_long_positions = daily_policy_context.calculated_max_long_positions
+        apply_daily_policy_context_to_config(cfg, daily_policy_context)
+        daily_policy_state = DailyPolicyRuntimeState(
+            context=daily_policy_context,
+            opened_timestamps=[],
+            sl_close_timestamps=[],
+        )
+        regime_label = daily_policy_context.regime_label
+        regime_exposure = daily_policy_context.exposure
         day_regime_exposure = regime_exposure
         if log_progress_today:
             log.info(
-                "Regime exposure day %d/%d %s model %s label %s score %.1f long risk %.2f short risk %.2f max long %d max short %d",
+                "Regime exposure day %d/%d %s model %s label %s score %.1f phase %s long risk %.2f short risk %.2f max long %d max short %d max total %d preferred industry %s blocked long sectors %s",
                 day_idx,
                 len(trading_days),
                 day,
                 runtime.CURRENT_MODEL_FILE,
                 regime_label,
                 regime.score,
+                daily_policy_context.phase,
                 direction_risk_multiplier(day_regime_exposure, "LONG"),
                 direction_risk_multiplier(day_regime_exposure, "SHORT"),
                 direction_max_positions(day_regime_exposure, "LONG"),
                 direction_max_positions(day_regime_exposure, "SHORT"),
+                exposure_max_total_positions(day_regime_exposure),
+                daily_policy_context.preferred_industry,
+                ",".join(daily_policy_context.blocked_long_sectors),
             )
 
-        open_positions, closed_before_regime_risk, pnl_before_regime_risk = apply_position_events_through(
+        def apply_day_position_events(
+            positions: list[OpenPosition],
+            end_ts: datetime,
+            closed_identity_blocklist: Optional[set[InstrumentKey]] = None,
+        ) -> tuple[list[OpenPosition], int, float]:
+            before_closed_count = len(closed_trades)
+            active, closed_count, realized_pnl = apply_position_events_through(
+                positions,
+                end_ts,
+                closed_identity_blocklist=closed_identity_blocklist,
+            )
+            if daily_policy_state is not None:
+                daily_policy_state.record_closed_trades(closed_trades[before_closed_count:])
+            return active, closed_count, realized_pnl
+
+        day_policy_prune_ts = daily_prune_ts(day) if daily_policy_state is not None else None
+
+        def daily_limits_violated(active_positions: list[OpenPosition]) -> bool:
+            total_cap = min(MAX_OPEN_POSITIONS, exposure_max_total_positions(day_regime_exposure))
+            long_cap = direction_max_positions(day_regime_exposure, "LONG")
+            short_cap = direction_max_positions(day_regime_exposure, "SHORT")
+            return (
+                len(active_positions) > total_cap
+                or _direction_open_count(active_positions, "LONG") > long_cap
+                or _direction_open_count(active_positions, "SHORT") > short_cap
+            )
+
+        def apply_daily_prune_if_due(as_of_ts: datetime) -> None:
+            nonlocal open_positions, closed_today, day_pnl, equity
+            if daily_policy_state is None or day_policy_prune_ts is None or daily_policy_state.prune_done:
+                return
+            as_of_ts = _ensure_utc_ts(as_of_ts)
+            if as_of_ts < day_policy_prune_ts or day_close_ts < day_policy_prune_ts:
+                return
+            open_positions, closed_before_prune, pnl_before_prune = apply_day_position_events(
+                open_positions,
+                day_policy_prune_ts,
+                closed_identity_blocklist=used_identities_today,
+            )
+            closed_today += closed_before_prune
+            day_pnl += pnl_before_prune
+            daily_policy_state.prune_done = True
+            if not daily_limits_violated(open_positions):
+                return
+
+            next_opens = load_next_bar_opens(
+                conn,
+                [
+                    (pos.identity_key, day_policy_prune_ts - timedelta(microseconds=1))
+                    for pos in open_positions
+                ],
+                batch_size=BAR_CACHE_BATCH_SIZE,
+            )
+            total_cap = min(MAX_OPEN_POSITIONS, exposure_max_total_positions(day_regime_exposure))
+            long_cap = direction_max_positions(day_regime_exposure, "LONG")
+            short_cap = direction_max_positions(day_regime_exposure, "SHORT")
+
+            while daily_limits_violated(open_positions):
+                long_count = _direction_open_count(open_positions, "LONG")
+                short_count = _direction_open_count(open_positions, "SHORT")
+                close_candidates: list[tuple[float, str, str, int, OpenPosition, float]] = []
+                for position in open_positions:
+                    if (
+                        len(open_positions) <= total_cap
+                        and not (position.direction == "LONG" and long_count > long_cap)
+                        and not (position.direction == "SHORT" and short_count > short_cap)
+                    ):
+                        continue
+                    open_info = next_opens.get(
+                        (position.identity_key, day_policy_prune_ts - timedelta(microseconds=1))
+                    )
+                    if open_info is None:
+                        continue
+                    close_ts, close_price = open_info
+                    close_ts = _ensure_utc_ts(close_ts)
+                    if close_ts != day_policy_prune_ts:
+                        continue
+                    pnl = _pnl_long(position, close_price) if position.direction == "LONG" else _pnl_short(position, close_price)
+                    close_candidates.append((pnl, position.symbol, position.exchange, position.cik, position, close_price))
+
+                if not close_candidates:
+                    log.warning(
+                        "Daily policy prune could not enforce limits day %s model %s open %d total cap %d long %d/%d short %d/%d because no exact 11:00 open prices were available",
+                        day,
+                        runtime.CURRENT_MODEL_FILE,
+                        len(open_positions),
+                        total_cap,
+                        long_count,
+                        long_cap,
+                        short_count,
+                        short_cap,
+                    )
+                    break
+
+                pnl, _symbol, _exchange, _cik, position, close_price = min(close_candidates)
+                trade = _make_trade(
+                    conn,
+                    position,
+                    "DAILY_POLICY_LIMIT_PRUNE",
+                    close_price,
+                    day_policy_prune_ts.date(),
+                    position.bars_processed,
+                    pnl,
+                    equity,
+                    day_policy_prune_ts,
+                )
+                _remove_position_by_identity(open_positions, position)
+                trade.equity_after = round(equity + trade.pnl_usd, 2)
+                equity = trade.equity_after
+                closed_trades.append(trade)
+                closed_today += 1
+                day_pnl += trade.pnl_usd
+                used_identities_today.add(position.identity_key)
+                record_account_curve(day_policy_prune_ts, open_positions)
+                log.info(
+                    "Daily policy prune closed %s %s pnl %.0f at %.2f day %s limits total %d long %d short %d",
+                    position.symbol,
+                    position.direction,
+                    trade.pnl_usd,
+                    close_price,
+                    day,
+                    total_cap,
+                    long_cap,
+                    short_cap,
+                )
+
+        open_positions, closed_before_regime_risk, pnl_before_regime_risk = apply_day_position_events(
             open_positions,
             day_decision_ts,
             closed_identity_blocklist=used_identities_today,
@@ -2672,24 +2742,6 @@ def run_backtest(
                     len(open_positions),
                 )
 
-        if (
-            PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED
-            and PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED
-            and reset_regime_days == PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS
-        ):
-            reset_equity = _account_snapshot_values(conn, open_positions, equity, day_decision_ts).equity_with_loan_value
-            update_portfolio_peak(reset_equity)
-            previous_drawdown_peak = portfolio_drawdown_peak_equity
-            reset_drawdown_peak = reset_portfolio_drawdown_peak(reset_equity)
-            log.info(
-                "Portfolio drawdown circuit breaker reset peak from %.2f to %.2f after %d consecutive %s regime days on %s",
-                previous_drawdown_peak,
-                reset_drawdown_peak,
-                reset_regime_days,
-                PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL,
-                day,
-            )
-
         if all(
             direction_risk_multiplier(day_regime_exposure, direction) <= 0.0
             and direction_max_positions(day_regime_exposure, direction) <= 0
@@ -2717,9 +2769,11 @@ def run_backtest(
                 max_open_positions=MAX_OPEN_POSITIONS,
                 account_equity=equity,
             )])
-            open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(
+            apply_daily_prune_if_due(day_close_ts)
+            open_positions, closed_after_entry, pnl_after_entry = apply_day_position_events(
                 open_positions,
                 day_close_ts,
+                closed_identity_blocklist=used_identities_today,
             )
             closed_today += closed_after_entry
             day_pnl += pnl_after_entry
@@ -2780,15 +2834,19 @@ def run_backtest(
 
         for signal_bar_start_ts, signal_decision_ts in valid_signal_decision_points:
             decisions_processed += 1
-            open_positions, closed_before_decision, pnl_before_decision = apply_position_events_through(
+            apply_daily_prune_if_due(signal_decision_ts)
+            open_positions, closed_before_decision, pnl_before_decision = apply_day_position_events(
                 open_positions,
                 signal_decision_ts,
                 closed_identity_blocklist=used_identities_today,
             )
             closed_today += closed_before_decision
             day_pnl += pnl_before_decision
+            if daily_policy_state is not None:
+                daily_policy_state.refresh_market_drop_halt(conn, signal_decision_ts)
 
-            if DECISION_EVENT_MODE != "all" and len(open_positions) >= MAX_OPEN_POSITIONS:
+            signal_total_position_cap = min(MAX_OPEN_POSITIONS, exposure_max_total_positions(day_regime_exposure))
+            if DECISION_EVENT_MODE != "all" and len(open_positions) >= signal_total_position_cap:
                 buffer_decision_events([DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -2799,15 +2857,15 @@ def run_backtest(
                     direction=None,
                     decision_stage="portfolio_filter",
                     decision="skipped_day",
-                    reason_code="max_open_positions_reached",
+                    reason_code="max_total_positions_reached",
                     reason_text=(
-                        f"Maximum open positions {MAX_OPEN_POSITIONS} was already reached; "
+                        f"Maximum open positions {signal_total_position_cap} was already reached; "
                         "skipped signal evaluation for this decision timestamp."
                     ),
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(open_positions),
-                    max_open_positions=MAX_OPEN_POSITIONS,
+                    max_open_positions=signal_total_position_cap,
                     account_equity=equity,
                 )])
                 if log_progress_today:
@@ -2817,12 +2875,42 @@ def run_backtest(
                         runtime.CURRENT_MODEL_FILE,
                         signal_decision_ts,
                         len(open_positions),
-                        MAX_OPEN_POSITIONS,
+                        signal_total_position_cap,
                     )
                 continue
 
             decision_hour = _entry_hour_bucket(signal_decision_ts)
             opened_this_hour = opened_by_hour.get(decision_hour, 0)
+            if daily_policy_state is not None:
+                signal_policy_check = daily_policy_state.entry_check(signal_decision_ts)
+                if DECISION_EVENT_MODE != "all" and not signal_policy_check.accepted:
+                    buffer_decision_events([DecisionEvent(
+                        run_id=run_id,
+                        intent_date=day,
+                        as_of_ts=signal_decision_ts,
+                        symbol=None,
+                        exchange=None,
+                        cik=None,
+                        direction=None,
+                        decision_stage="daily_position_policy",
+                        decision="skipped_day",
+                        reason_code=signal_policy_check.reason_code,
+                        reason_text=signal_policy_check.reason_text,
+                        world_regime_label=regime.label,
+                        world_regime_score=regime.score,
+                        open_positions=len(open_positions),
+                        max_open_positions=signal_total_position_cap,
+                        account_equity=equity,
+                    )])
+                    if log_progress_today:
+                        log.info(
+                            "Signal decision skipped by daily policy day %s model %s cutoff %s reason %s",
+                            day,
+                            runtime.CURRENT_MODEL_FILE,
+                            signal_decision_ts,
+                            signal_policy_check.reason_code,
+                        )
+                    continue
             if DECISION_EVENT_MODE != "all" and opened_today >= day_open_limit:
                 buffer_decision_events([DecisionEvent(
                     run_id=run_id,
@@ -2842,7 +2930,7 @@ def run_backtest(
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(open_positions),
-                    max_open_positions=MAX_OPEN_POSITIONS,
+                    max_open_positions=signal_total_position_cap,
                     account_equity=equity,
                 )])
                 if log_progress_today:
@@ -2875,7 +2963,7 @@ def run_backtest(
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
                     open_positions=len(open_positions),
-                    max_open_positions=MAX_OPEN_POSITIONS,
+                    max_open_positions=signal_total_position_cap,
                     account_equity=equity,
                 )])
                 if log_progress_today:
@@ -2904,6 +2992,7 @@ def run_backtest(
                 signal_regime_exposure,
                 model,
                 open_positions,
+                daily_policy_context,
                 log_progress_today=log_progress_today,
                 context_label="signal_bar_close",
                 entry_after_ts=signal_bar_start_ts,
@@ -2933,6 +3022,8 @@ def run_backtest(
                 day_open_limit=day_open_limit,
                 day_open_count=opened_today,
                 hour_open_counts=opened_by_hour,
+                daily_policy_state=daily_policy_state,
+                daily_policy_context=daily_policy_context,
             )
             buffer_decision_events(signal_decision_events)
 
@@ -2943,7 +3034,8 @@ def run_backtest(
         else:
             days_no_intents += 1
 
-        open_positions, closed_after_entry, pnl_after_entry = apply_position_events_through(
+        apply_daily_prune_if_due(day_close_ts)
+        open_positions, closed_after_entry, pnl_after_entry = apply_day_position_events(
             open_positions,
             day_close_ts,
             closed_identity_blocklist=used_identities_today,

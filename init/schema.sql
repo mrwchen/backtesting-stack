@@ -95,12 +95,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     common_stop_atr_mult NUMERIC(8,4) NOT NULL,
     common_min_stop_pct NUMERIC(6,3) NOT NULL,
     common_max_stop_pct NUMERIC(6,3) NOT NULL,
-    shock_overlay_policy_file TEXT,
-    shock_overlay_min_shock_score NUMERIC(5,2),
-    shock_overlay_full_shock_score NUMERIC(5,2),
-    shock_overlay_max_intent_score_delta NUMERIC(8,4),
-    shock_overlay_max_risk_uplift_pct NUMERIC(6,2),
-    shock_overlay_max_risk_cut_pct NUMERIC(6,2),
 
     -- Results summary (filled after run completes)
     run_duration_seconds NUMERIC(12,3),
@@ -147,22 +141,6 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     -- Market and fundamental context
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
-    dominant_shock_type  TEXT,
-    max_shock_type_score NUMERIC(5,2),
-    defensive_risk_off_score NUMERIC(5,2),
-    energy_commodity_shock_score NUMERIC(5,2),
-    rates_inflation_usd_shock_score NUMERIC(5,2),
-    credit_banking_stress_score NUMERIC(5,2),
-    policy_geopolitical_score NUMERIC(5,2),
-    tech_stress_shock_score NUMERIC(5,2),
-    precious_metals_score NUMERIC(5,2),
-    industrial_metals_score NUMERIC(5,2),
-    metals_mining_shock_score NUMERIC(5,2),
-    metals_mining_subtype TEXT,
-    shock_sector_bias    NUMERIC(8,4),
-    shock_score_delta    NUMERIC(8,4),
-    shock_risk_multiplier NUMERIC(8,4),
-    shock_base_intent_score NUMERIC(8,4),
     valuation_label      TEXT,
     sector               TEXT,
     industry             TEXT,
@@ -224,22 +202,6 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     -- World regime at intent time
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
-    dominant_shock_type  TEXT,
-    max_shock_type_score NUMERIC(5,2),
-    defensive_risk_off_score NUMERIC(5,2),
-    energy_commodity_shock_score NUMERIC(5,2),
-    rates_inflation_usd_shock_score NUMERIC(5,2),
-    credit_banking_stress_score NUMERIC(5,2),
-    policy_geopolitical_score NUMERIC(5,2),
-    tech_stress_shock_score NUMERIC(5,2),
-    precious_metals_score NUMERIC(5,2),
-    industrial_metals_score NUMERIC(5,2),
-    metals_mining_shock_score NUMERIC(5,2),
-    metals_mining_subtype TEXT,
-    shock_sector_bias    NUMERIC(8,4),
-    shock_score_delta    NUMERIC(8,4),
-    shock_risk_multiplier NUMERIC(8,4),
-    shock_base_intent_score NUMERIC(8,4),
 
     -- Fundamental label at intent time
     valuation_label      TEXT,
@@ -293,9 +255,6 @@ CREATE INDEX IF NOT EXISTS idx_backtest_trades_symbol
 
 CREATE INDEX IF NOT EXISTS idx_backtest_trades_identity
     ON backtest_trades (symbol, exchange, cik, intent_date);
-
-CREATE INDEX IF NOT EXISTS idx_backtest_trades_shock_sector
-    ON backtest_trades (run_id, dominant_shock_type, sector, direction, intent_date);
 
 -- ── Account curve snapshots ─────────────────────────────────────────────────
 

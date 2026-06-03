@@ -239,22 +239,6 @@ def log_backtest_context(model_files: list[str]) -> None:
     )
     log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
     log.info(
-        "Portfolio drawdown circuit breaker enabled %s thresholds %.1f/%.1f/%.1f long risk multipliers %.2f/%.2f/%.2f long caps %d/%d/%d reset on regime %s label %s consecutive days %d",
-        PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED,
-        PORTFOLIO_DRAWDOWN_WARN_PCT,
-        PORTFOLIO_DRAWDOWN_STRESS_PCT,
-        PORTFOLIO_DRAWDOWN_EXTREME_PCT,
-        PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_WARN,
-        PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_STRESS,
-        PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_EXTREME,
-        PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN,
-        PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS,
-        PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME,
-        PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED,
-        PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL,
-        PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS,
-    )
-    log.info(
         "Regime risk management enabled %s neutral elevated %s confirm days elevated/high/extreme/recovery %d/%d/%d/%d max close fraction %.2f cooldown days %d long stop distances %.2f/%.2f/%.2f long caps high/extreme %d/%d close excess %s close risk-off longs %s",
         REGIME_RISK_MANAGEMENT_ENABLED,
         REGIME_RISK_NEUTRAL_IS_ELEVATED,
@@ -272,15 +256,6 @@ def log_backtest_context(model_files: list[str]) -> None:
         REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS,
         REGIME_RISK_RISK_OFF_CLOSE_LONGS,
     )
-    for regime_label, exposure in REGIME_EXPOSURE_BY_LABEL.items():
-        log.info(
-            "Regime exposure label %s long risk multiplier %.2f short risk multiplier %.2f max long positions %d max short positions %d",
-            regime_label,
-            exposure["long_risk_multiplier"],
-            exposure["short_risk_multiplier"],
-            exposure["max_long_positions"],
-            exposure["max_short_positions"],
-        )
     log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(
         "Performance caches — trading days on, world regime on, candidate timeline %s max %.0f MiB, bars incremental PIT batches of %d symbols with %d warmup days decision event mode %s flush batch %d",

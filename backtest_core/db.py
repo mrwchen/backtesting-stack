@@ -241,18 +241,12 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "ps_share_cfd_admin_fee_pct",
         "ps_share_cfd_short_borrow_rate_pct",
         "ps_share_cfd_overnight_day_count",
-        "shock_overlay_policy_file",
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {
         "run_id", "symbol", "exchange", "cik", "entry_ts", "margin_hours_usd",
         "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason",
         "take_profit_mode", "take_profit", "trailing_activation_price", "trailing_distance_pct",
         "trailing_activated", "trailing_stop", "trailing_activated_ts",
-        "dominant_shock_type", "max_shock_type_score", "shock_sector_bias",
-        "shock_score_delta", "shock_risk_multiplier", "shock_base_intent_score",
-        "tech_stress_shock_score",
-        "precious_metals_score", "industrial_metals_score", "metals_mining_shock_score",
-        "metals_mining_subtype",
         "sector", "industry",
     })
     _require_not_null_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"entry_ts"})
@@ -263,10 +257,6 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     )
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_decision_events", {
         "run_id", "symbol", "exchange", "cik", "intent_date", "intent_passed", "intent_score",
-        "dominant_shock_type", "shock_sector_bias", "shock_score_delta", "shock_risk_multiplier",
-        "tech_stress_shock_score",
-        "precious_metals_score", "industrial_metals_score", "metals_mining_shock_score",
-        "metals_mining_subtype"
     })
     _require_columns(conn, f"{RESULT_SCHEMA}.backtest_account_curve", {
         "run_id",

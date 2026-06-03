@@ -147,7 +147,6 @@ SELECT
   date_trunc('month', t.entry_ts)::date AS entry_month,
   t.direction,
   t.world_regime_label,
-  t.dominant_shock_type,
   count(*) AS opened_trades,
   round(sum(t.pnl_usd)::numeric, 2) AS pnl_usd,
   round(avg(t.position_size_usd / NULLIF(t.equity_before, 0.0) * 100.0)::numeric, 1) AS avg_notional_pct_equity,
@@ -158,7 +157,7 @@ SELECT
 FROM params p
 JOIN public.backtest_trades t ON t.run_id = p.run_id
 WHERE t.entry_ts::date BETWEEN p.start_day AND p.end_day
-GROUP BY date_trunc('month', t.entry_ts)::date, t.direction, t.world_regime_label, t.dominant_shock_type
+GROUP BY date_trunc('month', t.entry_ts)::date, t.direction, t.world_regime_label
 ORDER BY entry_month, direction, opened_trades DESC;
 
 SELECT

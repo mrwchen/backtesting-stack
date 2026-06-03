@@ -153,9 +153,7 @@ SELECT
     COALESCE(e.valuation_label, '') AS valuation_label,
     COALESCE(e.sector, '') AS sector,
     COUNT(*) AS events,
-    ROUND(AVG(e.world_regime_score)::numeric, 2) AS avg_regime_score,
-    ROUND(AVG(e.max_shock_type_score)::numeric, 2) AS avg_max_shock_score,
-    ROUND(AVG(e.shock_sector_bias)::numeric, 4) AS avg_shock_sector_bias
+    ROUND(AVG(e.world_regime_score)::numeric, 2) AS avg_regime_score
 FROM public.backtest_decision_events e
 JOIN selected_runs s USING (run_id)
 WHERE e.decision_stage = 'regime_risk'

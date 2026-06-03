@@ -189,57 +189,50 @@ services:
       - ACCOUNT_PROFILE=ps_acc
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
-      - MAX_OPEN_POSITIONS=10
-      - MAX_POSITION_OPENS_PER_DAY=3
+      - MAX_OPEN_POSITIONS=5
+      - MAX_POSITION_OPENS_PER_DAY=2
       - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
+      - DAILY_POLICY_TZ=America/New_York
+      - DAILY_POLICY_WORLD_REGIME_MA_DAYS=5
+      - DAILY_POLICY_WORLD_REGIME_TREND_DAYS=2
+      - DAILY_POLICY_WORLD_REGIME_STRESS_THRESHOLD=45.0
+      - DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD=60.0
+      - DAILY_POLICY_LOW_STRESS_MAX_LONG_POSITIONS=5
+      - DAILY_POLICY_LOW_STRESS_MAX_SHORT_POSITIONS=0
+      - DAILY_POLICY_INITIAL_PREVIOUS_MAX_LONG_POSITIONS=5
+      - DAILY_POLICY_STRESS_RISK_REDUCTION_PCT=0.5
+      - DAILY_POLICY_STRESS_BUILD_MAX_LONG_DELTA=-1
+      - DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA=1
+      - DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA=0
+      - DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS=0
+      - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=2
+      - DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS=3.0
+      - DAILY_POLICY_SL_HALT_WINDOW_HOURS=2.0
+      - DAILY_POLICY_SL_HALT_COUNT=3
+      - DAILY_POLICY_SL_HALT_STATUSES=HIT_SL,REGIME_RISK_LONG_HIT_SL,REGIME_RISK_SHORT_HIT_SL
+      - DAILY_POLICY_MARKET_DROP_SYMBOL=VOO
+      - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=3.5
+      - DAILY_POLICY_MARKET_DROP_TZ=America/New_York
+      - DAILY_POLICY_MARKET_DROP_SESSION_START=09:30
+      - DAILY_POLICY_MARKET_DROP_SESSION_END=16:00
+      - DAILY_POLICY_MARKET_DROP_OPEN_BAR_MODE=at_or_after
+      - DAILY_POLICY_MARKET_DROP_PRICE_FIELD=low
+      - DAILY_POLICY_PRUNE_TIME_TZ=America/New_York
+      - DAILY_POLICY_PRUNE_TIME=11:00
+      - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=3
+      - DAILY_POLICY_TECH_STRESS_THRESHOLD=60.0
+      - DAILY_POLICY_BLOCK_LONG_SECTOR=Technology
+      - DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS=3
+      - DAILY_POLICY_ENERGY_SHOCK_THRESHOLD=60.0
+      - DAILY_POLICY_PREFERRED_INDUSTRY=Oil & Gas Integrated
+      - DAILY_POLICY_LOOKBACK_CALENDAR_DAYS=45
       # INTENT_SCORE_CLUSTERING_ENABLED mischt Kandidaten nur innerhalb naher
       # Intent-Score-Cluster. Der Seed macht einzelne Runs reproduzierbar.
       - INTENT_SCORE_CLUSTERING_ENABLED=true
       - INTENT_SCORE_CLUSTER_DELTA=0.50
       - INTENT_SCORE_CLUSTER_MIN_SIZE=2
       - INTENT_SCORE_CLUSTER_RANDOM_SEED=12345
-
-      # ---------------------------------------------------------------------
-      # Gemeinsame Policy: Direction-Budget nach World-Regime
-      #
-      # Diese Regeln sind modellunabhaengig und wirken nach der Modelllogik.
-      # Sie bestimmen je Regime-Label, ob Long/Short erlaubt ist, wie stark
-      # das Trade-Risiko multipliziert wird und wie viele Long-/Short-Positionen
-      # maximal offen sein duerfen.
-      #
-      # Die Labels kommen direkt aus SOURCE_WORLD_REGIME_TABLE.
-      # Wichtig: Das ist Portfolio-/Risk-Policy, keine Entry-Signal-Logik.
-      # ---------------------------------------------------------------------
-      # RISK-ON: score < 30
-      - REGIME_RISK_ON_LONG_RISK_MULTIPLIER=1.0
-      - REGIME_RISK_ON_SHORT_RISK_MULTIPLIER=0.0
-      - REGIME_RISK_ON_MAX_LONG_POSITIONS=10
-      - REGIME_RISK_ON_MAX_SHORT_POSITIONS=0
-
-      # CONSTRUCTIVE: 30 <= score < 50
-      - REGIME_CONSTRUCTIVE_LONG_RISK_MULTIPLIER=0.9
-      - REGIME_CONSTRUCTIVE_SHORT_RISK_MULTIPLIER=0.0
-      - REGIME_CONSTRUCTIVE_MAX_LONG_POSITIONS=7
-      - REGIME_CONSTRUCTIVE_MAX_SHORT_POSITIONS=0
-
-      # NEUTRAL: 50 <= score < 60
-      - REGIME_NEUTRAL_LONG_RISK_MULTIPLIER=0.50
-      - REGIME_NEUTRAL_SHORT_RISK_MULTIPLIER=0.00
-      - REGIME_NEUTRAL_MAX_LONG_POSITIONS=3
-      - REGIME_NEUTRAL_MAX_SHORT_POSITIONS=1
-
-      # DEFENSIVE: 60 <= score < 75
-      - REGIME_DEFENSIVE_LONG_RISK_MULTIPLIER=0.30
-      - REGIME_DEFENSIVE_SHORT_RISK_MULTIPLIER=0.70
-      - REGIME_DEFENSIVE_MAX_LONG_POSITIONS=1
-      - REGIME_DEFENSIVE_MAX_SHORT_POSITIONS=2
-
-      # RISK-OFF: score >= 75
-      - REGIME_RISK_OFF_LONG_RISK_MULTIPLIER=0.0
-      - REGIME_RISK_OFF_SHORT_RISK_MULTIPLIER=1.0
-      - REGIME_RISK_OFF_MAX_LONG_POSITIONS=0
-      - REGIME_RISK_OFF_MAX_SHORT_POSITIONS=3
 
       # ---------------------------------------------------------------------
       # Regimewechsel-Risikomanagement fuer bereits offene Positionen.
@@ -249,7 +242,7 @@ services:
       # Recovery wird langsamer bestaetigt, damit taegliches Regime-Zappeln nicht
       # staendig Closings oder Stop-Aenderungen ausloest.
       # ---------------------------------------------------------------------
-      - REGIME_RISK_MANAGEMENT_ENABLED=true
+      - REGIME_RISK_MANAGEMENT_ENABLED=false
       - REGIME_RISK_NEUTRAL_IS_ELEVATED=false
       - REGIME_RISK_ELEVATED_CONFIRM_DAYS=1
       - REGIME_RISK_HIGH_CONFIRM_DAYS=1
@@ -270,70 +263,10 @@ services:
       - REGIME_RISK_HIGH_CLOSE_EXCESS_LONGS=true
       - REGIME_RISK_RISK_OFF_CLOSE_LONGS=true
 
-      # Selektive Reduktion: Value-Labels und aktuelle negative Shock-Biases
-      # werden zuerst geschlossen, begrenzt durch MAX_CLOSE_FRACTION_PER_DAY.
-      - REGIME_RISK_HIGH_CLOSE_NEGATIVE_BIAS_LONGS=true
-      - REGIME_RISK_EXTREME_CLOSE_NEGATIVE_BIAS_LONGS=true
+      # Selektive Reduktion: Value-Labels werden zuerst geschlossen,
+      # begrenzt durch MAX_CLOSE_FRACTION_PER_DAY.
       - REGIME_RISK_HIGH_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
       - REGIME_RISK_EXTREME_CLOSE_VALUATION_LABELS=deep_value,undervalued,value_trap
-
-      # ---------------------------------------------------------------------
-      # Portfolio-Drawdown-Circuit-Breaker.
-      #
-      # Arbeitet auf Equity inkl. Open-PnL relativ zum bisherigen Drawdown-Peak
-      # im Run und reduziert nur neue LONG-Entries. Der Reset-Mechanismus setzt
-      # diesen Drawdown-Peak nach bestaetigter Regime-Erholung neu.
-      # ---------------------------------------------------------------------
-      - PORTFOLIO_DRAWDOWN_CIRCUIT_BREAKER_ENABLED=true
-      - PORTFOLIO_DRAWDOWN_WARN_PCT=6.0
-      - PORTFOLIO_DRAWDOWN_STRESS_PCT=10.0
-      - PORTFOLIO_DRAWDOWN_EXTREME_PCT=15.0
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_WARN=0.50
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_STRESS=0.20
-      - PORTFOLIO_DRAWDOWN_LONG_RISK_MULTIPLIER_EXTREME=0.0
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_WARN=2
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_STRESS=1
-      - PORTFOLIO_DRAWDOWN_MAX_LONG_POSITIONS_EXTREME=0
-      - PORTFOLIO_DRAWDOWN_RESET_ON_REGIME_ENABLED=true
-      - PORTFOLIO_DRAWDOWN_RESET_REGIME_LABEL=CONSTRUCTIVE
-      - PORTFOLIO_DRAWDOWN_RESET_CONSECUTIVE_DAYS=5
-
-      # ---------------------------------------------------------------------
-      # Shock-Overlay-Policy.
-      #
-      # Modellunabhaengige Zusatzlogik auf Basis der World-Regime-Shock-Scores.
-      # Das Overlay passt Intent-Score und Positionsgroesse anhand der Excel-
-      # Policy an.
-      # ---------------------------------------------------------------------
-
-      # Excel-Policy mit Sektor-Bias und Sonderregeln.
-      - SHOCK_OVERLAY_POLICY_FILE=backtest_policy_configs/shock_overlay_policy.xlsx
-
-      # Tabellenblaetter innerhalb der Excel-Policy.
-      - SHOCK_OVERLAY_SECTOR_BIAS_SHEET=sector_bias
-      - SHOCK_OVERLAY_SPECIAL_RULES_SHEET=special_rules
-
-      # Shock-Score-Bereich, in dem der Excel-Bias von 0 auf volle Staerke skaliert.
-      - SHOCK_OVERLAY_MIN_SHOCK_SCORE=55.0
-      - SHOCK_OVERLAY_FULL_SHOCK_SCORE=75.0
-
-      # Maximaler Auf-/Abschlag auf den Modell-Intent-Score durch das Overlay.
-      - SHOCK_OVERLAY_MAX_INTENT_SCORE_DELTA=1.00
-
-      # Maximaler Risikoaufschlag bei positivem Shock-Sektor-Bias.
-      - SHOCK_OVERLAY_MAX_RISK_UPLIFT_PCT=5.0
-
-      # Maximaler Risikoschnitt bei negativem Shock-Sektor-Bias.
-      - SHOCK_OVERLAY_MAX_RISK_CUT_PCT=10.0
-
-      # Bewertungslabels, bei denen Long-Boosts bzw. Short-Boosts blockiert werden.
-      - SHOCK_OVERLAY_BLOCK_LONG_LABELS=insufficient_data,value_trap
-      - SHOCK_OVERLAY_BLOCK_SHORT_LABELS=
-
-      # Schutzregeln: Long-Boosts bei hoher Verschuldung/Credit-Stress bzw.
-      # negativen Earnings verhindern.
-      - SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_HIGH_LEVERAGE_CREDIT=true
-      - SHOCK_OVERLAY_DISABLE_LONG_BOOST_ON_NEGATIVE_EARNINGS=true
 
       # ---------------------------------------------------------------------
       # Gemeinsame Policy: fundamentale Eligibility

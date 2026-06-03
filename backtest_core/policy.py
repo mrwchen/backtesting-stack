@@ -11,7 +11,7 @@ from .config import (
     COMMON_MIN_MARKET_CAP_M,
     COMMON_SHORT_LABEL_BLOCKLIST,
     COMMON_SHORT_MAX_FUNDAMENTAL,
-    REGIME_EXPOSURE_BY_LABEL,
+    MAX_OPEN_POSITIONS,
 )
 
 
@@ -39,25 +39,16 @@ COMMON_POLICY = CommonPolicy(
 )
 
 
-def normalize_regime_label(label: str) -> str:
-    return str(label or "").strip().upper()
-
-
-def regime_exposure_for_label(label: str) -> tuple[str, dict]:
-    regime_label = normalize_regime_label(label)
-    try:
-        return regime_label, REGIME_EXPOSURE_BY_LABEL[regime_label]
-    except KeyError as exc:
-        allowed = ", ".join(REGIME_EXPOSURE_BY_LABEL)
-        raise ValueError(f"Unsupported world regime label {label!r}; expected one of: {allowed}") from exc
-
-
 def direction_risk_multiplier(exposure: dict, direction: str) -> float:
     return float(exposure[f"{direction.lower()}_risk_multiplier"])
 
 
 def direction_max_positions(exposure: dict, direction: str) -> int:
     return int(exposure[f"max_{direction.lower()}_positions"])
+
+
+def exposure_max_total_positions(exposure: dict) -> int:
+    return int(exposure.get("max_total_positions", MAX_OPEN_POSITIONS))
 
 
 def direction_filter_negative_earnings(direction: str, policy: CommonPolicy = COMMON_POLICY) -> bool:
