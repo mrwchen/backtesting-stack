@@ -285,7 +285,7 @@ services:
       # Modelle weiter, wenn Energy-Shock an allen Lookback-Tagen hoch war.
       - DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS=3
       - DAILY_POLICY_ENERGY_SHOCK_THRESHOLD=60.0
-      - DAILY_POLICY_PREFERRED_INDUSTRY=Oil & Gas Integrated
+      - DAILY_POLICY_PREFERRED_INDUSTRY=1311 Crude Petroleum & Natural Gas
 
       # Historischer Lookback: Kalenderfenster, aus dem vorherige Handelstage
       # fuer Regime-MA, Trend und Sonderregeln geladen werden.
