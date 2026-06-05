@@ -192,6 +192,11 @@ def validate_source_schema(
                 "currency",
                 "financial_currency",
             })
+        if COMMON_FILTER_SCORER_ELIGIBILITY:
+            fundamental_required.update({
+                "long_eligible",
+                "short_eligible",
+            })
         _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
     else:
         log.info(

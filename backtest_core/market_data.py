@@ -1156,6 +1156,7 @@ def _get_candidates_from_shared_timeline(
     short_label_blocklist: Optional[list],
     filter_high_leverage: bool,
     filter_negative_earnings: bool,
+    filter_scorer_eligibility: bool,
     fundamental_score_mode: str,
     fundamental_peer_weight: float,
     fundamental_abs_weight: float,
@@ -1210,6 +1211,11 @@ def _get_candidates_from_shared_timeline(
                     break
                 if filter_negative_earnings and negative_earnings_flag:
                     break
+                if filter_scorer_eligibility:
+                    if direction == "LONG" and not bool(flags & 4):
+                        break
+                    if direction != "LONG" and not bool(flags & 8):
+                        break
 
                 valuation_label = _shared_text(timeline, timeline.valuation_label_code[absolute_idx])
                 if label_blocklist and valuation_label in label_blocklist:
@@ -1267,6 +1273,7 @@ def _get_candidates_from_timeline(
     short_label_blocklist: Optional[list],
     filter_high_leverage: bool,
     filter_negative_earnings: bool,
+    filter_scorer_eligibility: bool,
     pepperstone_table: str,
     ibkr_margin_table: str,
     fundamental_score_mode: str,
@@ -1308,6 +1315,7 @@ def _get_candidates_from_timeline(
         short_label_blocklist,
         filter_high_leverage,
         filter_negative_earnings,
+        filter_scorer_eligibility,
         fundamental_score_mode,
         fundamental_peer_weight,
         fundamental_abs_weight,
@@ -1332,6 +1340,7 @@ def get_candidates(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings: bool = False,
+    filter_scorer_eligibility: bool = False,
     require_upcoming_earnings_date: bool = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
     fundamental_score_mode: str = "peer",
@@ -1370,6 +1379,7 @@ def get_candidates(
         allow_rebuilt_historical_fundamentals,
         filter_high_leverage,
         filter_negative_earnings,
+        filter_scorer_eligibility,
         require_upcoming_earnings_date,
         ibkr_margin_table,
         fundamental_score_mode,
@@ -1418,6 +1428,11 @@ def get_candidates(
         eligibility_where_parts.append(sql.SQL("candidates.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
         eligibility_where_parts.append(sql.SQL("candidates.negative_earnings_flag IS NOT TRUE"))
+    if filter_scorer_eligibility:
+        if direction == "LONG":
+            eligibility_where_parts.append(sql.SQL("candidates.long_eligible IS TRUE"))
+        else:
+            eligibility_where_parts.append(sql.SQL("candidates.short_eligible IS TRUE"))
     if require_upcoming_earnings_date:
         _add_upcoming_earnings_date_params(params, resolved_as_of_ts)
         base_where_parts.append(_upcoming_earnings_date_exists_sql("f"))
@@ -1528,6 +1543,7 @@ def get_candidates(
             short_label_blocklist,
             filter_high_leverage,
             filter_negative_earnings,
+            filter_scorer_eligibility,
             pepperstone_table,
             ibkr_margin_table,
             fundamental_score_mode,
@@ -1675,6 +1691,7 @@ def preload_candidate_timelines(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings_by_direction: Optional[dict[str, bool]] = None,
+    filter_scorer_eligibility: bool = False,
     require_upcoming_earnings_date: bool = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
     fundamental_score_mode: str = "peer",
@@ -1721,6 +1738,7 @@ def preload_candidate_timelines(
             allow_rebuilt_historical_fundamentals=allow_rebuilt_historical_fundamentals,
             filter_high_leverage=filter_high_leverage,
             filter_negative_earnings=(filter_negative_earnings_by_direction or {}).get(direction, False),
+            filter_scorer_eligibility=filter_scorer_eligibility,
             ibkr_margin_table=ibkr_margin_table,
             fundamental_score_mode=fundamental_score_mode,
             fundamental_peer_weight=fundamental_peer_weight,

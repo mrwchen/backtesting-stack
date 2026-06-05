@@ -224,12 +224,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         COMMON_MAX_STOP_PCT,
     )
     log.info(
-        "Common eligibility min market cap %.0f require USD fundamentals %s high leverage filter %s negative earnings long filter %s short filter %s require upcoming earnings date %s days %d",
+        "Common eligibility min market cap %.0f require USD fundamentals %s high leverage filter %s negative earnings long filter %s short filter %s scorer eligibility filter %s require upcoming earnings date %s days %d",
         COMMON_POLICY.min_market_cap_m,
         REQUIRE_USD_FUNDAMENTALS,
         COMMON_POLICY.filter_high_leverage,
         COMMON_POLICY.filter_negative_earnings_long,
         COMMON_POLICY.filter_negative_earnings_short,
+        COMMON_POLICY.filter_scorer_eligibility,
         COMMON_POLICY.require_upcoming_earnings_date,
         COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS,
     )
