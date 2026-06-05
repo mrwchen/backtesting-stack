@@ -211,6 +211,13 @@ def validate_source_schema(
             "known_as_of_ts",
             "is_confirmed",
         })
+    elif COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
+        _require_columns(conn, SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE, {
+            "symbol",
+            "exchange",
+            "cik",
+            "earnings_date",
+        })
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
     if ACCOUNT_PROFILE == "ps_acc":

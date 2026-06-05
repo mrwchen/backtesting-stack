@@ -490,6 +490,7 @@ def get_direct_symbol_candidates(
     required_currency: Optional[str] = "USD",
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
     require_broker_eligibility: bool = True,
+    require_upcoming_earnings_date: bool = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
 ) -> list[FundamentalRow]:
     normalized_symbols = tuple(dict.fromkeys(
         str(symbol).strip().upper()
@@ -519,10 +520,14 @@ def get_direct_symbol_candidates(
         cutoff_ts = _last_complete_signal_bar_start_ts(cutoff_ts)
 
     cutoff_filter = sql.SQL("")
-    params: list[object] = [list(broker_symbols)]
+    upcoming_earnings_filter = sql.SQL("")
+    params: dict[str, object] = {"symbols": list(broker_symbols)}
     if cutoff_ts is not None:
-        cutoff_filter = sql.SQL("AND b.ts <= %s")
-        params.append(cutoff_ts)
+        cutoff_filter = sql.SQL("AND b.ts <= %(cutoff_ts)s")
+        params["cutoff_ts"] = cutoff_ts
+    if require_upcoming_earnings_date:
+        _add_upcoming_earnings_date_params(params, cutoff_ts)
+        upcoming_earnings_filter = sql.SQL("AND {}").format(_upcoming_earnings_date_exists_sql("b"))
 
     with conn.cursor() as cur:
         cur.execute(
@@ -530,7 +535,7 @@ def get_direct_symbol_candidates(
                 """
                 WITH requested AS (
                     SELECT symbol, ord
-                    FROM unnest(%s::text[]) WITH ORDINALITY AS u(symbol, ord)
+                    FROM unnest(%(symbols)s::text[]) WITH ORDINALITY AS u(symbol, ord)
                 )
                 SELECT r.symbol, b.exchange, b.cik
                 FROM requested r
@@ -538,6 +543,7 @@ def get_direct_symbol_candidates(
                     SELECT b.exchange, b.cik, b.ts
                     FROM {} b
                     WHERE b.symbol = r.symbol
+                      {}
                       {}
                     ORDER BY b.ts DESC
                     LIMIT 1
@@ -547,6 +553,7 @@ def get_direct_symbol_candidates(
             ).format(
                 relation_identifier(source_table),
                 cutoff_filter,
+                upcoming_earnings_filter,
             ),
             params,
         )
@@ -692,6 +699,37 @@ def _candidate_as_of_ts(as_of_date: Optional[date], as_of_ts: Optional[object]) 
     if isinstance(as_of_ts, date):
         return datetime.combine(as_of_ts, time.max, tzinfo=timezone.utc)
     return None
+
+
+def _add_upcoming_earnings_date_params(params: dict, as_of_ts: Optional[datetime]) -> None:
+    if as_of_ts is None:
+        raise ValueError("COMMON_REQUIRE_UPCOMING_EARNINGS_DATE requires as_of_date or as_of_ts")
+    entry_date = _entry_local_date(as_of_ts)
+    params["required_earnings_min_date"] = entry_date
+    params["required_earnings_max_date"] = entry_date + timedelta(days=COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS)
+
+
+def _upcoming_earnings_date_exists_sql(candidate_alias: str) -> sql.Composed:
+    alias = sql.Identifier(candidate_alias)
+    return sql.SQL(
+        """
+        EXISTS (
+            SELECT 1
+            FROM {} e
+            WHERE e.symbol = {}.symbol
+              AND e.exchange = {}.exchange
+              AND e.cik = {}.cik
+              AND e.earnings_date IS NOT NULL
+              AND e.earnings_date >= %(required_earnings_min_date)s::date
+              AND e.earnings_date <= %(required_earnings_max_date)s::date
+        )
+        """
+    ).format(
+        relation_identifier(SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE),
+        alias,
+        alias,
+        alias,
+    )
 
 
 def _candidate_timeline_key(
@@ -1294,6 +1332,7 @@ def get_candidates(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings: bool = False,
+    require_upcoming_earnings_date: bool = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
     fundamental_score_mode: str = "peer",
     fundamental_peer_weight: float = 1.0,
@@ -1331,6 +1370,7 @@ def get_candidates(
         allow_rebuilt_historical_fundamentals,
         filter_high_leverage,
         filter_negative_earnings,
+        require_upcoming_earnings_date,
         ibkr_margin_table,
         fundamental_score_mode,
         fundamental_peer_weight,
@@ -1378,6 +1418,9 @@ def get_candidates(
         eligibility_where_parts.append(sql.SQL("candidates.high_leverage_flag IS NOT TRUE"))
     if filter_negative_earnings:
         eligibility_where_parts.append(sql.SQL("candidates.negative_earnings_flag IS NOT TRUE"))
+    if require_upcoming_earnings_date:
+        _add_upcoming_earnings_date_params(params, resolved_as_of_ts)
+        base_where_parts.append(_upcoming_earnings_date_exists_sql("f"))
 
     if direction == "LONG" and long_label_blocklist:
         eligibility_where_parts.append(sql.SQL("(candidates.valuation_label IS NULL OR candidates.valuation_label != ALL(%(label_list)s))"))
@@ -1455,7 +1498,7 @@ def get_candidates(
     """)
     source_relation = relation_identifier(source_table)
 
-    if resolved_as_of_ts is not None:
+    if resolved_as_of_ts is not None and not require_upcoming_earnings_date:
         timeline_key = _candidate_timeline_key(
             direction,
             long_min_fundamental,
@@ -1632,6 +1675,7 @@ def preload_candidate_timelines(
     allow_rebuilt_historical_fundamentals: bool = False,
     filter_high_leverage: bool = False,
     filter_negative_earnings_by_direction: Optional[dict[str, bool]] = None,
+    require_upcoming_earnings_date: bool = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
     ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
     fundamental_score_mode: str = "peer",
     fundamental_peer_weight: float = 1.0,
@@ -1640,6 +1684,11 @@ def preload_candidate_timelines(
     short_max_absolute_score: Optional[float] = None,
 ) -> tuple[int, int, int, float]:
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not directions:
+        return _candidate_timeline_cache_counts()
+    if require_upcoming_earnings_date:
+        log.info(
+            "Skipping candidate timeline preload because upcoming earnings date eligibility requires per-day filtering"
+        )
         return _candidate_timeline_cache_counts()
 
     resolved_as_of_ts = _candidate_as_of_ts(as_of_date, as_of_ts)

@@ -1206,11 +1206,21 @@ def run_backtest(
                             "No model direct-candidate symbols were available in 1h price data "
                             "as of the decision timestamp."
                         )
+                    if COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
+                        reason_text += (
+                            f" Upcoming earnings date within {COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS} days "
+                            "was also required."
+                        )
                 else:
                     reason_code = "no_candidates_after_fundamental_filters"
                     reason_text = (
                         "No symbols passed the point-in-time fundamental, currency, market-cap and broker filters."
                     )
+                    if COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
+                        reason_text = (
+                            "No symbols passed the point-in-time fundamental, currency, market-cap, broker "
+                            f"and upcoming earnings date within {COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS} days filters."
+                        )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,

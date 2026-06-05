@@ -6,6 +6,7 @@ from .config import (
     COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE,
     COMMON_FILTER_NEGATIVE_EARNINGS_LONG,
     COMMON_FILTER_NEGATIVE_EARNINGS_SHORT,
+    COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
     COMMON_LONG_LABEL_BLOCKLIST,
     COMMON_LONG_MIN_FUNDAMENTAL,
     COMMON_MIN_MARKET_CAP_M,
@@ -25,6 +26,7 @@ class CommonPolicy:
     filter_high_leverage: bool
     filter_negative_earnings_long: bool
     filter_negative_earnings_short: bool
+    require_upcoming_earnings_date: bool
 
 
 COMMON_POLICY = CommonPolicy(
@@ -36,6 +38,7 @@ COMMON_POLICY = CommonPolicy(
     filter_high_leverage=COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE,
     filter_negative_earnings_long=COMMON_FILTER_NEGATIVE_EARNINGS_LONG,
     filter_negative_earnings_short=COMMON_FILTER_NEGATIVE_EARNINGS_SHORT,
+    require_upcoming_earnings_date=COMMON_REQUIRE_UPCOMING_EARNINGS_DATE,
 )
 
 
@@ -65,4 +68,5 @@ def candidate_policy_kwargs(policy: CommonPolicy = COMMON_POLICY) -> dict:
         "long_label_blocklist": list(policy.long_label_blocklist) or None,
         "short_label_blocklist": list(policy.short_label_blocklist) or None,
         "filter_high_leverage": policy.filter_high_leverage,
+        "require_upcoming_earnings_date": policy.require_upcoming_earnings_date,
     }
