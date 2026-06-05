@@ -16,7 +16,7 @@ Umgang mit neuen Positionen:
     - wenn in den letzten 2 Handelstagen das Portfolio an einem Tag um 5% oder mehr gefallen ist
     - wenn im vorherigen Handelstag VOO mehr als 4 Prozent gefallen ist
 - Standard risk ist 1.5 prozent
-
+- Eine Position darf nur geöffnet werden, wenn ein Earning Date in den kommenden 100 Tagen bekannt ist. Allerdings darf das Earning Date nicht in den nächsten 14 Tagen sein.
 
 Zu Beginn des Tages:
     - In diesem Schritt soll der World Regime Score als 5-Tage-Moving Average des Vortages zur Bewertung von maximalen offenen Positionen des heutigen Tages geprüft werden. Ich will ausschließlich den 5-Tage-MA betrachten und nicht den Roh Score. 
