@@ -34,6 +34,8 @@ from .market_data import (
     get_candidates,
     get_direct_symbol_candidates,
     get_trading_days,
+    get_upcoming_earnings_blackout_event,
+    earnings_blackout_reason_text,
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
@@ -1758,6 +1760,28 @@ def run_backtest(
                     event.reason_code = "entry_outside_entry_window"
                     event.reason_text = f"Next entry bar {plan_entry_ts} is outside the configured entry window."
                 continue
+            if COMMON_EARNINGS_BLACKOUT_ENABLED:
+                earnings_event = get_upcoming_earnings_blackout_event(
+                    conn,
+                    plan.identity_key,
+                    plan_entry_ts,
+                    knowledge_ts=as_of_ts,
+                    source_table=SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+                    blackout_days=COMMON_EARNINGS_BLACKOUT_DAYS,
+                    historical_known_days_before=COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+                )
+                if earnings_event is not None:
+                    if event:
+                        event.decision_stage = "portfolio_filter"
+                        event.decision = "blocked"
+                        event.reason_code = "upcoming_earnings_blackout"
+                        event.reason_text = earnings_blackout_reason_text(
+                            earnings_event,
+                            plan_entry_ts,
+                            blackout_days=COMMON_EARNINGS_BLACKOUT_DAYS,
+                            historical_known_days_before=COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+                        )
+                    continue
             if account_equity_current <= 0:
                 if event:
                     event.decision_stage = "portfolio_filter"

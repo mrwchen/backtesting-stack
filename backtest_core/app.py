@@ -124,9 +124,10 @@ def run_shared_candidate_timeline_prebuilder() -> None:
 
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
-        "Source tables bars %s fundamentals %s world regime %s account profile %s PS tradable symbols table %s",
+        "Source tables bars %s fundamentals %s earnings calendar %s world regime %s account profile %s PS tradable symbols table %s",
         SOURCE_MARKET_DATA_1H_TABLE,
         SOURCE_FUNDAMENTAL_SCORES_TABLE,
+        SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
         SOURCE_WORLD_REGIME_TABLE,
         ACCOUNT_PROFILE,
         PS_TRADABLE_SYMBOLS_TABLE,
@@ -229,6 +230,13 @@ def log_backtest_context(model_files: list[str]) -> None:
         COMMON_POLICY.filter_high_leverage,
         COMMON_POLICY.filter_negative_earnings_long,
         COMMON_POLICY.filter_negative_earnings_short,
+    )
+    log.info(
+        "Common earnings blackout enabled %s days %d historical known days before %d source table %s",
+        COMMON_EARNINGS_BLACKOUT_ENABLED,
+        COMMON_EARNINGS_BLACKOUT_DAYS,
+        COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+        SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
     )
     log.info(
         "Common eligibility long min fundamental %.2f short max fundamental %.2f long blocklist %s short blocklist %s",

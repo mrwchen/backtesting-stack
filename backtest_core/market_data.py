@@ -53,6 +53,20 @@ class _SignalBarCacheEntry:
     loaded_until_ts: Optional[datetime]
 
 
+@dataclass(frozen=True)
+class EarningsBlackoutEvent:
+    symbol: str
+    exchange: str
+    cik: int
+    earnings_date: date
+    announcement_ts: Optional[datetime]
+    announcement_time_type: str
+    source: str
+    source_priority: int
+    known_as_of_ts: datetime
+    is_confirmed: bool
+
+
 @dataclass
 class _SharedCandidateTimeline:
     cache_dir: Path
@@ -95,6 +109,7 @@ _WORLD_REGIME_CACHE: dict[tuple[str, Optional[date]], Optional[WorldRegime]] = {
 _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _CANDIDATE_TIMELINE_CACHE: dict[tuple, _SharedCandidateTimeline] = {}
 _CANDIDATE_TIMELINE_CACHE_DISABLED = False
+_EARNINGS_BLACKOUT_EVENT_CACHE: dict[tuple[str, InstrumentKey, date, int], list[EarningsBlackoutEvent]] = {}
 _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
@@ -1757,6 +1772,146 @@ def _ensure_utc_ts(ts: datetime) -> datetime:
     return ts.astimezone(timezone.utc)
 
 
+def _entry_local_date(ts: datetime) -> date:
+    return _ensure_utc_ts(ts).astimezone(_ENTRY_WINDOW_ZONE).date()
+
+
+def _earnings_event_known_from_date(event: EarningsBlackoutEvent, historical_known_days_before: int) -> date:
+    if event.source == "sec_8k_item_2_02":
+        return event.earnings_date - timedelta(days=historical_known_days_before)
+    return _entry_local_date(event.known_as_of_ts)
+
+
+def _earnings_event_is_publicly_known(
+    event: EarningsBlackoutEvent,
+    knowledge_ts: datetime,
+    entry_date: date,
+    historical_known_days_before: int,
+) -> bool:
+    if event.source == "sec_8k_item_2_02":
+        return entry_date >= _earnings_event_known_from_date(event, historical_known_days_before)
+    return _ensure_utc_ts(event.known_as_of_ts) <= _ensure_utc_ts(knowledge_ts)
+
+
+def _load_earnings_blackout_events(
+    conn: psycopg2.extensions.connection,
+    identity: InstrumentKey,
+    entry_date: date,
+    blackout_days: int,
+    source_table: str,
+) -> list[EarningsBlackoutEvent]:
+    cache_key = (source_table, identity, entry_date, blackout_days)
+    cached = _EARNINGS_BLACKOUT_EVENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    symbol, exchange, cik = instrument_key(*identity)
+    max_earnings_date = entry_date + timedelta(days=blackout_days)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                    symbol,
+                    exchange,
+                    cik,
+                    earnings_date,
+                    announcement_ts,
+                    COALESCE(announcement_time_type, 'unknown') AS announcement_time_type,
+                    source,
+                    source_priority,
+                    known_as_of_ts,
+                    is_confirmed
+                FROM {}
+                WHERE symbol = %s
+                  AND exchange = %s
+                  AND cik = %s
+                  AND earnings_date >= %s
+                  AND earnings_date <= %s
+                ORDER BY earnings_date ASC, source_priority DESC, known_as_of_ts DESC
+                """
+            ).format(relation_identifier(source_table)),
+            (symbol, exchange, int(cik), entry_date, max_earnings_date),
+        )
+        rows = cur.fetchall()
+
+    events = [
+        EarningsBlackoutEvent(
+            symbol=row[0],
+            exchange=row[1],
+            cik=int(row[2]),
+            earnings_date=row[3],
+            announcement_ts=_ensure_utc_ts(row[4]) if row[4] is not None else None,
+            announcement_time_type=row[5] or "unknown",
+            source=row[6],
+            source_priority=int(row[7]),
+            known_as_of_ts=_ensure_utc_ts(row[8]),
+            is_confirmed=bool(row[9]),
+        )
+        for row in rows
+    ]
+    _EARNINGS_BLACKOUT_EVENT_CACHE[cache_key] = events
+    return events
+
+
+def get_upcoming_earnings_blackout_event(
+    conn: psycopg2.extensions.connection,
+    identity: InstrumentKey,
+    entry_ts: datetime,
+    *,
+    knowledge_ts: Optional[datetime] = None,
+    source_table: str = SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+    blackout_days: int = COMMON_EARNINGS_BLACKOUT_DAYS,
+    historical_known_days_before: int = COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+) -> Optional[EarningsBlackoutEvent]:
+    if blackout_days < 0:
+        return None
+
+    entry_ts = _ensure_utc_ts(entry_ts)
+    knowledge_ts = _ensure_utc_ts(knowledge_ts) if knowledge_ts is not None else entry_ts
+    entry_date = _entry_local_date(entry_ts)
+    events = _load_earnings_blackout_events(
+        conn,
+        identity,
+        entry_date,
+        blackout_days,
+        source_table,
+    )
+    for event in events:
+        if _earnings_event_is_publicly_known(
+            event,
+            knowledge_ts,
+            entry_date,
+            historical_known_days_before,
+        ):
+            return event
+    return None
+
+
+def earnings_blackout_reason_text(
+    event: EarningsBlackoutEvent,
+    entry_ts: datetime,
+    *,
+    blackout_days: int = COMMON_EARNINGS_BLACKOUT_DAYS,
+    historical_known_days_before: int = COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+) -> str:
+    entry_date = _entry_local_date(entry_ts)
+    known_from_date = _earnings_event_known_from_date(event, historical_known_days_before)
+    if event.source == "sec_8k_item_2_02":
+        known_from_text = (
+            f"{known_from_date} modeled from historical SEC event "
+            f"and {historical_known_days_before} known-before days"
+        )
+    else:
+        known_from_text = event.known_as_of_ts.isoformat()
+    return (
+        f"Upcoming earnings date {event.earnings_date} source {event.source} "
+        f"time type {event.announcement_time_type} confirmed {event.is_confirmed} "
+        f"is within {blackout_days} calendar days of entry date {entry_date}; "
+        f"public known from {known_from_text}."
+    )
+
+
 def _ts_to_epoch_us(ts: datetime) -> int:
     delta = _ensure_utc_ts(ts) - _EPOCH
     return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
@@ -2652,6 +2807,7 @@ def clear_market_data_caches(context: str = "after_run") -> None:
     _CANDIDATE_TIMELINE_CACHE_DISABLED = False
     _PEPPERSTONE_SYMBOL_CACHE.clear()
     _PEPPERSTONE_24_SYMBOL_CACHE.clear()
+    _EARNINGS_BLACKOUT_EVENT_CACHE.clear()
     _SIGNAL_DECISIONS_CACHE.clear()
     _TRADING_DAYS_CACHE.clear()
     _WORLD_REGIME_CACHE.clear()

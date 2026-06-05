@@ -198,6 +198,19 @@ def validate_source_schema(
             "Skipping fundamental source schema validation table %s because selected model uses direct replace candidates",
             SOURCE_FUNDAMENTAL_SCORES_TABLE,
         )
+    if COMMON_EARNINGS_BLACKOUT_ENABLED:
+        _require_columns(conn, SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE, {
+            "symbol",
+            "exchange",
+            "cik",
+            "earnings_date",
+            "announcement_ts",
+            "announcement_time_type",
+            "source",
+            "source_priority",
+            "known_as_of_ts",
+            "is_confirmed",
+        })
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
     if ACCOUNT_PROFILE == "ps_acc":
@@ -374,6 +387,27 @@ def _validate_source_coverage(
         log.info(
             "Skipping fundamental source coverage validation table %s because selected model uses direct replace candidates",
             SOURCE_FUNDAMENTAL_SCORES_TABLE,
+        )
+
+    if COMMON_EARNINGS_BLACKOUT_ENABLED:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "SELECT COUNT(*), MIN(earnings_date), MAX(earnings_date) "
+                    "FROM {} "
+                    "WHERE earnings_date >= %s AND earnings_date <= %s"
+                ).format(relation_identifier(SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE)),
+                (START_DATE, END_DATE + timedelta(days=COMMON_EARNINGS_BLACKOUT_DAYS)),
+            )
+            earnings_event_count, earnings_min_date, earnings_max_date = cur.fetchone()
+        log.info(
+            "Source coverage earnings calendar %s rows %d min date %s max date %s blackout days %d historical known days before %d",
+            SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+            earnings_event_count,
+            earnings_min_date,
+            earnings_max_date,
+            COMMON_EARNINGS_BLACKOUT_DAYS,
+            COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
         )
 
     with conn.cursor() as cur:
