@@ -1,8 +1,8 @@
 """Load OHLCV bars from public.ibkr_market_data and compute causal base features.
 
 Everything here is point-in-time safe: each feature at bar t uses only information
-available up to (and including) the close of bar t. The prediction target is the
-sign of the *next* bar's return, so labels are shifted by -1.
+available up to (and including) the close of bar t. Trade-outcome labels are built
+later by the decision layer from already-closed historical candidate trades.
 """
 
 import logging
@@ -95,7 +95,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
       atr            ATR_BARS Average True Range (price points; for atr-based stops)
       session_date   local session day (for intraday flat-at-cutoff)
       local_time     local wall-clock time of the bar
-      target_up      1 if next bar's log return > 0 else 0  (label, shifted -1)
     """
     out = df.copy()
     close = out["close"]
@@ -111,9 +110,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     local = out["ts"].dt.tz_convert(tz)
     out["session_date"] = local.dt.date
     out["local_time"] = local.dt.time
-
-    # Label: did the next bar close higher than this one? (causal target)
-    out["target_up"] = (out["log_ret"].shift(-1) > 0.0).astype(float)
 
     out = out.replace([np.inf, -np.inf], np.nan)
     out["log_ret"] = out["log_ret"].fillna(0.0)

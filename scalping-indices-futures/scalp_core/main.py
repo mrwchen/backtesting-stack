@@ -33,6 +33,7 @@ def main() -> None:
         summary = summarize_trades(result.trades, result.initial_equity, result.final_equity)
         mc = run_monte_carlo(result.trades, result.initial_equity)
 
+        persistence.write_decisions(conn, run_id, result.decisions)
         persistence.write_trades(conn, run_id, result.trades)
         persistence.write_monte_carlo(conn, run_id, mc)
         persistence.update_run_summary(

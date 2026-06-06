@@ -40,7 +40,8 @@ wird am Open von Bar t+1 ausgefuehrt.
 Ergebnis-Tabellen (public)
 --------------------------
   backtest2_scalp_runs         - Run-Metadaten, Config-Snapshot, Ergebnis-Summary
-  backtest2_scalp_trades       - Einzeltrades
+  backtest2_scalp_trades       - Einzeltrades mit Trade-Win-Wahrscheinlichkeiten
+  backtest2_scalp_decisions    - Per-Bar Decision Trace mit No-Trade-Gruenden
   backtest2_scalp_monte_carlo  - MC-Perzentile (base / slippage / sequence)
 
 Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
@@ -51,7 +52,8 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
                         HMM_N_ITER, HMM_COVARIANCE_TYPE
   Layer 2 Preis         KF_OBS/LEVEL/TREND_NOISE_MULT
   Layer 3 Vola          GARCH_P, GARCH_Q, GARCH_DIST
-  Layer 4 Entscheidung  PROB_THRESHOLD, LOGISTIC_C, MIN_TRAIN_ROWS
+  Layer 4 Entscheidung  PROB_THRESHOLD, MIN_EXPECTED_NET_R, LOGISTIC_C,
+                        CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS
   Walk-Forward          WARMUP_BARS, TRAIN_WINDOW_BARS, REFIT_EVERY_BARS
   Stop/TP-Logik         STOP_MODE(vol|atr), TP_MODE(fixed|trailing),
                         STOP/TP_VOL_MULT, STOP/TP_ATR_MULT,
@@ -78,4 +80,7 @@ Wichtige Hinweise / Annahmen
   Resultate sind bis zum Aufbau weiterer 1-min-Historie nur indikativ.
   bar_size "1 hour" hat ~3 Jahre Historie und ist fuer das Fitting robuster.
 - USD->EUR ueber konstanten EURUSD_RATE (Default 1.0 = keine Umrechnung).
+- Die Decision-Schicht trainiert auf komplette Trade-Outcomes nach Kosten
+  (Entry naechster Open, Stop/TP/Max-Hold/Session-Flat), nicht auf die Richtung
+  der naechsten Minute.
 - Intrabar-Tie-Break standardmaessig Stop vor TP (INTRABAR_FILL_PRIORITY).

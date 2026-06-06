@@ -14,6 +14,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 \if :drop_scalp_tables_on_start
 DROP TABLE IF EXISTS backtest2_scalp_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest2_scalp_decisions CASCADE;
 DROP TABLE IF EXISTS backtest2_scalp_trades CASCADE;
 DROP TABLE IF EXISTS backtest2_scalp_runs CASCADE;
 \endif
@@ -59,12 +60,14 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     -- decision model detail
     logistic_c             NUMERIC(12,4),
     min_train_rows         INTEGER,
+    calibrate_probabilities BOOLEAN,
 
     -- walk-forward / decision params
     warmup_bars            INTEGER,
     train_window_bars      INTEGER,
     refit_every_bars       INTEGER,
     prob_threshold         NUMERIC(6,4),
+    min_expected_net_r     NUMERIC(12,6),
 
     -- trade-level params
     stop_mode              TEXT,                      -- vol | atr
@@ -121,12 +124,6 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     ruined                 BOOLEAN
 );
 
-ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS spread_points NUMERIC(10,4);
-ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS slippage_points NUMERIC(10,4);
-ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS lot_size NUMERIC(12,4);
-ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_points NUMERIC(10,4);
-ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_bps NUMERIC(8,4);
-
 -- ── Individual trades ───────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS backtest2_scalp_trades (
@@ -142,7 +139,11 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_trades (
     margin_used_eur        NUMERIC(18,2),
 
     regime_state           INTEGER,
-    prob_up                NUMERIC(8,6),
+    prob_long_win          NUMERIC(8,6),
+    prob_short_win         NUMERIC(8,6),
+    selected_trade_prob    NUMERIC(8,6),
+    expected_net_r         NUMERIC(12,6),
+    decision_reason        TEXT,
     sigma_pts              NUMERIC(15,6),
     stop_price             NUMERIC(15,4),
     take_profit_price      NUMERIC(15,4),
@@ -162,6 +163,42 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_trades (
 );
 
 CREATE INDEX IF NOT EXISTS backtest2_scalp_trades_run_idx ON backtest2_scalp_trades(run_id);
+
+-- ── Per-bar decision diagnostics ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS backtest2_scalp_decisions (
+    id                     BIGSERIAL     PRIMARY KEY,
+    run_id                 INTEGER       NOT NULL REFERENCES backtest2_scalp_runs(run_id) ON DELETE CASCADE,
+
+    ts                     TIMESTAMPTZ   NOT NULL,
+    session_date           DATE,
+    local_time             TIME,
+    close_price            NUMERIC(15,4),
+    in_entry_window        BOOLEAN,
+
+    decision_action        TEXT          NOT NULL,   -- LONG_SIGNAL | SHORT_SIGNAL | NO_TRADE | POSITION_OPEN | PENDING_SIGNAL
+    decision_reason        TEXT          NOT NULL,
+    direction              TEXT,                     -- LONG | SHORT when a side was selected
+
+    prob_long_win          NUMERIC(8,6),
+    prob_short_win         NUMERIC(8,6),
+    selected_trade_prob    NUMERIC(8,6),
+    expected_net_r         NUMERIC(12,6),
+    expected_long_r        NUMERIC(12,6),
+    expected_short_r       NUMERIC(12,6),
+
+    regime_state           INTEGER,
+    high_vol_state         BOOLEAN,
+    sigma_pts              NUMERIC(15,6),
+    atr_pts                NUMERIC(15,6),
+    stop_pct               NUMERIC(10,6),
+    tp_pct                 NUMERIC(10,6),
+
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS backtest2_scalp_decisions_run_ts_idx ON backtest2_scalp_decisions(run_id, ts);
+CREATE INDEX IF NOT EXISTS backtest2_scalp_decisions_run_action_idx ON backtest2_scalp_decisions(run_id, decision_action);
 
 -- ── Monte-Carlo risk (base / slippage stress / sequence) ────────────────────────
 
@@ -215,6 +252,6 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_monte_carlo (
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    backtest2_scalp_runs, backtest2_scalp_trades, backtest2_scalp_monte_carlo
+    backtest2_scalp_runs, backtest2_scalp_trades, backtest2_scalp_decisions, backtest2_scalp_monte_carlo
     TO "market-data-account";
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "market-data-account";

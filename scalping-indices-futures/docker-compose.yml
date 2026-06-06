@@ -62,7 +62,7 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       - PRICE_MODEL=kalman           # Layer 2: kalman | state_space
       - VOL_MODEL=garch              # Layer 3: garch | egarch
-      - DECISION_MODEL=bayes         # Layer 4: bayes | logistic
+      - DECISION_MODEL=logistic      # Layer 4: bayes | logistic
 
       # ═════════════════════════════════════════════════════════════════════════
       # FEATURE-FENSTER
@@ -107,8 +107,10 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Schwelle)
       # ═════════════════════════════════════════════════════════════════════════
-      - PROB_THRESHOLD=0.65          # Mindest-Wahrscheinlichkeit fuer einen Einstieg
+      - PROB_THRESHOLD=0.55          # Mindest-Wahrscheinlichkeit, dass der komplette Trade netto gewinnt
+      - MIN_EXPECTED_NET_R=0.05      # Mindest-Erwartungswert nach Kosten in R-Einheiten
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
+      - CALIBRATE_PROBABILITIES=true # Kalibriert Trade-Win-Wahrscheinlichkeiten im Vergangenheitsfenster
       - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
 
       # ═════════════════════════════════════════════════════════════════════════
@@ -116,7 +118,7 @@ services:
       # Wie oft und auf welchem Fenster die Schichten neu gefittet werden.
       # ═════════════════════════════════════════════════════════════════════════
       - WARMUP_BARS=1500             # Anlauf-Bars vor dem ersten Trade
-      - TRAIN_WINDOW_BARS=0          # 0 = expandierend, sonst rollierendes Fenster
+      - TRAIN_WINDOW_BARS=20000      # 0 = expandierend, sonst rollierendes Fenster
       - REFIT_EVERY_BARS=250         # Neu-Fit-Intervall in Bars
 
       # ═════════════════════════════════════════════════════════════════════════

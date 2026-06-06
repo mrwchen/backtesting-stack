@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .config import RunConfig
-from .entities import ClosedTrade
+from .entities import ClosedTrade, DecisionTrace
 
 log = logging.getLogger(__name__)
 
@@ -104,10 +104,12 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
         "garch_dist": cfg.garch_dist,
         "logistic_c": cfg.logistic_c,
         "min_train_rows": cfg.min_train_rows,
+        "calibrate_probabilities": cfg.calibrate_probabilities,
         "warmup_bars": cfg.warmup_bars,
         "train_window_bars": cfg.train_window_bars,
         "refit_every_bars": cfg.refit_every_bars,
         "prob_threshold": cfg.prob_threshold,
+        "min_expected_net_r": cfg.min_expected_net_r,
         "stop_mode": cfg.stop_mode,
         "tp_mode": cfg.tp_mode,
         "stop_vol_mult": cfg.stop_vol_mult,
@@ -199,7 +201,11 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
             _db_round(t.notional, 2),
             _db_round(t.margin_used, 2),
             _db_int(t.regime_state),
-            _db_float(t.prob_up),
+            _db_float(t.prob_long_win),
+            _db_float(t.prob_short_win),
+            _db_float(t.selected_trade_prob),
+            _db_float(t.expected_net_r),
+            t.decision_reason,
             _db_float(t.sigma_pts),
             _db_float(t.stop_price),
             _db_float(t.take_profit_price),
@@ -217,7 +223,8 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
     ]
     query = sql.SQL(
         "INSERT INTO {tbl} (run_id, intent_ts, entry_ts, entry_price, direction, units, "
-        "notional_eur, margin_used_eur, regime_state, prob_up, sigma_pts, stop_price, "
+        "notional_eur, margin_used_eur, regime_state, prob_long_win, prob_short_win, "
+        "selected_trade_prob, expected_net_r, decision_reason, sigma_pts, stop_price, "
         "take_profit_price, outcome_status, exit_ts, exit_price, bars_held, return_pct, "
         "pnl_eur, costs_eur, equity_before, equity_after) VALUES %s"
     ).format(tbl=_table("backtest2_scalp_trades"))
@@ -225,6 +232,48 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
         execute_values(cur, query.as_string(conn), rows, page_size=500)
     conn.commit()
     log.info("Wrote %d trades for run_id %d", len(trades), run_id)
+
+
+def write_decisions(conn, run_id: int, decisions: list[DecisionTrace]) -> None:
+    if not decisions:
+        return
+    rows = [
+        (
+            run_id,
+            _db_scalar(d.ts),
+            _db_scalar(d.session_date),
+            _db_scalar(d.local_time),
+            _db_float(d.close_price),
+            d.in_entry_window,
+            d.decision_action,
+            d.decision_reason,
+            d.direction,
+            _db_float(d.prob_long_win),
+            _db_float(d.prob_short_win),
+            _db_float(d.selected_trade_prob),
+            _db_float(d.expected_net_r),
+            _db_float(d.expected_long_r),
+            _db_float(d.expected_short_r),
+            _db_int(d.regime_state),
+            d.high_vol_state,
+            _db_float(d.sigma_pts),
+            _db_float(d.atr_pts),
+            _db_float(d.stop_pct),
+            _db_float(d.tp_pct),
+        )
+        for d in decisions
+    ]
+    query = sql.SQL(
+        "INSERT INTO {tbl} (run_id, ts, session_date, local_time, close_price, "
+        "in_entry_window, decision_action, decision_reason, direction, prob_long_win, "
+        "prob_short_win, selected_trade_prob, expected_net_r, expected_long_r, "
+        "expected_short_r, regime_state, high_vol_state, sigma_pts, atr_pts, stop_pct, "
+        "tp_pct) VALUES %s"
+    ).format(tbl=_table("backtest2_scalp_decisions"))
+    with conn.cursor() as cur:
+        execute_values(cur, query.as_string(conn), rows, page_size=1000)
+    conn.commit()
+    log.info("Wrote %d decisions for run_id %d", len(decisions), run_id)
 
 
 def write_monte_carlo(conn, run_id: int, mc: Optional[dict]) -> None:

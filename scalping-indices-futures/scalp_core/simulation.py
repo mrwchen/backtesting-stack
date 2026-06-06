@@ -1,13 +1,9 @@
 """Walk-forward simulation tying the five layers together.
 
-At every refit checkpoint (each REFIT_EVERY_BARS, beginning at WARMUP_BARS) all
-layers are re-fit on a past-only training window. Layer outputs for every bar are
-then recomputed *causally* with those fresh parameters and used both to train the
-decision classifier and to generate signals for the upcoming block. No per-bar
-inference ever uses information beyond that bar.
-
-Execution model: a signal at the close of bar t is filled at the open of bar t+1
-(no look-ahead). Positions are intraday-only and forced flat at the session cutoff.
+At every refit checkpoint all statistical layers are fit on past-only data. The
+decision layer is trained on historical trade-outcome labels whose exits are
+already known at the refit bar, then scores the current bar's long/short trade
+edge. A signal at the close of bar t is still filled at the open of bar t+1.
 """
 
 import logging
@@ -19,10 +15,17 @@ import pandas as pd
 
 from . import broker, config
 from .data import session_entry_end, session_entry_start, session_flat_cutoff
-from .entities import ClosedTrade
-from .layer_decision import make_decision_model
+from .entities import ClosedTrade, DecisionTrace
+from .layer_decision import DecisionScores, make_decision_model
 from .layer_price import make_price_filter
 from .layer_regime import RegimeModel
+from .layer_trade_outcome import (
+    OutcomeCache,
+    TradePlan,
+    build_atr_outcome_cache,
+    make_trade_plan,
+    simulate_trade_outcome,
+)
 from .layer_volatility import make_vol_model
 
 log = logging.getLogger(__name__)
@@ -31,6 +34,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class SimulationResult:
     trades: list[ClosedTrade] = field(default_factory=list)
+    decisions: list[DecisionTrace] = field(default_factory=list)
     initial_equity: float = 0.0
     final_equity: float = 0.0
     equity_curve: list[float] = field(default_factory=list)
@@ -39,14 +43,28 @@ class SimulationResult:
     ruined: bool = False
 
 
-def _clamp(x: float, lo: float, hi: float) -> float:
-    return lo if x < lo else hi if x > hi else x
-
-
 def _fmt_ts(value) -> str:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _minutes(value: time) -> int:
+    return value.hour * 60 + value.minute
+
+
+def _session_progress(local_time: np.ndarray, entry_start: time, entry_end: time) -> np.ndarray:
+    start = _minutes(entry_start)
+    end = _minutes(entry_end)
+    denom = max(1, end - start)
+    out = np.empty(local_time.shape[0], dtype=np.float64)
+    for idx, value in enumerate(local_time):
+        out[idx] = (_minutes(value) - start) / denom
+    return np.clip(out, 0.0, 1.0)
+
+
+def _empty_x(n_features: int) -> np.ndarray:
+    return np.empty((0, n_features), dtype=np.float64)
 
 
 def run_simulation(features: pd.DataFrame) -> SimulationResult:
@@ -61,7 +79,6 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     momentum = features["momentum"].to_numpy(dtype=np.float64)
     rsi = features["rsi"].to_numpy(dtype=np.float64)
     atr = features["atr"].to_numpy(dtype=np.float64)
-    target_up = features["target_up"].to_numpy(dtype=np.float64)
     session_date = features["session_date"].to_numpy()
     local_time = features["local_time"].to_numpy()
     entry_start: time = session_entry_start()
@@ -69,6 +86,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     cutoff: time = session_flat_cutoff()
 
     regime_feats = np.column_stack([log_ret, abs_ret])
+    progress = _session_progress(local_time, entry_start, entry_end)
+    entry_window = np.array([(entry_start <= value < entry_end) for value in local_time], dtype=bool)
 
     regime = RegimeModel(config.REGIME_STATES)
     price = make_price_filter(config.PRICE_MODEL)
@@ -83,6 +102,11 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         result.equity_curve = [config.INITIAL_EQUITY]
         return result
 
+    outcome_cache: OutcomeCache | None = None
+    if config.STOP_MODE == "atr":
+        outcome_cache = build_atr_outcome_cache(o, h, low, c, atr, session_date, local_time, entry_start, entry_end, cutoff)
+        log.info("Built ATR trade-outcome label cache for %d bars", n)
+
     log.info(
         "Simulation start at bar %d utc %s session %s local %s total bars %d entry window %s-%s %s refit every %d bars",
         start, _fmt_ts(ts[start]), session_date[start], local_time[start], n,
@@ -92,12 +116,83 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     equity = config.INITIAL_EQUITY
     equity_curve = [equity]
 
-    # Per-refit caches (full-length, causal arrays recomputed each checkpoint).
     states = np.zeros(n, dtype=np.int64)
     high_vol = np.zeros(n, dtype=bool)
     levels = c.copy()
     sigma_ret = np.full(n, np.nan)
-    X_full = np.zeros((n, 6), dtype=np.float64)
+    X_full = np.zeros((n, 8), dtype=np.float64)
+    dynamic_label_cache: dict[tuple[int, str, float, float], object] = {}
+
+    def _feature_matrix(slopes: np.ndarray) -> np.ndarray:
+        sigma_pts = np.where(np.isfinite(sigma_ret) & (sigma_ret > 0), sigma_ret * c, 0.0)
+        basis = np.maximum.reduce([
+            np.where(np.isfinite(atr) & (atr > 0), atr, 0.0),
+            sigma_pts,
+            np.full(n, 1e-6, dtype=np.float64),
+        ])
+        price_dev_basis = (c - levels) / basis
+        slope_basis = slopes / basis
+        rsi_centered = (rsi - 50.0) / 50.0
+        X = np.column_stack([
+            states.astype(np.float64),
+            high_vol.astype(np.float64),
+            price_dev_basis,
+            slope_basis,
+            sigma_ret,
+            momentum,
+            rsi_centered,
+            progress,
+        ])
+        return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _dynamic_outcome(idx: int, direction: str, plan: TradePlan):
+        key = (idx, direction, round(plan.stop_pct, 8), round(plan.tp_pct, 8))
+        if key not in dynamic_label_cache:
+            dynamic_label_cache[key] = simulate_trade_outcome(idx, direction, plan, o, h, low, c, session_date, local_time, cutoff)
+        return dynamic_label_cache[key]
+
+    def _training_data(upto: int, train_start: int):
+        base_mask = np.zeros(n, dtype=bool)
+        base_mask[train_start:min(upto, n - 1)] = True
+        base_mask &= entry_window
+        if config.REGIME_BLOCK_HIGH_VOL_STATE:
+            base_mask &= ~high_vol
+
+        if outcome_cache is not None:
+            long_mask = base_mask & outcome_cache.long_valid & (outcome_cache.long_exit_idx >= 0) & (outcome_cache.long_exit_idx < upto)
+            short_mask = base_mask & outcome_cache.short_valid & (outcome_cache.short_exit_idx >= 0) & (outcome_cache.short_exit_idx < upto)
+            return (
+                X_full[long_mask], outcome_cache.long_win[long_mask], outcome_cache.long_net_r[long_mask],
+                X_full[short_mask], outcome_cache.short_win[short_mask], outcome_cache.short_net_r[short_mask],
+            )
+
+        long_x, long_y, long_r = [], [], []
+        short_x, short_y, short_r = [], [], []
+        for idx in np.flatnonzero(base_mask):
+            plan = make_trade_plan(float(c[idx]), float(sigma_ret[idx]), float(atr[idx]))
+            if plan is None:
+                continue
+            long_out = _dynamic_outcome(idx, "LONG", plan)
+            if long_out is not None and long_out.exit_idx < upto:
+                long_x.append(X_full[idx])
+                long_y.append(1.0 if long_out.net_r > 0.0 else 0.0)
+                long_r.append(long_out.net_r)
+            if config.ALLOW_SHORT:
+                short_out = _dynamic_outcome(idx, "SHORT", plan)
+                if short_out is not None and short_out.exit_idx < upto:
+                    short_x.append(X_full[idx])
+                    short_y.append(1.0 if short_out.net_r > 0.0 else 0.0)
+                    short_r.append(short_out.net_r)
+
+        n_features = X_full.shape[1]
+        return (
+            np.asarray(long_x, dtype=np.float64) if long_x else _empty_x(n_features),
+            np.asarray(long_y, dtype=np.float64),
+            np.asarray(long_r, dtype=np.float64),
+            np.asarray(short_x, dtype=np.float64) if short_x else _empty_x(n_features),
+            np.asarray(short_y, dtype=np.float64),
+            np.asarray(short_r, dtype=np.float64),
+        )
 
     def refit(upto: int) -> None:
         nonlocal states, high_vol, levels, sigma_ret, X_full
@@ -109,40 +204,68 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         states, high_vol = regime.filtered_states(regime_feats)
         levels, slopes = price.filtered(c)
         sigma_ret = vol.conditional_vol(log_ret)
+        X_full = _feature_matrix(slopes)
 
-        price_dev = c - levels
-        X_full = np.column_stack([
-            states.astype(np.float64),
-            price_dev,
-            slopes,
-            sigma_ret,
-            momentum,
-            rsi,
-        ])
-        X_full = np.nan_to_num(X_full, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Train decision model on past-only labelled rows.
-        lo = train_start
-        hi = upto  # rows [lo, hi) all have known next-bar labels (hi <= n-1 typically)
-        hi = min(hi, n - 1)
-        if hi - lo >= config.MIN_TRAIN_ROWS:
-            Xtr = X_full[lo:hi]
-            ytr = target_up[lo:hi]
-            mask = np.isfinite(ytr)
-            decision.fit(Xtr[mask], ytr[mask])
-        else:
-            decision.fit(np.empty((0, 6)), np.empty(0))
+        X_long, y_long, r_long, X_short, y_short, r_short = _training_data(upto, train_start)
+        decision.fit(X_long, y_long, r_long, X_short, y_short, r_short)
         log.info(
-            "Refit at bar %d utc %s session %s local %s train bars %d to %d train utc %s to %s regime fitted %s decision fitted %s",
+            "Refit at bar %d utc %s session %s local %s train bars %d to %d train utc %s to %s long labels %d short labels %d decision fitted %s",
             upto, _fmt_ts(ts[upto]), session_date[upto], local_time[upto],
             train_start, upto, _fmt_ts(ts[train_start]), _fmt_ts(ts[upto - 1]),
-            regime.fitted, decision.fitted,
+            len(y_long), len(y_short), decision.fitted,
         )
 
-    # ── position state machine ──────────────────────────────────────────────
-    position = None          # dict | None
-    pending = None           # signal generated previous bar, to fill at this bar's open
-    last_exit_t = -10**9     # index of last exit, for the re-entry cooldown
+    position = None
+    pending = None
+    last_exit_t = -10**9
+
+    def append_decision(
+        idx: int,
+        action: str,
+        reason: str,
+        direction: str | None = None,
+        scores: DecisionScores | None = None,
+        plan: TradePlan | None = None,
+    ) -> None:
+        if scores is None:
+            prob_long = prob_short = selected_prob = expected = expected_long = expected_short = None
+        else:
+            prob_long = scores.prob_long_win
+            prob_short = scores.prob_short_win
+            expected_long = scores.expected_long_r
+            expected_short = scores.expected_short_r
+            if direction == "LONG":
+                selected_prob = scores.prob_long_win
+                expected = scores.expected_long_r
+            elif direction == "SHORT":
+                selected_prob = scores.prob_short_win
+                expected = scores.expected_short_r
+            else:
+                selected_prob = max(scores.prob_long_win, scores.prob_short_win)
+                expected = max(scores.expected_long_r, scores.expected_short_r)
+
+        result.decisions.append(DecisionTrace(
+            ts=ts[idx],
+            session_date=session_date[idx],
+            local_time=local_time[idx],
+            close_price=float(c[idx]),
+            in_entry_window=bool(entry_window[idx]),
+            decision_action=action,
+            decision_reason=reason,
+            direction=direction,
+            prob_long_win=prob_long,
+            prob_short_win=prob_short,
+            selected_trade_prob=selected_prob,
+            expected_net_r=expected,
+            expected_long_r=expected_long,
+            expected_short_r=expected_short,
+            regime_state=int(states[idx]) if idx < len(states) else None,
+            high_vol_state=bool(high_vol[idx]) if idx < len(high_vol) else None,
+            sigma_pts=plan.sigma_pts if plan is not None else None,
+            atr_pts=float(atr[idx]) if np.isfinite(atr[idx]) else None,
+            stop_pct=plan.stop_pct if plan is not None else None,
+            tp_pct=plan.tp_pct if plan is not None else None,
+        ))
 
     def close_position(exit_ts, exit_price, status, bars_held, exit_idx) -> None:
         nonlocal equity, position, last_exit_t
@@ -156,7 +279,10 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         result.trades.append(ClosedTrade(
             intent_ts=p["intent_ts"], entry_ts=p["entry_ts"], entry_price=p["entry_price"],
             direction=p["direction"], units=p["units"], notional=p["notional"],
-            margin_used=p["margin_used"], regime_state=p["regime_state"], prob_up=p["prob_up"],
+            margin_used=p["margin_used"], regime_state=p["regime_state"],
+            prob_long_win=p["prob_long_win"], prob_short_win=p["prob_short_win"],
+            selected_trade_prob=p["selected_trade_prob"], expected_net_r=p["expected_net_r"],
+            decision_reason=p["decision_reason"],
             sigma_pts=p["sigma_pts"], stop_price=p["stop_price"], take_profit_price=p["tp_price"],
             outcome_status=status, exit_ts=exit_ts, exit_price=exit_price, bars_held=bars_held,
             return_pct=ret_pct, pnl=pnl, costs=costs,
@@ -167,14 +293,46 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         last_exit_t = exit_idx
         position = None
 
+    def choose_direction(scores: DecisionScores) -> tuple[str | None, str]:
+        long_ok = (
+            scores.long_fitted
+            and scores.prob_long_win >= config.PROB_THRESHOLD
+            and scores.expected_long_r >= config.MIN_EXPECTED_NET_R
+        )
+        short_ok = (
+            config.ALLOW_SHORT
+            and scores.short_fitted
+            and scores.prob_short_win >= config.PROB_THRESHOLD
+            and scores.expected_short_r >= config.MIN_EXPECTED_NET_R
+        )
+        if long_ok and short_ok:
+            if scores.expected_long_r >= scores.expected_short_r:
+                return "LONG", "LONG_EXPECTED_EDGE"
+            return "SHORT", "SHORT_EXPECTED_EDGE"
+        if long_ok:
+            return "LONG", "LONG_EXPECTED_EDGE"
+        if short_ok:
+            return "SHORT", "SHORT_EXPECTED_EDGE"
+
+        max_prob = max(scores.prob_long_win if scores.long_fitted else 0.0, scores.prob_short_win if scores.short_fitted else 0.0)
+        max_expected = max(
+            scores.expected_long_r if scores.long_fitted else -np.inf,
+            scores.expected_short_r if scores.short_fitted else -np.inf,
+        )
+        if not scores.long_fitted and not scores.short_fitted:
+            return None, "MODEL_NOT_FITTED"
+        if max_prob < config.PROB_THRESHOLD:
+            return None, "PROBABILITY_BELOW_THRESHOLD"
+        if max_expected < config.MIN_EXPECTED_NET_R:
+            return None, "EXPECTED_NET_R_BELOW_MIN"
+        return None, "SIDE_DISABLED"
+
     last_simulated = start
     for t in range(start, n):
         last_simulated = t
-        # refit at checkpoints
         if t == start or (t - start) % config.REFIT_EVERY_BARS == 0:
             refit(t)
 
-        # 1. Fill a pending signal at this bar's open.
         if position is None and pending is not None:
             entry_price = o[t]
             sizing = broker.size_position(equity, entry_price, pending["stop_pct"])
@@ -191,18 +349,19 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                     "intent_ts": pending["intent_ts"], "entry_ts": ts[t], "entry_price": entry_price,
                     "direction": pending["direction"], "units": sizing.units,
                     "notional": sizing.notional_eur, "margin_used": sizing.margin_used_eur,
-                    "regime_state": pending["regime_state"], "prob_up": pending["prob_up"],
+                    "regime_state": pending["regime_state"],
+                    "prob_long_win": pending["prob_long_win"], "prob_short_win": pending["prob_short_win"],
+                    "selected_trade_prob": pending["selected_trade_prob"], "expected_net_r": pending["expected_net_r"],
+                    "decision_reason": pending["decision_reason"],
                     "sigma_pts": pending["sigma_pts"], "stop_price": stop_price,
                     "tp_price": (tp_price if config.TP_MODE == "fixed" else None),
                     "equity_before": equity, "entry_session": session_date[t], "bars_held": 0,
-                    # trailing-stop state (only used when TP_MODE == trailing)
                     "trail_active": False, "trail_distance_pct": pending["trail_distance_pct"],
                     "trail_activation_price": trail_activation_price,
                     "trailing_stop": None, "extreme": entry_price,
                 }
             pending = None
 
-        # 2. Manage an open position on this bar.
         if position is not None:
             position["bars_held"] += 1
             bars_held = position["bars_held"]
@@ -217,20 +376,21 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                     hit_stop, hit_tp = low[t] <= sp, h[t] >= tp
                 else:
                     hit_stop, hit_tp = h[t] >= sp, low[t] <= tp
-                # Resolve in the configured priority when both would trigger in-bar.
                 order = [("stop", hit_stop, sp, "HIT_SL"), ("tp", hit_tp, tp, "HIT_TP")]
                 if not stop_first:
                     order.reverse()
                 for _kind, hit, px, status in order:
                     if hit:
-                        close_position(ts[t], px, status, bars_held, t); exited = True
+                        close_position(ts[t], px, status, bars_held, t)
+                        exited = True
                         break
-            else:  # trailing stop
+            else:
                 eff_stop = position["trailing_stop"] if (position["trail_active"] and position["trailing_stop"] is not None) else sp
                 if d == "LONG":
                     if low[t] <= eff_stop:
                         status = "HIT_TRAILING_STOP" if position["trail_active"] else "HIT_SL"
-                        close_position(ts[t], eff_stop, status, bars_held, t); exited = True
+                        close_position(ts[t], eff_stop, status, bars_held, t)
+                        exited = True
                     else:
                         position["extreme"] = max(position["extreme"], h[t])
                         if not position["trail_active"] and h[t] >= position["trail_activation_price"]:
@@ -242,7 +402,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                 else:
                     if h[t] >= eff_stop:
                         status = "HIT_TRAILING_STOP" if position["trail_active"] else "HIT_SL"
-                        close_position(ts[t], eff_stop, status, bars_held, t); exited = True
+                        close_position(ts[t], eff_stop, status, bars_held, t)
+                        exited = True
                     else:
                         position["extreme"] = min(position["extreme"], low[t])
                         if not position["trail_active"] and low[t] <= position["trail_activation_price"]:
@@ -252,68 +413,68 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                             prev = position["trailing_stop"]
                             position["trailing_stop"] = new_stop if prev is None else min(prev, new_stop)
 
-            # Session flat / new session / max hold.
             if not exited:
                 new_session = session_date[t] != position["entry_session"]
                 if new_session or local_time[t] >= cutoff:
-                    close_position(ts[t], c[t], "SESSION_FLAT", bars_held, t); exited = True
+                    close_position(ts[t], c[t], "SESSION_FLAT", bars_held, t)
+                    exited = True
                 elif bars_held >= config.MAX_HOLD_BARS:
-                    close_position(ts[t], c[t], "MAX_HOLD", bars_held, t); exited = True
+                    close_position(ts[t], c[t], "MAX_HOLD", bars_held, t)
+                    exited = True
 
             if equity <= 0:
                 result.ruined = True
                 break
 
-        # 3. Generate a new signal (fills next bar). Only when flat and no pending.
-        if position is None and pending is None and t < n - 1:
-            # Only open during the configured session window and respect cooldowns.
-            if local_time[t] < entry_start or local_time[t] >= entry_end:
-                continue
-            if t - last_exit_t < config.REENTRY_COOLDOWN_BARS:
-                continue
-            if config.REGIME_BLOCK_HIGH_VOL_STATE and high_vol[t]:
-                continue
+        if t >= n - 1:
+            continue
 
-            # Stop/TP distance basis: GARCH/EGARCH sigma (vol) or ATR.
-            sr = sigma_ret[t]
-            sigma_pts = sr * c[t] if (np.isfinite(sr) and sr > 0) else 0.0
-            if config.STOP_MODE == "vol":
-                if not (np.isfinite(sr) and sr > 0):
-                    continue
-                basis = sigma_pts
-                stop_dist = config.STOP_VOL_MULT * basis
-                tp_dist = config.TP_VOL_MULT * basis
-            else:  # atr
-                a = atr[t]
-                if not (np.isfinite(a) and a > 0):
-                    continue
-                basis = a
-                stop_dist = config.STOP_ATR_MULT * basis
-                tp_dist = config.TP_ATR_MULT * basis
-                if sigma_pts <= 0:
-                    sigma_pts = basis
+        if position is not None:
+            append_decision(t, "POSITION_OPEN", "position open between entry and exit")
+            continue
+        if pending is not None:
+            append_decision(t, "PENDING_SIGNAL", "pending signal waits for next bar open")
+            continue
+        if not entry_window[t]:
+            append_decision(t, "NO_TRADE", "OUT_OF_ENTRY_WINDOW")
+            continue
+        if t - last_exit_t < config.REENTRY_COOLDOWN_BARS:
+            append_decision(t, "NO_TRADE", "REENTRY_COOLDOWN")
+            continue
+        if config.REGIME_BLOCK_HIGH_VOL_STATE and high_vol[t]:
+            append_decision(t, "NO_TRADE", "HIGH_VOL_REGIME_BLOCK")
+            continue
 
-            cur_price = c[t]
-            stop_pct = _clamp(stop_dist / cur_price * 100.0, config.MIN_STOP_PCT, config.MAX_STOP_PCT)
-            tp_pct = max(tp_dist / cur_price * 100.0, stop_pct)
-            trail_activation_pct = config.TRAILING_ACTIVATION_MULT * basis / cur_price * 100.0
-            trail_distance_pct = max(config.TRAILING_DISTANCE_MULT * basis / cur_price * 100.0, 1e-6)
+        plan = make_trade_plan(float(c[t]), float(sigma_ret[t]), float(atr[t]))
+        if plan is None:
+            append_decision(t, "NO_TRADE", "INVALID_STOP_BASIS")
+            continue
 
-            p_up = float(decision.proba_up(X_full[t : t + 1])[0])
-            direction = None
-            if p_up >= config.PROB_THRESHOLD:
-                direction = "LONG"
-            elif config.ALLOW_SHORT and (1.0 - p_up) >= config.PROB_THRESHOLD:
-                direction = "SHORT"
-            if direction is not None:
-                pending = {
-                    "direction": direction, "stop_pct": stop_pct, "tp_pct": tp_pct,
-                    "trail_activation_pct": trail_activation_pct, "trail_distance_pct": trail_distance_pct,
-                    "sigma_pts": sigma_pts, "regime_state": int(states[t]), "prob_up": p_up,
-                    "intent_ts": ts[t],
-                }
+        scores = decision.score(X_full[t:t + 1])
+        direction, reason = choose_direction(scores)
+        if direction is None:
+            append_decision(t, "NO_TRADE", reason, scores=scores, plan=plan)
+            continue
 
-    # Force-close any residual position at the last bar.
+        selected_prob = scores.prob_long_win if direction == "LONG" else scores.prob_short_win
+        expected_net_r = scores.expected_long_r if direction == "LONG" else scores.expected_short_r
+        pending = {
+            "direction": direction,
+            "stop_pct": plan.stop_pct,
+            "tp_pct": plan.tp_pct,
+            "trail_activation_pct": plan.trail_activation_pct,
+            "trail_distance_pct": plan.trail_distance_pct,
+            "sigma_pts": plan.sigma_pts,
+            "regime_state": int(states[t]),
+            "prob_long_win": scores.prob_long_win,
+            "prob_short_win": scores.prob_short_win,
+            "selected_trade_prob": selected_prob,
+            "expected_net_r": expected_net_r,
+            "decision_reason": reason,
+            "intent_ts": ts[t],
+        }
+        append_decision(t, f"{direction}_SIGNAL", reason, direction=direction, scores=scores, plan=plan)
+
     if position is not None:
         close_position(ts[last_simulated], c[last_simulated], "SESSION_FLAT", position["bars_held"], last_simulated)
 
@@ -321,8 +482,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     result.equity_curve = equity_curve
     result.bars_simulated = max(0, last_simulated - start + 1)
     log.info(
-        "Simulation done at bar %d utc %s session %s local %s simulated bars %d trades %d final equity %.2f ruined %s",
+        "Simulation done at bar %d utc %s session %s local %s simulated bars %d trades %d decisions %d final equity %.2f ruined %s",
         last_simulated, _fmt_ts(ts[last_simulated]), session_date[last_simulated], local_time[last_simulated],
-        result.bars_simulated, len(result.trades), result.final_equity, result.ruined,
+        result.bars_simulated, len(result.trades), len(result.decisions), result.final_equity, result.ruined,
     )
     return result

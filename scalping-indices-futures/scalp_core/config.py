@@ -72,7 +72,7 @@ END_DATE = _env_date("END_DATE")
 
 PRICE_MODEL = _one_of("PRICE_MODEL", "kalman", {"kalman", "state_space"})
 VOL_MODEL = _one_of("VOL_MODEL", "garch", {"garch", "egarch"})
-DECISION_MODEL = _one_of("DECISION_MODEL", "bayes", {"bayes", "logistic"})
+DECISION_MODEL = _one_of("DECISION_MODEL", "logistic", {"bayes", "logistic"})
 
 # Kalman local-linear-trend noise multipliers (relative to training diff variance,
 # so the filter is self-scaling across instruments of different price levels).
@@ -105,6 +105,7 @@ GARCH_DIST = _one_of("GARCH_DIST", "normal", {"normal", "studentst", "skewt", "g
 
 LOGISTIC_C = env_float("LOGISTIC_C", 1.0)
 MIN_TRAIN_ROWS = max(20, env_int("MIN_TRAIN_ROWS", 50))
+CALIBRATE_PROBABILITIES = env_bool("CALIBRATE_PROBABILITIES", True)
 
 # ── walk-forward fitting ────────────────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ REFIT_EVERY_BARS = max(1, env_int("REFIT_EVERY_BARS", 250))
 # ── layer 4: decision threshold ─────────────────────────────────────────────────
 
 PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.55)
+MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.05)
 
 # ── stop-loss / take-profit logic ───────────────────────────────────────────────
 # STOP_MODE chooses the distance basis: "vol" = GARCH/EGARCH sigma, "atr" = ATR.
@@ -232,10 +234,12 @@ class RunConfig:
     garch_dist: str
     logistic_c: float
     min_train_rows: int
+    calibrate_probabilities: bool
     warmup_bars: int
     train_window_bars: int
     refit_every_bars: int
     prob_threshold: float
+    min_expected_net_r: float
     stop_mode: str
     tp_mode: str
     stop_vol_mult: float
@@ -291,10 +295,12 @@ def active_run_config() -> RunConfig:
         garch_dist=GARCH_DIST,
         logistic_c=LOGISTIC_C,
         min_train_rows=MIN_TRAIN_ROWS,
+        calibrate_probabilities=CALIBRATE_PROBABILITIES,
         warmup_bars=WARMUP_BARS,
         train_window_bars=TRAIN_WINDOW_BARS,
         refit_every_bars=REFIT_EVERY_BARS,
         prob_threshold=PROB_THRESHOLD,
+        min_expected_net_r=MIN_EXPECTED_NET_R,
         stop_mode=STOP_MODE,
         tp_mode=TP_MODE,
         stop_vol_mult=STOP_VOL_MULT,
