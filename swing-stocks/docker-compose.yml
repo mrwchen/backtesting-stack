@@ -214,9 +214,9 @@ services:
       # Basis der Tageslogik: Zeitzone, World-Regime-MA und getrennte Trend-
       # Laengen fuer die Phasen Stress baut sich auf / Stress nimmt ab.
       - DAILY_POLICY_TZ=America/New_York
-      - DAILY_POLICY_WORLD_REGIME_MA_DAYS=5
-      - DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS=2
-      - DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS=2
+      - DAILY_POLICY_WORLD_REGIME_MA_DAYS=7
+      - DAILY_POLICY_WORLD_REGIME_STRESS_BUILDING_TREND_DAYS=3
+      - DAILY_POLICY_WORLD_REGIME_STRESS_RECEDING_TREND_DAYS=4
 
       # World-Regime-Schwellen: bis STRESS_THRESHOLD gilt Low Stress; ueber
       # HIGH_STRESS_THRESHOLD gilt harte High-Stress-Positionierung.
@@ -233,13 +233,13 @@ services:
       # berechneten Long-Caps je nach Stressphase relativ zum Vortag.
       - DAILY_POLICY_STRESS_RISK_REDUCTION_PCT=0.5
       - DAILY_POLICY_STRESS_BUILD_MAX_LONG_DELTA=-1
-      - DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA=1
+      - DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA=0
       - DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA=0
 
       # High-Stress-Budget: harte Direction-Caps, wenn der World-Regime-MA
       # oberhalb der High-Stress-Schwelle liegt.
       - DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS=0
-      - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=2
+      - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=0
 
       # Entry-Taktung und SL-Cluster-Halt: begrenzt Abstand zwischen Opens und
       # stoppt neue Entries nach zu vielen SL-Closes im Zeitfenster.
@@ -256,7 +256,7 @@ services:
       # Intraday-Market-Drop-Halt: prueft VOO ab NY-Regular-Open gegen das
       # Low/Close der 1h-Bars und stoppt neue Entries am selben Tag.
       - DAILY_POLICY_MARKET_DROP_SYMBOL=VOO
-      - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=4
+      - DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT=3.0
       - DAILY_POLICY_MARKET_DROP_TZ=America/New_York
       - DAILY_POLICY_MARKET_DROP_SESSION_START=09:30
       - DAILY_POLICY_MARKET_DROP_SESSION_END=16:00
@@ -266,13 +266,13 @@ services:
       # Previous-Day-Market-Drop-Halt: prueft den vorherigen Handelstag und
       # blockiert den heutigen Tag, wenn VOO Open->Close/Low stark fiel.
       - DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL=VOO
-      - DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT=4.0
+      - DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT=3.0
       - DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD=close
 
       # Tages-Prune: schliesst zur Uhrzeit die schlechtesten Positionen, bis
       # Tages-Caps fuer Long/Short/Total wieder eingehalten werden. ENABLED
       # schaltet diese Zwangsreduktion komplett ein oder aus.
-      - DAILY_POLICY_PRUNE_ENABLED=true
+      - DAILY_POLICY_PRUNE_ENABLED=false
       - DAILY_POLICY_PRUNE_TIME_TZ=America/New_York
       - DAILY_POLICY_PRUNE_TIME=11:00
 
@@ -359,11 +359,11 @@ services:
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=6.0
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=5.0
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=3.5
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=3.0
       - EXECUTION_LONG_TRAILING_DISTANCE_PCT=2.0
       - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=1.5
-      - EXECUTION_LONG_MAX_HOLD_DAYS=12.0
+      - EXECUTION_LONG_MAX_HOLD_DAYS=30.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=7.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=120
