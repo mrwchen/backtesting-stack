@@ -1,0 +1,57 @@
+Statistisches Scalping-Backtesting (scalping-indices-futures)
+============================================================
+
+Eigenstaendiger Stack (eigenes docker-compose) fuer Intraday-Scalping auf
+Index-/Futures-Daten. Fuenf-Schichten-Pipeline:
+
+  1. Marktregime    : Hidden Markov Model (hmmlearn)
+  2. Preisprozess   : Kalman-Filter | State-Space-Modell   (PRICE_MODEL)
+  3. Volatilitaet   : GARCH | EGARCH                        (VOL_MODEL)
+  4. Trade-Entscheid: Bayes-Klassifikator | Logit-Modell   (DECISION_MODEL)
+  5. Risiko         : Monte-Carlo (Drawdown / Slippage / Sequenzrisiko)
+
+Die Schichten 2-4 sind per Parameter im docker-compose.yml umschaltbar.
+
+Datenquelle
+-----------
+public.ibkr_market_data (TimescaleDB). Symbol und bar_size frei waehlbar
+(SYMBOL, BAR_SIZE). Standard: NQ / "1 min". START_DATE/END_DATE leer =
+automatisch gesamter verfuegbarer Bereich.
+
+Account: PS_ACC
+---------------
+Pepperstone-artiges Index-CFD-Konto mit kontinuierlicher (fraktionaler)
+Positionsgroesse:
+  - Startkapital      : 5000 EUR
+  - Margin-Anforderung: 5 % des Nominalwerts
+  - Risiko pro Trade  : 1,5 % des Equity (Groesse aus Risiko / Stop-Distanz)
+Ein voller NQ-Future-Kontrakt braeuchte bei 5 % Margin ~30k -> mit 5k Equity
+unmoeglich; daher CFD-artige kontinuierliche Groesse (CONTRACT_MULTIPLIER, Default 1.0).
+
+Methodik / Look-Ahead-Schutz
+----------------------------
+Walk-Forward: alle Schichten werden alle REFIT_EVERY_BARS Bars auf einem reinen
+Vergangenheitsfenster (WARMUP_BARS, optional rollierend TRAIN_WINDOW_BARS) neu
+gefittet. Jede Bar-Inferenz nutzt nur Daten bis zur jeweiligen Bar (kausale
+Forward-Filter fuer Regime/Preis/Volatilitaet). Ein Signal am Close von Bar t
+wird am Open von Bar t+1 ausgefuehrt.
+
+Ergebnis-Tabellen (public)
+--------------------------
+  scalp_backtest_runs         - Run-Metadaten, Config-Snapshot, Ergebnis-Summary
+  scalp_backtest_trades       - Einzeltrades
+  scalp_backtest_monte_carlo  - MC-Perzentile (base / slippage / sequence)
+
+Ausfuehrung (auf dem Server; nichts laeuft lokal)
+-------------------------------------------------
+  cd backtesting-stack/scalping-indices-futures
+  docker compose up --build
+
+Wichtige Hinweise / Annahmen
+----------------------------
+- Datenlage 1 min: aktuell nur ~2 Wochen NQ ("1 min", ~8,3k Bars). Die
+  statistischen Schichten (HMM/GARCH/Bayes) haben damit wenig Trainingsdaten;
+  Resultate sind bis zum Aufbau weiterer 1-min-Historie nur indikativ.
+  bar_size "1 hour" hat ~3 Jahre Historie und ist fuer das Fitting robuster.
+- USD->EUR ueber konstanten EURUSD_RATE (Default 1.0 = keine Umrechnung).
+- Intrabar-Tie-Break: Stop-Loss wird vor Take-Profit geprueft (konservativ).

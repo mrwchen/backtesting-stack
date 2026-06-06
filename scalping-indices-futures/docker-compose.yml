@@ -1,0 +1,119 @@
+services:
+  # Einmaliger Init-Job: legt die scalp_*-Ergebnis-Tabellen via ./init/schema.sql an.
+  # DROP_ALL_SCALP_TABLES_ON_START=true droppt sie vorher (frischer Lauf).
+  init-scalp-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: postgres-ts-root-pw
+      DROP_ALL_SCALP_TABLES_ON_START: "true"
+    command:
+      - sh
+      - -c
+      - >
+        psql -v ON_ERROR_STOP=1
+        -v drop_scalp_tables_on_start="$${DROP_ALL_SCALP_TABLES_ON_START:-false}"
+        -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
+    networks:
+      - shared_net
+
+  scalp-backtest-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      init-scalp-schema:
+        condition: service_completed_successfully
+    environment:
+      # ── Datenbank (TimescaleDB aus dem Infra-Stack) ──────────────────────────
+      - PGHOST=timescaledb
+      - PGPORT=5432
+      - PGDATABASE=postgres
+      - PGUSER=market-data-account
+      - PGPASSWORD=market-data-account-pw
+      - PGAPPNAME=scalp_backtest_runner
+      - PGOPTIONS=-c search_path=public
+      - RESULT_SCHEMA=public
+      - DB_CONNECT_TIMEOUT_SECONDS=10
+      - DB_CONNECT_RETRIES=5
+      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0
+      - DB_STATEMENT_TIMEOUT_MS=120000
+      - DB_LOCK_TIMEOUT_MS=5000
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=120000
+      - LOG_LEVEL=INFO
+      - RUN_LABEL_TZ=Europe/Berlin
+      - RUN_NOTES_EXTRA=
+
+      # ── Datenquelle ──────────────────────────────────────────────────────────
+      # Kursdaten aus public.ibkr_market_data. Symbol und bar_size frei waehlbar.
+      - SOURCE_TABLE=ibkr_market_data
+      - SYMBOL=NQ
+      - BAR_SIZE=1 min
+      # Leer = automatisch gesamter verfuegbarer Bereich fuer Symbol/bar_size.
+      - START_DATE=
+      - END_DATE=
+
+      # ── Layer-Schalter (die vier umschaltbaren Modelle) ──────────────────────
+      - PRICE_MODEL=kalman           # kalman | state_space
+      - VOL_MODEL=garch              # garch | egarch
+      - DECISION_MODEL=bayes         # bayes | logistic
+
+      # ── Layer 1: Regime (HMM) ────────────────────────────────────────────────
+      - REGIME_STATES=3
+      - REGIME_BLOCK_HIGH_VOL_STATE=false
+
+      # ── Walk-Forward-Fitting ─────────────────────────────────────────────────
+      - WARMUP_BARS=1500
+      - TRAIN_WINDOW_BARS=0          # 0 = expandierendes Fenster
+      - REFIT_EVERY_BARS=250
+
+      # ── Layer 2: Kalman-Rauschen (selbstskalierend) ──────────────────────────
+      - KF_OBS_NOISE_MULT=1.0
+      - KF_LEVEL_NOISE_MULT=0.1
+      - KF_TREND_NOISE_MULT=0.001
+
+      # ── Layer 4: Entscheidungs-Schwelle ──────────────────────────────────────
+      - PROB_THRESHOLD=0.55
+
+      # ── Trade-Levels (aus Layer-3-Volatilitaet) ──────────────────────────────
+      - STOP_VOL_MULT=2.0
+      - TP_VOL_MULT=3.0
+      - MIN_STOP_PCT=0.05
+      - MAX_STOP_PCT=0.6
+      - MAX_HOLD_BARS=60
+      - ALLOW_SHORT=true
+
+      # ── Session (Intraday-only, flat zum Cutoff) ─────────────────────────────
+      - SESSION_FLAT_TIME=16:55
+      - SESSION_TZ=America/New_York
+
+      # ── Account: PS_ACC ──────────────────────────────────────────────────────
+      - ACCOUNT_PROFILE=PS_ACC
+      - INITIAL_EQUITY=5000
+      - ACCOUNT_CURRENCY=EUR
+      - MARGIN_REQUIREMENT_PCT=5
+      - RISK_PER_TRADE_PCT=1.5
+      - MAX_MARGIN_PCT=45
+      - CONTRACT_MULTIPLIER=1.0
+      - EURUSD_RATE=1.0              # USD je 1 EUR; 1.0 = keine Umrechnung
+
+      # ── Kosten ───────────────────────────────────────────────────────────────
+      - SPREAD_BPS=1.0
+      - SLIPPAGE_BPS=0.5
+      - COMMISSION_PER_UNIT=0.0
+
+      # ── Layer 5: Monte-Carlo-Risiko ──────────────────────────────────────────
+      - MONTE_CARLO_ENABLED=true
+      - MONTE_CARLO_SIMULATIONS=2000
+      - MC_EXTRA_SLIPPAGE_BPS=1.0
+      - MC_BLOCK_SIZE=5
+      - MC_RUIN_DRAWDOWN_PCT=50.0
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
