@@ -8,7 +8,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_SCALP_TABLES_ON_START: "true"
+      DROP_ALL_SCALP_TABLES_ON_START: "false"
     command:
       - sh
       - -c
@@ -81,7 +81,7 @@ services:
       # Kann als Filter dienen (turbulente Phase blocken) und ist Feature.
       # ═════════════════════════════════════════════════════════════════════════
       - REGIME_STATES=3              # Anzahl versteckter Zustaende
-      - REGIME_BLOCK_HIGH_VOL_STATE=false   # true = im turbulentesten Regime nicht traden
+      - REGIME_BLOCK_HIGH_VOL_STATE=true    # true = im turbulentesten Regime nicht traden
       - HMM_N_ITER=100               # max. EM-Iterationen beim Fit
       - HMM_COVARIANCE_TYPE=diag     # diag | full | tied | spherical
 
@@ -106,7 +106,7 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Schwelle)
       # ═════════════════════════════════════════════════════════════════════════
-      - PROB_THRESHOLD=0.55          # Mindest-Wahrscheinlichkeit fuer einen Einstieg
+      - PROB_THRESHOLD=0.65          # Mindest-Wahrscheinlichkeit fuer einen Einstieg
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
       - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
 
@@ -125,7 +125,7 @@ services:
       # Die Multiplikatoren wirken auf die jeweilige Basis; MIN/MAX_STOP_PCT
       # begrenzen die Stop-Distanz (in % vom Preis) und damit die Positionsgroesse.
       # ═════════════════════════════════════════════════════════════════════════
-      - STOP_MODE=vol                # vol | atr
+      - STOP_MODE=atr                # vol | atr
       - TP_MODE=fixed                # fixed | trailing
       - STOP_VOL_MULT=2.0            # Stop = N x Sigma (bei STOP_MODE=vol)
       - TP_VOL_MULT=3.0              # TP   = N x Sigma (bei STOP_MODE=vol)
@@ -147,6 +147,8 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       # SESSION (Intraday-only, flat zum Cutoff)
       # ═════════════════════════════════════════════════════════════════════════
+      - ENTRY_START_TIME=09:30       # erste Signal-Bar in SESSION_TZ
+      - ENTRY_END_TIME=15:45         # keine neuen Einstiege ab dieser Uhrzeit
       - SESSION_FLAT_TIME=16:55
       - SESSION_TZ=America/New_York
 

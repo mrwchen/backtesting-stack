@@ -127,3 +127,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 def session_flat_cutoff() -> time:
     hh, mm = config.SESSION_FLAT_TIME.split(":")
     return time(int(hh), int(mm))
+
+
+def session_entry_start() -> time:
+    hh, mm = config.ENTRY_START_TIME.split(":")
+    return time(int(hh), int(mm))
+
+
+def session_entry_end() -> time:
+    hh, mm = config.ENTRY_END_TIME.split(":")
+    return time(int(hh), int(mm))

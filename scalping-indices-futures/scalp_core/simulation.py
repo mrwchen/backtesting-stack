@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import broker, config
-from .data import session_flat_cutoff
+from .data import session_entry_end, session_entry_start, session_flat_cutoff
 from .entities import ClosedTrade
 from .layer_decision import make_decision_model
 from .layer_price import make_price_filter
@@ -58,6 +58,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     target_up = features["target_up"].to_numpy(dtype=np.float64)
     session_date = features["session_date"].to_numpy()
     local_time = features["local_time"].to_numpy()
+    entry_start: time = session_entry_start()
+    entry_end: time = session_entry_end()
     cutoff: time = session_flat_cutoff()
 
     regime_feats = np.column_stack([log_ret, abs_ret])
@@ -250,8 +252,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
 
         # 3. Generate a new signal (fills next bar). Only when flat and no pending.
         if position is None and pending is None and t < n - 1:
-            # Don't open into the session-close window, and respect the re-entry cooldown.
-            if local_time[t] >= cutoff:
+            # Only open during the configured session window and respect cooldowns.
+            if local_time[t] < entry_start or local_time[t] >= entry_end:
                 continue
             if t - last_exit_t < config.REENTRY_COOLDOWN_BARS:
                 continue

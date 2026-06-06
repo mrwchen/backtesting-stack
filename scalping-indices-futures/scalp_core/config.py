@@ -143,6 +143,8 @@ INTRABAR_FILL_PRIORITY = _one_of("INTRABAR_FILL_PRIORITY", "stop", {"stop", "tp"
 
 # ── session handling (intraday-only, flat at cutoff) ────────────────────────────
 
+ENTRY_START_TIME = env_str("ENTRY_START_TIME", "09:30")
+ENTRY_END_TIME = env_str("ENTRY_END_TIME", "15:45")
 SESSION_FLAT_TIME = env_str("SESSION_FLAT_TIME", "16:55")
 SESSION_TZ = env_str("SESSION_TZ", "America/New_York")
 

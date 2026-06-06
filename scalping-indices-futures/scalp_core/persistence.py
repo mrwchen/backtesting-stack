@@ -32,6 +32,7 @@ def _notes() -> str:
         f"vol={config.VOL_MODEL}",
         f"decision={config.DECISION_MODEL}",
         f"regime_states={config.REGIME_STATES}",
+        f"entry={config.ENTRY_START_TIME}-{config.ENTRY_END_TIME} {config.SESSION_TZ}",
         f"account={config.ACCOUNT_PROFILE}",
     ]
     if config.RUN_NOTES_EXTRA:
