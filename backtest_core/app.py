@@ -106,7 +106,7 @@ def run_shared_candidate_timeline_prebuilder() -> None:
             long_min_absolute_score=None,
             short_max_absolute_score=None,
         )
-        if CANDIDATE_TIMELINE_CACHE_ENABLED and timeline_sets <= 0:
+        if CANDIDATE_TIMELINE_CACHE_ENABLED and timeline_sets <= 0 and not COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
             raise RuntimeError(
                 "Shared candidate timeline prebuild produced no cache sets; refusing slow per-worker fallback."
             )
