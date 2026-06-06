@@ -37,11 +37,15 @@ gefittet. Jede Bar-Inferenz nutzt nur Daten bis zur jeweiligen Bar (kausale
 Forward-Filter fuer Regime/Preis/Volatilitaet). Ein Signal am Close von Bar t
 wird am Open von Bar t+1 ausgefuehrt.
 Technische Setups werden zuerst aus bekannten Bar-Close-Daten erzeugt
-(z.B. Long-Pullback-Reclaim oder Short-Bounce-Reject). Das Entscheidungsmodell
-trainiert und scored nur noch diese Kandidaten, inklusive Setup-One-Hot-Feature.
+(z.B. Short-Bounce-Reject, Failed-Reclaim oder Opening-Range-Reject). Das
+Entscheidungsmodell trainiert und scored nur noch diese Kandidaten, inklusive
+Setup-One-Hot-Feature und Setup-Qualitaetsfeatures wie Rejection-Staerke,
+Close-Weakness, Trendqualitaet und Zeitqualitaet.
 Labels werden weiterhin nur verwendet, wenn der komplette Exit vor dem Refit-Bar
 bekannt war. High-Vol ist standardmaessig hart geblockt, weil die letzten Runs
-dort Volumen, aber negative Edge gezeigt haben.
+dort Volumen, aber negative Edge gezeigt haben. Nach der letzten Diagnose sind
+Long-Setups und Short-Continuation standardmaessig aus; die aktive Familie ist
+Short-Rejection im Regime 1.
 
 Ergebnis-Tabellen (public)
 --------------------------

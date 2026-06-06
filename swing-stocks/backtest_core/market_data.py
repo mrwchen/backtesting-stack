@@ -110,6 +110,7 @@ _CANDIDATE_CACHE: dict[tuple, list[FundamentalRow]] = {}
 _CANDIDATE_TIMELINE_CACHE: dict[tuple, _SharedCandidateTimeline] = {}
 _CANDIDATE_TIMELINE_CACHE_DISABLED = False
 _EARNINGS_BLACKOUT_EVENT_CACHE: dict[tuple[str, InstrumentKey, date, int], list[EarningsBlackoutEvent]] = {}
+_KNOWN_UPCOMING_EARNINGS_IDENTITY_CACHE: dict[tuple, frozenset[InstrumentKey]] = {}
 _PEPPERSTONE_SYMBOL_CACHE: dict[tuple[str, bool], tuple[str, ...]] = {}
 _PEPPERSTONE_24_SYMBOL_CACHE: dict[str, frozenset[str]] = {}
 _ENTRY_WINDOW_ZONE = ZoneInfo(ENTRY_WINDOW_TZ)
@@ -704,9 +705,13 @@ def _candidate_as_of_ts(as_of_date: Optional[date], as_of_ts: Optional[object]) 
 def _add_upcoming_earnings_date_params(params: dict, as_of_ts: Optional[datetime]) -> None:
     if as_of_ts is None:
         raise ValueError("COMMON_REQUIRE_UPCOMING_EARNINGS_DATE requires as_of_date or as_of_ts")
+    as_of_ts = _ensure_utc_ts(as_of_ts)
     entry_date = _entry_local_date(as_of_ts)
     params["required_earnings_min_date"] = entry_date
     params["required_earnings_max_date"] = entry_date + timedelta(days=COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS)
+    params["required_earnings_entry_date"] = entry_date
+    params["required_earnings_knowledge_ts"] = as_of_ts
+    params["historical_earnings_known_days_before"] = COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE
 
 
 def _upcoming_earnings_date_exists_sql(candidate_alias: str) -> sql.Composed:
@@ -722,6 +727,18 @@ def _upcoming_earnings_date_exists_sql(candidate_alias: str) -> sql.Composed:
               AND e.earnings_date IS NOT NULL
               AND e.earnings_date >= %(required_earnings_min_date)s::date
               AND e.earnings_date <= %(required_earnings_max_date)s::date
+              AND (
+                    (
+                      e.source = 'sec_8k_item_2_02'
+                      AND %(required_earnings_entry_date)s::date >= (
+                            e.earnings_date - (%(historical_earnings_known_days_before)s::int * INTERVAL '1 day')
+                      )::date
+                    )
+                    OR (
+                      COALESCE(e.source, '') != 'sec_8k_item_2_02'
+                      AND e.known_as_of_ts <= %(required_earnings_knowledge_ts)s::timestamptz
+                    )
+              )
         )
         """
     ).format(
@@ -730,6 +747,122 @@ def _upcoming_earnings_date_exists_sql(candidate_alias: str) -> sql.Composed:
         alias,
         alias,
     )
+
+
+def _known_upcoming_earnings_identities(
+    conn: psycopg2.extensions.connection,
+    identities: list[InstrumentKey],
+    as_of_ts: datetime,
+    *,
+    source_table: str = SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+    require_days: int = COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS,
+    historical_known_days_before: int = COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
+) -> frozenset[InstrumentKey]:
+    unique_identities = tuple(sorted({instrument_key(symbol, exchange, cik) for symbol, exchange, cik in identities}))
+    if not unique_identities:
+        return frozenset()
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    entry_date = _entry_local_date(as_of_ts)
+    max_earnings_date = entry_date + timedelta(days=require_days)
+    cache_key = (
+        source_table,
+        entry_date,
+        max_earnings_date,
+        _ts_to_epoch_us(as_of_ts),
+        int(historical_known_days_before),
+        unique_identities,
+    )
+    cached = _KNOWN_UPCOMING_EARNINGS_IDENTITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    symbols = [identity[0] for identity in unique_identities]
+    exchanges = [identity[1] for identity in unique_identities]
+    ciks = [identity[2] for identity in unique_identities]
+    known: set[InstrumentKey] = set()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                WITH requested AS (
+                    SELECT symbol, exchange, cik
+                    FROM unnest(%s::text[], %s::text[], %s::bigint[]) AS u(symbol, exchange, cik)
+                )
+                SELECT
+                    e.symbol,
+                    e.exchange,
+                    e.cik,
+                    e.earnings_date,
+                    e.announcement_ts,
+                    COALESCE(e.announcement_time_type, 'unknown') AS announcement_time_type,
+                    e.source,
+                    e.source_priority,
+                    e.known_as_of_ts,
+                    e.is_confirmed
+                FROM {} e
+                JOIN requested r
+                  ON r.symbol = e.symbol
+                 AND r.exchange = e.exchange
+                 AND r.cik = e.cik
+                WHERE e.earnings_date IS NOT NULL
+                  AND e.earnings_date >= %s
+                  AND e.earnings_date <= %s
+                ORDER BY e.earnings_date ASC, e.source_priority DESC, e.known_as_of_ts DESC
+                """
+            ).format(relation_identifier(source_table)),
+            (symbols, exchanges, ciks, entry_date, max_earnings_date),
+        )
+        rows = cur.fetchall()
+
+    for row in rows:
+        event = EarningsBlackoutEvent(
+            symbol=row[0],
+            exchange=row[1],
+            cik=int(row[2]),
+            earnings_date=row[3],
+            announcement_ts=_ensure_utc_ts(row[4]) if row[4] is not None else None,
+            announcement_time_type=row[5] or "unknown",
+            source=row[6],
+            source_priority=int(row[7]),
+            known_as_of_ts=_ensure_utc_ts(row[8]),
+            is_confirmed=bool(row[9]),
+        )
+        if _earnings_event_is_publicly_known(
+            event,
+            as_of_ts,
+            entry_date,
+            historical_known_days_before,
+        ):
+            known.add(instrument_key(event.symbol, event.exchange, event.cik))
+
+    result = frozenset(known)
+    _KNOWN_UPCOMING_EARNINGS_IDENTITY_CACHE[cache_key] = result
+    return result
+
+
+def _filter_candidates_with_known_upcoming_earnings(
+    conn: psycopg2.extensions.connection,
+    candidates: list[FundamentalRow],
+    as_of_ts: datetime,
+    *,
+    source_table: str = SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+) -> list[FundamentalRow]:
+    if not candidates:
+        return []
+    identities = [instrument_key(candidate.symbol, candidate.exchange, candidate.cik) for candidate in candidates]
+    known_identities = _known_upcoming_earnings_identities(
+        conn,
+        identities,
+        as_of_ts,
+        source_table=source_table,
+    )
+    if not known_identities:
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if instrument_key(candidate.symbol, candidate.exchange, candidate.cik) in known_identities
+    ]
 
 
 def _candidate_timeline_key(
@@ -1435,7 +1568,6 @@ def get_candidates(
             eligibility_where_parts.append(sql.SQL("candidates.short_eligible IS TRUE"))
     if require_upcoming_earnings_date:
         _add_upcoming_earnings_date_params(params, resolved_as_of_ts)
-        base_where_parts.append(_upcoming_earnings_date_exists_sql("f"))
 
     if direction == "LONG" and long_label_blocklist:
         eligibility_where_parts.append(sql.SQL("(candidates.valuation_label IS NULL OR candidates.valuation_label != ALL(%(label_list)s))"))
@@ -1513,7 +1645,7 @@ def get_candidates(
     """)
     source_relation = relation_identifier(source_table)
 
-    if resolved_as_of_ts is not None and not require_upcoming_earnings_date:
+    if resolved_as_of_ts is not None:
         timeline_key = _candidate_timeline_key(
             direction,
             long_min_fundamental,
@@ -1553,7 +1685,17 @@ def get_candidates(
             short_max_absolute_score,
         )
         if timeline_candidates is not None:
+            if require_upcoming_earnings_date:
+                timeline_candidates = _filter_candidates_with_known_upcoming_earnings(
+                    conn,
+                    timeline_candidates,
+                    resolved_as_of_ts,
+                    source_table=SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
+                )
             return timeline_candidates
+
+    if require_upcoming_earnings_date:
+        base_where_parts.append(_upcoming_earnings_date_exists_sql("f"))
 
     where_parts = list(base_where_parts)
     if as_of_ts is not None:
@@ -1702,11 +1844,6 @@ def preload_candidate_timelines(
 ) -> tuple[int, int, int, float]:
     if not CANDIDATE_TIMELINE_CACHE_ENABLED or not directions:
         return _candidate_timeline_cache_counts()
-    if require_upcoming_earnings_date:
-        log.info(
-            "Skipping candidate timeline preload because upcoming earnings date eligibility requires per-day filtering"
-        )
-        return _candidate_timeline_cache_counts()
 
     resolved_as_of_ts = _candidate_as_of_ts(as_of_date, as_of_ts)
     if resolved_as_of_ts is None:
@@ -1739,6 +1876,7 @@ def preload_candidate_timelines(
             filter_high_leverage=filter_high_leverage,
             filter_negative_earnings=(filter_negative_earnings_by_direction or {}).get(direction, False),
             filter_scorer_eligibility=filter_scorer_eligibility,
+            require_upcoming_earnings_date=False,
             ibkr_margin_table=ibkr_margin_table,
             fundamental_score_mode=fundamental_score_mode,
             fundamental_peer_weight=fundamental_peer_weight,

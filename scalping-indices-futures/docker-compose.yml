@@ -108,9 +108,9 @@ services:
       # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Bandpass-Gates)
       # ═════════════════════════════════════════════════════════════════════════
       - DECISION_GATE_MODE=side_regime_bandpass # global_bandpass | side_regime_bandpass
-      - PROB_THRESHOLD=0.52          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
+      - PROB_THRESHOLD=0.54          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
       - MAX_PROB_THRESHOLD=0.74      # Globaler oberer Probability-Cutoff; leer/none = keine Obergrenze
-      - MIN_EXPECTED_NET_R=0.14      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
+      - MIN_EXPECTED_NET_R=0.20      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
       - MAX_EXPECTED_NET_R=0.85      # Globaler oberer Expected-R-Cutoff; leer/none = keine Obergrenze
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
       - CALIBRATE_PROBABILITIES=true # Kalibriert Trade-Win-Wahrscheinlichkeiten im Vergangenheitsfenster
@@ -118,15 +118,20 @@ services:
       - CANDIDATE_ALLOW_HIGH_VOL=false
       - MIN_CANDIDATE_SCORE=0.20
       - MAX_CANDIDATES_PER_BAR=3
-      - LONG_REGIME0_PULLBACK_RECLAIM_ENABLED=true
-      - LONG_REGIME0_TREND_CONTINUATION_ENABLED=true
+      - LONG_REGIME0_PULLBACK_RECLAIM_ENABLED=false
+      - LONG_REGIME0_TREND_CONTINUATION_ENABLED=false
       - SHORT_REGIME1_BOUNCE_REJECT_ENABLED=true
-      - SHORT_REGIME1_CONTINUATION_ENABLED=true
+      - SHORT_REGIME1_WEAK_BOUNCE_REJECT_ENABLED=true
+      - SHORT_REGIME1_STRONG_BOUNCE_REJECT_ENABLED=true
+      - SHORT_REGIME1_FAILED_RECLAIM_ENABLED=true
+      - SHORT_REGIME1_OPENING_RANGE_REJECT_ENABLED=true
+      - SHORT_REGIME1_LEVEL_REJECT_ENABLED=true
+      - SHORT_REGIME1_CONTINUATION_ENABLED=false
       - HIGH_VOL_GATE_ENABLED=false  # false + REGIME_BLOCK_HIGH_VOL_STATE=true = High-Vol hart blocken
-      - LONG_REGIME0_GATE_ENABLED=true
-      - LONG_REGIME0_MIN_PROB=0.53
+      - LONG_REGIME0_GATE_ENABLED=false
+      - LONG_REGIME0_MIN_PROB=0.58
       - LONG_REGIME0_MAX_PROB=0.74
-      - LONG_REGIME0_MIN_EXPECTED_NET_R=0.16
+      - LONG_REGIME0_MIN_EXPECTED_NET_R=0.28
       - LONG_REGIME0_MAX_EXPECTED_NET_R=0.85
       - LONG_REGIME1_GATE_ENABLED=false
       - LONG_REGIME1_MIN_PROB=0.58
@@ -139,9 +144,9 @@ services:
       - SHORT_REGIME0_MIN_EXPECTED_NET_R=0.42
       - SHORT_REGIME0_MAX_EXPECTED_NET_R=0.60
       - SHORT_REGIME1_GATE_ENABLED=true
-      - SHORT_REGIME1_MIN_PROB=0.52
+      - SHORT_REGIME1_MIN_PROB=0.54
       - SHORT_REGIME1_MAX_PROB=0.74
-      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.14
+      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.20
       - SHORT_REGIME1_MAX_EXPECTED_NET_R=0.80
       - HIGH_VOL_LONG_GATE_ENABLED=false
       - HIGH_VOL_LONG_MIN_PROB=0.62

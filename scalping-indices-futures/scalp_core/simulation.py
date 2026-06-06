@@ -19,7 +19,13 @@ import pandas as pd
 from . import broker, config
 from .data import session_entry_end, session_entry_start, session_flat_cutoff
 from .entities import ClosedTrade, DecisionTrace
-from .layer_candidates import SETUP_IDS, SetupCandidate, build_setup_candidates, candidate_feature_row
+from .layer_candidates import (
+    SETUP_IDS,
+    SETUP_QUALITY_FEATURE_COLUMNS,
+    SetupCandidate,
+    build_setup_candidates,
+    candidate_feature_row,
+)
 from .layer_decision import DecisionScores, make_decision_model
 from .layer_price import make_price_filter
 from .layer_regime import RegimeModel
@@ -78,6 +84,40 @@ def _session_progress(local_time: np.ndarray, entry_start: time, entry_end: time
     return np.clip(out, 0.0, 1.0)
 
 
+def _minutes_from_start(local_time: np.ndarray, entry_start: time) -> np.ndarray:
+    start = _minutes(entry_start)
+    out = np.empty(local_time.shape[0], dtype=np.float64)
+    for idx, value in enumerate(local_time):
+        out[idx] = _minutes(value) - start
+    return out
+
+
+def _opening_high_prior(
+    high: np.ndarray,
+    session_date: np.ndarray,
+    local_time: np.ndarray,
+    entry_start: time,
+    opening_bars: int = 30,
+) -> np.ndarray:
+    out = np.full(high.shape[0], np.nan, dtype=np.float64)
+    current_session = None
+    bars_seen = 0
+    opening_high = -np.inf
+    for idx, value in enumerate(local_time):
+        if session_date[idx] != current_session:
+            current_session = session_date[idx]
+            bars_seen = 0
+            opening_high = -np.inf
+        if value < entry_start:
+            continue
+        if bars_seen > 0 and np.isfinite(opening_high):
+            out[idx] = opening_high
+        if bars_seen < opening_bars and np.isfinite(high[idx]):
+            opening_high = max(opening_high, float(high[idx]))
+        bars_seen += 1
+    return out
+
+
 def _empty_x(n_features: int) -> np.ndarray:
     return np.empty((0, n_features), dtype=np.float64)
 
@@ -102,6 +142,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
 
     regime_feats = np.column_stack([log_ret, abs_ret])
     progress = _session_progress(local_time, entry_start, entry_end)
+    minutes_from_entry_start = _minutes_from_start(local_time, entry_start)
+    opening_high = _opening_high_prior(h, session_date, local_time, entry_start)
     entry_window = np.array([(entry_start <= value < entry_end) for value in local_time], dtype=bool)
 
     regime = RegimeModel(config.REGIME_STATES)
@@ -182,10 +224,12 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             atr,
             momentum,
             rsi,
+            opening_high,
+            minutes_from_entry_start,
         )
 
     def _candidate_x(idx: int, candidate: SetupCandidate) -> np.ndarray:
-        return candidate_feature_row(X_full[idx], candidate.setup_id)
+        return candidate_feature_row(X_full[idx], candidate)
 
     def _training_data(upto: int, train_start: int, volatility_slice: str):
         base_mask = np.zeros(n, dtype=bool)
@@ -243,7 +287,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                             short_y.append(1.0 if short_out.net_r > 0.0 else 0.0)
                             short_r.append(short_out.net_r)
 
-        n_features = X_full.shape[1] + len(SETUP_IDS)
+        n_features = X_full.shape[1] + len(SETUP_IDS) + len(SETUP_QUALITY_FEATURE_COLUMNS)
         return (
             np.asarray(long_x, dtype=np.float64) if long_x else _empty_x(n_features),
             np.asarray(long_y, dtype=np.float64),

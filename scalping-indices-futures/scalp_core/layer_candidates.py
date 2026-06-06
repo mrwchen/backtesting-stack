@@ -14,15 +14,35 @@ from . import config
 LONG_REGIME0_PULLBACK_RECLAIM = "LONG_REGIME0_PULLBACK_RECLAIM"
 LONG_REGIME0_TREND_CONTINUATION = "LONG_REGIME0_TREND_CONTINUATION"
 SHORT_REGIME1_BOUNCE_REJECT = "SHORT_REGIME1_BOUNCE_REJECT"
+SHORT_REGIME1_WEAK_BOUNCE_REJECT = "SHORT_REGIME1_WEAK_BOUNCE_REJECT"
+SHORT_REGIME1_STRONG_BOUNCE_REJECT = "SHORT_REGIME1_STRONG_BOUNCE_REJECT"
+SHORT_REGIME1_FAILED_RECLAIM = "SHORT_REGIME1_FAILED_RECLAIM"
+SHORT_REGIME1_OPENING_RANGE_REJECT = "SHORT_REGIME1_OPENING_RANGE_REJECT"
+SHORT_REGIME1_LEVEL_REJECT = "SHORT_REGIME1_LEVEL_REJECT"
 SHORT_REGIME1_CONTINUATION = "SHORT_REGIME1_CONTINUATION"
 
 SETUP_IDS = (
     LONG_REGIME0_PULLBACK_RECLAIM,
     LONG_REGIME0_TREND_CONTINUATION,
     SHORT_REGIME1_BOUNCE_REJECT,
+    SHORT_REGIME1_WEAK_BOUNCE_REJECT,
+    SHORT_REGIME1_STRONG_BOUNCE_REJECT,
+    SHORT_REGIME1_FAILED_RECLAIM,
+    SHORT_REGIME1_OPENING_RANGE_REJECT,
+    SHORT_REGIME1_LEVEL_REJECT,
     SHORT_REGIME1_CONTINUATION,
 )
 SETUP_FEATURE_COLUMNS = tuple(f"setup_{setup_id.lower()}" for setup_id in SETUP_IDS)
+SETUP_QUALITY_FEATURE_COLUMNS = (
+    "setup_score",
+    "setup_bounce_quality",
+    "setup_reject_quality",
+    "setup_close_weakness",
+    "setup_downtrend_quality",
+    "setup_rsi_quality",
+    "setup_momentum_quality",
+    "setup_time_quality",
+)
 _SETUP_INDEX = {setup_id: idx for idx, setup_id in enumerate(SETUP_IDS)}
 
 
@@ -31,6 +51,7 @@ class SetupCandidate:
     setup_id: str
     direction: str
     score: float
+    quality_features: tuple[float, ...]
 
 
 def _clip01(value: float) -> float:
@@ -62,8 +83,42 @@ def setup_feature_vector(setup_id: str) -> np.ndarray:
     return vector
 
 
-def candidate_feature_row(base_features: np.ndarray, setup_id: str) -> np.ndarray:
-    return np.concatenate([base_features.astype(np.float64, copy=False), setup_feature_vector(setup_id)])
+def candidate_feature_row(base_features: np.ndarray, candidate: SetupCandidate) -> np.ndarray:
+    quality = np.asarray((candidate.score, *candidate.quality_features), dtype=np.float64)
+    if quality.shape[0] != len(SETUP_QUALITY_FEATURE_COLUMNS):
+        raise ValueError(f"Setup candidate {candidate.setup_id} has {quality.shape[0]} quality features")
+    return np.concatenate([
+        base_features.astype(np.float64, copy=False),
+        setup_feature_vector(candidate.setup_id),
+        quality,
+    ])
+
+
+def _candidate(
+    setup_id: str,
+    score: float,
+    bounce: float,
+    reject: float,
+    close_weakness: float,
+    trend: float,
+    rsi_quality: float,
+    momentum_quality: float,
+    time_quality: float,
+) -> SetupCandidate:
+    return SetupCandidate(
+        setup_id=setup_id,
+        direction="SHORT",
+        score=float(score),
+        quality_features=(
+            float(bounce),
+            float(reject),
+            float(close_weakness),
+            float(trend),
+            float(rsi_quality),
+            float(momentum_quality),
+            float(time_quality),
+        ),
+    )
 
 
 def build_setup_candidates(
@@ -79,6 +134,8 @@ def build_setup_candidates(
     atr: np.ndarray,
     momentum: np.ndarray,
     rsi: np.ndarray,
+    opening_high: np.ndarray,
+    minutes_from_entry_start: np.ndarray,
 ) -> list[SetupCandidate]:
     if idx <= 0:
         return []
@@ -101,6 +158,15 @@ def build_setup_candidates(
     mom = float(momentum[idx])
     rsi_value = float(rsi[idx])
     body_pos = _body_position(cur_high, cur_low, cur_close)
+    minutes_from_open = float(minutes_from_entry_start[idx])
+    opening_high_value = float(opening_high[idx]) if np.isfinite(opening_high[idx]) else np.nan
+    bounce = _clip01((high_dev + 0.10) / 1.25)
+    reject = _clip01((max(prev_dev, high_dev) - dev + 0.05) / 1.00)
+    close_weakness = _clip01((0.62 - body_pos) / 0.62)
+    trend_ok = _clip01((0.20 - slope) / 0.65)
+    rsi_short_quality = _clip01((rsi_value - 30.0) / 48.0)
+    momentum_down = _clip01((0.00025 - mom) / 0.0015)
+    time_quality = _clip01((210.0 - minutes_from_open) / 210.0)
     candidates: list[SetupCandidate] = []
 
     if state == 0:
@@ -118,7 +184,12 @@ def build_setup_candidates(
             trend_ok = _clip01((slope + 0.20) / 0.65)
             rsi_room = _clip01((68.0 - rsi_value) / 34.0)
             score = 0.30 * pullback + 0.25 * reclaim + 0.20 * close_strength + 0.15 * trend_ok + 0.10 * rsi_room
-            candidates.append(SetupCandidate(LONG_REGIME0_PULLBACK_RECLAIM, "LONG", score))
+            candidates.append(SetupCandidate(
+                LONG_REGIME0_PULLBACK_RECLAIM,
+                "LONG",
+                score,
+                (pullback, reclaim, close_strength, trend_ok, rsi_room, _clip01(mom / 0.0015), time_quality),
+            ))
 
         if (
             _enabled(LONG_REGIME0_TREND_CONTINUATION)
@@ -134,7 +205,12 @@ def build_setup_candidates(
             close_strength = _clip01((body_pos - 0.45) / 0.45)
             rsi_room = _clip01((70.0 - rsi_value) / 28.0)
             score = 0.35 * trend + 0.25 * continuation + 0.25 * close_strength + 0.15 * rsi_room
-            candidates.append(SetupCandidate(LONG_REGIME0_TREND_CONTINUATION, "LONG", score))
+            candidates.append(SetupCandidate(
+                LONG_REGIME0_TREND_CONTINUATION,
+                "LONG",
+                score,
+                (continuation, trend, close_strength, trend, rsi_room, _clip01(mom / 0.0015), time_quality),
+            ))
 
     if state == 1:
         if (
@@ -145,13 +221,181 @@ def build_setup_candidates(
             and slope <= 0.20
             and (dev < prev_dev or body_pos <= 0.55)
         ):
-            bounce = _clip01((high_dev + 0.10) / 1.25)
-            reject = _clip01((max(prev_dev, high_dev) - dev + 0.05) / 1.00)
-            close_weakness = _clip01((0.58 - body_pos) / 0.58)
-            trend_ok = _clip01((0.20 - slope) / 0.65)
-            rsi_room = _clip01((rsi_value - 32.0) / 44.0)
-            score = 0.30 * bounce + 0.25 * reject + 0.20 * close_weakness + 0.15 * trend_ok + 0.10 * rsi_room
-            candidates.append(SetupCandidate(SHORT_REGIME1_BOUNCE_REJECT, "SHORT", score))
+            score = (
+                0.24 * bounce
+                + 0.24 * reject
+                + 0.20 * close_weakness
+                + 0.14 * trend_ok
+                + 0.10 * rsi_short_quality
+                + 0.08 * momentum_down
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_BOUNCE_REJECT,
+                score,
+                bounce,
+                reject,
+                close_weakness,
+                trend_ok,
+                rsi_short_quality,
+                momentum_down,
+                time_quality,
+            ))
+
+        if (
+            _enabled(SHORT_REGIME1_WEAK_BOUNCE_REJECT)
+            and 30.0 <= rsi_value <= 70.0
+            and -0.10 <= high_dev <= 0.45
+            and dev <= 0.25
+            and slope <= 0.15
+            and body_pos <= 0.60
+            and (dev < prev_dev or cur_close < float(close[idx - 1]))
+        ):
+            weak_bounce = _clip01((high_dev + 0.10) / 0.55)
+            weak_reject = _clip01((max(prev_dev, high_dev) - dev + 0.03) / 0.70)
+            score = (
+                0.22 * weak_bounce
+                + 0.28 * weak_reject
+                + 0.22 * close_weakness
+                + 0.13 * trend_ok
+                + 0.10 * momentum_down
+                + 0.05 * time_quality
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_WEAK_BOUNCE_REJECT,
+                score,
+                weak_bounce,
+                weak_reject,
+                close_weakness,
+                trend_ok,
+                rsi_short_quality,
+                momentum_down,
+                time_quality,
+            ))
+
+        if (
+            _enabled(SHORT_REGIME1_STRONG_BOUNCE_REJECT)
+            and 38.0 <= rsi_value <= 80.0
+            and high_dev >= 0.25
+            and dev <= 0.65
+            and high_dev - dev >= 0.18
+            and slope <= 0.25
+            and body_pos <= 0.55
+        ):
+            strong_bounce = _clip01((high_dev - 0.15) / 1.35)
+            strong_reject = _clip01((high_dev - dev) / 1.05)
+            rsi_pressure = _clip01((rsi_value - 38.0) / 42.0)
+            score = (
+                0.26 * strong_bounce
+                + 0.28 * strong_reject
+                + 0.18 * close_weakness
+                + 0.12 * trend_ok
+                + 0.10 * rsi_pressure
+                + 0.06 * momentum_down
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_STRONG_BOUNCE_REJECT,
+                score,
+                strong_bounce,
+                strong_reject,
+                close_weakness,
+                trend_ok,
+                rsi_pressure,
+                momentum_down,
+                time_quality,
+            ))
+
+        if (
+            _enabled(SHORT_REGIME1_FAILED_RECLAIM)
+            and 30.0 <= rsi_value <= 76.0
+            and high_dev >= 0.00
+            and dev <= 0.05
+            and prev_dev <= 0.25
+            and body_pos <= 0.55
+            and slope <= 0.18
+        ):
+            reclaim_attempt = _clip01((high_dev + 0.05) / 0.90)
+            failed_close = _clip01((0.08 - dev) / 0.85)
+            score = (
+                0.26 * reclaim_attempt
+                + 0.28 * failed_close
+                + 0.18 * close_weakness
+                + 0.14 * trend_ok
+                + 0.08 * momentum_down
+                + 0.06 * rsi_short_quality
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_FAILED_RECLAIM,
+                score,
+                reclaim_attempt,
+                failed_close,
+                close_weakness,
+                trend_ok,
+                rsi_short_quality,
+                momentum_down,
+                time_quality,
+            ))
+
+        if (
+            _enabled(SHORT_REGIME1_OPENING_RANGE_REJECT)
+            and np.isfinite(opening_high_value)
+            and 15.0 <= minutes_from_open <= 180.0
+            and cur_high >= opening_high_value - 0.15 * basis
+            and cur_close <= opening_high_value + 0.05 * basis
+            and body_pos <= 0.58
+            and slope <= 0.25
+        ):
+            range_retest = _clip01((cur_high - opening_high_value + 0.25 * basis) / max(1e-6, 1.25 * basis))
+            range_reject = _clip01((cur_high - cur_close) / max(1e-6, 1.10 * basis))
+            score = (
+                0.28 * range_retest
+                + 0.28 * range_reject
+                + 0.18 * close_weakness
+                + 0.12 * trend_ok
+                + 0.08 * momentum_down
+                + 0.06 * time_quality
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_OPENING_RANGE_REJECT,
+                score,
+                range_retest,
+                range_reject,
+                close_weakness,
+                trend_ok,
+                rsi_short_quality,
+                momentum_down,
+                time_quality,
+            ))
+
+        if (
+            _enabled(SHORT_REGIME1_LEVEL_REJECT)
+            and 30.0 <= rsi_value <= 76.0
+            and high_dev >= -0.08
+            and dev <= 0.18
+            and high_dev - dev >= 0.08
+            and body_pos <= 0.57
+            and slope <= 0.18
+        ):
+            level_test = _clip01((high_dev + 0.08) / 0.88)
+            level_reject = _clip01((high_dev - dev) / 0.85)
+            score = (
+                0.27 * level_test
+                + 0.29 * level_reject
+                + 0.18 * close_weakness
+                + 0.14 * trend_ok
+                + 0.07 * momentum_down
+                + 0.05 * rsi_short_quality
+            )
+            candidates.append(_candidate(
+                SHORT_REGIME1_LEVEL_REJECT,
+                score,
+                level_test,
+                level_reject,
+                close_weakness,
+                trend_ok,
+                rsi_short_quality,
+                momentum_down,
+                time_quality,
+            ))
 
         if (
             _enabled(SHORT_REGIME1_CONTINUATION)
@@ -166,7 +410,17 @@ def build_setup_candidates(
             close_weakness = _clip01((0.62 - body_pos) / 0.62)
             rsi_room = _clip01((rsi_value - 24.0) / 38.0)
             score = 0.35 * trend + 0.25 * continuation + 0.25 * close_weakness + 0.15 * rsi_room
-            candidates.append(SetupCandidate(SHORT_REGIME1_CONTINUATION, "SHORT", score))
+            candidates.append(_candidate(
+                SHORT_REGIME1_CONTINUATION,
+                score,
+                continuation,
+                trend,
+                close_weakness,
+                trend,
+                rsi_room,
+                momentum_down,
+                time_quality,
+            ))
 
     candidates = [c for c in candidates if c.score >= config.MIN_CANDIDATE_SCORE]
     candidates.sort(key=lambda c: (c.score, c.direction == "SHORT"), reverse=True)
