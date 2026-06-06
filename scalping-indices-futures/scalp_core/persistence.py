@@ -49,6 +49,13 @@ def _db_scalar(value):
     return value
 
 
+def _db_value(value):
+    value = _db_scalar(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
 def _db_float(value):
     value = _db_scalar(value)
     if value is None:
@@ -136,7 +143,7 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
         ph=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
     with conn.cursor() as cur:
-        cur.execute(query, [columns[k] for k in cols])
+        cur.execute(query, [_db_value(columns[k]) for k in cols])
         run_id = cur.fetchone()[0]
     conn.commit()
     log.info("Created run_id %d (%s)", run_id, _notes())
@@ -168,7 +175,7 @@ def update_run_summary(conn, run_id: int, summary: dict, run_duration_seconds: f
         tbl=_table("backtest2_scalp_runs"), a=assignments, ph=sql.Placeholder(),
     )
     with conn.cursor() as cur:
-        cur.execute(query, [*fields.values(), run_id])
+        cur.execute(query, [*(_db_value(v) for v in fields.values()), run_id])
     conn.commit()
 
 
@@ -225,6 +232,6 @@ def write_monte_carlo(conn, run_id: int, mc: Optional[dict]) -> None:
         ph=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
     with conn.cursor() as cur:
-        cur.execute(query, [payload[k] for k in cols])
+        cur.execute(query, [_db_value(payload[k]) for k in cols])
     conn.commit()
     log.info("Wrote Monte-Carlo results for run_id %d", run_id)
