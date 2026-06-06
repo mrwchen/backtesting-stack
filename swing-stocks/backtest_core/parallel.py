@@ -123,12 +123,6 @@ def _prebuild_shared_candidate_timelines(jobs: list[BacktestJob], script_path: P
             "Skipping shared candidate timeline prebuild because selected models use direct replace candidates only"
         )
         return
-    if COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-        log.info(
-            "Skipping shared candidate timeline prebuild because upcoming earnings date eligibility requires per-day filtering"
-        )
-        return
-
     reset_shared_candidate_timeline_cache()
     for profile in profiles:
         env = os.environ.copy()

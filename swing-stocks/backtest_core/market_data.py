@@ -200,6 +200,7 @@ def _disable_candidate_timeline_cache(reason: str) -> None:
     global _CANDIDATE_TIMELINE_CACHE_DISABLED
     timeline_sets, timeline_rows, timeline_identities, timeline_mib = _candidate_timeline_cache_counts()
     _CANDIDATE_TIMELINE_CACHE.clear()
+    _KNOWN_UPCOMING_EARNINGS_IDENTITY_CACHE.clear()
     _CANDIDATE_TIMELINE_CACHE_DISABLED = True
     log.warning(
         "Candidate timeline cache disabled %s cleared sets %d rows %d identities %d estimated %.0f MiB",
@@ -3013,6 +3014,7 @@ def clear_market_data_caches(context: str = "after_run") -> None:
     _PEPPERSTONE_SYMBOL_CACHE.clear()
     _PEPPERSTONE_24_SYMBOL_CACHE.clear()
     _EARNINGS_BLACKOUT_EVENT_CACHE.clear()
+    _KNOWN_UPCOMING_EARNINGS_IDENTITY_CACHE.clear()
     _SIGNAL_DECISIONS_CACHE.clear()
     _TRADING_DAYS_CACHE.clear()
     _WORLD_REGIME_CACHE.clear()

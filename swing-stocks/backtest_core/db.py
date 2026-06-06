@@ -203,7 +203,7 @@ def validate_source_schema(
             "Skipping fundamental source schema validation table %s because selected model uses direct replace candidates",
             SOURCE_FUNDAMENTAL_SCORES_TABLE,
         )
-    if COMMON_EARNINGS_BLACKOUT_ENABLED:
+    if COMMON_EARNINGS_BLACKOUT_ENABLED or COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
         _require_columns(conn, SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE, {
             "symbol",
             "exchange",
@@ -215,13 +215,6 @@ def validate_source_schema(
             "source_priority",
             "known_as_of_ts",
             "is_confirmed",
-        })
-    elif COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-        _require_columns(conn, SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE, {
-            "symbol",
-            "exchange",
-            "cik",
-            "earnings_date",
         })
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
