@@ -43,6 +43,12 @@ class FundamentalRow:
     composite_score_abs: float | None = None
     valuation_label: str = ""
     mispricing_score: float | None = None
+    leadership_score: float | None = None
+    momentum_score: float | None = None
+    price_momentum_score: float | None = None
+    fundamental_momentum_score: float | None = None
+    quality_score: float | None = None
+    valuation_score: float | None = None
     negative_earnings_flag: bool = False
     high_leverage_flag: bool = False
     market_cap_m: float | None = None

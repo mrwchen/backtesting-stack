@@ -86,6 +86,12 @@ class _SharedCandidateTimeline:
     composite_score: np.ndarray
     composite_score_abs: np.ndarray
     mispricing_score: np.ndarray
+    leadership_score: np.ndarray
+    momentum_score: np.ndarray
+    price_momentum_score: np.ndarray
+    fundamental_momentum_score: np.ndarray
+    quality_score: np.ndarray
+    valuation_score: np.ndarray
     market_cap_m: np.ndarray
     flags: np.ndarray
     sector_code: np.ndarray
@@ -119,8 +125,8 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SIGNAL_BAR_DURATION = timedelta(hours=1)
 _BAR_ESTIMATED_BYTES_PER_ROW = 512
 _SIGNAL_BAR_ESTIMATED_BYTES_PER_ROW = 80
-_CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 640
-_SHARED_CANDIDATE_TIMELINE_VERSION = 1
+_CANDIDATE_TIMELINE_ESTIMATED_BYTES_PER_ROW = 704
+_SHARED_CANDIDATE_TIMELINE_VERSION = 2
 _SIGNAL_DECISIONS_CACHE: dict[tuple[str, str, tuple[str, ...], date], list[tuple[datetime, datetime]]] = {}
 _TIMELINE_ROW_BUFFER_SPECS = {
     "available_epoch_us": ("q", np.int64),
@@ -128,6 +134,12 @@ _TIMELINE_ROW_BUFFER_SPECS = {
     "composite_score": ("d", np.float64),
     "composite_score_abs": ("d", np.float64),
     "mispricing_score": ("d", np.float64),
+    "leadership_score": ("d", np.float64),
+    "momentum_score": ("d", np.float64),
+    "price_momentum_score": ("d", np.float64),
+    "fundamental_momentum_score": ("d", np.float64),
+    "quality_score": ("d", np.float64),
+    "valuation_score": ("d", np.float64),
     "market_cap_m": ("d", np.float64),
     "flags": ("B", np.uint8),
     "sector_code": ("i", np.int32),
@@ -152,6 +164,12 @@ _SHARED_CANDIDATE_TIMELINE_ARRAYS = (
     "composite_score",
     "composite_score_abs",
     "mispricing_score",
+    "leadership_score",
+    "momentum_score",
+    "price_momentum_score",
+    "fundamental_momentum_score",
+    "quality_score",
+    "valuation_score",
     "market_cap_m",
     "flags",
     "sector_code",
@@ -274,6 +292,12 @@ def _load_shared_candidate_timeline(timeline_key: tuple) -> Optional[_SharedCand
             composite_score=arrays["composite_score"],
             composite_score_abs=arrays["composite_score_abs"],
             mispricing_score=arrays["mispricing_score"],
+            leadership_score=arrays["leadership_score"],
+            momentum_score=arrays["momentum_score"],
+            price_momentum_score=arrays["price_momentum_score"],
+            fundamental_momentum_score=arrays["fundamental_momentum_score"],
+            quality_score=arrays["quality_score"],
+            valuation_score=arrays["valuation_score"],
             market_cap_m=arrays["market_cap_m"],
             flags=arrays["flags"],
             sector_code=arrays["sector_code"],
@@ -1069,6 +1093,12 @@ def _build_shared_candidate_timeline(
                 composite_score,
                 composite_score_abs,
                 mispricing_score,
+                leadership_score,
+                momentum_score,
+                price_momentum_score,
+                fundamental_momentum_score,
+                quality_score,
+                valuation_score,
                 market_cap_m,
                 flags,
                 sector_code,
@@ -1087,6 +1117,12 @@ def _build_shared_candidate_timeline(
             row_buffers["composite_score"].append(composite_score)
             row_buffers["composite_score_abs"].append(composite_score_abs)
             row_buffers["mispricing_score"].append(mispricing_score)
+            row_buffers["leadership_score"].append(leadership_score)
+            row_buffers["momentum_score"].append(momentum_score)
+            row_buffers["price_momentum_score"].append(price_momentum_score)
+            row_buffers["fundamental_momentum_score"].append(fundamental_momentum_score)
+            row_buffers["quality_score"].append(quality_score)
+            row_buffers["valuation_score"].append(valuation_score)
             row_buffers["market_cap_m"].append(market_cap_m)
             row_buffers["flags"].append(flags)
             row_buffers["sector_code"].append(sector_code)
@@ -1154,6 +1190,12 @@ def _build_shared_candidate_timeline(
                     _float_or_nan(row[5]),
                     _float_or_nan(row[8]),
                     _float_or_nan(row[10]),
+                    _float_or_nan(row[23]),
+                    _float_or_nan(row[24]),
+                    _float_or_nan(row[25]),
+                    _float_or_nan(row[26]),
+                    _float_or_nan(row[27]),
+                    _float_or_nan(row[28]),
                     _float_or_nan(row[13]),
                     flags,
                     code_for(row[6]),
@@ -1377,6 +1419,12 @@ def _get_candidates_from_shared_timeline(
                     composite_score_abs=composite_score_abs,
                     valuation_label=valuation_label,
                     mispricing_score=_shared_float_or_none(timeline.mispricing_score, absolute_idx),
+                    leadership_score=_shared_float_or_none(timeline.leadership_score, absolute_idx),
+                    momentum_score=_shared_float_or_none(timeline.momentum_score, absolute_idx),
+                    price_momentum_score=_shared_float_or_none(timeline.price_momentum_score, absolute_idx),
+                    fundamental_momentum_score=_shared_float_or_none(timeline.fundamental_momentum_score, absolute_idx),
+                    quality_score=_shared_float_or_none(timeline.quality_score, absolute_idx),
+                    valuation_score=_shared_float_or_none(timeline.valuation_score, absolute_idx),
                     negative_earnings_flag=negative_earnings_flag,
                     high_leverage_flag=high_leverage_flag,
                     market_cap_m=market_cap_m,
@@ -1623,7 +1671,13 @@ def get_candidates(
         f.current_price_currency,
         f.market_cap_currency,
         f.currency,
-        f.financial_currency
+        f.financial_currency,
+        f.leadership_score,
+        f.momentum_score,
+        f.price_momentum_score,
+        f.fundamental_momentum_score,
+        f.quality_score,
+        f.valuation_score
     """)
     outer_select_columns = sql.SQL("""
         candidates.symbol,
@@ -1642,7 +1696,13 @@ def get_candidates(
         candidates.short_eligible,
         candidates.relative_absolute_divergence,
         candidates.long_block_reason,
-        candidates.short_block_reason
+        candidates.short_block_reason,
+        candidates.leadership_score,
+        candidates.momentum_score,
+        candidates.price_momentum_score,
+        candidates.fundamental_momentum_score,
+        candidates.quality_score,
+        candidates.valuation_score
     """)
     source_relation = relation_identifier(source_table)
 
@@ -1801,6 +1861,12 @@ def get_candidates(
             composite_score_abs=float(r[6]) if r[6] is not None else None,
             valuation_label=r[7],
             mispricing_score=float(r[8]) if r[8] is not None else None,
+            leadership_score=float(r[17]) if r[17] is not None else None,
+            momentum_score=float(r[18]) if r[18] is not None else None,
+            price_momentum_score=float(r[19]) if r[19] is not None else None,
+            fundamental_momentum_score=float(r[20]) if r[20] is not None else None,
+            quality_score=float(r[21]) if r[21] is not None else None,
+            valuation_score=float(r[22]) if r[22] is not None else None,
             negative_earnings_flag=bool(r[9]),
             high_leverage_flag=bool(r[10]),
             market_cap_m=float(r[11]) if r[11] is not None else None,
