@@ -78,10 +78,10 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       # LAYER 1 — REGIME (HMM)
       # Hidden-Markov-Modell erkennt Marktphasen (ruhig vs. turbulent).
-      # Kann als Filter dienen (turbulente Phase blocken) und ist Feature.
+      # Kann als Feature dienen; harte Blocks sind aus, High-Vol nutzt eigene strenge Gates.
       # ═════════════════════════════════════════════════════════════════════════
       - REGIME_STATES=2              # Anzahl versteckter Zustaende
-      - REGIME_BLOCK_HIGH_VOL_STATE=true    # true = im turbulentesten Regime nicht traden
+      - REGIME_BLOCK_HIGH_VOL_STATE=false   # true = im turbulentesten Regime hart blocken, wenn HIGH_VOL_GATE_ENABLED=false
       - HMM_N_ITER=100               # max. EM-Iterationen beim Fit
       - HMM_COVARIANCE_TYPE=diag     # diag | full | tied | spherical
       - HMM_MIN_COVAR=0.000001       # Mindest-Kovarianz fuer stabilere HMM-Fits
@@ -115,12 +115,13 @@ services:
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
       - CALIBRATE_PROBABILITIES=true # Kalibriert Trade-Win-Wahrscheinlichkeiten im Vergangenheitsfenster
       - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
+      - HIGH_VOL_GATE_ENABLED=true   # true = High-Vol nicht hart blocken, sondern eigene strenge Gates nutzen
       - LONG_REGIME0_GATE_ENABLED=true
       - LONG_REGIME0_MIN_PROB=0.57
       - LONG_REGIME0_MAX_PROB=0.70
       - LONG_REGIME0_MIN_EXPECTED_NET_R=0.32
       - LONG_REGIME0_MAX_EXPECTED_NET_R=0.70
-      - LONG_REGIME1_GATE_ENABLED=false
+      - LONG_REGIME1_GATE_ENABLED=true
       - LONG_REGIME1_MIN_PROB=0.57
       - LONG_REGIME1_MAX_PROB=0.65
       - LONG_REGIME1_MIN_EXPECTED_NET_R=0.32
@@ -135,6 +136,16 @@ services:
       - SHORT_REGIME1_MAX_PROB=0.70
       - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.30
       - SHORT_REGIME1_MAX_EXPECTED_NET_R=0.65
+      - HIGH_VOL_LONG_GATE_ENABLED=true
+      - HIGH_VOL_LONG_MIN_PROB=0.62
+      - HIGH_VOL_LONG_MAX_PROB=0.70
+      - HIGH_VOL_LONG_MIN_EXPECTED_NET_R=0.45
+      - HIGH_VOL_LONG_MAX_EXPECTED_NET_R=0.80
+      - HIGH_VOL_SHORT_GATE_ENABLED=true
+      - HIGH_VOL_SHORT_MIN_PROB=0.62
+      - HIGH_VOL_SHORT_MAX_PROB=0.70
+      - HIGH_VOL_SHORT_MIN_EXPECTED_NET_R=0.45
+      - HIGH_VOL_SHORT_MAX_EXPECTED_NET_R=0.80
 
       # ═════════════════════════════════════════════════════════════════════════
       # WALK-FORWARD-FITTING

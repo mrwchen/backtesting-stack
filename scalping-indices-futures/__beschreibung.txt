@@ -56,7 +56,7 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
                         MIN_EXPECTED_NET_R, MAX_EXPECTED_NET_R, LOGISTIC_C,
                         CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS,
                         LONG/SHORT_REGIME*_GATE_ENABLED, *_MIN/MAX_PROB,
-                        *_MIN/MAX_EXPECTED_NET_R
+                        *_MIN/MAX_EXPECTED_NET_R, HIGH_VOL_*_GATE_ENABLED
   Walk-Forward          WARMUP_BARS, TRAIN_WINDOW_BARS, REFIT_EVERY_BARS
   Stop/TP-Logik         STOP_MODE(vol|atr), TP_MODE(fixed|trailing),
                         STOP/TP_VOL_MULT, STOP/TP_ATR_MULT,

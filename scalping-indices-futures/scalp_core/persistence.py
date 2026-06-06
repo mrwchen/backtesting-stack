@@ -32,6 +32,7 @@ def _notes() -> str:
         f"vol={config.VOL_MODEL}",
         f"decision={config.DECISION_MODEL}",
         f"gate={config.DECISION_GATE_MODE}",
+        f"high_vol_gate={config.HIGH_VOL_GATE_ENABLED}",
         f"regime_states={config.REGIME_STATES}",
         f"entry={config.ENTRY_START_TIME}-{config.ENTRY_END_TIME} {config.SESSION_TZ}",
         f"account={config.ACCOUNT_PROFILE}",

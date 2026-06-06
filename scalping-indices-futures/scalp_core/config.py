@@ -120,6 +120,15 @@ def _gate_spec(side: str, regime_state: int, gate: DecisionGate) -> str:
     return f"{side}:{regime_state}:p>={gate.min_prob:g},p<{max_prob},er>={min_er},er<{max_er}"
 
 
+def _high_vol_gate_spec(side: str, gate: DecisionGate) -> str:
+    if not gate.enabled:
+        return f"HIGH_VOL:{side}:disabled"
+    max_prob = "*" if gate.max_prob is None else f"{gate.max_prob:g}"
+    min_er = "*" if gate.min_expected_net_r is None else f"{gate.min_expected_net_r:g}"
+    max_er = "*" if gate.max_expected_net_r is None else f"{gate.max_expected_net_r:g}"
+    return f"HIGH_VOL:{side}:p>={gate.min_prob:g},p<{max_prob},er>={min_er},er<{max_er}"
+
+
 # ── data source ────────────────────────────────────────────────────────────────
 
 SOURCE_TABLE = env_str("SOURCE_TABLE", "ibkr_market_data")
@@ -194,14 +203,26 @@ GLOBAL_DECISION_GATE = DecisionGate(
 _validate_decision_gate("GLOBAL_DECISION_GATE", GLOBAL_DECISION_GATE)
 SIDE_REGIME_GATES = {
     ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.57, 0.70, 0.32, 0.70),
-    ("LONG", 1): _decision_gate("LONG_REGIME1", False, 0.57, 0.65, 0.32, 0.51),
+    ("LONG", 1): _decision_gate("LONG_REGIME1", True, 0.57, 0.65, 0.32, 0.51),
     ("SHORT", 0): _decision_gate("SHORT_REGIME0", True, 0.57, 0.65, 0.32, 0.51),
     ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.00, 0.70, 0.30, 0.65),
 }
-SIDE_REGIME_GATE_SPEC = "; ".join(
-    _gate_spec(side, regime_state, gate)
-    for (side, regime_state), gate in sorted(SIDE_REGIME_GATES.items())
-)
+HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", True)
+HIGH_VOL_GATES = {
+    "LONG": _decision_gate("HIGH_VOL_LONG", True, 0.62, 0.70, 0.45, 0.80),
+    "SHORT": _decision_gate("HIGH_VOL_SHORT", True, 0.62, 0.70, 0.45, 0.80),
+}
+SIDE_REGIME_GATE_SPEC = "; ".join([
+    *(
+        _gate_spec(side, regime_state, gate)
+        for (side, regime_state), gate in sorted(SIDE_REGIME_GATES.items())
+    ),
+    *(
+        _high_vol_gate_spec(side, gate)
+        for side, gate in sorted(HIGH_VOL_GATES.items())
+        if HIGH_VOL_GATE_ENABLED
+    ),
+])
 
 # ── stop-loss / take-profit logic ───────────────────────────────────────────────
 # STOP_MODE chooses the distance basis: "vol" = GARCH/EGARCH sigma, "atr" = ATR.
