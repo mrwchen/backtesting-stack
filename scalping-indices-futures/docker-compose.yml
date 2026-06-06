@@ -162,6 +162,7 @@ services:
       - RISK_PER_TRADE_PCT=1.5       # Risiko pro Trade in % des Equity
       - MAX_MARGIN_PCT=45            # max. Margin-Auslastung pro Position
       - CONTRACT_MULTIPLIER=1.0      # Punktwert je Einheit (CFD: 1.0)
+      - LOT_SIZE=0.1                 # Mindest- und Schrittgroesse in CFD-Lots
       - EURUSD_RATE=1.0              # USD je 1 EUR; 1.0 = keine Umrechnung
 
       # ═════════════════════════════════════════════════════════════════════════

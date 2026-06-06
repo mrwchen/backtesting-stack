@@ -131,6 +131,7 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
         "max_margin_pct": cfg.max_margin_pct,
         "contract_multiplier": cfg.contract_multiplier,
+        "lot_size": cfg.lot_size,
         "eurusd_rate": cfg.eurusd_rate,
         "spread_points": cfg.spread_points,
         "slippage_points": cfg.slippage_points,

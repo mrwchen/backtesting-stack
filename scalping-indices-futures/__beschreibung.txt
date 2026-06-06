@@ -20,13 +20,14 @@ automatisch gesamter verfuegbarer Bereich.
 
 Account: PS_ACC
 ---------------
-Pepperstone-artiges Index-CFD-Konto mit kontinuierlicher (fraktionaler)
-Positionsgroesse:
+Pepperstone-artiges Index-CFD-Konto mit fraktionaler Positionsgroesse in
+0,1-Lot-Schritten:
   - Startkapital      : 5000 EUR
   - Margin-Anforderung: 5 % des Nominalwerts
   - Risiko pro Trade  : 1,5 % des Equity (Groesse aus Risiko / Stop-Distanz)
+  - Mindest-/Schrittgroesse: 0,1 Lot; kleinere berechnete Groessen werden nicht gehandelt
 Ein voller NQ-Future-Kontrakt braeuchte bei 5 % Margin ~30k -> mit 5k Equity
-unmoeglich; daher CFD-artige kontinuierliche Groesse (CONTRACT_MULTIPLIER, Default 1.0).
+unmoeglich; daher CFD-artige fraktionale Groesse (CONTRACT_MULTIPLIER, Default 1.0).
 
 Methodik / Look-Ahead-Schutz
 ----------------------------
@@ -59,7 +60,7 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
   Trade-Management      REENTRY_COOLDOWN_BARS, INTRABAR_FILL_PRIORITY(stop|tp)
   Session               SESSION_FLAT_TIME, SESSION_TZ
   Account PS_ACC        INITIAL_EQUITY, MARGIN_REQUIREMENT_PCT, RISK_PER_TRADE_PCT,
-                        MAX_MARGIN_PCT, CONTRACT_MULTIPLIER, EURUSD_RATE
+                        MAX_MARGIN_PCT, CONTRACT_MULTIPLIER, LOT_SIZE, EURUSD_RATE
   Kosten                SPREAD_POINTS, SLIPPAGE_POINTS, COMMISSION_PER_UNIT
   Layer 5 Monte-Carlo   MONTE_CARLO_*, MC_EXTRA_SLIPPAGE_POINTS, MC_BLOCK_SIZE,
                         MC_RUIN_DRAWDOWN_PCT, MC_RANDOM_SEED

@@ -157,6 +157,9 @@ MARGIN_REQUIREMENT_PCT = env_float("MARGIN_REQUIREMENT_PCT", 5.0)
 RISK_PER_TRADE_PCT = env_float("RISK_PER_TRADE_PCT", 1.5)
 MAX_MARGIN_PCT = env_float("MAX_MARGIN_PCT", 45.0)
 CONTRACT_MULTIPLIER = env_float("CONTRACT_MULTIPLIER", 1.0)
+LOT_SIZE = env_float("LOT_SIZE", 0.1)
+if LOT_SIZE <= 0:
+    raise ValueError(f"LOT_SIZE={LOT_SIZE!r} invalid; expected a positive value")
 EURUSD_RATE = env_float("EURUSD_RATE", 1.0)  # USD price -> EUR equity; 1.0 = no conversion
 
 # ── costs ───────────────────────────────────────────────────────────────────────
@@ -255,6 +258,7 @@ class RunConfig:
     risk_per_trade_pct: float
     max_margin_pct: float
     contract_multiplier: float
+    lot_size: float
     eurusd_rate: float
     spread_points: float
     slippage_points: float
@@ -313,6 +317,7 @@ def active_run_config() -> RunConfig:
         risk_per_trade_pct=RISK_PER_TRADE_PCT,
         max_margin_pct=MAX_MARGIN_PCT,
         contract_multiplier=CONTRACT_MULTIPLIER,
+        lot_size=LOT_SIZE,
         eurusd_rate=EURUSD_RATE,
         spread_points=SPREAD_POINTS,
         slippage_points=SLIPPAGE_POINTS,

@@ -1,7 +1,7 @@
-"""PS_ACC broker model — CFD-style continuous sizing, margin, costs, PnL.
+"""PS_ACC broker model — CFD-style lot sizing, margin, costs, PnL.
 
 PS_ACC = Pepperstone-style index CFD account:
-  * continuous (fractional) units — no whole-contract constraint;
+  * fractional CFD units rounded down to the configured lot size;
   * margin = MARGIN_REQUIREMENT_PCT of notional (default 5%);
   * size derived from RISK_PER_TRADE_PCT of equity divided by the stop distance;
   * instrument is priced in USD; equity is in EUR, converted via EURUSD_RATE
@@ -9,21 +9,29 @@ PS_ACC = Pepperstone-style index CFD account:
 """
 
 from dataclasses import dataclass
+import math
 
 from . import config
 
 
 @dataclass(frozen=True)
 class Sizing:
-    units: float            # continuous units (>= 0)
+    units: float            # CFD units rounded to lot size (>= 0)
     notional_eur: float
     margin_used_eur: float
-    risk_eur: float         # intended cash risk at the stop
+    risk_eur: float         # actual cash risk at the stop after lot rounding
 
 
 def _usd_to_eur(usd: float) -> float:
     rate = config.EURUSD_RATE if config.EURUSD_RATE > 0 else 1.0
     return usd / rate
+
+
+def _round_down_to_lot_size(units: float) -> float:
+    lot_size = config.LOT_SIZE
+    if units < lot_size:
+        return 0.0
+    return round(math.floor((units + 1e-12) / lot_size) * lot_size, 10)
 
 
 def size_position(equity_eur: float, entry_price: float, stop_pct: float) -> Sizing:
@@ -50,9 +58,14 @@ def size_position(equity_eur: float, entry_price: float, stop_pct: float) -> Siz
     if margin_used_eur > max_margin_eur and margin_used_eur > 0:
         scale = max_margin_eur / margin_used_eur
         units *= scale
-        notional_eur *= scale
-        margin_used_eur *= scale
-        risk_eur *= scale
+
+    units = _round_down_to_lot_size(units)
+    if units <= 0:
+        return Sizing(0.0, 0.0, 0.0, 0.0)
+
+    notional_eur = _usd_to_eur(units * entry_price * mult)
+    margin_used_eur = notional_eur * (config.MARGIN_REQUIREMENT_PCT / 100.0)
+    risk_eur = units * risk_per_unit_eur
 
     return Sizing(units=units, notional_eur=notional_eur, margin_used_eur=margin_used_eur, risk_eur=risk_eur)
 

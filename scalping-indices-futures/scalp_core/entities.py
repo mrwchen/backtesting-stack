@@ -12,7 +12,7 @@ class ClosedTrade:
     entry_ts: datetime
     entry_price: float
     direction: str               # "LONG" | "SHORT"
-    units: float                 # continuous CFD units (always positive)
+    units: float                 # CFD units rounded to lot size (always positive)
     notional: float              # units * entry_price * multiplier (account currency)
     margin_used: float
     regime_state: int

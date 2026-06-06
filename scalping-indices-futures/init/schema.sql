@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     risk_per_trade_pct     NUMERIC(6,3),
     max_margin_pct         NUMERIC(6,3),
     contract_multiplier    NUMERIC(12,4),
+    lot_size               NUMERIC(12,4),
     eurusd_rate            NUMERIC(10,6),
 
     -- costs
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
 
 ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS spread_points NUMERIC(10,4);
 ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS slippage_points NUMERIC(10,4);
+ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS lot_size NUMERIC(12,4);
 ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_points NUMERIC(10,4);
 ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_bps NUMERIC(8,4);
 
