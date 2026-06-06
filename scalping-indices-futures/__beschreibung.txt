@@ -38,9 +38,9 @@ wird am Open von Bar t+1 ausgefuehrt.
 
 Ergebnis-Tabellen (public)
 --------------------------
-  scalp_backtest_runs         - Run-Metadaten, Config-Snapshot, Ergebnis-Summary
-  scalp_backtest_trades       - Einzeltrades
-  scalp_backtest_monte_carlo  - MC-Perzentile (base / slippage / sequence)
+  backtest2_scalp_runs         - Run-Metadaten, Config-Snapshot, Ergebnis-Summary
+  backtest2_scalp_trades       - Einzeltrades
+  backtest2_scalp_monte_carlo  - MC-Perzentile (base / slippage / sequence)
 
 Ausfuehrung (auf dem Server; nichts laeuft lokal)
 -------------------------------------------------

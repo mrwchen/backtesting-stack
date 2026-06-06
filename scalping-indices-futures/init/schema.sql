@@ -1,5 +1,5 @@
 -- Schema for the statistical scalping backtester (scalping-indices-futures).
--- Tables are prefixed `scalp_` so they never collide with the swing-stocks stack.
+-- Tables are prefixed `backtest2_scalp_` so they never collide with other stacks.
 
 DO $$
 BEGIN
@@ -13,14 +13,14 @@ GRANT CONNECT ON DATABASE postgres TO "market-data-account";
 GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 
 \if :drop_scalp_tables_on_start
-DROP TABLE IF EXISTS scalp_backtest_monte_carlo CASCADE;
-DROP TABLE IF EXISTS scalp_backtest_trades CASCADE;
-DROP TABLE IF EXISTS scalp_backtest_runs CASCADE;
+DROP TABLE IF EXISTS backtest2_scalp_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest2_scalp_trades CASCADE;
+DROP TABLE IF EXISTS backtest2_scalp_runs CASCADE;
 \endif
 
 -- ── Run metadata + config snapshot + result summary ─────────────────────────────
 
-CREATE TABLE IF NOT EXISTS scalp_backtest_runs (
+CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     run_id                 SERIAL        PRIMARY KEY,
     created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     run_label              TEXT          NOT NULL,
@@ -90,9 +90,9 @@ CREATE TABLE IF NOT EXISTS scalp_backtest_runs (
 
 -- ── Individual trades ───────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS scalp_backtest_trades (
+CREATE TABLE IF NOT EXISTS backtest2_scalp_trades (
     id                     BIGSERIAL     PRIMARY KEY,
-    run_id                 INTEGER       NOT NULL REFERENCES scalp_backtest_runs(run_id) ON DELETE CASCADE,
+    run_id                 INTEGER       NOT NULL REFERENCES backtest2_scalp_runs(run_id) ON DELETE CASCADE,
 
     intent_ts              TIMESTAMPTZ   NOT NULL,
     entry_ts               TIMESTAMPTZ   NOT NULL,
@@ -122,12 +122,12 @@ CREATE TABLE IF NOT EXISTS scalp_backtest_trades (
     created_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS scalp_backtest_trades_run_idx ON scalp_backtest_trades(run_id);
+CREATE INDEX IF NOT EXISTS backtest2_scalp_trades_run_idx ON backtest2_scalp_trades(run_id);
 
 -- ── Monte-Carlo risk (base / slippage stress / sequence) ────────────────────────
 
-CREATE TABLE IF NOT EXISTS scalp_backtest_monte_carlo (
-    run_id                 INTEGER       PRIMARY KEY REFERENCES scalp_backtest_runs(run_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS backtest2_scalp_monte_carlo (
+    run_id                 INTEGER       PRIMARY KEY REFERENCES backtest2_scalp_runs(run_id) ON DELETE CASCADE,
     n_simulations          INTEGER       NOT NULL,
 
     -- base (permuted trade order)
@@ -176,6 +176,6 @@ CREATE TABLE IF NOT EXISTS scalp_backtest_monte_carlo (
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    scalp_backtest_runs, scalp_backtest_trades, scalp_backtest_monte_carlo
+    backtest2_scalp_runs, backtest2_scalp_trades, backtest2_scalp_monte_carlo
     TO "market-data-account";
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "market-data-account";

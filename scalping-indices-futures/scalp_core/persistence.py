@@ -78,7 +78,7 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
     }
     cols = list(columns.keys())
     query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES ({ph}) RETURNING run_id").format(
-        tbl=_table("scalp_backtest_runs"),
+        tbl=_table("backtest2_scalp_runs"),
         cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
         ph=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
@@ -112,7 +112,7 @@ def update_run_summary(conn, run_id: int, summary: dict, run_duration_seconds: f
         sql.SQL("{} = {}").format(sql.Identifier(k), sql.Placeholder()) for k in fields
     )
     query = sql.SQL("UPDATE {tbl} SET {a} WHERE run_id = {ph}").format(
-        tbl=_table("scalp_backtest_runs"), a=assignments, ph=sql.Placeholder(),
+        tbl=_table("backtest2_scalp_runs"), a=assignments, ph=sql.Placeholder(),
     )
     with conn.cursor() as cur:
         cur.execute(query, [*fields.values(), run_id])
@@ -137,7 +137,7 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
         "notional_eur, margin_used_eur, regime_state, prob_up, sigma_pts, stop_price, "
         "take_profit_price, outcome_status, exit_ts, exit_price, bars_held, return_pct, "
         "pnl_eur, costs_eur, equity_before, equity_after) VALUES %s"
-    ).format(tbl=_table("scalp_backtest_trades"))
+    ).format(tbl=_table("backtest2_scalp_trades"))
     with conn.cursor() as cur:
         execute_values(cur, query.as_string(conn), rows, page_size=500)
     conn.commit()
@@ -150,7 +150,7 @@ def write_monte_carlo(conn, run_id: int, mc: Optional[dict]) -> None:
     payload = {"run_id": run_id, **mc}
     cols = list(payload.keys())
     query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES ({ph})").format(
-        tbl=_table("scalp_backtest_monte_carlo"),
+        tbl=_table("backtest2_scalp_monte_carlo"),
         cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
         ph=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
