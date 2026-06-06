@@ -66,8 +66,12 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     warmup_bars            INTEGER,
     train_window_bars      INTEGER,
     refit_every_bars       INTEGER,
+    decision_gate_mode     TEXT,
     prob_threshold         NUMERIC(6,4),
+    max_prob_threshold     NUMERIC(6,4),
     min_expected_net_r     NUMERIC(12,6),
+    max_expected_net_r     NUMERIC(12,6),
+    side_regime_gate_spec  TEXT,
 
     -- trade-level params
     stop_mode              TEXT,                      -- vol | atr

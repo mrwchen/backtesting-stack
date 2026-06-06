@@ -52,8 +52,11 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
                         HMM_N_ITER, HMM_COVARIANCE_TYPE
   Layer 2 Preis         KF_OBS/LEVEL/TREND_NOISE_MULT
   Layer 3 Vola          GARCH_P, GARCH_Q, GARCH_DIST
-  Layer 4 Entscheidung  PROB_THRESHOLD, MIN_EXPECTED_NET_R, LOGISTIC_C,
-                        CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS
+  Layer 4 Entscheidung  DECISION_GATE_MODE, PROB_THRESHOLD, MAX_PROB_THRESHOLD,
+                        MIN_EXPECTED_NET_R, MAX_EXPECTED_NET_R, LOGISTIC_C,
+                        CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS,
+                        LONG/SHORT_REGIME*_GATE_ENABLED, *_MIN/MAX_PROB,
+                        *_MIN/MAX_EXPECTED_NET_R
   Walk-Forward          WARMUP_BARS, TRAIN_WINDOW_BARS, REFIT_EVERY_BARS
   Stop/TP-Logik         STOP_MODE(vol|atr), TP_MODE(fixed|trailing),
                         STOP/TP_VOL_MULT, STOP/TP_ATR_MULT,

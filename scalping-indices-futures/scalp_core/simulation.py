@@ -293,39 +293,55 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         last_exit_t = exit_idx
         position = None
 
-    def choose_direction(scores: DecisionScores) -> tuple[str | None, str]:
-        long_ok = (
-            scores.long_fitted
-            and scores.prob_long_win >= config.PROB_THRESHOLD
-            and scores.expected_long_r >= config.MIN_EXPECTED_NET_R
-        )
-        short_ok = (
-            config.ALLOW_SHORT
-            and scores.short_fitted
-            and scores.prob_short_win >= config.PROB_THRESHOLD
-            and scores.expected_short_r >= config.MIN_EXPECTED_NET_R
-        )
-        if long_ok and short_ok:
-            if scores.expected_long_r >= scores.expected_short_r:
-                return "LONG", "LONG_EXPECTED_EDGE"
-            return "SHORT", "SHORT_EXPECTED_EDGE"
-        if long_ok:
-            return "LONG", "LONG_EXPECTED_EDGE"
-        if short_ok:
-            return "SHORT", "SHORT_EXPECTED_EDGE"
+    def gate_for(direction: str, regime_state: int):
+        if config.DECISION_GATE_MODE == "global_bandpass":
+            return config.GLOBAL_DECISION_GATE
+        return config.SIDE_REGIME_GATES.get((direction, regime_state))
 
-        max_prob = max(scores.prob_long_win if scores.long_fitted else 0.0, scores.prob_short_win if scores.short_fitted else 0.0)
-        max_expected = max(
-            scores.expected_long_r if scores.long_fitted else -np.inf,
-            scores.expected_short_r if scores.short_fitted else -np.inf,
-        )
+    def evaluate_gate(direction: str, fitted: bool, prob: float, expected: float, regime_state: int) -> tuple[bool, str]:
+        if not fitted:
+            return False, "MODEL_NOT_FITTED"
+        if direction == "SHORT" and not config.ALLOW_SHORT:
+            return False, "SIDE_DISABLED"
+
+        gate = gate_for(direction, regime_state)
+        if gate is None or not gate.enabled:
+            return False, "SIDE_REGIME_GATE_DISABLED"
+        if prob < gate.min_prob:
+            return False, "PROBABILITY_BELOW_THRESHOLD"
+        if gate.max_prob is not None and prob >= gate.max_prob:
+            return False, "PROBABILITY_ABOVE_MAX"
+        if gate.min_expected_net_r is not None and expected < gate.min_expected_net_r:
+            return False, "EXPECTED_NET_R_BELOW_MIN"
+        if gate.max_expected_net_r is not None and expected >= gate.max_expected_net_r:
+            return False, "EXPECTED_NET_R_ABOVE_MAX"
+        return True, f"{direction}_ACCEPTED_{config.DECISION_GATE_MODE.upper()}"
+
+    def choose_direction(scores: DecisionScores, regime_state: int) -> tuple[str | None, str]:
+        evaluations = [
+            (
+                "LONG",
+                scores.expected_long_r,
+                *evaluate_gate("LONG", scores.long_fitted, scores.prob_long_win, scores.expected_long_r, regime_state),
+            ),
+            (
+                "SHORT",
+                scores.expected_short_r,
+                *evaluate_gate("SHORT", scores.short_fitted, scores.prob_short_win, scores.expected_short_r, regime_state),
+            ),
+        ]
+        accepted = [item for item in evaluations if item[2]]
+        if accepted:
+            direction, _expected, _ok, reason = max(accepted, key=lambda item: item[1])
+            return direction, reason
+
         if not scores.long_fitted and not scores.short_fitted:
             return None, "MODEL_NOT_FITTED"
-        if max_prob < config.PROB_THRESHOLD:
-            return None, "PROBABILITY_BELOW_THRESHOLD"
-        if max_expected < config.MIN_EXPECTED_NET_R:
-            return None, "EXPECTED_NET_R_BELOW_MIN"
-        return None, "SIDE_DISABLED"
+        failed = [item for item in evaluations if item[3] != "MODEL_NOT_FITTED"]
+        if not failed:
+            return None, "MODEL_NOT_FITTED"
+        _direction, _expected, _ok, reason = max(failed, key=lambda item: item[1])
+        return None, reason
 
     last_simulated = start
     for t in range(start, n):
@@ -451,7 +467,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             continue
 
         scores = decision.score(X_full[t:t + 1])
-        direction, reason = choose_direction(scores)
+        direction, reason = choose_direction(scores, int(states[t]))
         if direction is None:
             append_decision(t, "NO_TRADE", reason, scores=scores, plan=plan)
             continue

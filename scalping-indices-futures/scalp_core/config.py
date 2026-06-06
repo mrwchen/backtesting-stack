@@ -39,6 +39,18 @@ def env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def env_optional_float(name: str, default: Optional[float]) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if not text:
+        return default
+    if text.lower() in {"none", "null", "off", "disabled", "*"}:
+        return None
+    return float(text)
+
+
 def env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -58,6 +70,54 @@ def _one_of(name: str, default: str, choices: set[str]) -> str:
     if value not in choices:
         raise ValueError(f"{name}={value!r} invalid; expected one of {sorted(choices)}")
     return value
+
+
+@dataclass(frozen=True)
+class DecisionGate:
+    enabled: bool
+    min_prob: float
+    max_prob: Optional[float]
+    min_expected_net_r: Optional[float]
+    max_expected_net_r: Optional[float]
+
+
+def _decision_gate(
+    prefix: str,
+    enabled_default: bool,
+    min_prob_default: float,
+    max_prob_default: Optional[float],
+    min_expected_default: Optional[float],
+    max_expected_default: Optional[float],
+) -> DecisionGate:
+    gate = DecisionGate(
+        enabled=env_bool(f"{prefix}_GATE_ENABLED", enabled_default),
+        min_prob=env_float(f"{prefix}_MIN_PROB", min_prob_default),
+        max_prob=env_optional_float(f"{prefix}_MAX_PROB", max_prob_default),
+        min_expected_net_r=env_optional_float(f"{prefix}_MIN_EXPECTED_NET_R", min_expected_default),
+        max_expected_net_r=env_optional_float(f"{prefix}_MAX_EXPECTED_NET_R", max_expected_default),
+    )
+    _validate_decision_gate(prefix, gate)
+    return gate
+
+
+def _validate_decision_gate(name: str, gate: DecisionGate) -> None:
+    if gate.max_prob is not None and gate.max_prob <= gate.min_prob:
+        raise ValueError(f"{name}_MAX_PROB must be greater than {name}_MIN_PROB")
+    if (
+        gate.min_expected_net_r is not None
+        and gate.max_expected_net_r is not None
+        and gate.max_expected_net_r <= gate.min_expected_net_r
+    ):
+        raise ValueError(f"{name}_MAX_EXPECTED_NET_R must be greater than {name}_MIN_EXPECTED_NET_R")
+
+
+def _gate_spec(side: str, regime_state: int, gate: DecisionGate) -> str:
+    if not gate.enabled:
+        return f"{side}:{regime_state}:disabled"
+    max_prob = "*" if gate.max_prob is None else f"{gate.max_prob:g}"
+    min_er = "*" if gate.min_expected_net_r is None else f"{gate.min_expected_net_r:g}"
+    max_er = "*" if gate.max_expected_net_r is None else f"{gate.max_expected_net_r:g}"
+    return f"{side}:{regime_state}:p>={gate.min_prob:g},p<{max_prob},er>={min_er},er<{max_er}"
 
 
 # ── data source ────────────────────────────────────────────────────────────────
@@ -113,10 +173,35 @@ WARMUP_BARS = max(200, env_int("WARMUP_BARS", 1500))
 TRAIN_WINDOW_BARS = env_int("TRAIN_WINDOW_BARS", 0)  # 0 = expanding window
 REFIT_EVERY_BARS = max(1, env_int("REFIT_EVERY_BARS", 250))
 
-# ── layer 4: decision threshold ─────────────────────────────────────────────────
+# ── layer 4: decision gating ────────────────────────────────────────────────────
 
-PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.55)
-MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.05)
+DECISION_GATE_MODE = _one_of(
+    "DECISION_GATE_MODE",
+    "global_bandpass",
+    {"global_bandpass", "side_regime_bandpass"},
+)
+PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.57)
+MAX_PROB_THRESHOLD = env_optional_float("MAX_PROB_THRESHOLD", 0.65)
+MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.32)
+MAX_EXPECTED_NET_R = env_optional_float("MAX_EXPECTED_NET_R", 0.51)
+GLOBAL_DECISION_GATE = DecisionGate(
+    enabled=True,
+    min_prob=PROB_THRESHOLD,
+    max_prob=MAX_PROB_THRESHOLD,
+    min_expected_net_r=MIN_EXPECTED_NET_R,
+    max_expected_net_r=MAX_EXPECTED_NET_R,
+)
+_validate_decision_gate("GLOBAL_DECISION_GATE", GLOBAL_DECISION_GATE)
+SIDE_REGIME_GATES = {
+    ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.57, 0.70, 0.32, 0.70),
+    ("LONG", 1): _decision_gate("LONG_REGIME1", False, 0.57, 0.65, 0.32, 0.51),
+    ("SHORT", 0): _decision_gate("SHORT_REGIME0", True, 0.57, 0.65, 0.32, 0.51),
+    ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.00, 0.70, 0.30, 0.65),
+}
+SIDE_REGIME_GATE_SPEC = "; ".join(
+    _gate_spec(side, regime_state, gate)
+    for (side, regime_state), gate in sorted(SIDE_REGIME_GATES.items())
+)
 
 # ── stop-loss / take-profit logic ───────────────────────────────────────────────
 # STOP_MODE chooses the distance basis: "vol" = GARCH/EGARCH sigma, "atr" = ATR.
@@ -238,8 +323,12 @@ class RunConfig:
     warmup_bars: int
     train_window_bars: int
     refit_every_bars: int
+    decision_gate_mode: str
     prob_threshold: float
+    max_prob_threshold: Optional[float]
     min_expected_net_r: float
+    max_expected_net_r: Optional[float]
+    side_regime_gate_spec: str
     stop_mode: str
     tp_mode: str
     stop_vol_mult: float
@@ -299,8 +388,12 @@ def active_run_config() -> RunConfig:
         warmup_bars=WARMUP_BARS,
         train_window_bars=TRAIN_WINDOW_BARS,
         refit_every_bars=REFIT_EVERY_BARS,
+        decision_gate_mode=DECISION_GATE_MODE,
         prob_threshold=PROB_THRESHOLD,
+        max_prob_threshold=MAX_PROB_THRESHOLD,
         min_expected_net_r=MIN_EXPECTED_NET_R,
+        max_expected_net_r=MAX_EXPECTED_NET_R,
+        side_regime_gate_spec=SIDE_REGIME_GATE_SPEC,
         stop_mode=STOP_MODE,
         tp_mode=TP_MODE,
         stop_vol_mult=STOP_VOL_MULT,
