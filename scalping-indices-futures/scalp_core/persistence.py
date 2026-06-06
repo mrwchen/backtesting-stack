@@ -1,6 +1,7 @@
 """Persist runs, trades and Monte-Carlo results to TimescaleDB."""
 
 import logging
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -36,6 +37,38 @@ def _notes() -> str:
     if config.RUN_NOTES_EXTRA:
         parts.append(config.RUN_NOTES_EXTRA)
     return " | ".join(parts)
+
+
+def _db_scalar(value):
+    if value is None:
+        return None
+    if hasattr(value, "to_pydatetime"):
+        return value.to_pydatetime()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _db_float(value):
+    value = _db_scalar(value)
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _db_int(value):
+    value = _db_scalar(value)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _db_round(value, digits: int):
+    value = _db_float(value)
+    if value is None:
+        return None
+    return round(value, digits)
 
 
 def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int) -> int:
@@ -144,11 +177,28 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
         return
     rows = [
         (
-            run_id, t.intent_ts, t.entry_ts, t.entry_price, t.direction, t.units,
-            round(t.notional, 2), round(t.margin_used, 2), t.regime_state, t.prob_up,
-            t.sigma_pts, t.stop_price, t.take_profit_price, t.outcome_status, t.exit_ts,
-            t.exit_price, t.bars_held, t.return_pct, round(t.pnl, 2), round(t.costs, 2),
-            round(t.equity_before, 2), round(t.equity_after, 2),
+            run_id,
+            _db_scalar(t.intent_ts),
+            _db_scalar(t.entry_ts),
+            _db_float(t.entry_price),
+            t.direction,
+            _db_float(t.units),
+            _db_round(t.notional, 2),
+            _db_round(t.margin_used, 2),
+            _db_int(t.regime_state),
+            _db_float(t.prob_up),
+            _db_float(t.sigma_pts),
+            _db_float(t.stop_price),
+            _db_float(t.take_profit_price),
+            t.outcome_status,
+            _db_scalar(t.exit_ts),
+            _db_float(t.exit_price),
+            _db_int(t.bars_held),
+            _db_float(t.return_pct),
+            _db_round(t.pnl, 2),
+            _db_round(t.costs, 2),
+            _db_round(t.equity_before, 2),
+            _db_round(t.equity_after, 2),
         )
         for t in trades
     ]
