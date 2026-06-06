@@ -159,7 +159,7 @@ ATR_BARS = max(2, env_int("ATR_BARS", 14))
 # ── layer 1: regime (HMM) ───────────────────────────────────────────────────────
 
 REGIME_STATES = max(2, env_int("REGIME_STATES", 3))
-REGIME_BLOCK_HIGH_VOL_STATE = env_bool("REGIME_BLOCK_HIGH_VOL_STATE", False)
+REGIME_BLOCK_HIGH_VOL_STATE = env_bool("REGIME_BLOCK_HIGH_VOL_STATE", True)
 HMM_N_ITER = max(10, env_int("HMM_N_ITER", 100))
 HMM_COVARIANCE_TYPE = _one_of("HMM_COVARIANCE_TYPE", "diag", {"diag", "full", "tied", "spherical"})
 HMM_MIN_COVAR = max(1e-12, env_float("HMM_MIN_COVAR", 1e-6))
@@ -189,10 +189,10 @@ DECISION_GATE_MODE = _one_of(
     "global_bandpass",
     {"global_bandpass", "side_regime_bandpass"},
 )
-PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.56)
-MAX_PROB_THRESHOLD = env_optional_float("MAX_PROB_THRESHOLD", 0.65)
-MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.28)
-MAX_EXPECTED_NET_R = env_optional_float("MAX_EXPECTED_NET_R", 0.51)
+PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.52)
+MAX_PROB_THRESHOLD = env_optional_float("MAX_PROB_THRESHOLD", 0.74)
+MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.14)
+MAX_EXPECTED_NET_R = env_optional_float("MAX_EXPECTED_NET_R", 0.85)
 GLOBAL_DECISION_GATE = DecisionGate(
     enabled=True,
     min_prob=PROB_THRESHOLD,
@@ -202,16 +202,39 @@ GLOBAL_DECISION_GATE = DecisionGate(
 )
 _validate_decision_gate("GLOBAL_DECISION_GATE", GLOBAL_DECISION_GATE)
 SIDE_REGIME_GATES = {
-    ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.56, 0.70, 0.28, 0.70),
-    ("LONG", 1): _decision_gate("LONG_REGIME1", True, 0.56, 0.66, 0.30, 0.55),
+    ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.53, 0.74, 0.16, 0.85),
+    ("LONG", 1): _decision_gate("LONG_REGIME1", False, 0.58, 0.68, 0.28, 0.60),
     ("SHORT", 0): _decision_gate("SHORT_REGIME0", False, 0.62, 0.66, 0.42, 0.60),
-    ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.54, 0.70, 0.28, 0.65),
+    ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.52, 0.74, 0.14, 0.80),
 }
-HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", True)
+HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", False)
 HIGH_VOL_GATES = {
-    "LONG": _decision_gate("HIGH_VOL_LONG", True, 0.60, 0.70, 0.40, 0.80),
-    "SHORT": _decision_gate("HIGH_VOL_SHORT", True, 0.60, 0.70, 0.40, 0.80),
+    "LONG": _decision_gate("HIGH_VOL_LONG", False, 0.62, 0.70, 0.45, 0.80),
+    "SHORT": _decision_gate("HIGH_VOL_SHORT", False, 0.62, 0.70, 0.45, 0.80),
 }
+
+# ── layer 4a: technical setup candidates ───────────────────────────────────────
+
+CANDIDATE_ALLOW_HIGH_VOL = env_bool("CANDIDATE_ALLOW_HIGH_VOL", False)
+MIN_CANDIDATE_SCORE = env_float("MIN_CANDIDATE_SCORE", 0.20)
+if MIN_CANDIDATE_SCORE < 0.0:
+    raise ValueError("MIN_CANDIDATE_SCORE must be >= 0")
+MAX_CANDIDATES_PER_BAR = max(1, env_int("MAX_CANDIDATES_PER_BAR", 3))
+CANDIDATE_SETUP_ENABLED = {
+    "LONG_REGIME0_PULLBACK_RECLAIM": env_bool("LONG_REGIME0_PULLBACK_RECLAIM_ENABLED", True),
+    "LONG_REGIME0_TREND_CONTINUATION": env_bool("LONG_REGIME0_TREND_CONTINUATION_ENABLED", True),
+    "SHORT_REGIME1_BOUNCE_REJECT": env_bool("SHORT_REGIME1_BOUNCE_REJECT_ENABLED", True),
+    "SHORT_REGIME1_CONTINUATION": env_bool("SHORT_REGIME1_CONTINUATION_ENABLED", True),
+}
+CANDIDATE_SETUP_SPEC = "; ".join([
+    f"allow_high_vol={str(CANDIDATE_ALLOW_HIGH_VOL).lower()}",
+    f"min_score={MIN_CANDIDATE_SCORE:g}",
+    f"max_per_bar={MAX_CANDIDATES_PER_BAR}",
+    *(
+        f"{setup_id}:{'on' if enabled else 'off'}"
+        for setup_id, enabled in CANDIDATE_SETUP_ENABLED.items()
+    ),
+])
 SIDE_REGIME_GATE_SPEC = "; ".join([
     *(
         _gate_spec(side, regime_state, gate)
@@ -350,6 +373,7 @@ class RunConfig:
     min_expected_net_r: float
     max_expected_net_r: Optional[float]
     side_regime_gate_spec: str
+    candidate_setup_spec: str
     stop_mode: str
     tp_mode: str
     stop_vol_mult: float
@@ -415,6 +439,7 @@ def active_run_config() -> RunConfig:
         min_expected_net_r=MIN_EXPECTED_NET_R,
         max_expected_net_r=MAX_EXPECTED_NET_R,
         side_regime_gate_spec=SIDE_REGIME_GATE_SPEC,
+        candidate_setup_spec=CANDIDATE_SETUP_SPEC,
         stop_mode=STOP_MODE,
         tp_mode=TP_MODE,
         stop_vol_mult=STOP_VOL_MULT,

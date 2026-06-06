@@ -1,10 +1,12 @@
 """Walk-forward simulation tying the five layers together.
 
 At every refit checkpoint all statistical layers are fit on past-only data.
-Separate normal/high-vol decision layers are trained on historical trade-outcome
-labels whose exits are already known at the refit bar, then the layer matching
-the current volatility state scores the current bar's long/short trade edge. A
-signal at the close of bar t is still filled at the open of bar t+1.
+Technical setup candidates are generated from bar-close information first.
+Separate normal/high-vol decision layers are trained only on historical
+candidate trade-outcome labels whose exits are already known at the refit bar,
+then the layer matching the current volatility state filters/ranks the current
+bar's candidates. A signal at the close of bar t is still filled at the open of
+bar t+1.
 """
 
 import logging
@@ -17,6 +19,7 @@ import pandas as pd
 from . import broker, config
 from .data import session_entry_end, session_entry_start, session_flat_cutoff
 from .entities import ClosedTrade, DecisionTrace
+from .layer_candidates import SETUP_IDS, SetupCandidate, build_setup_candidates, candidate_feature_row
 from .layer_decision import DecisionScores, make_decision_model
 from .layer_price import make_price_filter
 from .layer_regime import RegimeModel
@@ -42,6 +45,17 @@ class SimulationResult:
     bars_total: int = 0
     bars_simulated: int = 0
     ruined: bool = False
+
+
+@dataclass(frozen=True)
+class EvaluatedCandidate:
+    candidate: SetupCandidate
+    rank: int
+    scores: DecisionScores
+    accepted: bool
+    reason: str
+    selected_prob: float
+    expected_net_r: float
 
 
 def _fmt_ts(value) -> str:
@@ -121,6 +135,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     states = np.zeros(n, dtype=np.int64)
     high_vol = np.zeros(n, dtype=bool)
     levels = c.copy()
+    slopes = np.zeros(n, dtype=np.float64)
     sigma_ret = np.full(n, np.nan)
     X_full = np.zeros((n, 8), dtype=np.float64)
     dynamic_label_cache: dict[tuple[int, str, float, float], object] = {}
@@ -153,6 +168,25 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             dynamic_label_cache[key] = simulate_trade_outcome(idx, direction, plan, o, h, low, c, session_date, local_time, cutoff)
         return dynamic_label_cache[key]
 
+    def _bar_candidates(idx: int) -> list[SetupCandidate]:
+        return build_setup_candidates(
+            idx,
+            states,
+            high_vol,
+            c,
+            h,
+            low,
+            levels,
+            slopes,
+            sigma_ret,
+            atr,
+            momentum,
+            rsi,
+        )
+
+    def _candidate_x(idx: int, candidate: SetupCandidate) -> np.ndarray:
+        return candidate_feature_row(X_full[idx], candidate.setup_id)
+
     def _training_data(upto: int, train_start: int, volatility_slice: str):
         base_mask = np.zeros(n, dtype=bool)
         base_mask[train_start:min(upto, n - 1)] = True
@@ -166,33 +200,50 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         if config.REGIME_BLOCK_HIGH_VOL_STATE and not config.HIGH_VOL_GATE_ENABLED:
             base_mask &= ~high_vol
 
-        if outcome_cache is not None:
-            long_mask = base_mask & outcome_cache.long_valid & (outcome_cache.long_exit_idx >= 0) & (outcome_cache.long_exit_idx < upto)
-            short_mask = base_mask & outcome_cache.short_valid & (outcome_cache.short_exit_idx >= 0) & (outcome_cache.short_exit_idx < upto)
-            return (
-                X_full[long_mask], outcome_cache.long_win[long_mask], outcome_cache.long_net_r[long_mask],
-                X_full[short_mask], outcome_cache.short_win[short_mask], outcome_cache.short_net_r[short_mask],
-            )
-
         long_x, long_y, long_r = [], [], []
         short_x, short_y, short_r = [], [], []
         for idx in np.flatnonzero(base_mask):
             plan = make_trade_plan(float(c[idx]), float(sigma_ret[idx]), float(atr[idx]))
             if plan is None:
                 continue
-            long_out = _dynamic_outcome(idx, "LONG", plan)
-            if long_out is not None and long_out.exit_idx < upto:
-                long_x.append(X_full[idx])
-                long_y.append(1.0 if long_out.net_r > 0.0 else 0.0)
-                long_r.append(long_out.net_r)
-            if config.ALLOW_SHORT:
-                short_out = _dynamic_outcome(idx, "SHORT", plan)
-                if short_out is not None and short_out.exit_idx < upto:
-                    short_x.append(X_full[idx])
-                    short_y.append(1.0 if short_out.net_r > 0.0 else 0.0)
-                    short_r.append(short_out.net_r)
+            for candidate in _bar_candidates(idx):
+                row = _candidate_x(idx, candidate)
+                if candidate.direction == "LONG":
+                    if outcome_cache is not None:
+                        if not (
+                            outcome_cache.long_valid[idx]
+                            and outcome_cache.long_exit_idx[idx] >= 0
+                            and outcome_cache.long_exit_idx[idx] < upto
+                        ):
+                            continue
+                        long_x.append(row)
+                        long_y.append(float(outcome_cache.long_win[idx]))
+                        long_r.append(float(outcome_cache.long_net_r[idx]))
+                    else:
+                        long_out = _dynamic_outcome(idx, "LONG", plan)
+                        if long_out is not None and long_out.exit_idx < upto:
+                            long_x.append(row)
+                            long_y.append(1.0 if long_out.net_r > 0.0 else 0.0)
+                            long_r.append(long_out.net_r)
+                elif config.ALLOW_SHORT:
+                    if outcome_cache is not None:
+                        if not (
+                            outcome_cache.short_valid[idx]
+                            and outcome_cache.short_exit_idx[idx] >= 0
+                            and outcome_cache.short_exit_idx[idx] < upto
+                        ):
+                            continue
+                        short_x.append(row)
+                        short_y.append(float(outcome_cache.short_win[idx]))
+                        short_r.append(float(outcome_cache.short_net_r[idx]))
+                    else:
+                        short_out = _dynamic_outcome(idx, "SHORT", plan)
+                        if short_out is not None and short_out.exit_idx < upto:
+                            short_x.append(row)
+                            short_y.append(1.0 if short_out.net_r > 0.0 else 0.0)
+                            short_r.append(short_out.net_r)
 
-        n_features = X_full.shape[1]
+        n_features = X_full.shape[1] + len(SETUP_IDS)
         return (
             np.asarray(long_x, dtype=np.float64) if long_x else _empty_x(n_features),
             np.asarray(long_y, dtype=np.float64),
@@ -203,7 +254,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         )
 
     def refit(upto: int) -> None:
-        nonlocal states, high_vol, levels, sigma_ret, X_full
+        nonlocal states, high_vol, levels, slopes, sigma_ret, X_full
         train_start = 0 if config.TRAIN_WINDOW_BARS <= 0 else max(0, upto - config.TRAIN_WINDOW_BARS)
         regime.fit(regime_feats[train_start:upto])
         price.update_params(c[train_start:upto])
@@ -240,6 +291,9 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         direction: str | None = None,
         scores: DecisionScores | None = None,
         plan: TradePlan | None = None,
+        setup_id: str | None = None,
+        setup_score: float | None = None,
+        candidate_rank: int | None = None,
     ) -> None:
         if scores is None:
             prob_long = prob_short = selected_prob = expected = expected_long = expected_short = None
@@ -273,6 +327,9 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             expected_net_r=expected,
             expected_long_r=expected_long,
             expected_short_r=expected_short,
+            setup_id=setup_id,
+            setup_score=setup_score,
+            candidate_rank=candidate_rank,
             regime_state=int(states[idx]) if idx < len(states) else None,
             high_vol_state=bool(high_vol[idx]) if idx < len(high_vol) else None,
             sigma_pts=plan.sigma_pts if plan is not None else None,
@@ -297,6 +354,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             prob_long_win=p["prob_long_win"], prob_short_win=p["prob_short_win"],
             selected_trade_prob=p["selected_trade_prob"], expected_net_r=p["expected_net_r"],
             decision_reason=p["decision_reason"],
+            setup_id=p["setup_id"], setup_score=p["setup_score"], candidate_rank=p["candidate_rank"],
             sigma_pts=p["sigma_pts"], stop_price=p["stop_price"], take_profit_price=p["tp_price"],
             outcome_status=status, exit_ts=exit_ts, exit_price=exit_price, bars_held=bars_held,
             return_pct=ret_pct, pnl=pnl, costs=costs,
@@ -342,31 +400,30 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             return False, "EXPECTED_NET_R_ABOVE_MAX"
         return True, f"{direction}_ACCEPTED_{gate_label}"
 
-    def choose_direction(scores: DecisionScores, regime_state: int, high_vol_state: bool) -> tuple[str | None, str]:
-        evaluations = [
-            (
-                "LONG",
-                scores.expected_long_r,
-                *evaluate_gate("LONG", scores.long_fitted, scores.prob_long_win, scores.expected_long_r, regime_state, high_vol_state),
-            ),
-            (
-                "SHORT",
-                scores.expected_short_r,
-                *evaluate_gate("SHORT", scores.short_fitted, scores.prob_short_win, scores.expected_short_r, regime_state, high_vol_state),
-            ),
-        ]
-        accepted = [item for item in evaluations if item[2]]
-        if accepted:
-            direction, _expected, _ok, reason = max(accepted, key=lambda item: item[1])
-            return direction, reason
+    def evaluate_candidate(
+        idx: int,
+        candidate: SetupCandidate,
+        rank: int,
+        active_decision,
+        regime_state: int,
+        high_vol_state: bool,
+    ) -> EvaluatedCandidate:
+        scores = active_decision.score(_candidate_x(idx, candidate).reshape(1, -1))
+        if candidate.direction == "LONG":
+            fitted = scores.long_fitted
+            prob = scores.prob_long_win
+            expected = scores.expected_long_r
+        else:
+            fitted = scores.short_fitted
+            prob = scores.prob_short_win
+            expected = scores.expected_short_r
+        accepted, reason = evaluate_gate(candidate.direction, fitted, prob, expected, regime_state, high_vol_state)
+        return EvaluatedCandidate(candidate, rank, scores, accepted, reason, prob, expected)
 
-        if not scores.long_fitted and not scores.short_fitted:
-            return None, "MODEL_NOT_FITTED"
-        failed = [item for item in evaluations if item[3] != "MODEL_NOT_FITTED"]
-        if not failed:
-            return None, "MODEL_NOT_FITTED"
-        _direction, _expected, _ok, reason = max(failed, key=lambda item: item[1])
-        return None, reason
+    def choose_candidate(evaluated: list[EvaluatedCandidate]) -> EvaluatedCandidate:
+        accepted = [item for item in evaluated if item.accepted]
+        pool = accepted if accepted else evaluated
+        return max(pool, key=lambda item: (item.expected_net_r, item.selected_prob, item.candidate.score))
 
     last_simulated = start
     for t in range(start, n):
@@ -491,15 +548,32 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             append_decision(t, "NO_TRADE", "INVALID_STOP_BASIS")
             continue
 
-        active_decision = decision_high_vol if (bool(high_vol[t]) and config.HIGH_VOL_GATE_ENABLED) else decision_normal
-        scores = active_decision.score(X_full[t:t + 1])
-        direction, reason = choose_direction(scores, int(states[t]), bool(high_vol[t]))
-        if direction is None:
-            append_decision(t, "NO_TRADE", reason, scores=scores, plan=plan)
+        candidates = _bar_candidates(t)
+        if not candidates:
+            append_decision(t, "NO_TRADE", "NO_CANDIDATE_SETUP", plan=plan)
             continue
 
-        selected_prob = scores.prob_long_win if direction == "LONG" else scores.prob_short_win
-        expected_net_r = scores.expected_long_r if direction == "LONG" else scores.expected_short_r
+        active_decision = decision_high_vol if (bool(high_vol[t]) and config.HIGH_VOL_GATE_ENABLED) else decision_normal
+        evaluated = [
+            evaluate_candidate(t, candidate, rank, active_decision, int(states[t]), bool(high_vol[t]))
+            for rank, candidate in enumerate(candidates, start=1)
+        ]
+        selected = choose_candidate(evaluated)
+        if not selected.accepted:
+            append_decision(
+                t,
+                "NO_TRADE",
+                selected.reason,
+                direction=selected.candidate.direction,
+                scores=selected.scores,
+                plan=plan,
+                setup_id=selected.candidate.setup_id,
+                setup_score=selected.candidate.score,
+                candidate_rank=selected.rank,
+            )
+            continue
+
+        direction = selected.candidate.direction
         pending = {
             "direction": direction,
             "stop_pct": plan.stop_pct,
@@ -508,14 +582,27 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             "trail_distance_pct": plan.trail_distance_pct,
             "sigma_pts": plan.sigma_pts,
             "regime_state": int(states[t]),
-            "prob_long_win": scores.prob_long_win,
-            "prob_short_win": scores.prob_short_win,
-            "selected_trade_prob": selected_prob,
-            "expected_net_r": expected_net_r,
-            "decision_reason": reason,
+            "prob_long_win": selected.scores.prob_long_win,
+            "prob_short_win": selected.scores.prob_short_win,
+            "selected_trade_prob": selected.selected_prob,
+            "expected_net_r": selected.expected_net_r,
+            "decision_reason": selected.reason,
+            "setup_id": selected.candidate.setup_id,
+            "setup_score": selected.candidate.score,
+            "candidate_rank": selected.rank,
             "intent_ts": ts[t],
         }
-        append_decision(t, f"{direction}_SIGNAL", reason, direction=direction, scores=scores, plan=plan)
+        append_decision(
+            t,
+            f"{direction}_SIGNAL",
+            selected.reason,
+            direction=direction,
+            scores=selected.scores,
+            plan=plan,
+            setup_id=selected.candidate.setup_id,
+            setup_score=selected.candidate.score,
+            candidate_rank=selected.rank,
+        )
 
     if position is not None:
         close_position(ts[last_simulated], c[last_simulated], "SESSION_FLAT", position["bars_held"], last_simulated)

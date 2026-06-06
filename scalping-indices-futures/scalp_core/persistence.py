@@ -32,6 +32,7 @@ def _notes() -> str:
         f"vol={config.VOL_MODEL}",
         f"decision={config.DECISION_MODEL}",
         f"gate={config.DECISION_GATE_MODE}",
+        f"setups={config.CANDIDATE_SETUP_SPEC}",
         f"high_vol_gate={config.HIGH_VOL_GATE_ENABLED}",
         f"regime_states={config.REGIME_STATES}",
         f"entry={config.ENTRY_START_TIME}-{config.ENTRY_END_TIME} {config.SESSION_TZ}",
@@ -116,6 +117,7 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
         "min_expected_net_r": cfg.min_expected_net_r,
         "max_expected_net_r": cfg.max_expected_net_r,
         "side_regime_gate_spec": cfg.side_regime_gate_spec,
+        "candidate_setup_spec": cfg.candidate_setup_spec,
         "stop_mode": cfg.stop_mode,
         "tp_mode": cfg.tp_mode,
         "stop_vol_mult": cfg.stop_vol_mult,
@@ -212,6 +214,9 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
             _db_float(t.selected_trade_prob),
             _db_float(t.expected_net_r),
             t.decision_reason,
+            t.setup_id,
+            _db_float(t.setup_score),
+            _db_int(t.candidate_rank),
             _db_float(t.sigma_pts),
             _db_float(t.stop_price),
             _db_float(t.take_profit_price),
@@ -230,7 +235,8 @@ def write_trades(conn, run_id: int, trades: list[ClosedTrade]) -> None:
     query = sql.SQL(
         "INSERT INTO {tbl} (run_id, intent_ts, entry_ts, entry_price, direction, units, "
         "notional_eur, margin_used_eur, regime_state, prob_long_win, prob_short_win, "
-        "selected_trade_prob, expected_net_r, decision_reason, sigma_pts, stop_price, "
+        "selected_trade_prob, expected_net_r, decision_reason, setup_id, setup_score, "
+        "candidate_rank, sigma_pts, stop_price, "
         "take_profit_price, outcome_status, exit_ts, exit_price, bars_held, return_pct, "
         "pnl_eur, costs_eur, equity_before, equity_after) VALUES %s"
     ).format(tbl=_table("backtest2_scalp_trades"))
@@ -260,6 +266,9 @@ def write_decisions(conn, run_id: int, decisions: list[DecisionTrace]) -> None:
             _db_float(d.expected_net_r),
             _db_float(d.expected_long_r),
             _db_float(d.expected_short_r),
+            d.setup_id,
+            _db_float(d.setup_score),
+            _db_int(d.candidate_rank),
             _db_int(d.regime_state),
             d.high_vol_state,
             _db_float(d.sigma_pts),
@@ -273,7 +282,8 @@ def write_decisions(conn, run_id: int, decisions: list[DecisionTrace]) -> None:
         "INSERT INTO {tbl} (run_id, ts, session_date, local_time, close_price, "
         "in_entry_window, decision_action, decision_reason, direction, prob_long_win, "
         "prob_short_win, selected_trade_prob, expected_net_r, expected_long_r, "
-        "expected_short_r, regime_state, high_vol_state, sigma_pts, atr_pts, stop_pct, "
+        "expected_short_r, setup_id, setup_score, candidate_rank, "
+        "regime_state, high_vol_state, sigma_pts, atr_pts, stop_pct, "
         "tp_pct) VALUES %s"
     ).format(tbl=_table("backtest2_scalp_decisions"))
     with conn.cursor() as cur:

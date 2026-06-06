@@ -23,6 +23,9 @@ class DecisionTrace:
     expected_net_r: Optional[float]
     expected_long_r: Optional[float]
     expected_short_r: Optional[float]
+    setup_id: Optional[str]
+    setup_score: Optional[float]
+    candidate_rank: Optional[int]
     regime_state: Optional[int]
     high_vol_state: Optional[bool]
     sigma_pts: Optional[float]
@@ -48,6 +51,9 @@ class ClosedTrade:
     selected_trade_prob: float
     expected_net_r: float
     decision_reason: str
+    setup_id: str
+    setup_score: float
+    candidate_rank: int
     sigma_pts: float             # forecast volatility in price points
     stop_price: float
     take_profit_price: float

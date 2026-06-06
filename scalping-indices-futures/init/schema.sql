@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     min_expected_net_r     NUMERIC(12,6),
     max_expected_net_r     NUMERIC(12,6),
     side_regime_gate_spec  TEXT,
+    candidate_setup_spec   TEXT,
 
     -- trade-level params
     stop_mode              TEXT,                      -- vol | atr
@@ -148,6 +149,9 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_trades (
     selected_trade_prob    NUMERIC(8,6),
     expected_net_r         NUMERIC(12,6),
     decision_reason        TEXT,
+    setup_id               TEXT,
+    setup_score            NUMERIC(10,6),
+    candidate_rank         INTEGER,
     sigma_pts              NUMERIC(15,6),
     stop_price             NUMERIC(15,4),
     take_profit_price      NUMERIC(15,4),
@@ -190,6 +194,9 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_decisions (
     expected_net_r         NUMERIC(12,6),
     expected_long_r        NUMERIC(12,6),
     expected_short_r       NUMERIC(12,6),
+    setup_id               TEXT,
+    setup_score            NUMERIC(10,6),
+    candidate_rank         INTEGER,
 
     regime_state           INTEGER,
     high_vol_state         BOOLEAN,
@@ -203,6 +210,7 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_decisions (
 
 CREATE INDEX IF NOT EXISTS backtest2_scalp_decisions_run_ts_idx ON backtest2_scalp_decisions(run_id, ts);
 CREATE INDEX IF NOT EXISTS backtest2_scalp_decisions_run_action_idx ON backtest2_scalp_decisions(run_id, decision_action);
+CREATE INDEX IF NOT EXISTS backtest2_scalp_decisions_run_setup_idx ON backtest2_scalp_decisions(run_id, setup_id);
 
 -- ── Monte-Carlo risk (base / slippage stress / sequence) ────────────────────────
 

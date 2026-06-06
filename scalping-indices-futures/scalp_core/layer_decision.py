@@ -13,6 +13,7 @@ from typing import Optional
 import numpy as np
 
 from . import config
+from .layer_candidates import SETUP_FEATURE_COLUMNS
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ FEATURE_COLUMNS = (
     "momentum",
     "rsi_centered",
     "session_progress",
+    *SETUP_FEATURE_COLUMNS,
 )
 
 
