@@ -108,56 +108,60 @@ services:
       # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Bandpass-Gates)
       # ═════════════════════════════════════════════════════════════════════════
       - DECISION_GATE_MODE=side_regime_bandpass # global_bandpass | side_regime_bandpass
-      - PROB_THRESHOLD=0.54          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
-      - MAX_PROB_THRESHOLD=0.74      # Globaler oberer Probability-Cutoff; leer/none = keine Obergrenze
-      - MIN_EXPECTED_NET_R=0.20      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
-      - MAX_EXPECTED_NET_R=0.85      # Globaler oberer Expected-R-Cutoff; leer/none = keine Obergrenze
+      - PROB_THRESHOLD=0.52          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
+      - MAX_PROB_THRESHOLD=none      # Globaler oberer Probability-Cutoff; leer/none = keine Obergrenze
+      - MIN_EXPECTED_NET_R=0.04      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
+      - MAX_EXPECTED_NET_R=none      # Globaler oberer Expected-R-Cutoff; leer/none = keine Obergrenze
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
       - CALIBRATE_PROBABILITIES=true # Kalibriert Trade-Win-Wahrscheinlichkeiten im Vergangenheitsfenster
       - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
-      - CANDIDATE_ALLOW_HIGH_VOL=false
-      - MIN_CANDIDATE_SCORE=0.20
-      - MAX_CANDIDATES_PER_BAR=3
+      - CANDIDATE_ALLOW_HIGH_VOL=true
+      - MIN_CANDIDATE_SCORE=0.12
+      - MAX_CANDIDATES_PER_BAR=5
       - LONG_REGIME0_PULLBACK_RECLAIM_ENABLED=false
       - LONG_REGIME0_TREND_CONTINUATION_ENABLED=false
+      - SHORT_REGIME0_PULLBACK_FADE_ENABLED=true
+      - SHORT_REGIME0_LEVEL_REJECT_ENABLED=true
+      - SHORT_REGIME0_OPENING_RANGE_REJECT_ENABLED=true
+      - SHORT_REGIME0_MOMENTUM_ROLLOVER_ENABLED=true
       - SHORT_REGIME1_BOUNCE_REJECT_ENABLED=true
       - SHORT_REGIME1_WEAK_BOUNCE_REJECT_ENABLED=true
-      - SHORT_REGIME1_STRONG_BOUNCE_REJECT_ENABLED=true
-      - SHORT_REGIME1_FAILED_RECLAIM_ENABLED=true
+      - SHORT_REGIME1_STRONG_BOUNCE_REJECT_ENABLED=false
+      - SHORT_REGIME1_FAILED_RECLAIM_ENABLED=false
       - SHORT_REGIME1_OPENING_RANGE_REJECT_ENABLED=true
       - SHORT_REGIME1_LEVEL_REJECT_ENABLED=true
       - SHORT_REGIME1_CONTINUATION_ENABLED=false
-      - HIGH_VOL_GATE_ENABLED=false  # false + REGIME_BLOCK_HIGH_VOL_STATE=true = High-Vol hart blocken
+      - HIGH_VOL_GATE_ENABLED=true   # true = High-Vol wird mit eigenem Gate statt hartem Block getestet
       - LONG_REGIME0_GATE_ENABLED=false
       - LONG_REGIME0_MIN_PROB=0.58
-      - LONG_REGIME0_MAX_PROB=0.74
+      - LONG_REGIME0_MAX_PROB=none
       - LONG_REGIME0_MIN_EXPECTED_NET_R=0.28
-      - LONG_REGIME0_MAX_EXPECTED_NET_R=0.85
+      - LONG_REGIME0_MAX_EXPECTED_NET_R=none
       - LONG_REGIME1_GATE_ENABLED=false
       - LONG_REGIME1_MIN_PROB=0.58
-      - LONG_REGIME1_MAX_PROB=0.68
+      - LONG_REGIME1_MAX_PROB=none
       - LONG_REGIME1_MIN_EXPECTED_NET_R=0.28
-      - LONG_REGIME1_MAX_EXPECTED_NET_R=0.60
-      - SHORT_REGIME0_GATE_ENABLED=false
-      - SHORT_REGIME0_MIN_PROB=0.62
-      - SHORT_REGIME0_MAX_PROB=0.66
-      - SHORT_REGIME0_MIN_EXPECTED_NET_R=0.42
-      - SHORT_REGIME0_MAX_EXPECTED_NET_R=0.60
+      - LONG_REGIME1_MAX_EXPECTED_NET_R=none
+      - SHORT_REGIME0_GATE_ENABLED=true
+      - SHORT_REGIME0_MIN_PROB=0.52
+      - SHORT_REGIME0_MAX_PROB=none
+      - SHORT_REGIME0_MIN_EXPECTED_NET_R=0.04
+      - SHORT_REGIME0_MAX_EXPECTED_NET_R=none
       - SHORT_REGIME1_GATE_ENABLED=true
-      - SHORT_REGIME1_MIN_PROB=0.54
-      - SHORT_REGIME1_MAX_PROB=0.74
-      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.20
-      - SHORT_REGIME1_MAX_EXPECTED_NET_R=0.80
+      - SHORT_REGIME1_MIN_PROB=0.52
+      - SHORT_REGIME1_MAX_PROB=none
+      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.04
+      - SHORT_REGIME1_MAX_EXPECTED_NET_R=none
       - HIGH_VOL_LONG_GATE_ENABLED=false
       - HIGH_VOL_LONG_MIN_PROB=0.62
-      - HIGH_VOL_LONG_MAX_PROB=0.70
+      - HIGH_VOL_LONG_MAX_PROB=none
       - HIGH_VOL_LONG_MIN_EXPECTED_NET_R=0.45
-      - HIGH_VOL_LONG_MAX_EXPECTED_NET_R=0.80
-      - HIGH_VOL_SHORT_GATE_ENABLED=false
-      - HIGH_VOL_SHORT_MIN_PROB=0.62
-      - HIGH_VOL_SHORT_MAX_PROB=0.70
-      - HIGH_VOL_SHORT_MIN_EXPECTED_NET_R=0.45
-      - HIGH_VOL_SHORT_MAX_EXPECTED_NET_R=0.80
+      - HIGH_VOL_LONG_MAX_EXPECTED_NET_R=none
+      - HIGH_VOL_SHORT_GATE_ENABLED=true
+      - HIGH_VOL_SHORT_MIN_PROB=0.58
+      - HIGH_VOL_SHORT_MAX_PROB=none
+      - HIGH_VOL_SHORT_MIN_EXPECTED_NET_R=0.16
+      - HIGH_VOL_SHORT_MAX_EXPECTED_NET_R=none
 
       # ═════════════════════════════════════════════════════════════════════════
       # WALK-FORWARD-FITTING
@@ -177,14 +181,14 @@ services:
       - STOP_MODE=atr                # vol | atr
       - TP_MODE=fixed                # fixed | trailing
       - STOP_VOL_MULT=2.0            # Stop = N x Sigma (bei STOP_MODE=vol)
-      - TP_VOL_MULT=3.0              # TP   = N x Sigma (bei STOP_MODE=vol)
+      - TP_VOL_MULT=2.0              # TP   = N x Sigma (bei STOP_MODE=vol)
       - STOP_ATR_MULT=2.0            # Stop = N x ATR   (bei STOP_MODE=atr)
-      - TP_ATR_MULT=3.0              # TP   = N x ATR   (bei STOP_MODE=atr)
+      - TP_ATR_MULT=2.0              # TP   = N x ATR   (bei STOP_MODE=atr)
       - TRAILING_ACTIVATION_MULT=2.0 # Trailing aktiviert nach N x Basis Gewinn (TP_MODE=trailing)
       - TRAILING_DISTANCE_MULT=1.5   # Trailing-Abstand = N x Basis        (TP_MODE=trailing)
       - MIN_STOP_PCT=0.05            # untere Schranke Stop-Distanz (% vom Preis)
       - MAX_STOP_PCT=0.6             # obere Schranke Stop-Distanz (% vom Preis)
-      - MAX_HOLD_BARS=60             # Zwangs-Exit nach N Bars
+      - MAX_HOLD_BARS=45             # Zwangs-Exit nach N Bars
       - ALLOW_SHORT=true             # Short-Seite an/aus
 
       # ═════════════════════════════════════════════════════════════════════════
