@@ -451,6 +451,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                     "prob_long_win": pending["prob_long_win"], "prob_short_win": pending["prob_short_win"],
                     "selected_trade_prob": pending["selected_trade_prob"], "expected_net_r": pending["expected_net_r"],
                     "decision_reason": pending["decision_reason"],
+                    "setup_id": pending["setup_id"], "setup_score": pending["setup_score"],
+                    "candidate_rank": pending["candidate_rank"],
                     "sigma_pts": pending["sigma_pts"], "stop_price": stop_price,
                     "tp_price": (tp_price if config.TP_MODE == "fixed" else None),
                     "equity_before": equity, "entry_session": session_date[t], "bars_held": 0,
