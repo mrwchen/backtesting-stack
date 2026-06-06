@@ -123,7 +123,7 @@ def run_monte_carlo(trades: list[ClosedTrade], initial_equity: float) -> dict | 
     extra_cost = notional * (config.MC_EXTRA_SLIPPAGE_BPS / 10000.0) * 2.0
     slip_frac = (pnl - extra_cost) / eq_before
 
-    rng = np.random.default_rng(12345)
+    rng = np.random.default_rng(config.MC_RANDOM_SEED)
     base = _curve_stats(base_frac, n_sims, initial_equity, rng, "permute")
     slippage = _curve_stats(slip_frac, n_sims, initial_equity, rng, "permute")
     sequence = _curve_stats(base_frac, n_sims, initial_equity, rng, "block")

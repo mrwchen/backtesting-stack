@@ -56,61 +56,130 @@ services:
       - START_DATE=
       - END_DATE=
 
-      # ── Layer-Schalter (die vier umschaltbaren Modelle) ──────────────────────
-      - PRICE_MODEL=kalman           # kalman | state_space
-      - VOL_MODEL=garch              # garch | egarch
-      - DECISION_MODEL=bayes         # bayes | logistic
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER-SCHALTER
+      # Waehlt pro Schicht das Modell. Das sind die vier Haupt-Umschalter.
+      # ═════════════════════════════════════════════════════════════════════════
+      - PRICE_MODEL=kalman           # Layer 2: kalman | state_space
+      - VOL_MODEL=garch              # Layer 3: garch | egarch
+      - DECISION_MODEL=bayes         # Layer 4: bayes | logistic
 
-      # ── Layer 1: Regime (HMM) ────────────────────────────────────────────────
-      - REGIME_STATES=3
-      - REGIME_BLOCK_HIGH_VOL_STATE=false
+      # ═════════════════════════════════════════════════════════════════════════
+      # FEATURE-FENSTER
+      # Laenge der Indikator-Fenster, die als Eingangssignale in die
+      # Entscheidungs-Schicht gehen (und ATR fuer ATR-basierte Stops).
+      # Kuerzer = reaktiver/nervoeser, laenger = glatter/traeger.
+      # ═════════════════════════════════════════════════════════════════════════
+      - RSI_PERIOD=14                # RSI-Periode
+      - ROLL_VOL_BARS=20             # Fenster der rollierenden Volatilitaet
+      - MOMENTUM_BARS=10             # Lookback fuer Momentum (Log-Return ueber N Bars)
+      - ATR_BARS=14                  # ATR-Periode (Wilder)
 
-      # ── Walk-Forward-Fitting ─────────────────────────────────────────────────
-      - WARMUP_BARS=1500
-      - TRAIN_WINDOW_BARS=0          # 0 = expandierendes Fenster
-      - REFIT_EVERY_BARS=250
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER 1 — REGIME (HMM)
+      # Hidden-Markov-Modell erkennt Marktphasen (ruhig vs. turbulent).
+      # Kann als Filter dienen (turbulente Phase blocken) und ist Feature.
+      # ═════════════════════════════════════════════════════════════════════════
+      - REGIME_STATES=3              # Anzahl versteckter Zustaende
+      - REGIME_BLOCK_HIGH_VOL_STATE=false   # true = im turbulentesten Regime nicht traden
+      - HMM_N_ITER=100               # max. EM-Iterationen beim Fit
+      - HMM_COVARIANCE_TYPE=diag     # diag | full | tied | spherical
 
-      # ── Layer 2: Kalman-Rauschen (selbstskalierend) ──────────────────────────
-      - KF_OBS_NOISE_MULT=1.0
-      - KF_LEVEL_NOISE_MULT=0.1
-      - KF_TREND_NOISE_MULT=0.001
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER 2 — PREISPROZESS (Kalman-Rauschen)
+      # Selbstskalierende Rauschmultiplikatoren des Local-Linear-Trend-Filters
+      # (nur relevant bei PRICE_MODEL=kalman). Hoeher = glatter, traeger.
+      # ═════════════════════════════════════════════════════════════════════════
+      - KF_OBS_NOISE_MULT=1.0        # Messrauschen
+      - KF_LEVEL_NOISE_MULT=0.1      # Level-Prozessrauschen
+      - KF_TREND_NOISE_MULT=0.001    # Trend-Prozessrauschen
 
-      # ── Layer 4: Entscheidungs-Schwelle ──────────────────────────────────────
-      - PROB_THRESHOLD=0.55
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER 3 — VOLATILITAET (GARCH/EGARCH-Detail)
+      # Ordnung des Vola-Modells und Fehlerverteilung. studentst/ged fangen
+      # fette Raender (Tail-Risiko) besser als normal.
+      # ═════════════════════════════════════════════════════════════════════════
+      - GARCH_P=1                    # ARCH-Ordnung
+      - GARCH_Q=1                    # GARCH-Ordnung
+      - GARCH_DIST=normal            # normal | studentst | skewt | ged
 
-      # ── Trade-Levels (aus Layer-3-Volatilitaet) ──────────────────────────────
-      - STOP_VOL_MULT=2.0
-      - TP_VOL_MULT=3.0
-      - MIN_STOP_PCT=0.05
-      - MAX_STOP_PCT=0.6
-      - MAX_HOLD_BARS=60
-      - ALLOW_SHORT=true
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Schwelle)
+      # ═════════════════════════════════════════════════════════════════════════
+      - PROB_THRESHOLD=0.55          # Mindest-Wahrscheinlichkeit fuer einen Einstieg
+      - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
+      - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
 
-      # ── Session (Intraday-only, flat zum Cutoff) ─────────────────────────────
+      # ═════════════════════════════════════════════════════════════════════════
+      # WALK-FORWARD-FITTING
+      # Wie oft und auf welchem Fenster die Schichten neu gefittet werden.
+      # ═════════════════════════════════════════════════════════════════════════
+      - WARMUP_BARS=1500             # Anlauf-Bars vor dem ersten Trade
+      - TRAIN_WINDOW_BARS=0          # 0 = expandierend, sonst rollierendes Fenster
+      - REFIT_EVERY_BARS=250         # Neu-Fit-Intervall in Bars
+
+      # ═════════════════════════════════════════════════════════════════════════
+      # STOP-LOSS / TAKE-PROFIT-LOGIK
+      # STOP_MODE = Distanzbasis (vol = GARCH-Sigma, atr = ATR).
+      # TP_MODE   = Ausstieg (fixed = harter TP, trailing = nachziehender Stop).
+      # Die Multiplikatoren wirken auf die jeweilige Basis; MIN/MAX_STOP_PCT
+      # begrenzen die Stop-Distanz (in % vom Preis) und damit die Positionsgroesse.
+      # ═════════════════════════════════════════════════════════════════════════
+      - STOP_MODE=vol                # vol | atr
+      - TP_MODE=fixed                # fixed | trailing
+      - STOP_VOL_MULT=2.0            # Stop = N x Sigma (bei STOP_MODE=vol)
+      - TP_VOL_MULT=3.0              # TP   = N x Sigma (bei STOP_MODE=vol)
+      - STOP_ATR_MULT=2.0            # Stop = N x ATR   (bei STOP_MODE=atr)
+      - TP_ATR_MULT=3.0              # TP   = N x ATR   (bei STOP_MODE=atr)
+      - TRAILING_ACTIVATION_MULT=2.0 # Trailing aktiviert nach N x Basis Gewinn (TP_MODE=trailing)
+      - TRAILING_DISTANCE_MULT=1.5   # Trailing-Abstand = N x Basis        (TP_MODE=trailing)
+      - MIN_STOP_PCT=0.05            # untere Schranke Stop-Distanz (% vom Preis)
+      - MAX_STOP_PCT=0.6             # obere Schranke Stop-Distanz (% vom Preis)
+      - MAX_HOLD_BARS=60             # Zwangs-Exit nach N Bars
+      - ALLOW_SHORT=true             # Short-Seite an/aus
+
+      # ═════════════════════════════════════════════════════════════════════════
+      # TRADE-MANAGEMENT
+      # ═════════════════════════════════════════════════════════════════════════
+      - REENTRY_COOLDOWN_BARS=0      # Wartezeit (Bars) nach Exit vor neuem Einstieg
+      - INTRABAR_FILL_PRIORITY=stop  # stop | tp  (wer gewinnt, wenn beide in einer Bar triggern)
+
+      # ═════════════════════════════════════════════════════════════════════════
+      # SESSION (Intraday-only, flat zum Cutoff)
+      # ═════════════════════════════════════════════════════════════════════════
       - SESSION_FLAT_TIME=16:55
       - SESSION_TZ=America/New_York
 
-      # ── Account: PS_ACC ──────────────────────────────────────────────────────
+      # ═════════════════════════════════════════════════════════════════════════
+      # ACCOUNT: PS_ACC (Pepperstone-artiges Index-CFD-Konto)
+      # ═════════════════════════════════════════════════════════════════════════
       - ACCOUNT_PROFILE=PS_ACC
-      - INITIAL_EQUITY=5000
+      - INITIAL_EQUITY=5000          # Startkapital
       - ACCOUNT_CURRENCY=EUR
-      - MARGIN_REQUIREMENT_PCT=5
-      - RISK_PER_TRADE_PCT=1.5
-      - MAX_MARGIN_PCT=45
-      - CONTRACT_MULTIPLIER=1.0
+      - MARGIN_REQUIREMENT_PCT=5     # Margin = 5 % des Nominalwerts
+      - RISK_PER_TRADE_PCT=1.5       # Risiko pro Trade in % des Equity
+      - MAX_MARGIN_PCT=45            # max. Margin-Auslastung pro Position
+      - CONTRACT_MULTIPLIER=1.0      # Punktwert je Einheit (CFD: 1.0)
       - EURUSD_RATE=1.0              # USD je 1 EUR; 1.0 = keine Umrechnung
 
-      # ── Kosten ───────────────────────────────────────────────────────────────
-      - SPREAD_BPS=1.0
-      - SLIPPAGE_BPS=0.5
-      - COMMISSION_PER_UNIT=0.0
+      # ═════════════════════════════════════════════════════════════════════════
+      # KOSTEN
+      # ═════════════════════════════════════════════════════════════════════════
+      - SPREAD_BPS=1.0               # Spread in Basispunkten des Nominalwerts
+      - SLIPPAGE_BPS=0.5             # Slippage in Basispunkten
+      - COMMISSION_PER_UNIT=0.0      # Kommission je Einheit (beide Legs)
 
-      # ── Layer 5: Monte-Carlo-Risiko ──────────────────────────────────────────
+      # ═════════════════════════════════════════════════════════════════════════
+      # LAYER 5 — MONTE-CARLO-RISIKO
+      # Resampling der Trade-Reihenfolge fuer Drawdown-/Ruin-Verteilung,
+      # plus Slippage-Stress und Block-Bootstrap (Sequenzrisiko).
+      # ═════════════════════════════════════════════════════════════════════════
       - MONTE_CARLO_ENABLED=true
-      - MONTE_CARLO_SIMULATIONS=2000
-      - MC_EXTRA_SLIPPAGE_BPS=1.0
-      - MC_BLOCK_SIZE=5
-      - MC_RUIN_DRAWDOWN_PCT=50.0
+      - MONTE_CARLO_SIMULATIONS=2000 # Anzahl Simulationen
+      - MC_EXTRA_SLIPPAGE_BPS=1.0    # Zusatz-Slippage im Stress-Szenario
+      - MC_BLOCK_SIZE=5              # Blocklaenge fuer Sequenz-Bootstrap
+      - MC_RUIN_DRAWDOWN_PCT=50.0    # Verlustschwelle, ab der ein Pfad als "Ruin" zaehlt
+      - MC_RANDOM_SEED=12345         # fester Seed = reproduzierbar
     networks:
       - shared_net
 

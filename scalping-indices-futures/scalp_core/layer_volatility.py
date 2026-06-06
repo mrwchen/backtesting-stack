@@ -16,6 +16,8 @@ import warnings
 
 import numpy as np
 
+from . import config
+
 log = logging.getLogger(__name__)
 
 
@@ -37,7 +39,10 @@ class VolModel:
 
         vol = "EGARCH" if self.kind == "egarch" else "GARCH"
         o = 1 if self.kind == "egarch" else 0
-        return arch_model(scaled_returns, mean="Zero", vol=vol, p=1, o=o, q=1, dist="normal")
+        return arch_model(
+            scaled_returns, mean="Zero", vol=vol,
+            p=config.GARCH_P, o=o, q=config.GARCH_Q, dist=config.GARCH_DIST,
+        )
 
     def update_params(self, returns_train: np.ndarray) -> None:
         r = returns_train[np.isfinite(returns_train)]

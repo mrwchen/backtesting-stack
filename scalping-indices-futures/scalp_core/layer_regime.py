@@ -16,20 +16,24 @@ import warnings
 
 import numpy as np
 
+from . import config
+
 log = logging.getLogger(__name__)
 
 REGIME_FEATURES = ("log_ret", "abs_ret")
 
 
 class RegimeModel:
-    def __init__(self, n_states: int):
+    def __init__(self, n_states: int, n_iter: int | None = None, covariance_type: str | None = None):
         self.n_states = n_states
+        self.n_iter = n_iter if n_iter is not None else config.HMM_N_ITER
+        self.covariance_type = covariance_type if covariance_type is not None else config.HMM_COVARIANCE_TYPE
         self._fitted = False
         self._startprob = None
         self._transmat = None
         self._means = None      # (k, d)
-        self._inv_var = None    # (k, d)
-        self._log_norm = None   # (k,) constant part of the diag-Gaussian log pdf
+        self._inv_cov = None    # (k, d, d) full inverse covariance
+        self._log_norm = None   # (k,) constant part of the multivariate-Gaussian log pdf
         self._high_vol_state = -1
 
     def fit(self, features: np.ndarray) -> None:
@@ -44,8 +48,8 @@ class RegimeModel:
                 warnings.simplefilter("ignore")
                 model = GaussianHMM(
                     n_components=self.n_states,
-                    covariance_type="diag",
-                    n_iter=100,
+                    covariance_type=self.covariance_type,
+                    n_iter=self.n_iter,
                     tol=1e-3,
                     random_state=42,
                 )
@@ -55,28 +59,45 @@ class RegimeModel:
             return
 
         means = np.asarray(model.means_, dtype=np.float64)            # (k, d)
-        covars = np.asarray(model.covars_, dtype=np.float64)
-        var = covars[:, np.arange(means.shape[1]), np.arange(means.shape[1])] if covars.ndim == 3 else covars
-        var = np.clip(var, 1e-12, None)                               # (k, d)
+        k, d = means.shape
+        # hmmlearn's covars_ shape depends on covariance_type; normalise to (k, d, d).
+        cov = self._to_full_cov(np.asarray(model.covars_, dtype=np.float64), k, d)
+        cov = cov + np.eye(d)[None, :, :] * 1e-12                     # regularise
 
         self._startprob = np.clip(np.asarray(model.startprob_, dtype=np.float64), 1e-12, None)
         self._transmat = np.clip(np.asarray(model.transmat_, dtype=np.float64), 1e-12, None)
         self._means = means
-        self._inv_var = 1.0 / var
-        self._log_norm = -0.5 * np.sum(np.log(2.0 * np.pi * var), axis=1)  # (k,)
+        self._inv_cov = np.linalg.inv(cov)                           # (k, d, d)
+        sign, logdet = np.linalg.slogdet(cov)
+        self._log_norm = -0.5 * (d * np.log(2.0 * np.pi) + logdet)   # (k,)
         # Rank states by log_ret emission variance -> highest is "turbulent".
-        self._high_vol_state = int(np.argmax(var[:, 0]))
+        self._high_vol_state = int(np.argmax(cov[:, 0, 0]))
         self._fitted = True
+
+    @staticmethod
+    def _to_full_cov(cov: np.ndarray, k: int, d: int) -> np.ndarray:
+        """Normalise hmmlearn covars_ (shape varies by covariance_type) to (k, d, d)."""
+        if cov.ndim == 3 and cov.shape == (k, d, d):          # full
+            return cov
+        if cov.ndim == 2 and cov.shape == (d, d):             # tied
+            return np.repeat(cov[None, :, :], k, axis=0)
+        if cov.ndim == 2 and cov.shape == (k, d):             # diag
+            return np.stack([np.diag(cov[i]) for i in range(k)])
+        if cov.ndim == 1 and cov.shape == (k,):               # spherical
+            return np.stack([np.eye(d) * cov[i] for i in range(k)])
+        # Fallback: broadcast a diagonal from whatever is given.
+        flat = np.broadcast_to(cov.reshape(-1)[:1], (k, d))
+        return np.stack([np.diag(flat[i]) for i in range(k)])
 
     @property
     def fitted(self) -> bool:
         return self._fitted
 
     def _emission_logprob(self, X: np.ndarray) -> np.ndarray:
-        """Diagonal-Gaussian log pdf per state. Returns (n, k)."""
-        # (n, 1, d) - (1, k, d) -> (n, k, d)
-        diff = X[:, None, :] - self._means[None, :, :]
-        quad = np.sum((diff ** 2) * self._inv_var[None, :, :], axis=2)  # (n, k)
+        """Multivariate-Gaussian log pdf per state. Returns (n, k)."""
+        diff = X[:, None, :] - self._means[None, :, :]               # (n, k, d)
+        tmp = np.einsum("nkd,kde->nke", diff, self._inv_cov)         # (n, k, d)
+        quad = np.einsum("nke,nke->nk", tmp, diff)                   # (n, k)
         return self._log_norm[None, :] - 0.5 * quad
 
     def filtered_states(self, features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

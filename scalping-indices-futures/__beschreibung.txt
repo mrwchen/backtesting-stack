@@ -42,6 +42,29 @@ Ergebnis-Tabellen (public)
   backtest2_scalp_trades       - Einzeltrades
   backtest2_scalp_monte_carlo  - MC-Perzentile (base / slippage / sequence)
 
+Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
+----------------------------------------------------------------------
+  Layer-Schalter        PRICE_MODEL, VOL_MODEL, DECISION_MODEL
+  Feature-Fenster       RSI_PERIOD, ROLL_VOL_BARS, MOMENTUM_BARS, ATR_BARS
+  Layer 1 Regime        REGIME_STATES, REGIME_BLOCK_HIGH_VOL_STATE,
+                        HMM_N_ITER, HMM_COVARIANCE_TYPE
+  Layer 2 Preis         KF_OBS/LEVEL/TREND_NOISE_MULT
+  Layer 3 Vola          GARCH_P, GARCH_Q, GARCH_DIST
+  Layer 4 Entscheidung  PROB_THRESHOLD, LOGISTIC_C, MIN_TRAIN_ROWS
+  Walk-Forward          WARMUP_BARS, TRAIN_WINDOW_BARS, REFIT_EVERY_BARS
+  Stop/TP-Logik         STOP_MODE(vol|atr), TP_MODE(fixed|trailing),
+                        STOP/TP_VOL_MULT, STOP/TP_ATR_MULT,
+                        TRAILING_ACTIVATION/DISTANCE_MULT, MIN/MAX_STOP_PCT,
+                        MAX_HOLD_BARS, ALLOW_SHORT
+  Trade-Management      REENTRY_COOLDOWN_BARS, INTRABAR_FILL_PRIORITY(stop|tp)
+  Session               SESSION_FLAT_TIME, SESSION_TZ
+  Account PS_ACC        INITIAL_EQUITY, MARGIN_REQUIREMENT_PCT, RISK_PER_TRADE_PCT,
+                        MAX_MARGIN_PCT, CONTRACT_MULTIPLIER, EURUSD_RATE
+  Kosten                SPREAD_BPS, SLIPPAGE_BPS, COMMISSION_PER_UNIT
+  Layer 5 Monte-Carlo   MONTE_CARLO_*, MC_EXTRA_SLIPPAGE_BPS, MC_BLOCK_SIZE,
+                        MC_RUIN_DRAWDOWN_PCT, MC_RANDOM_SEED
+Alle Parameter werden im Run-Snapshot (backtest2_scalp_runs) mitgespeichert.
+
 Ausfuehrung (auf dem Server; nichts laeuft lokal)
 -------------------------------------------------
   cd backtesting-stack/scalping-indices-futures
@@ -54,4 +77,4 @@ Wichtige Hinweise / Annahmen
   Resultate sind bis zum Aufbau weiterer 1-min-Historie nur indikativ.
   bar_size "1 hour" hat ~3 Jahre Historie und ist fuer das Fitting robuster.
 - USD->EUR ueber konstanten EURUSD_RATE (Default 1.0 = keine Umrechnung).
-- Intrabar-Tie-Break: Stop-Loss wird vor Take-Profit geprueft (konservativ).
+- Intrabar-Tie-Break standardmaessig Stop vor TP (INTRABAR_FILL_PRIORITY).

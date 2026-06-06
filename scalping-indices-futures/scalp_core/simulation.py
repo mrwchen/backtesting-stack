@@ -54,6 +54,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     abs_ret = features["abs_ret"].to_numpy(dtype=np.float64)
     momentum = features["momentum"].to_numpy(dtype=np.float64)
     rsi = features["rsi"].to_numpy(dtype=np.float64)
+    atr = features["atr"].to_numpy(dtype=np.float64)
     target_up = features["target_up"].to_numpy(dtype=np.float64)
     session_date = features["session_date"].to_numpy()
     local_time = features["local_time"].to_numpy()
@@ -110,7 +111,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         lo = train_start
         hi = upto  # rows [lo, hi) all have known next-bar labels (hi <= n-1 typically)
         hi = min(hi, n - 1)
-        if hi - lo >= 50:
+        if hi - lo >= config.MIN_TRAIN_ROWS:
             Xtr = X_full[lo:hi]
             ytr = target_up[lo:hi]
             mask = np.isfinite(ytr)
@@ -125,9 +126,10 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     # ── position state machine ──────────────────────────────────────────────
     position = None          # dict | None
     pending = None           # signal generated previous bar, to fill at this bar's open
+    last_exit_t = -10**9     # index of last exit, for the re-entry cooldown
 
-    def close_position(exit_ts, exit_price, status, bars_held) -> None:
-        nonlocal equity, position
+    def close_position(exit_ts, exit_price, status, bars_held, exit_idx) -> None:
+        nonlocal equity, position, last_exit_t
         p = position
         gross = broker.gross_pnl(p["units"], p["entry_price"], exit_price, p["direction"])
         costs = broker.round_trip_costs(p["units"], p["entry_price"], exit_price)
@@ -146,6 +148,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         ))
         equity = equity_after
         equity_curve.append(equity)
+        last_exit_t = exit_idx
         position = None
 
     last_simulated = start
@@ -163,16 +166,23 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
                 if pending["direction"] == "LONG":
                     stop_price = entry_price * (1.0 - pending["stop_pct"] / 100.0)
                     tp_price = entry_price * (1.0 + pending["tp_pct"] / 100.0)
+                    trail_activation_price = entry_price * (1.0 + pending["trail_activation_pct"] / 100.0)
                 else:
                     stop_price = entry_price * (1.0 + pending["stop_pct"] / 100.0)
                     tp_price = entry_price * (1.0 - pending["tp_pct"] / 100.0)
+                    trail_activation_price = entry_price * (1.0 - pending["trail_activation_pct"] / 100.0)
                 position = {
                     "intent_ts": pending["intent_ts"], "entry_ts": ts[t], "entry_price": entry_price,
                     "direction": pending["direction"], "units": sizing.units,
                     "notional": sizing.notional_eur, "margin_used": sizing.margin_used_eur,
                     "regime_state": pending["regime_state"], "prob_up": pending["prob_up"],
-                    "sigma_pts": pending["sigma_pts"], "stop_price": stop_price, "tp_price": tp_price,
+                    "sigma_pts": pending["sigma_pts"], "stop_price": stop_price,
+                    "tp_price": (tp_price if config.TP_MODE == "fixed" else None),
                     "equity_before": equity, "entry_session": session_date[t], "bars_held": 0,
+                    # trailing-stop state (only used when TP_MODE == trailing)
+                    "trail_active": False, "trail_distance_pct": pending["trail_distance_pct"],
+                    "trail_activation_price": trail_activation_price,
+                    "trailing_stop": None, "extreme": entry_price,
                 }
             pending = None
 
@@ -181,26 +191,58 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             position["bars_held"] += 1
             bars_held = position["bars_held"]
             d = position["direction"]
-            sp, tp = position["stop_price"], position["tp_price"]
+            sp = position["stop_price"]
             exited = False
-            # Intrabar SL/TP (conservative: stop checked before target).
-            if d == "LONG":
-                if low[t] <= sp:
-                    close_position(ts[t], sp, "HIT_SL", bars_held); exited = True
-                elif h[t] >= tp:
-                    close_position(ts[t], tp, "HIT_TP", bars_held); exited = True
-            else:
-                if h[t] >= sp:
-                    close_position(ts[t], sp, "HIT_SL", bars_held); exited = True
-                elif low[t] <= tp:
-                    close_position(ts[t], tp, "HIT_TP", bars_held); exited = True
+
+            if config.TP_MODE == "fixed":
+                tp = position["tp_price"]
+                stop_first = config.INTRABAR_FILL_PRIORITY == "stop"
+                if d == "LONG":
+                    hit_stop, hit_tp = low[t] <= sp, h[t] >= tp
+                else:
+                    hit_stop, hit_tp = h[t] >= sp, low[t] <= tp
+                # Resolve in the configured priority when both would trigger in-bar.
+                order = [("stop", hit_stop, sp, "HIT_SL"), ("tp", hit_tp, tp, "HIT_TP")]
+                if not stop_first:
+                    order.reverse()
+                for _kind, hit, px, status in order:
+                    if hit:
+                        close_position(ts[t], px, status, bars_held, t); exited = True
+                        break
+            else:  # trailing stop
+                eff_stop = position["trailing_stop"] if (position["trail_active"] and position["trailing_stop"] is not None) else sp
+                if d == "LONG":
+                    if low[t] <= eff_stop:
+                        status = "HIT_TRAILING_STOP" if position["trail_active"] else "HIT_SL"
+                        close_position(ts[t], eff_stop, status, bars_held, t); exited = True
+                    else:
+                        position["extreme"] = max(position["extreme"], h[t])
+                        if not position["trail_active"] and h[t] >= position["trail_activation_price"]:
+                            position["trail_active"] = True
+                        if position["trail_active"]:
+                            new_stop = position["extreme"] * (1.0 - position["trail_distance_pct"] / 100.0)
+                            prev = position["trailing_stop"]
+                            position["trailing_stop"] = new_stop if prev is None else max(prev, new_stop)
+                else:
+                    if h[t] >= eff_stop:
+                        status = "HIT_TRAILING_STOP" if position["trail_active"] else "HIT_SL"
+                        close_position(ts[t], eff_stop, status, bars_held, t); exited = True
+                    else:
+                        position["extreme"] = min(position["extreme"], low[t])
+                        if not position["trail_active"] and low[t] <= position["trail_activation_price"]:
+                            position["trail_active"] = True
+                        if position["trail_active"]:
+                            new_stop = position["extreme"] * (1.0 + position["trail_distance_pct"] / 100.0)
+                            prev = position["trailing_stop"]
+                            position["trailing_stop"] = new_stop if prev is None else min(prev, new_stop)
+
             # Session flat / new session / max hold.
             if not exited:
                 new_session = session_date[t] != position["entry_session"]
                 if new_session or local_time[t] >= cutoff:
-                    close_position(ts[t], c[t], "SESSION_FLAT", bars_held); exited = True
+                    close_position(ts[t], c[t], "SESSION_FLAT", bars_held, t); exited = True
                 elif bars_held >= config.MAX_HOLD_BARS:
-                    close_position(ts[t], c[t], "MAX_HOLD", bars_held); exited = True
+                    close_position(ts[t], c[t], "MAX_HOLD", bars_held, t); exited = True
 
             if equity <= 0:
                 result.ruined = True
@@ -208,19 +250,40 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
 
         # 3. Generate a new signal (fills next bar). Only when flat and no pending.
         if position is None and pending is None and t < n - 1:
-            # Don't open into the session-close window.
+            # Don't open into the session-close window, and respect the re-entry cooldown.
             if local_time[t] >= cutoff:
                 continue
-            p_up = float(decision.proba_up(X_full[t : t + 1])[0])
+            if t - last_exit_t < config.REENTRY_COOLDOWN_BARS:
+                continue
             if config.REGIME_BLOCK_HIGH_VOL_STATE and high_vol[t]:
                 continue
-            sr = sigma_ret[t]
-            if not np.isfinite(sr) or sr <= 0:
-                continue
-            stop_pct = _clamp(config.STOP_VOL_MULT * sr * 100.0, config.MIN_STOP_PCT, config.MAX_STOP_PCT)
-            tp_pct = max(config.TP_VOL_MULT * sr * 100.0, stop_pct)
-            sigma_pts = sr * c[t]
 
+            # Stop/TP distance basis: GARCH/EGARCH sigma (vol) or ATR.
+            sr = sigma_ret[t]
+            sigma_pts = sr * c[t] if (np.isfinite(sr) and sr > 0) else 0.0
+            if config.STOP_MODE == "vol":
+                if not (np.isfinite(sr) and sr > 0):
+                    continue
+                basis = sigma_pts
+                stop_dist = config.STOP_VOL_MULT * basis
+                tp_dist = config.TP_VOL_MULT * basis
+            else:  # atr
+                a = atr[t]
+                if not (np.isfinite(a) and a > 0):
+                    continue
+                basis = a
+                stop_dist = config.STOP_ATR_MULT * basis
+                tp_dist = config.TP_ATR_MULT * basis
+                if sigma_pts <= 0:
+                    sigma_pts = basis
+
+            cur_price = c[t]
+            stop_pct = _clamp(stop_dist / cur_price * 100.0, config.MIN_STOP_PCT, config.MAX_STOP_PCT)
+            tp_pct = max(tp_dist / cur_price * 100.0, stop_pct)
+            trail_activation_pct = config.TRAILING_ACTIVATION_MULT * basis / cur_price * 100.0
+            trail_distance_pct = max(config.TRAILING_DISTANCE_MULT * basis / cur_price * 100.0, 1e-6)
+
+            p_up = float(decision.proba_up(X_full[t : t + 1])[0])
             direction = None
             if p_up >= config.PROB_THRESHOLD:
                 direction = "LONG"
@@ -229,13 +292,14 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             if direction is not None:
                 pending = {
                     "direction": direction, "stop_pct": stop_pct, "tp_pct": tp_pct,
+                    "trail_activation_pct": trail_activation_pct, "trail_distance_pct": trail_distance_pct,
                     "sigma_pts": sigma_pts, "regime_state": int(states[t]), "prob_up": p_up,
                     "intent_ts": ts[t],
                 }
 
     # Force-close any residual position at the last bar.
     if position is not None:
-        close_position(ts[last_simulated], c[last_simulated], "SESSION_FLAT", position["bars_held"])
+        close_position(ts[last_simulated], c[last_simulated], "SESSION_FLAT", position["bars_held"], last_simulated)
 
     result.final_equity = equity
     result.equity_curve = equity_curve

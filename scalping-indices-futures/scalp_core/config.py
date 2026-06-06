@@ -80,10 +80,30 @@ KF_OBS_NOISE_MULT = env_float("KF_OBS_NOISE_MULT", 1.0)
 KF_LEVEL_NOISE_MULT = env_float("KF_LEVEL_NOISE_MULT", 0.1)
 KF_TREND_NOISE_MULT = env_float("KF_TREND_NOISE_MULT", 0.001)
 
+# ── feature windows (inputs to the decision layer + ATR for stops) ──────────────
+
+RSI_PERIOD = max(2, env_int("RSI_PERIOD", 14))
+ROLL_VOL_BARS = max(2, env_int("ROLL_VOL_BARS", 20))
+MOMENTUM_BARS = max(1, env_int("MOMENTUM_BARS", 10))
+ATR_BARS = max(2, env_int("ATR_BARS", 14))
+
 # ── layer 1: regime (HMM) ───────────────────────────────────────────────────────
 
 REGIME_STATES = max(2, env_int("REGIME_STATES", 3))
 REGIME_BLOCK_HIGH_VOL_STATE = env_bool("REGIME_BLOCK_HIGH_VOL_STATE", False)
+HMM_N_ITER = max(10, env_int("HMM_N_ITER", 100))
+HMM_COVARIANCE_TYPE = _one_of("HMM_COVARIANCE_TYPE", "diag", {"diag", "full", "tied", "spherical"})
+
+# ── layer 3: volatility model detail (GARCH/EGARCH order + error distribution) ──
+
+GARCH_P = max(1, env_int("GARCH_P", 1))
+GARCH_Q = max(1, env_int("GARCH_Q", 1))
+GARCH_DIST = _one_of("GARCH_DIST", "normal", {"normal", "studentst", "skewt", "ged"})
+
+# ── layer 4: decision model detail ──────────────────────────────────────────────
+
+LOGISTIC_C = env_float("LOGISTIC_C", 1.0)
+MIN_TRAIN_ROWS = max(20, env_int("MIN_TRAIN_ROWS", 50))
 
 # ── walk-forward fitting ────────────────────────────────────────────────────────
 
@@ -95,14 +115,31 @@ REFIT_EVERY_BARS = max(1, env_int("REFIT_EVERY_BARS", 250))
 
 PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.55)
 
-# ── trade levels (driven by layer 3 volatility) ─────────────────────────────────
-
+# ── stop-loss / take-profit logic ───────────────────────────────────────────────
+# STOP_MODE chooses the distance basis: "vol" = GARCH/EGARCH sigma, "atr" = ATR.
+# TP_MODE chooses the exit:            "fixed" = hard take-profit, "trailing" = trailing stop.
+STOP_MODE = _one_of("STOP_MODE", "vol", {"vol", "atr"})
+TP_MODE = _one_of("TP_MODE", "fixed", {"fixed", "trailing"})
+# vol-basis multipliers (used when STOP_MODE=vol)
 STOP_VOL_MULT = env_float("STOP_VOL_MULT", 2.0)
 TP_VOL_MULT = env_float("TP_VOL_MULT", 3.0)
+# atr-basis multipliers (used when STOP_MODE=atr)
+STOP_ATR_MULT = env_float("STOP_ATR_MULT", 2.0)
+TP_ATR_MULT = env_float("TP_ATR_MULT", 3.0)
+# trailing-stop multipliers (applied to the same basis unit, used when TP_MODE=trailing)
+TRAILING_ACTIVATION_MULT = env_float("TRAILING_ACTIVATION_MULT", 2.0)
+TRAILING_DISTANCE_MULT = env_float("TRAILING_DISTANCE_MULT", 1.5)
+# clamp on the stop distance (percent of price) — bounds sizing in both modes
 MIN_STOP_PCT = env_float("MIN_STOP_PCT", 0.05)
 MAX_STOP_PCT = env_float("MAX_STOP_PCT", 0.6)
 MAX_HOLD_BARS = max(1, env_int("MAX_HOLD_BARS", 60))
 ALLOW_SHORT = env_bool("ALLOW_SHORT", True)
+
+# ── trade management ────────────────────────────────────────────────────────────
+# Cooldown after an exit before a new entry is allowed; tie-break when SL and TP
+# would both trigger inside the same bar.
+REENTRY_COOLDOWN_BARS = max(0, env_int("REENTRY_COOLDOWN_BARS", 0))
+INTRABAR_FILL_PRIORITY = _one_of("INTRABAR_FILL_PRIORITY", "stop", {"stop", "tp"})
 
 # ── session handling (intraday-only, flat at cutoff) ────────────────────────────
 
@@ -133,6 +170,7 @@ MONTE_CARLO_SIMULATIONS = max(0, env_int("MONTE_CARLO_SIMULATIONS", 2000))
 MC_EXTRA_SLIPPAGE_BPS = env_float("MC_EXTRA_SLIPPAGE_BPS", 1.0)
 MC_BLOCK_SIZE = max(1, env_int("MC_BLOCK_SIZE", 5))
 MC_RUIN_DRAWDOWN_PCT = env_float("MC_RUIN_DRAWDOWN_PCT", 50.0)
+MC_RANDOM_SEED = env_int("MC_RANDOM_SEED", 12345)  # fixed seed = reproducible MC
 
 # ── run metadata ────────────────────────────────────────────────────────────────
 
@@ -172,18 +210,37 @@ class RunConfig:
     price_model: str
     vol_model: str
     decision_model: str
+    rsi_period: int
+    roll_vol_bars: int
+    momentum_bars: int
+    atr_bars: int
     regime_states: int
     regime_block_high_vol_state: bool
+    hmm_n_iter: int
+    hmm_covariance_type: str
+    garch_p: int
+    garch_q: int
+    garch_dist: str
+    logistic_c: float
+    min_train_rows: int
     warmup_bars: int
     train_window_bars: int
     refit_every_bars: int
     prob_threshold: float
+    stop_mode: str
+    tp_mode: str
     stop_vol_mult: float
     tp_vol_mult: float
+    stop_atr_mult: float
+    tp_atr_mult: float
+    trailing_activation_mult: float
+    trailing_distance_mult: float
     min_stop_pct: float
     max_stop_pct: float
     max_hold_bars: int
     allow_short: bool
+    reentry_cooldown_bars: int
+    intrabar_fill_priority: str
     session_flat_time: str
     session_tz: str
     account_profile: str
@@ -197,6 +254,7 @@ class RunConfig:
     spread_bps: float
     slippage_bps: float
     commission_per_unit: float
+    mc_random_seed: int
 
 
 def active_run_config() -> RunConfig:
@@ -206,18 +264,37 @@ def active_run_config() -> RunConfig:
         price_model=PRICE_MODEL,
         vol_model=VOL_MODEL,
         decision_model=DECISION_MODEL,
+        rsi_period=RSI_PERIOD,
+        roll_vol_bars=ROLL_VOL_BARS,
+        momentum_bars=MOMENTUM_BARS,
+        atr_bars=ATR_BARS,
         regime_states=REGIME_STATES,
         regime_block_high_vol_state=REGIME_BLOCK_HIGH_VOL_STATE,
+        hmm_n_iter=HMM_N_ITER,
+        hmm_covariance_type=HMM_COVARIANCE_TYPE,
+        garch_p=GARCH_P,
+        garch_q=GARCH_Q,
+        garch_dist=GARCH_DIST,
+        logistic_c=LOGISTIC_C,
+        min_train_rows=MIN_TRAIN_ROWS,
         warmup_bars=WARMUP_BARS,
         train_window_bars=TRAIN_WINDOW_BARS,
         refit_every_bars=REFIT_EVERY_BARS,
         prob_threshold=PROB_THRESHOLD,
+        stop_mode=STOP_MODE,
+        tp_mode=TP_MODE,
         stop_vol_mult=STOP_VOL_MULT,
         tp_vol_mult=TP_VOL_MULT,
+        stop_atr_mult=STOP_ATR_MULT,
+        tp_atr_mult=TP_ATR_MULT,
+        trailing_activation_mult=TRAILING_ACTIVATION_MULT,
+        trailing_distance_mult=TRAILING_DISTANCE_MULT,
         min_stop_pct=MIN_STOP_PCT,
         max_stop_pct=MAX_STOP_PCT,
         max_hold_bars=MAX_HOLD_BARS,
         allow_short=ALLOW_SHORT,
+        reentry_cooldown_bars=REENTRY_COOLDOWN_BARS,
+        intrabar_fill_priority=INTRABAR_FILL_PRIORITY,
         session_flat_time=SESSION_FLAT_TIME,
         session_tz=SESSION_TZ,
         account_profile=ACCOUNT_PROFILE,
@@ -231,4 +308,5 @@ def active_run_config() -> RunConfig:
         spread_bps=SPREAD_BPS,
         slippage_bps=SLIPPAGE_BPS,
         commission_per_unit=COMMISSION_PER_UNIT,
+        mc_random_seed=MC_RANDOM_SEED,
     )

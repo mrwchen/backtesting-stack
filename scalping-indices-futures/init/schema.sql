@@ -38,8 +38,27 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     price_model            TEXT          NOT NULL,   -- kalman | state_space
     vol_model              TEXT          NOT NULL,   -- garch | egarch
     decision_model         TEXT          NOT NULL,   -- bayes | logistic
+
+    -- feature windows
+    rsi_period             INTEGER,
+    roll_vol_bars          INTEGER,
+    momentum_bars          INTEGER,
+    atr_bars               INTEGER,
+
+    -- regime (HMM) detail
     regime_states          INTEGER       NOT NULL,
     regime_block_high_vol_state BOOLEAN,
+    hmm_n_iter             INTEGER,
+    hmm_covariance_type    TEXT,
+
+    -- volatility model detail
+    garch_p                INTEGER,
+    garch_q                INTEGER,
+    garch_dist             TEXT,
+
+    -- decision model detail
+    logistic_c             NUMERIC(12,4),
+    min_train_rows         INTEGER,
 
     -- walk-forward / decision params
     warmup_bars            INTEGER,
@@ -48,12 +67,20 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     prob_threshold         NUMERIC(6,4),
 
     -- trade-level params
+    stop_mode              TEXT,                      -- vol | atr
+    tp_mode                TEXT,                      -- fixed | trailing
     stop_vol_mult          NUMERIC(8,4),
     tp_vol_mult            NUMERIC(8,4),
+    stop_atr_mult          NUMERIC(8,4),
+    tp_atr_mult            NUMERIC(8,4),
+    trailing_activation_mult NUMERIC(8,4),
+    trailing_distance_mult NUMERIC(8,4),
     min_stop_pct           NUMERIC(8,4),
     max_stop_pct           NUMERIC(8,4),
     max_hold_bars          INTEGER,
     allow_short            BOOLEAN,
+    reentry_cooldown_bars  INTEGER,
+    intrabar_fill_priority TEXT,                      -- stop | tp
     session_flat_time      TEXT,
     session_tz             TEXT,
 
@@ -71,6 +98,7 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     spread_bps             NUMERIC(8,4),
     slippage_bps           NUMERIC(8,4),
     commission_per_unit    NUMERIC(12,6),
+    mc_random_seed         BIGINT,
 
     -- result summary
     run_duration_seconds   NUMERIC(12,3),

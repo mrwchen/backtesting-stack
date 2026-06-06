@@ -20,6 +20,17 @@ from . import config
 log = logging.getLogger(__name__)
 
 
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:
+    """Average True Range (Wilder smoothing), in price points."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0.0)
@@ -79,8 +90,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
       log_ret        log return of close vs previous close
       abs_ret        |log_ret|
       roll_vol       rolling std of log_ret (short window)
-      momentum       cumulative log return over a short lookback
-      rsi            14-period RSI
+      momentum       cumulative log return over MOMENTUM_BARS
+      rsi            RSI_PERIOD RSI
+      atr            ATR_BARS Average True Range (price points; for atr-based stops)
       session_date   local session day (for intraday flat-at-cutoff)
       local_time     local wall-clock time of the bar
       target_up      1 if next bar's log return > 0 else 0  (label, shifted -1)
@@ -90,9 +102,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     out["log_ret"] = np.log(close).diff()
     out["abs_ret"] = out["log_ret"].abs()
-    out["roll_vol"] = out["log_ret"].rolling(20, min_periods=5).std()
-    out["momentum"] = np.log(close).diff(10)
-    out["rsi"] = _rsi(close, 14)
+    out["roll_vol"] = out["log_ret"].rolling(config.ROLL_VOL_BARS, min_periods=max(2, config.ROLL_VOL_BARS // 4)).std()
+    out["momentum"] = np.log(close).diff(config.MOMENTUM_BARS)
+    out["rsi"] = _rsi(close, config.RSI_PERIOD)
+    out["atr"] = _atr(out["high"], out["low"], close, config.ATR_BARS)
 
     tz = ZoneInfo(config.SESSION_TZ)
     local = out["ts"].dt.tz_convert(tz)
@@ -107,6 +120,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     out["abs_ret"] = out["abs_ret"].fillna(0.0)
     out["roll_vol"] = out["roll_vol"].fillna(out["roll_vol"].median())
     out["momentum"] = out["momentum"].fillna(0.0)
+    out["atr"] = out["atr"].fillna(out["atr"].median())
     return out
 
 

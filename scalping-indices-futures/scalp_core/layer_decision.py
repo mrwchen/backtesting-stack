@@ -14,6 +14,8 @@ import warnings
 
 import numpy as np
 
+from . import config
+
 log = logging.getLogger(__name__)
 
 FEATURE_COLUMNS = ("regime_state", "price_deviation", "slope", "sigma", "momentum", "rsi")
@@ -42,13 +44,13 @@ class DecisionModel:
 
         return make_pipeline(
             StandardScaler(),
-            LogisticRegression(max_iter=200, C=1.0),
+            LogisticRegression(max_iter=200, C=config.LOGISTIC_C),
         )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
         self._clf = None
         self._single_class = None
-        if X.shape[0] < 50:
+        if X.shape[0] < config.MIN_TRAIN_ROWS:
             return
         classes = np.unique(y)
         if classes.shape[0] < 2:
