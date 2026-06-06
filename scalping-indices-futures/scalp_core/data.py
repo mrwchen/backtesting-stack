@@ -77,7 +77,7 @@ def load_bars(conn: psycopg2.extensions.connection) -> pd.DataFrame:
         df[col] = df[col].astype(float)
     df = df.sort_values("ts").reset_index(drop=True)
     log.info(
-        "Loaded %d bars symbol %s bar_size %s range %s -> %s",
+        "Loaded bars %d for %s %s from %s to %s",
         len(df), config.SYMBOL, config.BAR_SIZE, df["ts"].iloc[0], df["ts"].iloc[-1],
     )
     return df

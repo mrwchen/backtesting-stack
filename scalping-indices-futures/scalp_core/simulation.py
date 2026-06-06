@@ -43,6 +43,12 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
 
 
+def _fmt_ts(value) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 def run_simulation(features: pd.DataFrame) -> SimulationResult:
     n = len(features)
     ts = features["ts"].to_numpy()
@@ -72,10 +78,16 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     start = config.WARMUP_BARS
     result = SimulationResult(initial_equity=config.INITIAL_EQUITY, bars_total=n)
     if start >= n - 1:
-        log.warning("WARMUP_BARS=%d >= available bars %d; nothing to simulate", start, n)
+        log.warning("Warmup bars %d exceed available bars %d; nothing to simulate", start, n)
         result.final_equity = config.INITIAL_EQUITY
         result.equity_curve = [config.INITIAL_EQUITY]
         return result
+
+    log.info(
+        "Simulation start at bar %d utc %s session %s local %s total bars %d entry window %s-%s %s refit every %d bars",
+        start, _fmt_ts(ts[start]), session_date[start], local_time[start], n,
+        config.ENTRY_START_TIME, config.ENTRY_END_TIME, config.SESSION_TZ, config.REFIT_EVERY_BARS,
+    )
 
     equity = config.INITIAL_EQUITY
     equity_curve = [equity]
@@ -121,8 +133,10 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         else:
             decision.fit(np.empty((0, 6)), np.empty(0))
         log.info(
-            "Refit @bar %d train[%d:%d] regime_fitted=%s decision_fitted=%s",
-            upto, train_start, upto, regime.fitted, decision.fitted,
+            "Refit at bar %d utc %s session %s local %s train bars %d to %d train utc %s to %s regime fitted %s decision fitted %s",
+            upto, _fmt_ts(ts[upto]), session_date[upto], local_time[upto],
+            train_start, upto, _fmt_ts(ts[train_start]), _fmt_ts(ts[upto - 1]),
+            regime.fitted, decision.fitted,
         )
 
     # ── position state machine ──────────────────────────────────────────────
@@ -307,7 +321,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     result.equity_curve = equity_curve
     result.bars_simulated = max(0, last_simulated - start + 1)
     log.info(
-        "Simulation done trades %d final_equity %.2f ruined %s",
-        len(result.trades), result.final_equity, result.ruined,
+        "Simulation done at bar %d utc %s session %s local %s simulated bars %d trades %d final equity %.2f ruined %s",
+        last_simulated, _fmt_ts(ts[last_simulated]), session_date[last_simulated], local_time[last_simulated],
+        result.bars_simulated, len(result.trades), result.final_equity, result.ruined,
     )
     return result

@@ -1,8 +1,9 @@
 """Layer 1 — Market regime via Hidden Markov Model.
 
-A Gaussian HMM (diagonal covariance) is fit on [log_return, |log_return|]. Hidden
-states are ranked by their emission variance so the highest-variance state is flagged
-as the "turbulent" regime.
+A Gaussian HMM (diagonal covariance) is fit on standardized [log_return,
+|log_return|]. The scaler is fit from the past-only training window at each refit.
+Hidden states are ranked by their emission variance so the highest-variance state
+is flagged as the "turbulent" regime.
 
 For per-bar state assignment we use a **causal forward filter**: the filtered
 posterior P(state_t | observations up to t) is computed from the fitted parameters
@@ -28,7 +29,10 @@ class RegimeModel:
         self.n_states = n_states
         self.n_iter = n_iter if n_iter is not None else config.HMM_N_ITER
         self.covariance_type = covariance_type if covariance_type is not None else config.HMM_COVARIANCE_TYPE
+        self.min_covar = config.HMM_MIN_COVAR
         self._fitted = False
+        self._feature_mean = None
+        self._feature_scale = None
         self._startprob = None
         self._transmat = None
         self._means = None      # (k, d)
@@ -43,6 +47,7 @@ class RegimeModel:
         self._fitted = False
         if features.shape[0] < self.n_states * 10:
             return
+        features_scaled = self._standardize_for_fit(features)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -50,10 +55,11 @@ class RegimeModel:
                     n_components=self.n_states,
                     covariance_type=self.covariance_type,
                     n_iter=self.n_iter,
+                    min_covar=self.min_covar,
                     tol=1e-3,
                     random_state=42,
                 )
-                model.fit(features)
+                model.fit(features_scaled)
         except Exception as exc:  # noqa: BLE001 - HMM fits can fail to converge
             log.warning("HMM fit failed (%s); regime layer disabled this window", exc)
             return
@@ -62,7 +68,7 @@ class RegimeModel:
         k, d = means.shape
         # hmmlearn's covars_ shape depends on covariance_type; normalise to (k, d, d).
         cov = self._to_full_cov(np.asarray(model.covars_, dtype=np.float64), k, d)
-        cov = cov + np.eye(d)[None, :, :] * 1e-12                     # regularise
+        cov = cov + np.eye(d)[None, :, :] * self.min_covar            # regularise
 
         self._startprob = np.clip(np.asarray(model.startprob_, dtype=np.float64), 1e-12, None)
         self._transmat = np.clip(np.asarray(model.transmat_, dtype=np.float64), 1e-12, None)
@@ -73,6 +79,26 @@ class RegimeModel:
         # Rank states by log_ret emission variance -> highest is "turbulent".
         self._high_vol_state = int(np.argmax(cov[:, 0, 0]))
         self._fitted = True
+
+    def _standardize_for_fit(self, features: np.ndarray) -> np.ndarray:
+        """Fit a past-only scaler and return standardized HMM features."""
+        x = np.asarray(features, dtype=np.float64)
+        finite = np.where(np.isfinite(x), x, np.nan)
+        mean = np.nanmean(finite, axis=0)
+        mean = np.where(np.isfinite(mean), mean, 0.0)
+        scale = np.nanstd(finite, axis=0)
+        scale = np.where(np.isfinite(scale) & (scale > 1e-12), scale, 1.0)
+        self._feature_mean = mean
+        self._feature_scale = scale
+        return self._standardize(features)
+
+    def _standardize(self, features: np.ndarray) -> np.ndarray:
+        mean = self._feature_mean
+        scale = self._feature_scale
+        if mean is None or scale is None:
+            return np.nan_to_num(np.asarray(features, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+        x = (np.asarray(features, dtype=np.float64) - mean) / scale
+        return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     @staticmethod
     def _to_full_cov(cov: np.ndarray, k: int, d: int) -> np.ndarray:
@@ -110,7 +136,8 @@ class RegimeModel:
         if not self._fitted or n == 0:
             return np.zeros(n, dtype=np.int64), np.zeros(n, dtype=bool)
 
-        logB = self._emission_logprob(features)            # (n, k)
+        features_scaled = self._standardize(features)
+        logB = self._emission_logprob(features_scaled)     # (n, k)
         k = self.n_states
         states = np.empty(n, dtype=np.int64)
 

@@ -16,7 +16,7 @@ def main() -> None:
     started = time.time()
     cfg = config.active_run_config()
     log.info(
-        "Scalping backtest start symbol=%s bar_size=%s price=%s vol=%s decision=%s account=%s",
+        "Scalping backtest start for %s %s using %s price %s volatility %s decision account %s",
         cfg.symbol, cfg.bar_size, cfg.price_model, cfg.vol_model, cfg.decision_model, cfg.account_profile,
     )
 
@@ -43,7 +43,7 @@ def main() -> None:
         )
 
         log.info(
-            "Run %d complete: trades=%d final_equity=%.2f return=%.2f%% max_dd=%.2f%% win_rate=%.2f%%",
+            "Run %d complete with %d trades final equity %.2f return %.2f%% max drawdown %.2f%% win rate %.2f%%",
             run_id, summary["total_trades"], result.final_equity,
             summary["total_return_pct"], summary["max_drawdown_pct"], summary["win_rate_pct"],
         )

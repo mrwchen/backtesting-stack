@@ -80,10 +80,11 @@ services:
       # Hidden-Markov-Modell erkennt Marktphasen (ruhig vs. turbulent).
       # Kann als Filter dienen (turbulente Phase blocken) und ist Feature.
       # ═════════════════════════════════════════════════════════════════════════
-      - REGIME_STATES=3              # Anzahl versteckter Zustaende
+      - REGIME_STATES=2              # Anzahl versteckter Zustaende
       - REGIME_BLOCK_HIGH_VOL_STATE=true    # true = im turbulentesten Regime nicht traden
       - HMM_N_ITER=100               # max. EM-Iterationen beim Fit
       - HMM_COVARIANCE_TYPE=diag     # diag | full | tied | spherical
+      - HMM_MIN_COVAR=0.000001       # Mindest-Kovarianz fuer stabilere HMM-Fits
 
       # ═════════════════════════════════════════════════════════════════════════
       # LAYER 2 — PREISPROZESS (Kalman-Rauschen)

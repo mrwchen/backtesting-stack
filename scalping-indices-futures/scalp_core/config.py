@@ -93,6 +93,7 @@ REGIME_STATES = max(2, env_int("REGIME_STATES", 3))
 REGIME_BLOCK_HIGH_VOL_STATE = env_bool("REGIME_BLOCK_HIGH_VOL_STATE", False)
 HMM_N_ITER = max(10, env_int("HMM_N_ITER", 100))
 HMM_COVARIANCE_TYPE = _one_of("HMM_COVARIANCE_TYPE", "diag", {"diag", "full", "tied", "spherical"})
+HMM_MIN_COVAR = max(1e-12, env_float("HMM_MIN_COVAR", 1e-6))
 
 # ── layer 3: volatility model detail (GARCH/EGARCH order + error distribution) ──
 
