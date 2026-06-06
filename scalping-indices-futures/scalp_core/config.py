@@ -189,9 +189,9 @@ DECISION_GATE_MODE = _one_of(
     "global_bandpass",
     {"global_bandpass", "side_regime_bandpass"},
 )
-PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.57)
+PROB_THRESHOLD = env_float("PROB_THRESHOLD", 0.56)
 MAX_PROB_THRESHOLD = env_optional_float("MAX_PROB_THRESHOLD", 0.65)
-MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.32)
+MIN_EXPECTED_NET_R = env_float("MIN_EXPECTED_NET_R", 0.28)
 MAX_EXPECTED_NET_R = env_optional_float("MAX_EXPECTED_NET_R", 0.51)
 GLOBAL_DECISION_GATE = DecisionGate(
     enabled=True,
@@ -202,15 +202,15 @@ GLOBAL_DECISION_GATE = DecisionGate(
 )
 _validate_decision_gate("GLOBAL_DECISION_GATE", GLOBAL_DECISION_GATE)
 SIDE_REGIME_GATES = {
-    ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.57, 0.70, 0.32, 0.70),
-    ("LONG", 1): _decision_gate("LONG_REGIME1", True, 0.57, 0.65, 0.32, 0.51),
-    ("SHORT", 0): _decision_gate("SHORT_REGIME0", True, 0.57, 0.65, 0.32, 0.51),
-    ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.00, 0.70, 0.30, 0.65),
+    ("LONG", 0): _decision_gate("LONG_REGIME0", True, 0.56, 0.70, 0.28, 0.70),
+    ("LONG", 1): _decision_gate("LONG_REGIME1", True, 0.56, 0.66, 0.30, 0.55),
+    ("SHORT", 0): _decision_gate("SHORT_REGIME0", False, 0.62, 0.66, 0.42, 0.60),
+    ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.54, 0.70, 0.28, 0.65),
 }
 HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", True)
 HIGH_VOL_GATES = {
-    "LONG": _decision_gate("HIGH_VOL_LONG", True, 0.62, 0.70, 0.45, 0.80),
-    "SHORT": _decision_gate("HIGH_VOL_SHORT", True, 0.62, 0.70, 0.45, 0.80),
+    "LONG": _decision_gate("HIGH_VOL_LONG", True, 0.60, 0.70, 0.40, 0.80),
+    "SHORT": _decision_gate("HIGH_VOL_SHORT", True, 0.60, 0.70, 0.40, 0.80),
 }
 SIDE_REGIME_GATE_SPEC = "; ".join([
     *(

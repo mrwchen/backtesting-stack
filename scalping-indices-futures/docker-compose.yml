@@ -108,43 +108,43 @@ services:
       # LAYER 4 — ENTSCHEIDUNG (Klassifikator-Detail + Bandpass-Gates)
       # ═════════════════════════════════════════════════════════════════════════
       - DECISION_GATE_MODE=side_regime_bandpass # global_bandpass | side_regime_bandpass
-      - PROB_THRESHOLD=0.57          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
+      - PROB_THRESHOLD=0.56          # Globaler Mindestwert fuer Trade-Win-Wahrscheinlichkeit
       - MAX_PROB_THRESHOLD=0.65      # Globaler oberer Probability-Cutoff; leer/none = keine Obergrenze
-      - MIN_EXPECTED_NET_R=0.32      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
+      - MIN_EXPECTED_NET_R=0.28      # Globaler Mindest-Erwartungswert nach Kosten in R-Einheiten
       - MAX_EXPECTED_NET_R=0.51      # Globaler oberer Expected-R-Cutoff; leer/none = keine Obergrenze
       - LOGISTIC_C=1.0               # Regularisierung der Logit-Regression (klein = staerker)
       - CALIBRATE_PROBABILITIES=true # Kalibriert Trade-Win-Wahrscheinlichkeiten im Vergangenheitsfenster
       - MIN_TRAIN_ROWS=50            # Mindestanzahl Trainingszeilen, sonst kein Signal
       - HIGH_VOL_GATE_ENABLED=true   # true = High-Vol nicht hart blocken, sondern eigene strenge Gates nutzen
       - LONG_REGIME0_GATE_ENABLED=true
-      - LONG_REGIME0_MIN_PROB=0.57
+      - LONG_REGIME0_MIN_PROB=0.56
       - LONG_REGIME0_MAX_PROB=0.70
-      - LONG_REGIME0_MIN_EXPECTED_NET_R=0.32
+      - LONG_REGIME0_MIN_EXPECTED_NET_R=0.28
       - LONG_REGIME0_MAX_EXPECTED_NET_R=0.70
       - LONG_REGIME1_GATE_ENABLED=true
-      - LONG_REGIME1_MIN_PROB=0.57
-      - LONG_REGIME1_MAX_PROB=0.65
-      - LONG_REGIME1_MIN_EXPECTED_NET_R=0.32
-      - LONG_REGIME1_MAX_EXPECTED_NET_R=0.51
-      - SHORT_REGIME0_GATE_ENABLED=true
-      - SHORT_REGIME0_MIN_PROB=0.57
-      - SHORT_REGIME0_MAX_PROB=0.65
-      - SHORT_REGIME0_MIN_EXPECTED_NET_R=0.32
-      - SHORT_REGIME0_MAX_EXPECTED_NET_R=0.51
+      - LONG_REGIME1_MIN_PROB=0.56
+      - LONG_REGIME1_MAX_PROB=0.66
+      - LONG_REGIME1_MIN_EXPECTED_NET_R=0.30
+      - LONG_REGIME1_MAX_EXPECTED_NET_R=0.55
+      - SHORT_REGIME0_GATE_ENABLED=false
+      - SHORT_REGIME0_MIN_PROB=0.62
+      - SHORT_REGIME0_MAX_PROB=0.66
+      - SHORT_REGIME0_MIN_EXPECTED_NET_R=0.42
+      - SHORT_REGIME0_MAX_EXPECTED_NET_R=0.60
       - SHORT_REGIME1_GATE_ENABLED=true
-      - SHORT_REGIME1_MIN_PROB=0.00
+      - SHORT_REGIME1_MIN_PROB=0.54
       - SHORT_REGIME1_MAX_PROB=0.70
-      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.30
+      - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.28
       - SHORT_REGIME1_MAX_EXPECTED_NET_R=0.65
       - HIGH_VOL_LONG_GATE_ENABLED=true
-      - HIGH_VOL_LONG_MIN_PROB=0.62
+      - HIGH_VOL_LONG_MIN_PROB=0.60
       - HIGH_VOL_LONG_MAX_PROB=0.70
-      - HIGH_VOL_LONG_MIN_EXPECTED_NET_R=0.45
+      - HIGH_VOL_LONG_MIN_EXPECTED_NET_R=0.40
       - HIGH_VOL_LONG_MAX_EXPECTED_NET_R=0.80
       - HIGH_VOL_SHORT_GATE_ENABLED=true
-      - HIGH_VOL_SHORT_MIN_PROB=0.62
+      - HIGH_VOL_SHORT_MIN_PROB=0.60
       - HIGH_VOL_SHORT_MAX_PROB=0.70
-      - HIGH_VOL_SHORT_MIN_EXPECTED_NET_R=0.45
+      - HIGH_VOL_SHORT_MIN_EXPECTED_NET_R=0.40
       - HIGH_VOL_SHORT_MAX_EXPECTED_NET_R=0.80
 
       # ═════════════════════════════════════════════════════════════════════════

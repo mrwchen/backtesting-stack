@@ -1,9 +1,10 @@
 """Walk-forward simulation tying the five layers together.
 
-At every refit checkpoint all statistical layers are fit on past-only data. The
-decision layer is trained on historical trade-outcome labels whose exits are
-already known at the refit bar, then scores the current bar's long/short trade
-edge. A signal at the close of bar t is still filled at the open of bar t+1.
+At every refit checkpoint all statistical layers are fit on past-only data.
+Separate normal/high-vol decision layers are trained on historical trade-outcome
+labels whose exits are already known at the refit bar, then the layer matching
+the current volatility state scores the current bar's long/short trade edge. A
+signal at the close of bar t is still filled at the open of bar t+1.
 """
 
 import logging
@@ -92,7 +93,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     regime = RegimeModel(config.REGIME_STATES)
     price = make_price_filter(config.PRICE_MODEL)
     vol = make_vol_model(config.VOL_MODEL)
-    decision = make_decision_model(config.DECISION_MODEL)
+    decision_normal = make_decision_model(config.DECISION_MODEL)
+    decision_high_vol = make_decision_model(config.DECISION_MODEL)
 
     start = config.WARMUP_BARS
     result = SimulationResult(initial_equity=config.INITIAL_EQUITY, bars_total=n)
@@ -151,10 +153,16 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             dynamic_label_cache[key] = simulate_trade_outcome(idx, direction, plan, o, h, low, c, session_date, local_time, cutoff)
         return dynamic_label_cache[key]
 
-    def _training_data(upto: int, train_start: int):
+    def _training_data(upto: int, train_start: int, volatility_slice: str):
         base_mask = np.zeros(n, dtype=bool)
         base_mask[train_start:min(upto, n - 1)] = True
         base_mask &= entry_window
+        if volatility_slice == "normal":
+            base_mask &= ~high_vol
+        elif volatility_slice == "high_vol":
+            base_mask &= high_vol
+        elif volatility_slice != "all":
+            raise ValueError(f"Unknown volatility_slice {volatility_slice!r}")
         if config.REGIME_BLOCK_HIGH_VOL_STATE and not config.HIGH_VOL_GATE_ENABLED:
             base_mask &= ~high_vol
 
@@ -206,13 +214,19 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         sigma_ret = vol.conditional_vol(log_ret)
         X_full = _feature_matrix(slopes)
 
-        X_long, y_long, r_long, X_short, y_short, r_short = _training_data(upto, train_start)
-        decision.fit(X_long, y_long, r_long, X_short, y_short, r_short)
+        normal_slice = "normal" if (config.HIGH_VOL_GATE_ENABLED or config.REGIME_BLOCK_HIGH_VOL_STATE) else "all"
+        X_long, y_long, r_long, X_short, y_short, r_short = _training_data(upto, train_start, normal_slice)
+        decision_normal.fit(X_long, y_long, r_long, X_short, y_short, r_short)
+        hv_y_long = hv_y_short = np.asarray([], dtype=np.float64)
+        if config.HIGH_VOL_GATE_ENABLED:
+            hv_X_long, hv_y_long, hv_r_long, hv_X_short, hv_y_short, hv_r_short = _training_data(upto, train_start, "high_vol")
+            decision_high_vol.fit(hv_X_long, hv_y_long, hv_r_long, hv_X_short, hv_y_short, hv_r_short)
         log.info(
-            "Refit at bar %d utc %s session %s local %s train bars %d to %d train utc %s to %s long labels %d short labels %d decision fitted %s",
+            "Refit at bar %d utc %s session %s local %s train bars %d to %d train utc %s to %s normal slice %s long labels %d short labels %d normal fitted %s high-vol labels %d/%d high-vol fitted %s",
             upto, _fmt_ts(ts[upto]), session_date[upto], local_time[upto],
             train_start, upto, _fmt_ts(ts[train_start]), _fmt_ts(ts[upto - 1]),
-            len(y_long), len(y_short), decision.fitted,
+            normal_slice, len(y_long), len(y_short), decision_normal.fitted,
+            len(hv_y_long), len(hv_y_short), decision_high_vol.fitted,
         )
 
     position = None
@@ -477,7 +491,8 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             append_decision(t, "NO_TRADE", "INVALID_STOP_BASIS")
             continue
 
-        scores = decision.score(X_full[t:t + 1])
+        active_decision = decision_high_vol if (bool(high_vol[t]) and config.HIGH_VOL_GATE_ENABLED) else decision_normal
+        scores = active_decision.score(X_full[t:t + 1])
         direction, reason = choose_direction(scores, int(states[t]), bool(high_vol[t]))
         if direction is None:
             append_decision(t, "NO_TRADE", reason, scores=scores, plan=plan)

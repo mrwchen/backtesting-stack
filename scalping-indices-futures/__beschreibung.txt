@@ -36,6 +36,8 @@ Vergangenheitsfenster (WARMUP_BARS, optional rollierend TRAIN_WINDOW_BARS) neu
 gefittet. Jede Bar-Inferenz nutzt nur Daten bis zur jeweiligen Bar (kausale
 Forward-Filter fuer Regime/Preis/Volatilitaet). Ein Signal am Close von Bar t
 wird am Open von Bar t+1 ausgefuehrt.
+Bei aktivem HIGH_VOL_GATE_ENABLED werden normale und High-Vol-Entscheidungsmodelle
+getrennt auf jeweils passenden historischen Trade-Outcome-Labels trainiert.
 
 Ergebnis-Tabellen (public)
 --------------------------
