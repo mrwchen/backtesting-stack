@@ -58,14 +58,16 @@ def size_position(equity_eur: float, entry_price: float, stop_pct: float) -> Siz
 
 
 def round_trip_costs(units: float, entry_price: float, exit_price: float) -> float:
-    """Spread + slippage (bps of notional, both legs) + per-unit commission (both legs)."""
+    """Round-trip spread/slippage in index points plus optional per-unit commission."""
     mult = config.CONTRACT_MULTIPLIER
+    points = config.SPREAD_POINTS + config.SLIPPAGE_POINTS
+    point_cost = _usd_to_eur(units * points * mult)
     bps = (config.SPREAD_BPS + config.SLIPPAGE_BPS) / 10000.0
     entry_notional_eur = _usd_to_eur(units * entry_price * mult)
     exit_notional_eur = _usd_to_eur(units * exit_price * mult)
-    spread_slip = (entry_notional_eur + exit_notional_eur) * bps
+    bps_cost = (entry_notional_eur + exit_notional_eur) * bps
     commission = config.COMMISSION_PER_UNIT * units * 2.0
-    return spread_slip + commission
+    return point_cost + bps_cost + commission
 
 
 def gross_pnl(units: float, entry_price: float, exit_price: float, direction: str) -> float:

@@ -95,9 +95,13 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     eurusd_rate            NUMERIC(10,6),
 
     -- costs
+    spread_points          NUMERIC(10,4),
+    slippage_points        NUMERIC(10,4),
     spread_bps             NUMERIC(8,4),
     slippage_bps           NUMERIC(8,4),
     commission_per_unit    NUMERIC(12,6),
+    mc_extra_slippage_points NUMERIC(10,4),
+    mc_extra_slippage_bps  NUMERIC(8,4),
     mc_random_seed         BIGINT,
 
     -- result summary
@@ -115,6 +119,11 @@ CREATE TABLE IF NOT EXISTS backtest2_scalp_runs (
     avg_loss_pct           NUMERIC(12,4),
     ruined                 BOOLEAN
 );
+
+ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS spread_points NUMERIC(10,4);
+ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS slippage_points NUMERIC(10,4);
+ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_points NUMERIC(10,4);
+ALTER TABLE backtest2_scalp_runs ADD COLUMN IF NOT EXISTS mc_extra_slippage_bps NUMERIC(8,4);
 
 -- ── Individual trades ───────────────────────────────────────────────────────────
 

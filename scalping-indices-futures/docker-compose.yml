@@ -8,7 +8,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_SCALP_TABLES_ON_START: "false"
+      DROP_ALL_SCALP_TABLES_ON_START: "true"
     command:
       - sh
       - -c
@@ -167,8 +167,10 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       # KOSTEN
       # ═════════════════════════════════════════════════════════════════════════
-      - SPREAD_BPS=1.0               # Spread in Basispunkten des Nominalwerts
-      - SLIPPAGE_BPS=0.5             # Slippage in Basispunkten
+      - SPREAD_POINTS=1.2            # Pepperstone NAS100 Standard: ca. 1.2 Punkte avg Spread
+      - SLIPPAGE_POINTS=0.3          # konservative Zusatzslippage pro Roundtrip in Punkten
+      - SPREAD_BPS=0.0               # Legacy: bps-Kosten sind fuer NAS100 deaktiviert
+      - SLIPPAGE_BPS=0.0             # Legacy: bps-Kosten sind fuer NAS100 deaktiviert
       - COMMISSION_PER_UNIT=0.0      # Kommission je Einheit (beide Legs)
 
       # ═════════════════════════════════════════════════════════════════════════
@@ -178,7 +180,8 @@ services:
       # ═════════════════════════════════════════════════════════════════════════
       - MONTE_CARLO_ENABLED=true
       - MONTE_CARLO_SIMULATIONS=2000 # Anzahl Simulationen
-      - MC_EXTRA_SLIPPAGE_BPS=1.0    # Zusatz-Slippage im Stress-Szenario
+      - MC_EXTRA_SLIPPAGE_POINTS=0.5 # Zusatz-Slippage im Stress-Szenario (Roundtrip-Punkte)
+      - MC_EXTRA_SLIPPAGE_BPS=0.0    # Legacy: bps-Stress deaktiviert
       - MC_BLOCK_SIZE=5              # Blocklaenge fuer Sequenz-Bootstrap
       - MC_RUIN_DRAWDOWN_PCT=50.0    # Verlustschwelle, ab der ein Pfad als "Ruin" zaehlt
       - MC_RANDOM_SEED=12345         # fester Seed = reproduzierbar

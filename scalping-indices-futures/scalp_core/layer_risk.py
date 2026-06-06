@@ -4,7 +4,7 @@ Built on the equity-fraction resampling pattern (pnl / equity_before preserves t
 fixed-fractional compounding of the strategy). Three views are produced:
 
   base      trade order permuted (classic reshuffle) -> drawdown / ruin distribution
-  slippage  same, after deducting MC_EXTRA_SLIPPAGE_BPS per trade -> slippage stress
+  slippage  same, after deducting MC_EXTRA_SLIPPAGE_POINTS per trade -> slippage stress
   sequence  block bootstrap (MC_BLOCK_SIZE) -> preserves win/loss streak structure
 """
 
@@ -118,9 +118,14 @@ def run_monte_carlo(trades: list[ClosedTrade], initial_equity: float) -> dict | 
     pnl = np.array([t.pnl for t in trades], dtype=np.float64)
     base_frac = pnl / eq_before
 
-    # Slippage stress: deduct extra round-trip slippage as bps of notional.
-    notional = np.array([t.notional for t in trades], dtype=np.float64)
-    extra_cost = notional * (config.MC_EXTRA_SLIPPAGE_BPS / 10000.0) * 2.0
+    # Slippage stress: deduct extra round-trip slippage in index points.
+    units = np.array([t.units for t in trades], dtype=np.float64)
+    extra_cost = units * config.MC_EXTRA_SLIPPAGE_POINTS * config.CONTRACT_MULTIPLIER
+    if config.EURUSD_RATE > 0:
+        extra_cost = extra_cost / config.EURUSD_RATE
+    if config.MC_EXTRA_SLIPPAGE_BPS:
+        notional = np.array([t.notional for t in trades], dtype=np.float64)
+        extra_cost = extra_cost + notional * (config.MC_EXTRA_SLIPPAGE_BPS / 10000.0) * 2.0
     slip_frac = (pnl - extra_cost) / eq_before
 
     rng = np.random.default_rng(config.MC_RANDOM_SEED)

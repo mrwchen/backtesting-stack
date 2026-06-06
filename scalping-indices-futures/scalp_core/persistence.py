@@ -132,9 +132,13 @@ def create_run(conn, cfg: RunConfig, data_start_ts, data_end_ts, bars_total: int
         "max_margin_pct": cfg.max_margin_pct,
         "contract_multiplier": cfg.contract_multiplier,
         "eurusd_rate": cfg.eurusd_rate,
+        "spread_points": cfg.spread_points,
+        "slippage_points": cfg.slippage_points,
         "spread_bps": cfg.spread_bps,
         "slippage_bps": cfg.slippage_bps,
         "commission_per_unit": cfg.commission_per_unit,
+        "mc_extra_slippage_points": cfg.mc_extra_slippage_points,
+        "mc_extra_slippage_bps": cfg.mc_extra_slippage_bps,
         "mc_random_seed": cfg.mc_random_seed,
     }
     cols = list(columns.keys())

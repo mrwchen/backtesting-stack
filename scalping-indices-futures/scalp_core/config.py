@@ -161,15 +161,18 @@ EURUSD_RATE = env_float("EURUSD_RATE", 1.0)  # USD price -> EUR equity; 1.0 = no
 
 # ── costs ───────────────────────────────────────────────────────────────────────
 
-SPREAD_BPS = env_float("SPREAD_BPS", 1.0)
-SLIPPAGE_BPS = env_float("SLIPPAGE_BPS", 0.5)
+SPREAD_POINTS = env_float("SPREAD_POINTS", 1.2)
+SLIPPAGE_POINTS = env_float("SLIPPAGE_POINTS", 0.3)
+SPREAD_BPS = env_float("SPREAD_BPS", 0.0)
+SLIPPAGE_BPS = env_float("SLIPPAGE_BPS", 0.0)
 COMMISSION_PER_UNIT = env_float("COMMISSION_PER_UNIT", 0.0)
 
 # ── layer 5: Monte-Carlo risk ───────────────────────────────────────────────────
 
 MONTE_CARLO_ENABLED = env_bool("MONTE_CARLO_ENABLED", True)
 MONTE_CARLO_SIMULATIONS = max(0, env_int("MONTE_CARLO_SIMULATIONS", 2000))
-MC_EXTRA_SLIPPAGE_BPS = env_float("MC_EXTRA_SLIPPAGE_BPS", 1.0)
+MC_EXTRA_SLIPPAGE_POINTS = env_float("MC_EXTRA_SLIPPAGE_POINTS", 0.5)
+MC_EXTRA_SLIPPAGE_BPS = env_float("MC_EXTRA_SLIPPAGE_BPS", 0.0)
 MC_BLOCK_SIZE = max(1, env_int("MC_BLOCK_SIZE", 5))
 MC_RUIN_DRAWDOWN_PCT = env_float("MC_RUIN_DRAWDOWN_PCT", 50.0)
 MC_RANDOM_SEED = env_int("MC_RANDOM_SEED", 12345)  # fixed seed = reproducible MC
@@ -253,9 +256,13 @@ class RunConfig:
     max_margin_pct: float
     contract_multiplier: float
     eurusd_rate: float
+    spread_points: float
+    slippage_points: float
     spread_bps: float
     slippage_bps: float
     commission_per_unit: float
+    mc_extra_slippage_points: float
+    mc_extra_slippage_bps: float
     mc_random_seed: int
 
 
@@ -307,8 +314,12 @@ def active_run_config() -> RunConfig:
         max_margin_pct=MAX_MARGIN_PCT,
         contract_multiplier=CONTRACT_MULTIPLIER,
         eurusd_rate=EURUSD_RATE,
+        spread_points=SPREAD_POINTS,
+        slippage_points=SLIPPAGE_POINTS,
         spread_bps=SPREAD_BPS,
         slippage_bps=SLIPPAGE_BPS,
         commission_per_unit=COMMISSION_PER_UNIT,
+        mc_extra_slippage_points=MC_EXTRA_SLIPPAGE_POINTS,
+        mc_extra_slippage_bps=MC_EXTRA_SLIPPAGE_BPS,
         mc_random_seed=MC_RANDOM_SEED,
     )

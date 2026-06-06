@@ -60,8 +60,8 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
   Session               SESSION_FLAT_TIME, SESSION_TZ
   Account PS_ACC        INITIAL_EQUITY, MARGIN_REQUIREMENT_PCT, RISK_PER_TRADE_PCT,
                         MAX_MARGIN_PCT, CONTRACT_MULTIPLIER, EURUSD_RATE
-  Kosten                SPREAD_BPS, SLIPPAGE_BPS, COMMISSION_PER_UNIT
-  Layer 5 Monte-Carlo   MONTE_CARLO_*, MC_EXTRA_SLIPPAGE_BPS, MC_BLOCK_SIZE,
+  Kosten                SPREAD_POINTS, SLIPPAGE_POINTS, COMMISSION_PER_UNIT
+  Layer 5 Monte-Carlo   MONTE_CARLO_*, MC_EXTRA_SLIPPAGE_POINTS, MC_BLOCK_SIZE,
                         MC_RUIN_DRAWDOWN_PCT, MC_RANDOM_SEED
 Alle Parameter werden im Run-Snapshot (backtest2_scalp_runs) mitgespeichert.
 
