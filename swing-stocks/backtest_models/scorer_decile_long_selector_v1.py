@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Optional
 
 from backtest_shared import Bar, FundamentalRow, IntentEvaluation, TradeIntent
-from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, env_list, env_str, mean
+from backtest_shared import clamp, compute_rsi, env_bool, env_float, env_int, env_list, env_optional_float, env_str, mean
 
 
 MODEL_NAME = "scorer_decile_long_selector_v1"
@@ -47,11 +47,13 @@ class IntentConfig:
     blocked_world_regime_labels: tuple[str, ...] = ()
     require_world_regime_label: bool = False
     blocked_daily_policy_phases: tuple[str, ...] = ()
+    blocked_regime_phase_pairs: tuple[str, ...] = ()
 
     min_market_cap_m: float = 10000.0
     min_long_composite_score: float = 50.0
     min_long_momentum_score: float = 72.0
     min_long_price_momentum_score: float = 78.0
+    max_long_price_momentum_score: Optional[float] = None
     min_long_leadership_score: float = 55.0
     min_long_selector_alpha: float = 0.72
     min_long_intent_score: float = 6.8
@@ -68,6 +70,7 @@ class IntentConfig:
     min_mid_return_pct: float = -4.0
     min_short_return_pct: float = -6.0
     max_long_return_pct: float = 140.0
+    max_mid_return_pct: Optional[float] = None
     max_drawdown_pct: float = 22.0
     max_below_slow_ma_pct: float = 5.0
     long_min_rsi: float = 35.0
@@ -127,10 +130,15 @@ def intent_config_from_env() -> IntentConfig:
         blocked_world_regime_labels=_parse_label_set("BLOCKED_WORLD_REGIME_LABELS", d.blocked_world_regime_labels),
         require_world_regime_label=env_bool("REQUIRE_WORLD_REGIME_LABEL", d.require_world_regime_label),
         blocked_daily_policy_phases=_parse_label_set("BLOCKED_DAILY_POLICY_PHASES", d.blocked_daily_policy_phases),
+        blocked_regime_phase_pairs=_parse_label_set("BLOCKED_REGIME_PHASE_PAIRS", d.blocked_regime_phase_pairs),
         min_market_cap_m=env_float("MIN_MARKET_CAP_USD_M", d.min_market_cap_m),
         min_long_composite_score=env_float("MIN_LONG_COMPOSITE_SCORE", d.min_long_composite_score),
         min_long_momentum_score=env_float("MIN_LONG_MOMENTUM_SCORE", d.min_long_momentum_score),
         min_long_price_momentum_score=env_float("MIN_LONG_PRICE_MOMENTUM_SCORE", d.min_long_price_momentum_score),
+        max_long_price_momentum_score=env_optional_float(
+            "MAX_LONG_PRICE_MOMENTUM_SCORE",
+            d.max_long_price_momentum_score,
+        ),
         min_long_leadership_score=env_float("MIN_LONG_LEADERSHIP_SCORE", d.min_long_leadership_score),
         min_long_selector_alpha=env_float("MIN_LONG_SELECTOR_ALPHA", d.min_long_selector_alpha),
         min_long_intent_score=env_float("MIN_LONG_INTENT_SCORE", d.min_long_intent_score),
@@ -145,6 +153,7 @@ def intent_config_from_env() -> IntentConfig:
         min_mid_return_pct=env_float("MIN_MID_RETURN_PCT", d.min_mid_return_pct),
         min_short_return_pct=env_float("MIN_SHORT_RETURN_PCT", d.min_short_return_pct),
         max_long_return_pct=env_float("MAX_LONG_RETURN_PCT", d.max_long_return_pct),
+        max_mid_return_pct=env_optional_float("MAX_MID_RETURN_PCT", d.max_mid_return_pct),
         max_drawdown_pct=env_float("MAX_DRAWDOWN_PCT", d.max_drawdown_pct),
         max_below_slow_ma_pct=env_float("MAX_BELOW_SLOW_MA_PCT", d.max_below_slow_ma_pct),
         long_min_rsi=env_float("LONG_MIN_RSI", d.long_min_rsi),
@@ -239,6 +248,10 @@ def _regime_is_tradeable(cfg: IntentConfig) -> tuple[bool, str, str]:
         return False, "world_regime_not_allowed", f"World regime label {label} is not allowed."
     if phase and phase in set(cfg.blocked_daily_policy_phases):
         return False, "daily_policy_phase_blocked", f"Daily policy phase {phase} is blocked."
+    if label and phase:
+        pair = f"{label}:{phase}"
+        if pair in set(cfg.blocked_regime_phase_pairs):
+            return False, "regime_phase_pair_blocked", f"Regime/phase pair {pair} is blocked."
     return True, "", ""
 
 
@@ -401,6 +414,13 @@ def evaluate_long_intent(
         return IntentEvaluation(None, "rejected", "momentum_below_selector_min", f"Momentum {momentum:.1f} below selector minimum.")
     if price_momentum < cfg.min_long_price_momentum_score:
         return IntentEvaluation(None, "rejected", "price_momentum_below_selector_min", f"Price momentum {price_momentum:.1f} below selector minimum.")
+    if cfg.max_long_price_momentum_score is not None and price_momentum > cfg.max_long_price_momentum_score:
+        return IntentEvaluation(
+            None,
+            "rejected",
+            "price_momentum_above_selector_max",
+            f"Price momentum {price_momentum:.1f} above selector maximum.",
+        )
     if leadership < cfg.min_long_leadership_score:
         return IntentEvaluation(None, "rejected", "leadership_below_floor", f"Leadership {leadership:.1f} below floor.")
     if selector_alpha < cfg.min_long_selector_alpha:
@@ -416,6 +436,8 @@ def evaluate_long_intent(
         return IntentEvaluation(None, "rejected", "short_return_below_min", f"Short return {m['short_return']:.2f}% below minimum.")
     if m["long_return"] > cfg.max_long_return_pct:
         return IntentEvaluation(None, "rejected", "long_return_too_extended", f"Long return {m['long_return']:.2f}% above maximum.")
+    if cfg.max_mid_return_pct is not None and m["mid_return"] > cfg.max_mid_return_pct:
+        return IntentEvaluation(None, "rejected", "mid_return_too_extended", f"Mid return {m['mid_return']:.2f}% above maximum.")
     if m["drawdown"] > cfg.max_drawdown_pct:
         return IntentEvaluation(None, "rejected", "drawdown_above_max", f"Drawdown {m['drawdown']:.2f}% above maximum.")
     if m["slow_ma"] > 0.0 and close < m["slow_ma"] * (1.0 - cfg.max_below_slow_ma_pct / 100.0):
