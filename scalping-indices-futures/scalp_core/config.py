@@ -81,6 +81,12 @@ class DecisionGate:
     max_expected_net_r: Optional[float]
 
 
+@dataclass(frozen=True)
+class CandidateScoreGate:
+    min_score: float
+    max_score: Optional[float]
+
+
 def _decision_gate(
     prefix: str,
     enabled_default: bool,
@@ -127,6 +133,27 @@ def _high_vol_gate_spec(side: str, gate: DecisionGate) -> str:
     min_er = "*" if gate.min_expected_net_r is None else f"{gate.min_expected_net_r:g}"
     max_er = "*" if gate.max_expected_net_r is None else f"{gate.max_expected_net_r:g}"
     return f"HIGH_VOL:{side}:p>={gate.min_prob:g},p<{max_prob},er>={min_er},er<{max_er}"
+
+
+def _candidate_score_gate(
+    setup_id: str,
+    min_score_default: float,
+    max_score_default: Optional[float],
+) -> CandidateScoreGate:
+    gate = CandidateScoreGate(
+        min_score=env_float(f"{setup_id}_MIN_SCORE", min_score_default),
+        max_score=env_optional_float(f"{setup_id}_MAX_SCORE", max_score_default),
+    )
+    if gate.min_score < 0.0:
+        raise ValueError(f"{setup_id}_MIN_SCORE must be >= 0")
+    if gate.max_score is not None and gate.max_score <= gate.min_score:
+        raise ValueError(f"{setup_id}_MAX_SCORE must be greater than {setup_id}_MIN_SCORE")
+    return gate
+
+
+def _candidate_setup_spec(setup_id: str, enabled: bool, gate: CandidateScoreGate) -> str:
+    max_score = "*" if gate.max_score is None else f"{gate.max_score:g}"
+    return f"{setup_id}:{'on' if enabled else 'off'},score>={gate.min_score:g},score<{max_score}"
 
 
 # ── data source ────────────────────────────────────────────────────────────────
@@ -207,15 +234,15 @@ SIDE_REGIME_GATES = {
     ("SHORT", 0): _decision_gate("SHORT_REGIME0", True, 0.52, None, 0.04, None),
     ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.52, None, 0.04, None),
 }
-HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", True)
+HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", False)
 HIGH_VOL_GATES = {
     "LONG": _decision_gate("HIGH_VOL_LONG", False, 0.62, None, 0.45, None),
-    "SHORT": _decision_gate("HIGH_VOL_SHORT", True, 0.58, None, 0.16, None),
+    "SHORT": _decision_gate("HIGH_VOL_SHORT", False, 0.58, None, 0.16, None),
 }
 
 # ── layer 4a: technical setup candidates ───────────────────────────────────────
 
-CANDIDATE_ALLOW_HIGH_VOL = env_bool("CANDIDATE_ALLOW_HIGH_VOL", True)
+CANDIDATE_ALLOW_HIGH_VOL = env_bool("CANDIDATE_ALLOW_HIGH_VOL", False)
 MIN_CANDIDATE_SCORE = env_float("MIN_CANDIDATE_SCORE", 0.12)
 if MIN_CANDIDATE_SCORE < 0.0:
     raise ValueError("MIN_CANDIDATE_SCORE must be >= 0")
@@ -223,10 +250,10 @@ MAX_CANDIDATES_PER_BAR = max(1, env_int("MAX_CANDIDATES_PER_BAR", 5))
 CANDIDATE_SETUP_ENABLED = {
     "LONG_REGIME0_PULLBACK_RECLAIM": env_bool("LONG_REGIME0_PULLBACK_RECLAIM_ENABLED", False),
     "LONG_REGIME0_TREND_CONTINUATION": env_bool("LONG_REGIME0_TREND_CONTINUATION_ENABLED", False),
-    "SHORT_REGIME0_PULLBACK_FADE": env_bool("SHORT_REGIME0_PULLBACK_FADE_ENABLED", True),
+    "SHORT_REGIME0_PULLBACK_FADE": env_bool("SHORT_REGIME0_PULLBACK_FADE_ENABLED", False),
     "SHORT_REGIME0_LEVEL_REJECT": env_bool("SHORT_REGIME0_LEVEL_REJECT_ENABLED", True),
     "SHORT_REGIME0_OPENING_RANGE_REJECT": env_bool("SHORT_REGIME0_OPENING_RANGE_REJECT_ENABLED", True),
-    "SHORT_REGIME0_MOMENTUM_ROLLOVER": env_bool("SHORT_REGIME0_MOMENTUM_ROLLOVER_ENABLED", True),
+    "SHORT_REGIME0_MOMENTUM_ROLLOVER": env_bool("SHORT_REGIME0_MOMENTUM_ROLLOVER_ENABLED", False),
     "SHORT_REGIME1_BOUNCE_REJECT": env_bool("SHORT_REGIME1_BOUNCE_REJECT_ENABLED", True),
     "SHORT_REGIME1_WEAK_BOUNCE_REJECT": env_bool("SHORT_REGIME1_WEAK_BOUNCE_REJECT_ENABLED", True),
     "SHORT_REGIME1_STRONG_BOUNCE_REJECT": env_bool("SHORT_REGIME1_STRONG_BOUNCE_REJECT_ENABLED", False),
@@ -235,12 +262,53 @@ CANDIDATE_SETUP_ENABLED = {
     "SHORT_REGIME1_LEVEL_REJECT": env_bool("SHORT_REGIME1_LEVEL_REJECT_ENABLED", True),
     "SHORT_REGIME1_CONTINUATION": env_bool("SHORT_REGIME1_CONTINUATION_ENABLED", False),
 }
+CANDIDATE_SETUP_SCORE_GATES = {
+    "LONG_REGIME0_PULLBACK_RECLAIM": _candidate_score_gate(
+        "LONG_REGIME0_PULLBACK_RECLAIM", MIN_CANDIDATE_SCORE, None,
+    ),
+    "LONG_REGIME0_TREND_CONTINUATION": _candidate_score_gate(
+        "LONG_REGIME0_TREND_CONTINUATION", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME0_PULLBACK_FADE": _candidate_score_gate(
+        "SHORT_REGIME0_PULLBACK_FADE", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME0_LEVEL_REJECT": _candidate_score_gate(
+        "SHORT_REGIME0_LEVEL_REJECT", 0.35, 0.65,
+    ),
+    "SHORT_REGIME0_OPENING_RANGE_REJECT": _candidate_score_gate(
+        "SHORT_REGIME0_OPENING_RANGE_REJECT", 0.45, None,
+    ),
+    "SHORT_REGIME0_MOMENTUM_ROLLOVER": _candidate_score_gate(
+        "SHORT_REGIME0_MOMENTUM_ROLLOVER", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME1_BOUNCE_REJECT": _candidate_score_gate(
+        "SHORT_REGIME1_BOUNCE_REJECT", 0.45, None,
+    ),
+    "SHORT_REGIME1_WEAK_BOUNCE_REJECT": _candidate_score_gate(
+        "SHORT_REGIME1_WEAK_BOUNCE_REJECT", MIN_CANDIDATE_SCORE, 0.55,
+    ),
+    "SHORT_REGIME1_STRONG_BOUNCE_REJECT": _candidate_score_gate(
+        "SHORT_REGIME1_STRONG_BOUNCE_REJECT", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME1_FAILED_RECLAIM": _candidate_score_gate(
+        "SHORT_REGIME1_FAILED_RECLAIM", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME1_OPENING_RANGE_REJECT": _candidate_score_gate(
+        "SHORT_REGIME1_OPENING_RANGE_REJECT", MIN_CANDIDATE_SCORE, None,
+    ),
+    "SHORT_REGIME1_LEVEL_REJECT": _candidate_score_gate(
+        "SHORT_REGIME1_LEVEL_REJECT", 0.65, None,
+    ),
+    "SHORT_REGIME1_CONTINUATION": _candidate_score_gate(
+        "SHORT_REGIME1_CONTINUATION", MIN_CANDIDATE_SCORE, None,
+    ),
+}
 CANDIDATE_SETUP_SPEC = "; ".join([
     f"allow_high_vol={str(CANDIDATE_ALLOW_HIGH_VOL).lower()}",
     f"min_score={MIN_CANDIDATE_SCORE:g}",
     f"max_per_bar={MAX_CANDIDATES_PER_BAR}",
     *(
-        f"{setup_id}:{'on' if enabled else 'off'}"
+        _candidate_setup_spec(setup_id, enabled, CANDIDATE_SETUP_SCORE_GATES[setup_id])
         for setup_id, enabled in CANDIDATE_SETUP_ENABLED.items()
     ),
 ])

@@ -83,6 +83,17 @@ def _enabled(setup_id: str) -> bool:
     return config.CANDIDATE_SETUP_ENABLED.get(setup_id, True)
 
 
+def _score_allowed(candidate: SetupCandidate) -> bool:
+    gate = config.CANDIDATE_SETUP_SCORE_GATES.get(candidate.setup_id)
+    if gate is None:
+        return candidate.score >= config.MIN_CANDIDATE_SCORE
+    if candidate.score < gate.min_score:
+        return False
+    if gate.max_score is not None and candidate.score >= gate.max_score:
+        return False
+    return True
+
+
 def setup_feature_vector(setup_id: str) -> np.ndarray:
     vector = np.zeros(len(SETUP_IDS), dtype=np.float64)
     setup_idx = _SETUP_INDEX.get(setup_id)
@@ -558,6 +569,6 @@ def build_setup_candidates(
                 time_quality,
             ))
 
-    candidates = [c for c in candidates if c.score >= config.MIN_CANDIDATE_SCORE]
+    candidates = [c for c in candidates if _score_allowed(c)]
     candidates.sort(key=lambda c: (c.score, c.direction == "SHORT"), reverse=True)
     return candidates[: config.MAX_CANDIDATES_PER_BAR]

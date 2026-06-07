@@ -40,12 +40,16 @@ Technische Setups werden zuerst aus bekannten Bar-Close-Daten erzeugt
 (z.B. Short-Regime0-Fade, Short-Level-Reject, Short-Bounce-Reject oder
 Opening-Range-Reject). Das Entscheidungsmodell trainiert und scored nur noch
 diese Kandidaten, inklusive Setup-One-Hot-Feature und Setup-Qualitaetsfeatures
-wie Rejection-Staerke, Close-Weakness, Trendqualitaet und Zeitqualitaet.
+wie Rejection-Staerke, Close-Weakness, Trendqualitaet und Zeitqualitaet. Pro
+Setup kann zusaetzlich ein kausales setup_score-Min/Max-Gate gesetzt werden,
+damit zu schwache oder ueberdehnte Kandidaten gar nicht erst ans Modell gehen.
 Labels werden weiterhin nur verwendet, wenn der komplette Exit vor dem Refit-Bar
 bekannt war. Nach der letzten Diagnose sind Long-Setups und Short-Continuation
 standardmaessig aus. State 0 hat eigene Short-Rejection-/Fade-Setups bekommen,
-damit normale Markttage nicht leer bleiben. High-Vol wird mit eigenem Short-Gate
-und separatem High-Vol-Modell getestet, statt komplett blockiert zu werden.
+damit normale Markttage nicht leer bleiben; die im letzten Run klar negativen
+State-0-Fade-/Momentum-Setups sind standardmaessig wieder deaktiviert. High-Vol
+ist nach der Diagnose wieder hart blockiert, bis dort ein eigener positiver
+Setup-Pfad nachweisbar ist.
 
 Ergebnis-Tabellen (public)
 --------------------------
@@ -64,6 +68,7 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
   Layer 3 Vola          GARCH_P, GARCH_Q, GARCH_DIST
   Layer 4 Entscheidung  CANDIDATE_ALLOW_HIGH_VOL, MIN_CANDIDATE_SCORE,
                         MAX_CANDIDATES_PER_BAR, *_SETUP_ENABLED,
+                        *_MIN_SCORE, *_MAX_SCORE,
                         DECISION_GATE_MODE, PROB_THRESHOLD, MAX_PROB_THRESHOLD,
                         MIN_EXPECTED_NET_R, MAX_EXPECTED_NET_R, LOGISTIC_C,
                         CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS,
