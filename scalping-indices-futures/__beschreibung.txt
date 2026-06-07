@@ -44,6 +44,9 @@ wie Rejection-Staerke, Close-Weakness, Trendqualitaet und Zeitqualitaet. Pro
 Setup kann zusaetzlich ein kausales setup_score-Min/Max-Gate und ein
 Entry-Minuten-Zeitfenster gesetzt werden, damit zu schwache, ueberdehnte oder
 zur falschen Tageszeit auftretende Kandidaten gar nicht erst ans Modell gehen.
+Ein optionales Setup-Health-Gate bewertet nur bereits geschlossene Trades pro
+Setup; wenn die juengste Phase nach Winrate oder Netto-PnL kippt, pausiert das
+Setup fuer eine konfigurierbare Cooldown-Zeit und testet danach wieder an.
 Labels werden weiterhin nur verwendet, wenn der komplette Exit vor dem Refit-Bar
 bekannt war. Nach der letzten Diagnose sind Long-Setups und Short-Continuation
 standardmaessig aus. State 0 hat eigene Short-Rejection-/Fade-Setups bekommen,
@@ -70,6 +73,7 @@ Parametergruppen (alle im docker-compose.yml, dort deutsch kommentiert)
   Layer 4 Entscheidung  CANDIDATE_ALLOW_HIGH_VOL, MIN_CANDIDATE_SCORE,
                         MAX_CANDIDATES_PER_BAR, *_SETUP_ENABLED,
                         *_MIN_SCORE, *_MAX_SCORE, *_ENTRY_MINUTE_RANGES,
+                        SETUP_HEALTH_*,
                         DECISION_GATE_MODE, PROB_THRESHOLD, MAX_PROB_THRESHOLD,
                         MIN_EXPECTED_NET_R, MAX_EXPECTED_NET_R, LOGISTIC_C,
                         CALIBRATE_PROBABILITIES, MIN_TRAIN_ROWS,

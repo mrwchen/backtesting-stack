@@ -283,6 +283,16 @@ MIN_CANDIDATE_SCORE = env_float("MIN_CANDIDATE_SCORE", 0.12)
 if MIN_CANDIDATE_SCORE < 0.0:
     raise ValueError("MIN_CANDIDATE_SCORE must be >= 0")
 MAX_CANDIDATES_PER_BAR = max(1, env_int("MAX_CANDIDATES_PER_BAR", 5))
+SETUP_HEALTH_GATE_ENABLED = env_bool("SETUP_HEALTH_GATE_ENABLED", True)
+SETUP_HEALTH_LOOKBACK_TRADES = max(1, env_int("SETUP_HEALTH_LOOKBACK_TRADES", 24))
+SETUP_HEALTH_MIN_TRADES = max(1, env_int("SETUP_HEALTH_MIN_TRADES", 12))
+if SETUP_HEALTH_MIN_TRADES > SETUP_HEALTH_LOOKBACK_TRADES:
+    raise ValueError("SETUP_HEALTH_MIN_TRADES must be <= SETUP_HEALTH_LOOKBACK_TRADES")
+SETUP_HEALTH_MIN_WIN_RATE = env_float("SETUP_HEALTH_MIN_WIN_RATE", 0.52)
+if not 0.0 <= SETUP_HEALTH_MIN_WIN_RATE <= 1.0:
+    raise ValueError("SETUP_HEALTH_MIN_WIN_RATE must be between 0 and 1")
+SETUP_HEALTH_MIN_TOTAL_PNL = env_float("SETUP_HEALTH_MIN_TOTAL_PNL", 0.0)
+SETUP_HEALTH_COOLDOWN_BARS = max(1, env_int("SETUP_HEALTH_COOLDOWN_BARS", 1500))
 CANDIDATE_SETUP_ENABLED = {
     "LONG_REGIME0_PULLBACK_RECLAIM": env_bool("LONG_REGIME0_PULLBACK_RECLAIM_ENABLED", False),
     "LONG_REGIME0_TREND_CONTINUATION": env_bool("LONG_REGIME0_TREND_CONTINUATION_ENABLED", False),
@@ -343,6 +353,12 @@ CANDIDATE_SETUP_SPEC = "; ".join([
     f"allow_high_vol={str(CANDIDATE_ALLOW_HIGH_VOL).lower()}",
     f"min_score={MIN_CANDIDATE_SCORE:g}",
     f"max_per_bar={MAX_CANDIDATES_PER_BAR}",
+    f"health_gate={str(SETUP_HEALTH_GATE_ENABLED).lower()}",
+    f"health_lookback_trades={SETUP_HEALTH_LOOKBACK_TRADES}",
+    f"health_min_trades={SETUP_HEALTH_MIN_TRADES}",
+    f"health_min_win_rate={SETUP_HEALTH_MIN_WIN_RATE:g}",
+    f"health_min_total_pnl={SETUP_HEALTH_MIN_TOTAL_PNL:g}",
+    f"health_cooldown_bars={SETUP_HEALTH_COOLDOWN_BARS}",
     *(
         _candidate_setup_spec(setup_id, enabled, CANDIDATE_SETUP_SCORE_GATES[setup_id])
         for setup_id, enabled in CANDIDATE_SETUP_ENABLED.items()

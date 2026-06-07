@@ -10,6 +10,7 @@ bar t+1.
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import time
 
@@ -327,6 +328,37 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     position = None
     pending = None
     last_exit_t = -10**9
+    setup_health = {
+        setup_id: deque(maxlen=config.SETUP_HEALTH_LOOKBACK_TRADES)
+        for setup_id in SETUP_IDS
+    }
+    setup_block_until: dict[str, int] = {}
+
+    def setup_health_reason(setup_id: str, idx: int) -> str | None:
+        if not config.SETUP_HEALTH_GATE_ENABLED:
+            return None
+        block_until = setup_block_until.get(setup_id)
+        if block_until is not None and idx < block_until:
+            return "SETUP_HEALTH_COOLDOWN"
+        return None
+
+    def record_setup_health(setup_id: str, pnl: float, exit_idx: int) -> None:
+        if not config.SETUP_HEALTH_GATE_ENABLED:
+            return
+        history = setup_health.get(setup_id)
+        if history is None:
+            return
+        history.append(float(pnl))
+        if len(history) < config.SETUP_HEALTH_MIN_TRADES:
+            return
+        total_pnl = float(sum(history))
+        win_rate = sum(1 for value in history if value > 0.0) / len(history)
+        if total_pnl < config.SETUP_HEALTH_MIN_TOTAL_PNL or win_rate < config.SETUP_HEALTH_MIN_WIN_RATE:
+            setup_block_until[setup_id] = max(
+                setup_block_until.get(setup_id, -1),
+                exit_idx + config.SETUP_HEALTH_COOLDOWN_BARS,
+            )
+            history.clear()
 
     def append_decision(
         idx: int,
@@ -391,6 +423,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
         equity_before = p["equity_before"]
         equity_after = equity + pnl
         ret_pct = (pnl / equity_before * 100.0) if equity_before > 0 else 0.0
+        record_setup_health(p["setup_id"], pnl, exit_idx)
         result.trades.append(ClosedTrade(
             intent_ts=p["intent_ts"], entry_ts=p["entry_ts"], entry_price=p["entry_price"],
             direction=p["direction"], units=p["units"], notional=p["notional"],
@@ -462,6 +495,11 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
             prob = scores.prob_short_win
             expected = scores.expected_short_r
         accepted, reason = evaluate_gate(candidate.direction, fitted, prob, expected, regime_state, high_vol_state)
+        if accepted:
+            health_reason = setup_health_reason(candidate.setup_id, idx)
+            if health_reason is not None:
+                accepted = False
+                reason = health_reason
         return EvaluatedCandidate(candidate, rank, scores, accepted, reason, prob, expected)
 
     def choose_candidate(evaluated: list[EvaluatedCandidate]) -> EvaluatedCandidate:
