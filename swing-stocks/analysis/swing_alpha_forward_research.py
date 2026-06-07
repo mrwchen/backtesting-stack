@@ -1172,7 +1172,8 @@ def run() -> None:
     skipped_no_history = 0
     skipped_no_forward = 0
 
-    with connect_with_retry() as conn:
+    conn = connect_with_retry()
+    try:
         trading_days = fetch_trading_days(
             conn,
             args.market_table,
@@ -1295,6 +1296,8 @@ def run() -> None:
         finally:
             if candidate_handle is not None:
                 candidate_handle.close()
+    finally:
+        conn.close()
 
     write_summary(summary_path, buckets)
     write_spreads(spreads_path, buckets)
