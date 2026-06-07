@@ -125,6 +125,7 @@ class CandidateMetrics:
     price_alpha: float
     swing_alpha: float
     price_metrics: dict[str, float]
+    relative_metrics: dict[str, float]
     score_values: dict[str, float]
     score_deciles: dict[str, int]
 
@@ -630,20 +631,48 @@ def directional_score(direction: str, value: float | None) -> float | None:
     return value
 
 
+def _history_through(bars: list[Bar], as_of_ts: datetime, lookback_bars: int) -> list[Bar]:
+    history = [bar for bar in bars if bar.ts <= as_of_ts]
+    if len(history) < lookback_bars:
+        return []
+    return history[-lookback_bars:]
+
+
+def build_relative_metrics(
+    direction: str,
+    price_metrics: dict[str, float],
+    benchmark_history: list[Bar],
+    cfg: IntentConfig,
+) -> dict[str, float]:
+    if not benchmark_history:
+        return {}
+    _, benchmark_metrics = _long_price_alpha(benchmark_history, cfg)
+    relative: dict[str, float] = {}
+    for key in ("trend", "intermediate", "confirmation", "atr"):
+        stock_value = finite_score(price_metrics.get(key))
+        benchmark_value = finite_score(benchmark_metrics.get(key))
+        if stock_value is None or benchmark_value is None:
+            continue
+        raw_value = stock_value - benchmark_value
+        relative[f"raw_relative_{key}"] = raw_value
+        relative[f"directional_relative_{key}"] = raw_value if direction == "LONG" else -raw_value
+    return relative
+
+
 def build_candidate_metrics(
     day: date,
     direction: str,
     as_of_ts: datetime,
     fundamental: FundamentalRow,
     bars: list[Bar],
+    benchmark_bars: list[Bar],
     cfg: IntentConfig,
     lookback_bars: int,
     regime: RegimeContext,
 ) -> CandidateMetrics | None:
-    history = [bar for bar in bars if bar.ts <= as_of_ts]
-    if len(history) < lookback_bars:
+    history = _history_through(bars, as_of_ts, lookback_bars)
+    if not history:
         return None
-    history = history[-lookback_bars:]
     if history[-1].close <= 0.0:
         return None
 
@@ -654,6 +683,8 @@ def build_candidate_metrics(
         scorer_alpha = _long_scorer_alpha(fundamental)
         price_alpha, price_metrics = _long_price_alpha(history, cfg)
     swing_alpha = scorer_alpha * 0.45 + price_alpha * 0.55
+    benchmark_history = _history_through(benchmark_bars, as_of_ts, lookback_bars)
+    relative_metrics = build_relative_metrics(direction, price_metrics, benchmark_history, cfg)
 
     score_values = {
         "directional_composite": directional_score(direction, fundamental.composite_score),
@@ -666,6 +697,9 @@ def build_candidate_metrics(
         "scorer_alpha": scorer_alpha,
         "price_alpha": price_alpha,
         "swing_alpha": swing_alpha,
+        "directional_relative_trend": relative_metrics.get("directional_relative_trend"),
+        "directional_relative_intermediate": relative_metrics.get("directional_relative_intermediate"),
+        "directional_relative_confirmation": relative_metrics.get("directional_relative_confirmation"),
     }
     score_values = {key: value for key, value in score_values.items() if value is not None}
     return CandidateMetrics(
@@ -679,22 +713,25 @@ def build_candidate_metrics(
         price_alpha=price_alpha,
         swing_alpha=swing_alpha,
         price_metrics=price_metrics,
+        relative_metrics=relative_metrics,
         score_values=score_values,
         score_deciles={},
     )
 
 
 def assign_deciles(metrics: list[CandidateMetrics]) -> None:
-    score_names = sorted({name for metric in metrics for name in metric.score_values})
-    for score_name in score_names:
-        valid = [metric for metric in metrics if score_name in metric.score_values]
-        valid.sort(key=lambda item: item.score_values[score_name])
-        count = len(valid)
-        if count == 0:
-            continue
-        for idx, metric in enumerate(valid, start=1):
-            decile = max(1, min(10, math.ceil(idx * 10 / count)))
-            metric.score_deciles[score_name] = decile
+    for direction in sorted({metric.direction for metric in metrics}):
+        direction_metrics = [metric for metric in metrics if metric.direction == direction]
+        score_names = sorted({name for metric in direction_metrics for name in metric.score_values})
+        for score_name in score_names:
+            valid = [metric for metric in direction_metrics if score_name in metric.score_values]
+            valid.sort(key=lambda item: item.score_values[score_name])
+            count = len(valid)
+            if count == 0:
+                continue
+            for idx, metric in enumerate(valid, start=1):
+                decile = max(1, min(10, math.ceil(idx * 10 / count)))
+                metric.score_deciles[score_name] = decile
 
 
 def entry_pullback_value(metric: CandidateMetrics) -> float | None:
@@ -720,6 +757,84 @@ def entry_pullback_bucket(metric: CandidateMetrics) -> str:
     if value <= 15.0:
         return f"{prefix}_10_15"
     return f"{prefix}_15_plus"
+
+
+def market_cap_bucket(metric: CandidateMetrics) -> str:
+    market_cap_m = finite_score(metric.fundamental.market_cap_m)
+    if market_cap_m is None:
+        return "market_cap_unknown"
+    if market_cap_m < 1_000.0:
+        return "market_cap_lt_1b"
+    if market_cap_m < 5_000.0:
+        return "market_cap_1_5b"
+    if market_cap_m < 20_000.0:
+        return "market_cap_5_20b"
+    if market_cap_m < 100_000.0:
+        return "market_cap_20_100b"
+    if market_cap_m < 500_000.0:
+        return "market_cap_100_500b"
+    return "market_cap_500b_plus"
+
+
+def atr_bucket(metric: CandidateMetrics) -> str:
+    atr = finite_score(metric.price_metrics.get("atr"))
+    if atr is None:
+        return "atr_unknown"
+    if atr <= 1.0:
+        return "atr_00_01"
+    if atr <= 2.0:
+        return "atr_01_02"
+    if atr <= 4.0:
+        return "atr_02_04"
+    if atr <= 6.0:
+        return "atr_04_06"
+    return "atr_06_plus"
+
+
+def rsi_bucket(metric: CandidateMetrics) -> str:
+    rsi = finite_score(metric.price_metrics.get("rsi"))
+    if rsi is None:
+        return "rsi_unknown"
+    if rsi <= 35.0:
+        return "rsi_00_35"
+    if rsi <= 45.0:
+        return "rsi_35_45"
+    if rsi <= 55.0:
+        return "rsi_45_55"
+    if rsi <= 65.0:
+        return "rsi_55_65"
+    if rsi <= 75.0:
+        return "rsi_65_75"
+    return "rsi_75_plus"
+
+
+def signed_pct_bucket(prefix: str, value: float | None) -> str:
+    value = finite_score(value)
+    if value is None:
+        return f"{prefix}_unknown"
+    if value <= -15.0:
+        return f"{prefix}_le_neg15"
+    if value <= -10.0:
+        return f"{prefix}_neg15_neg10"
+    if value <= -5.0:
+        return f"{prefix}_neg10_neg05"
+    if value <= 0.0:
+        return f"{prefix}_neg05_00"
+    if value <= 5.0:
+        return f"{prefix}_00_05"
+    if value <= 10.0:
+        return f"{prefix}_05_10"
+    if value <= 15.0:
+        return f"{prefix}_10_15"
+    return f"{prefix}_15_plus"
+
+
+def normalized_text_bucket(prefix: str, value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = "UNKNOWN"
+    text = "_".join(text.upper().replace("/", " ").replace("&", "AND").split())
+    return f"{prefix}_{text[:80]}"
 
 
 def slice_regime_labels(metric: CandidateMetrics) -> list[tuple[str, str]]:
@@ -749,6 +864,54 @@ def add_slice_buckets(
             pullback_bucket,
         )
         slice_buckets[key].add(metric, forward, pullback_value)
+
+
+def factor_slice_labels(metric: CandidateMetrics) -> list[tuple[str, str]]:
+    labels = [
+        ("sector", normalized_text_bucket("sector", metric.fundamental.sector)),
+        ("industry", normalized_text_bucket("industry", metric.fundamental.industry)),
+        ("valuation_label", normalized_text_bucket("valuation", metric.fundamental.valuation_label)),
+        ("market_cap", market_cap_bucket(metric)),
+        ("atr", atr_bucket(metric)),
+        ("rsi", rsi_bucket(metric)),
+        ("entry_pullback", entry_pullback_bucket(metric)),
+        (
+            "relative_trend",
+            signed_pct_bucket("directional_relative_trend", metric.relative_metrics.get("directional_relative_trend")),
+        ),
+        (
+            "relative_intermediate",
+            signed_pct_bucket(
+                "directional_relative_intermediate",
+                metric.relative_metrics.get("directional_relative_intermediate"),
+            ),
+        ),
+        (
+            "relative_confirmation",
+            signed_pct_bucket(
+                "directional_relative_confirmation",
+                metric.relative_metrics.get("directional_relative_confirmation"),
+            ),
+        ),
+    ]
+    for regime_source, regime_label in slice_regime_labels(metric):
+        labels.append((f"{regime_source}_regime", normalized_text_bucket(regime_source, regime_label)))
+    return labels
+
+
+def add_factor_slice_buckets(
+    factor_slice_buckets: dict[tuple[str, int, str, str], SliceBucket],
+    metric: CandidateMetrics,
+    forward: ForwardMetrics,
+) -> None:
+    pullback_value = entry_pullback_value(metric)
+    entry_value = pullback_value if pullback_value is not None else 0.0
+    for slice_type, slice_name in factor_slice_labels(metric):
+        factor_slice_buckets[(metric.direction, forward.horizon_days, slice_type, slice_name)].add(
+            metric,
+            forward,
+            entry_value,
+        )
 
 
 def write_run_metadata(path: Path, args: argparse.Namespace, sample_days: list[date]) -> None:
@@ -837,6 +1000,14 @@ def candidate_fieldnames(horizons: list[int]) -> list[str]:
         "atr",
         "fast_ma",
         "slow_ma",
+        "raw_relative_trend",
+        "directional_relative_trend",
+        "raw_relative_intermediate",
+        "directional_relative_intermediate",
+        "raw_relative_confirmation",
+        "directional_relative_confirmation",
+        "raw_relative_atr",
+        "directional_relative_atr",
         "entry_pullback_bucket",
         "entry_pullback_pct",
         "horizon_days",
@@ -860,6 +1031,9 @@ def candidate_fieldnames(horizons: list[int]) -> list[str]:
         "scorer_alpha",
         "price_alpha",
         "swing_alpha",
+        "directional_relative_trend",
+        "directional_relative_intermediate",
+        "directional_relative_confirmation",
     ]]
 
 
@@ -916,6 +1090,17 @@ def candidate_row(metric: CandidateMetrics, forward: ForwardMetrics) -> dict[str
     }
     for key in ("trend", "intermediate", "confirmation", "drawdown", "breakout_gap", "bounce", "rsi", "atr", "fast_ma", "slow_ma"):
         row[key] = metric.price_metrics.get(key)
+    for key in (
+        "raw_relative_trend",
+        "directional_relative_trend",
+        "raw_relative_intermediate",
+        "directional_relative_intermediate",
+        "raw_relative_confirmation",
+        "directional_relative_confirmation",
+        "raw_relative_atr",
+        "directional_relative_atr",
+    ):
+        row[key] = metric.relative_metrics.get(key)
     for score_name, decile in metric.score_deciles.items():
         row[f"{score_name}_decile"] = decile
     return row
@@ -1078,6 +1263,283 @@ def write_slice_leaders(
         writer.writerows(rows)
 
 
+FACTOR_SLICE_FIELDNAMES = [
+    "direction",
+    "horizon_days",
+    "slice_type",
+    "slice_name",
+    "count",
+    "avg_directional_price_momentum",
+    "avg_entry_pullback_pct",
+    "avg_price_alpha",
+    "avg_scorer_alpha",
+    "avg_swing_alpha",
+    "avg_return_pct",
+    "median_return_pct",
+    "win_rate_pct",
+    "avg_excess_benchmark_pct",
+    "median_excess_benchmark_pct",
+    "positive_excess_rate_pct",
+    "avg_mae_pct",
+    "avg_mfe_pct",
+    "avg_mfe_to_abs_mae",
+    "avg_mfe_minus_abs_mae_pct",
+]
+
+
+def factor_slice_row(
+    key: tuple[str, int, str, str],
+    bucket: SliceBucket,
+) -> dict[str, object]:
+    direction, horizon_days, slice_type, slice_name = key
+    row = bucket.as_row(direction, horizon_days, "factor", slice_type, 0, slice_name)
+    return {
+        "direction": row["direction"],
+        "horizon_days": row["horizon_days"],
+        "slice_type": slice_type,
+        "slice_name": slice_name,
+        "count": row["count"],
+        "avg_directional_price_momentum": row["avg_directional_price_momentum"],
+        "avg_entry_pullback_pct": row["avg_entry_pullback_pct"],
+        "avg_price_alpha": row["avg_price_alpha"],
+        "avg_scorer_alpha": row["avg_scorer_alpha"],
+        "avg_swing_alpha": row["avg_swing_alpha"],
+        "avg_return_pct": row["avg_return_pct"],
+        "median_return_pct": row["median_return_pct"],
+        "win_rate_pct": row["win_rate_pct"],
+        "avg_excess_benchmark_pct": row["avg_excess_benchmark_pct"],
+        "median_excess_benchmark_pct": row["median_excess_benchmark_pct"],
+        "positive_excess_rate_pct": row["positive_excess_rate_pct"],
+        "avg_mae_pct": row["avg_mae_pct"],
+        "avg_mfe_pct": row["avg_mfe_pct"],
+        "avg_mfe_to_abs_mae": row["avg_mfe_to_abs_mae"],
+        "avg_mfe_minus_abs_mae_pct": row["avg_mfe_minus_abs_mae_pct"],
+    }
+
+
+def write_factor_slices(
+    path: Path,
+    factor_slice_buckets: dict[tuple[str, int, str, str], SliceBucket],
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FACTOR_SLICE_FIELDNAMES)
+        writer.writeheader()
+        for key in sorted(factor_slice_buckets):
+            writer.writerow(factor_slice_row(key, factor_slice_buckets[key]))
+
+
+def write_factor_slice_leaders(
+    path: Path,
+    factor_slice_buckets: dict[tuple[str, int, str, str], SliceBucket],
+    min_slice_count: int,
+) -> None:
+    rows = [
+        factor_slice_row(key, bucket)
+        for key, bucket in factor_slice_buckets.items()
+        if bucket.count >= min_slice_count
+    ]
+    rows.sort(key=_leader_sort_value, reverse=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FACTOR_SLICE_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def avg_return(bucket: StatBucket | None) -> float | None:
+    if bucket is None or bucket.count <= 0:
+        return None
+    return bucket.return_sum / bucket.count
+
+
+def avg_excess(bucket: StatBucket | None) -> float | None:
+    if bucket is None:
+        return None
+    excess_count = len(bucket.excess_returns or [])
+    if excess_count <= 0:
+        return None
+    return bucket.excess_sum / excess_count
+
+
+def linear_slope(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 2 or len(xs) != len(ys):
+        return None
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    if denom <= 0.0:
+        return None
+    return sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denom
+
+
+def pearson_corr(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 2 or len(xs) != len(ys):
+        return None
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    x_var = sum((x - x_mean) ** 2 for x in xs)
+    y_var = sum((y - y_mean) ** 2 for y in ys)
+    if x_var <= 0.0 or y_var <= 0.0:
+        return None
+    cov = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+    return cov / math.sqrt(x_var * y_var)
+
+
+def positive_steps(values: list[float | None]) -> int:
+    valid_pairs = [
+        (left, right)
+        for left, right in zip(values, values[1:])
+        if left is not None and right is not None
+    ]
+    return sum(1 for left, right in valid_pairs if right > left)
+
+
+def diagnostic_verdict(
+    *,
+    top_avg_excess: float | None,
+    top_minus_bottom_excess: float | None,
+    excess_slope: float | None,
+    excess_positive_steps: int,
+    top_is_best: bool,
+    top_count: int,
+    bottom_count: int,
+    min_count: int,
+) -> str:
+    if top_count < min_count or bottom_count < min_count:
+        return "INSUFFICIENT_COUNT"
+    if (
+        top_avg_excess is not None
+        and top_minus_bottom_excess is not None
+        and excess_slope is not None
+        and top_avg_excess > 0.0
+        and top_minus_bottom_excess > 0.0
+        and excess_slope > 0.0
+        and excess_positive_steps >= 6
+        and top_is_best
+    ):
+        return "PASS_MONOTONIC_EDGE"
+    if (
+        top_avg_excess is not None
+        and top_minus_bottom_excess is not None
+        and top_avg_excess > 0.0
+        and top_minus_bottom_excess > 0.0
+        and excess_slope is not None
+        and excess_slope > 0.0
+    ):
+        return "WEAK_POSITIVE_EDGE"
+    if (
+        top_avg_excess is not None
+        and top_minus_bottom_excess is not None
+        and (top_avg_excess <= 0.0 or top_minus_bottom_excess <= 0.0)
+    ):
+        return "FAIL_NO_TOP_DECILE_EDGE"
+    return "MIXED"
+
+
+def write_score_diagnostics(
+    path: Path,
+    buckets: dict[tuple[str, str, int, int], StatBucket],
+    min_decile_count: int,
+) -> None:
+    decile_fields = []
+    for decile in range(1, 11):
+        decile_fields.extend([
+            f"d{decile}_count",
+            f"d{decile}_avg_return_pct",
+            f"d{decile}_avg_excess_benchmark_pct",
+        ])
+    fieldnames = [
+        "direction",
+        "score_name",
+        "horizon_days",
+        "verdict",
+        "total_count",
+        "non_empty_deciles",
+        "bottom_decile_count",
+        "top_decile_count",
+        "bottom_avg_excess_benchmark_pct",
+        "top_avg_excess_benchmark_pct",
+        "top_minus_bottom_excess_pct",
+        "return_slope_per_decile",
+        "excess_slope_per_decile",
+        "return_corr_decile_avg",
+        "excess_corr_decile_avg",
+        "return_positive_steps",
+        "excess_positive_steps",
+        "best_excess_decile",
+        "best_excess_pct",
+        "top_is_best_excess_decile",
+    ] + decile_fields
+    groups = sorted({key[:3] for key in buckets})
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for direction, score_name, horizon_days in groups:
+            deciles = list(range(1, 11))
+            return_values = [avg_return(buckets.get((direction, score_name, horizon_days, decile))) for decile in deciles]
+            excess_values = [avg_excess(buckets.get((direction, score_name, horizon_days, decile))) for decile in deciles]
+            counts = [
+                buckets.get((direction, score_name, horizon_days, decile)).count
+                if buckets.get((direction, score_name, horizon_days, decile)) is not None
+                else 0
+                for decile in deciles
+            ]
+            return_points = [(float(decile), value) for decile, value in zip(deciles, return_values) if value is not None]
+            excess_points = [(float(decile), value) for decile, value in zip(deciles, excess_values) if value is not None]
+            return_slope = linear_slope([x for x, _ in return_points], [y for _, y in return_points])
+            excess_slope = linear_slope([x for x, _ in excess_points], [y for _, y in excess_points])
+            return_corr = pearson_corr([x for x, _ in return_points], [y for _, y in return_points])
+            excess_corr = pearson_corr([x for x, _ in excess_points], [y for _, y in excess_points])
+            bottom_excess = excess_values[0]
+            top_excess = excess_values[-1]
+            top_minus_bottom = (
+                top_excess - bottom_excess
+                if top_excess is not None and bottom_excess is not None
+                else None
+            )
+            best_excess_decile = None
+            best_excess_pct = None
+            valid_excess = [(decile, value) for decile, value in zip(deciles, excess_values) if value is not None]
+            if valid_excess:
+                best_excess_decile, best_excess_pct = max(valid_excess, key=lambda item: item[1])
+            top_is_best = best_excess_decile == 10
+            row = {
+                "direction": direction,
+                "score_name": score_name,
+                "horizon_days": horizon_days,
+                "verdict": diagnostic_verdict(
+                    top_avg_excess=top_excess,
+                    top_minus_bottom_excess=top_minus_bottom,
+                    excess_slope=excess_slope,
+                    excess_positive_steps=positive_steps(excess_values),
+                    top_is_best=top_is_best,
+                    top_count=counts[-1],
+                    bottom_count=counts[0],
+                    min_count=min_decile_count,
+                ),
+                "total_count": sum(counts),
+                "non_empty_deciles": sum(1 for count in counts if count > 0),
+                "bottom_decile_count": counts[0],
+                "top_decile_count": counts[-1],
+                "bottom_avg_excess_benchmark_pct": bottom_excess,
+                "top_avg_excess_benchmark_pct": top_excess,
+                "top_minus_bottom_excess_pct": top_minus_bottom,
+                "return_slope_per_decile": return_slope,
+                "excess_slope_per_decile": excess_slope,
+                "return_corr_decile_avg": return_corr,
+                "excess_corr_decile_avg": excess_corr,
+                "return_positive_steps": positive_steps(return_values),
+                "excess_positive_steps": positive_steps(excess_values),
+                "best_excess_decile": best_excess_decile,
+                "best_excess_pct": best_excess_pct,
+                "top_is_best_excess_decile": top_is_best,
+            }
+            for decile, count, ret_value, excess_value in zip(deciles, counts, return_values, excess_values):
+                row[f"d{decile}_count"] = count
+                row[f"d{decile}_avg_return_pct"] = ret_value
+                row[f"d{decile}_avg_excess_benchmark_pct"] = excess_value
+            writer.writerow(row)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-date", type=parse_date, default=DEFAULT_START_DATE)
@@ -1157,8 +1619,11 @@ def run() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = args.output_dir / "swing_alpha_forward_summary.csv"
     spreads_path = args.output_dir / "swing_alpha_forward_spreads.csv"
+    diagnostics_path = args.output_dir / "swing_alpha_forward_score_diagnostics.csv"
     slices_path = args.output_dir / "swing_alpha_forward_slices.csv"
     slice_leaders_path = args.output_dir / "swing_alpha_forward_slice_leaders.csv"
+    factor_slices_path = args.output_dir / "swing_alpha_forward_factor_slices.csv"
+    factor_slice_leaders_path = args.output_dir / "swing_alpha_forward_factor_slice_leaders.csv"
     metadata_path = args.output_dir / "swing_alpha_forward_run.json"
     candidates_path = args.output_dir / "swing_alpha_forward_candidates.csv"
 
@@ -1167,6 +1632,7 @@ def run() -> None:
     max_horizon = max(args.horizons)
     buckets: dict[tuple[str, str, int, int], StatBucket] = defaultdict(StatBucket)
     slice_buckets: dict[tuple[str, int, str, str, int, str], SliceBucket] = defaultdict(SliceBucket)
+    factor_slice_buckets: dict[tuple[str, int, str, str], SliceBucket] = defaultdict(SliceBucket)
     total_candidate_rows = 0
     total_forward_rows = 0
     skipped_no_history = 0
@@ -1240,6 +1706,7 @@ def run() -> None:
                     symbols.append(args.benchmark_symbol)
                     bars_by_identity = fetch_bars(conn, args.market_table, symbols, load_start, load_end)
                     day_bars_by_identity.update(bars_by_identity)
+                    benchmark_bars_for_direction = select_benchmark_bars(bars_by_identity, args.benchmark_symbol)
 
                     for fundamental in candidates:
                         bars = bars_by_identity.get(fundamental.identity_key, [])
@@ -1249,6 +1716,7 @@ def run() -> None:
                             as_of_ts,
                             fundamental,
                             bars,
+                            benchmark_bars_for_direction,
                             cfg,
                             lookback_bars,
                             regime_context,
@@ -1276,6 +1744,7 @@ def run() -> None:
                                 continue
                             buckets[(metric.direction, score_name, horizon, decile)].add(score_value, forward)
                         add_slice_buckets(slice_buckets, metric, forward)
+                        add_factor_slice_buckets(factor_slice_buckets, metric, forward)
                         if candidate_writer is not None:
                             candidate_writer.writerow(candidate_row(metric, forward))
 
@@ -1301,18 +1770,24 @@ def run() -> None:
 
     write_summary(summary_path, buckets)
     write_spreads(spreads_path, buckets)
+    write_score_diagnostics(diagnostics_path, buckets, args.min_slice_count)
     write_slices(slices_path, slice_buckets)
     write_slice_leaders(slice_leaders_path, slice_buckets, args.min_slice_count)
+    write_factor_slices(factor_slices_path, factor_slice_buckets)
+    write_factor_slice_leaders(factor_slice_leaders_path, factor_slice_buckets, args.min_slice_count)
     LOG.info(
-        "Research complete candidates %d forward rows %d skipped history %d skipped forward %d summary %s spreads %s slices %s slice leaders %s",
+        "Research complete candidates %d forward rows %d skipped history %d skipped forward %d summary %s spreads %s diagnostics %s slices %s slice leaders %s factor slices %s factor leaders %s",
         total_candidate_rows,
         total_forward_rows,
         skipped_no_history,
         skipped_no_forward,
         summary_path,
         spreads_path,
+        diagnostics_path,
         slices_path,
         slice_leaders_path,
+        factor_slices_path,
+        factor_slice_leaders_path,
     )
 
 

@@ -40,16 +40,19 @@ Wichtige Dateien:
 
 - `swing_alpha_forward_summary.csv`: Decile-Auswertung je Score, Richtung und Horizont.
 - `swing_alpha_forward_spreads.csv`: Top-Decile minus Bottom-Decile. Das ist die wichtigste Datei.
+- `swing_alpha_forward_score_diagnostics.csv`: harte Scorer-Eignung je Score, Richtung und Horizont inklusive Monotonie, Decile-Slope, Top-Decile-Edge gegen QQQ und Verdict.
 - `swing_alpha_forward_slices.csv`: Slice-Auswertung nach Richtung, Horizont, Regime, Price-Momentum-Decile und Entry-Pullback-Bucket.
 - `swing_alpha_forward_slice_leaders.csv`: Die gleichen Slices, aber nach Edge sortiert und mit `--min-slice-count` gefiltert.
+- `swing_alpha_forward_factor_slices.csv`: Einfache Faktor-Slices nach Sector, Industry, Valuation Label, Market Cap, ATR, RSI, Entry-Pullback und QQQ-relativer Staerke.
+- `swing_alpha_forward_factor_slice_leaders.csv`: Die besten Faktor-Slices nach QQQ-Excess, mit `--min-slice-count` gefiltert.
 - `swing_alpha_forward_candidates.csv`: Einzelne Kandidaten mit Forward-Return, MAE, MFE und Deciles.
 - `swing_alpha_forward_run.json`: Parameter des Research-Laufs.
 
 ## Interpretation
 
-Ein brauchbarer Long-Scorer sollte in `swing_alpha_forward_spreads.csv` fuer `LONG` bei `scorer_alpha`, `price_alpha` oder `swing_alpha` positive `top_minus_bottom_return_pct` und idealerweise positive `top_minus_bottom_excess_pct` zeigen. Wenn die Top-Deciles keine bessere Rendite, aber schlechtere MAE zeigen, ist der Score fuer Swing-Entries nicht geeignet.
+Ein brauchbarer Long-Scorer sollte in `swing_alpha_forward_score_diagnostics.csv` fuer `LONG` bei `scorer_alpha`, `price_alpha`, `swing_alpha` oder den `directional_relative_*` Scores mindestens `WEAK_POSITIVE_EDGE`, besser `PASS_MONOTONIC_EDGE`, zeigen. Entscheidend ist nicht nur Top-minus-Bottom, sondern auch `excess_slope_per_decile`, `excess_positive_steps`, `top_is_best_excess_decile` und ein positives `top_avg_excess_benchmark_pct`.
 
-Ein brauchbarer Short-Scorer sollte bei `SHORT` ebenfalls positive Top-minus-Bottom-Spreads zeigen, weil die directional Scores fuer Shorts invertiert werden. Wenn die Short-Top-Deciles positive absolute Long-Returns oder negative Short-Returns liefern, sind die Scorer-Flags eher Underperformance-Hinweise als echte Naked-Short-Signale.
+Ein brauchbarer Short-Scorer sollte bei `SHORT` ebenfalls positive Decile-Slopes und positives QQQ-Excess zeigen, weil die directional Scores fuer Shorts invertiert werden. Wenn die Short-Top-Deciles keine positive Short-Rendite oder kein positives QQQ-Excess liefern, sind die Scorer-Flags eher Underperformance-Hinweise als echte Naked-Short-Signale.
 
 Das Skript nutzt als Entry die erste 1h-Bar nach `as_of_ts` und ist damit point-in-time konservativ. Default ist `23:59 UTC` pro Sample-Tag.
 
@@ -64,6 +67,8 @@ Wichtige Spalten:
 - `price_momentum_decile`: Tages-Decile des directional Price-Momentum-Scores.
 - `entry_pullback_bucket`: fuer Longs `long_drawdown_00_02`, `long_drawdown_02_05`, `long_drawdown_05_10`, `long_drawdown_10_15`, `long_drawdown_15_plus`; fuer Shorts analog `short_bounce_*`.
 - `avg_excess_benchmark_pct`: entscheidend fuer QQQ-Vergleich.
+
+Die Faktor-Slices beantworten die grobe Universumsfrage: Kommt ein moeglicher Edge nur aus bestimmten Sectors, Market-Cap-Buckets, Volatilitaetsbereichen oder QQQ-relativer Staerke? Fuer QQQ-Ersatzmodelle sind vor allem `slice_type=sector`, `market_cap`, `atr`, `relative_intermediate` und `relative_confirmation` relevant.
 
 Fuer ein neues Long-Modell sind die besten Kandidaten Slices mit:
 
