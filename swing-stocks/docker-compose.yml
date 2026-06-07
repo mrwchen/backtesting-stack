@@ -119,7 +119,7 @@ services:
       # ---------------------------------------------------------------------
       #- MODEL_SELECTION=all
       - MODEL_SELECTION=single
-      - MODEL_FILE=momentum_pullback_long_v1.py
+      - MODEL_FILE=relative_strength_market_aware_swing_v2.py
       #- MODEL_SELECTION=multi
       #- MODEL_FILES=benchmark_qqq.py,qqq_engine_probe.py
       #- MODEL_FILES=pullback_bounce_fundamental_v1.py,sector_rotation_long_short_v1.py,trend_pullback_reclaim_v1.py,relative_strength_momentum_v1.py
@@ -193,8 +193,8 @@ services:
       - INITIAL_EQUITY_USD=5000
       - RISK_PER_TRADE_EQUITY_PCT=1.5
       - MAX_OPEN_POSITIONS=5
-      - MAX_POSITION_OPENS_PER_DAY=2
-      - MAX_POSITION_OPENS_PER_HOUR=1
+      - MAX_POSITION_OPENS_PER_DAY=4
+      - MAX_POSITION_OPENS_PER_HOUR=2
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
@@ -245,7 +245,7 @@ services:
 
       # Entry-Taktung und SL-Cluster-Halt: begrenzt Abstand zwischen Opens und
       # stoppt neue Entries nach zu vielen SL-Closes im Zeitfenster.
-      - DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS=3.0
+      - DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS=1.0
       - DAILY_POLICY_SL_HALT_WINDOW_HOURS=2.0
       - DAILY_POLICY_SL_HALT_COUNT=3
       - DAILY_POLICY_SL_HALT_STATUSES=HIT_SL
@@ -268,7 +268,7 @@ services:
       # Previous-Day-Market-Drop-Halt: prueft den vorherigen Handelstag und
       # blockiert den heutigen Tag, wenn VOO Open->Close/Low stark fiel.
       - DAILY_POLICY_PREVIOUS_MARKET_DROP_SYMBOL=VOO
-      - DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT=3.0
+      - DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT=4.5
       - DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD=close
 
       # Tages-Prune: schliesst zur Uhrzeit die schlechtesten Positionen, bis
@@ -282,7 +282,7 @@ services:
       # Sektor, wenn Tech-Stress im Lookback ueber der Schwelle lag.
       - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=3
       - DAILY_POLICY_TECH_STRESS_THRESHOLD=60.0
-      - DAILY_POLICY_BLOCK_LONG_SECTOR=Technology
+      - DAILY_POLICY_BLOCK_LONG_SECTOR=__NONE__
 
       # Energy-Shock-Industry-Praeferenz: gibt eine bevorzugte Industry an die
       # Modelle weiter, wenn Energy-Shock an allen Lookback-Tagen hoch war.
@@ -321,19 +321,19 @@ services:
       # SEC-8-K-Events werden fuer historische Backtests als N Tage vorher
       # oeffentlich bekannt modelliert; yfinance nutzt strikt known_as_of_ts.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=50.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=45.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
       - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data, value_trap,overvalued,overvalued_weak,expensive_quality
       - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data, deep_value,quality_value,compounder,undervalued
-      - COMMON_MIN_MARKET_CAP_USD_M=50000.0
+      - COMMON_MIN_MARKET_CAP_USD_M=10000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
-      - COMMON_FILTER_SCORER_ELIGIBILITY=true
-      - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE=true
+      - COMMON_FILTER_SCORER_ELIGIBILITY=false
+      - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE=false
       - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS=100
       - COMMON_EARNINGS_BLACKOUT_ENABLED=true
-      - COMMON_EARNINGS_BLACKOUT_DAYS=14
+      - COMMON_EARNINGS_BLACKOUT_DAYS=5
       - COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE=21
 
       # ---------------------------------------------------------------------
@@ -361,19 +361,19 @@ services:
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=6.0
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=8.0
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=6.5
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=3.0
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=3.5
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=3.0
       - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=1.5
-      - EXECUTION_LONG_MAX_HOLD_DAYS=25.0
+      - EXECUTION_LONG_MAX_HOLD_DAYS=20.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=7.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=120
       - COMMON_STOP_BUFFER_RATIO=0.010
       - COMMON_STOP_ATR_LOOKBACK_BARS=120
-      - COMMON_STOP_ATR_MULT=2.0
-      - COMMON_MIN_STOP_PCT=4.0
-      - COMMON_MAX_STOP_PCT=10.0
+      - COMMON_STOP_ATR_MULT=1.8
+      - COMMON_MIN_STOP_PCT=3.5
+      - COMMON_MAX_STOP_PCT=9.0
 
       # ---------------------------------------------------------------------
       # Pepperstone-Profil: EU Retail US Share CFD

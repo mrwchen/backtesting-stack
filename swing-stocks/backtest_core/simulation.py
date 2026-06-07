@@ -227,6 +227,80 @@ def _model_allow_multiple_positions_per_instrument(model: Any) -> bool:
     return bool(getattr(model, "ALLOW_MULTIPLE_POSITIONS_PER_INSTRUMENT", False))
 
 
+def _model_benchmark_symbols(model: Any) -> tuple[str, ...]:
+    raw_symbols = getattr(model, "BENCHMARK_SYMBOLS", ())
+    if not raw_symbols:
+        raw_symbol = getattr(model, "BENCHMARK_SYMBOL", "")
+        raw_symbols = (raw_symbol,) if raw_symbol else ()
+    if isinstance(raw_symbols, str):
+        raw_symbols = (raw_symbols,)
+    return tuple(dict.fromkeys(
+        str(symbol).strip().upper()
+        for symbol in raw_symbols
+        if str(symbol).strip()
+    ))
+
+
+def _apply_model_market_context(
+    conn: psycopg2.extensions.connection,
+    model: Any,
+    cfg: Any,
+    as_of_ts: datetime,
+    *,
+    log_progress_today: bool = False,
+) -> None:
+    benchmark_symbols = _model_benchmark_symbols(model)
+    hook = getattr(model, "set_market_context", None)
+    if not benchmark_symbols and not callable(hook):
+        return
+
+    as_of_ts = _ensure_utc_ts(as_of_ts)
+    bars_by_symbol: dict[str, list[Any]] = {}
+    if benchmark_symbols:
+        benchmark_candidates = get_direct_symbol_candidates(
+            conn,
+            benchmark_symbols,
+            "LONG",
+            as_of_ts=as_of_ts,
+            source_table=SOURCE_MARKET_DATA_1H_TABLE,
+            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
+            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            require_broker_eligibility=False,
+            require_upcoming_earnings_date=False,
+        )
+        benchmark_lookback = max(
+            _bar_lookback_limit(model, cfg),
+            int(getattr(model, "BENCHMARK_BAR_LOOKBACK", 0) or 0),
+        )
+        bars_by_identity = load_recent_bars_for_identities(
+            conn,
+            [candidate.identity_key for candidate in benchmark_candidates],
+            benchmark_lookback,
+            as_of_ts,
+            batch_size=BAR_CACHE_BATCH_SIZE,
+            log_batches=False,
+        )
+        for candidate in benchmark_candidates:
+            bars_by_symbol[str(candidate.symbol).strip().upper()] = bars_by_identity.get(candidate.identity_key, [])
+
+    setattr(cfg, "market_context_as_of_ts", as_of_ts)
+    setattr(cfg, "market_context_bars_by_symbol", bars_by_symbol)
+    if callable(hook):
+        hook(cfg, as_of_ts, bars_by_symbol)
+    if log_progress_today and benchmark_symbols:
+        loaded = ", ".join(
+            f"{symbol}:{len(bars_by_symbol.get(symbol, []))}"
+            for symbol in benchmark_symbols
+        )
+        log.info(
+            "Model market context loaded model %s cutoff %s benchmarks %s",
+            runtime.CURRENT_MODEL_FILE,
+            as_of_ts,
+            loaded,
+        )
+
+
 def _merge_direct_candidates(candidates: list[Any], direct_candidates: list[Any]) -> list[Any]:
     if not direct_candidates:
         return candidates
@@ -443,6 +517,62 @@ def _short_take_profit_trade(
     return _exit_trade(conn, pos, "HIT_TP", price, bar_date, total_bars, equity, ts)
 
 
+def _model_exit_trade(
+    conn: psycopg2.extensions.connection,
+    model: Any,
+    cfg: Any,
+    pos: OpenPosition,
+    ts: datetime,
+    total_bars: int,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    exit_active: bool,
+    equity: float,
+) -> Optional[ClosedTrade]:
+    hook = getattr(model, "evaluate_position_exit", None)
+    if not callable(hook):
+        return None
+
+    decision = hook(
+        pos,
+        ts,
+        open_,
+        high,
+        low,
+        close,
+        total_bars,
+        cfg,
+        exit_active=exit_active,
+    )
+    if not decision or not exit_active:
+        return None
+
+    status = "MODEL_EXIT"
+    price = float(close)
+    if isinstance(decision, str):
+        status = decision
+    elif isinstance(decision, dict):
+        if not bool(decision.get("exit", True)):
+            return None
+        status = str(decision.get("status", status))
+        price = float(decision.get("price", price))
+    elif isinstance(decision, tuple):
+        if len(decision) >= 1:
+            status = str(decision[0])
+        if len(decision) >= 2:
+            price = float(decision[1])
+    else:
+        return None
+
+    status = status.strip().upper() or "MODEL_EXIT"
+    if not math.isfinite(price) or price <= 0.0:
+        price = float(close)
+    pnl = _pnl_long(pos, price) if pos.direction == "LONG" else _pnl_short(pos, price)
+    return _make_trade(conn, pos, status, price, ts.date(), total_bars, pnl, equity, ts)
+
+
 def _simulate_position_bar(
     conn: psycopg2.extensions.connection,
     pos: OpenPosition,
@@ -452,6 +582,9 @@ def _simulate_position_bar(
     low: float,
     close: float,
     equity: float,
+    *,
+    cfg: Any = None,
+    model: Any = None,
 ) -> Optional[ClosedTrade]:
     ts = _ensure_utc_ts(ts)
     bar_date = ts.date()
@@ -492,6 +625,24 @@ def _simulate_position_bar(
         )
     if trade is not None:
         return trade
+
+    if model is not None and cfg is not None:
+        trade = _model_exit_trade(
+            conn,
+            model,
+            cfg,
+            pos,
+            ts,
+            total_bars,
+            float(open_),
+            float(high),
+            float(low),
+            float(close),
+            sl_tp_active,
+            equity,
+        )
+        if trade is not None:
+            return trade
 
     if ts >= pos.valid_until and sl_tp_active:
         price = float(close)
@@ -669,6 +820,8 @@ def simulate_outcome(
     pos: OpenPosition,
     up_to_ts: datetime,
     equity: float,
+    cfg: Any = None,
+    model: Any = None,
 ) -> Optional[ClosedTrade]:
     """
     Check whether pos has closed by up_to_ts.
@@ -687,7 +840,7 @@ def simulate_outcome(
         return None
 
     for ts, open_, high, low, close in bars:
-        trade = _simulate_position_bar(conn, pos, ts, open_, high, low, close, equity)
+        trade = _simulate_position_bar(conn, pos, ts, open_, high, low, close, equity, cfg=cfg, model=model)
         if trade is not None:
             return trade
     return None
@@ -919,6 +1072,7 @@ def run_backtest(
         closed_count = 0
         realized_pnl = 0.0
         closed_identity_blocklist = closed_identity_blocklist if closed_identity_blocklist is not None else set()
+        model = get_model_module()
 
         if active_positions:
             preload_identity_bars(
@@ -974,7 +1128,18 @@ def run_backtest(
                 if ts != next_ts:
                     continue
                 bar_index_by_position[key] = idx + 1
-                trade = _simulate_position_bar(conn, position, ts, open_, high, low, close, equity)
+                trade = _simulate_position_bar(
+                    conn,
+                    position,
+                    ts,
+                    open_,
+                    high,
+                    low,
+                    close,
+                    equity,
+                    cfg=cfg,
+                    model=model,
+                )
                 if trade is not None:
                     close_events.append((position, trade))
 
@@ -1065,6 +1230,13 @@ def run_backtest(
         direct_candidate_mode = _model_direct_candidate_mode(model)
         direct_candidate_require_broker_eligibility = _model_direct_candidate_require_broker_eligibility(model)
         allow_multiple_positions_per_instrument = _model_allow_multiple_positions_per_instrument(model)
+        _apply_model_market_context(
+            conn,
+            model,
+            cfg,
+            as_of_ts,
+            log_progress_today=log_progress_today,
+        )
 
         for direction in DIRECTIONS:
             direction_risk = direction_risk_multiplier(regime_exposure, direction)
