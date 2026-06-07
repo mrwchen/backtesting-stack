@@ -78,6 +78,9 @@ class IntentConfig:
     max_atr_pct: float = 7.5
 
     model_exit_enabled: bool = True
+    regime_exit_enabled: bool = False
+    regime_exit_min_bars: int = 26
+    regime_exit_max_return_pct: float = 4.0
     hard_loss_exit_min_bars: int = 130
     hard_loss_return_pct: float = -11.0
     hard_loss_mfe_cap_pct: float = 3.0
@@ -160,6 +163,9 @@ def intent_config_from_env() -> IntentConfig:
         long_max_rsi=env_float("LONG_MAX_RSI", d.long_max_rsi),
         max_atr_pct=env_float("MAX_ATR_PCT", d.max_atr_pct),
         model_exit_enabled=env_bool("MODEL_EXIT_ENABLED", d.model_exit_enabled),
+        regime_exit_enabled=env_bool("REGIME_EXIT_ENABLED", d.regime_exit_enabled),
+        regime_exit_min_bars=env_int("REGIME_EXIT_MIN_BARS", d.regime_exit_min_bars),
+        regime_exit_max_return_pct=env_float("REGIME_EXIT_MAX_RETURN_PCT", d.regime_exit_max_return_pct),
         hard_loss_exit_min_bars=env_int("HARD_LOSS_EXIT_MIN_BARS", d.hard_loss_exit_min_bars),
         hard_loss_return_pct=env_float("HARD_LOSS_RETURN_PCT", d.hard_loss_return_pct),
         hard_loss_mfe_cap_pct=env_float("HARD_LOSS_MFE_CAP_PCT", d.hard_loss_mfe_cap_pct),
@@ -237,21 +243,29 @@ def _daily_policy_phase(cfg: IntentConfig) -> str:
     return str(getattr(cfg, "daily_policy_phase", "") or "").strip().upper()
 
 
-def _regime_is_tradeable(cfg: IntentConfig) -> tuple[bool, str, str]:
+def _explicit_regime_block(cfg: IntentConfig) -> tuple[bool, str, str]:
     label = _world_regime_label(cfg)
     phase = _daily_policy_phase(cfg)
-    if not label and cfg.require_world_regime_label:
-        return False, "world_regime_missing", "World regime label is missing."
     if label and label in set(cfg.blocked_world_regime_labels):
-        return False, "world_regime_blocked", f"World regime label {label} is blocked."
-    if cfg.allowed_world_regime_labels and label and label not in set(cfg.allowed_world_regime_labels):
-        return False, "world_regime_not_allowed", f"World regime label {label} is not allowed."
+        return True, "world_regime_blocked", f"World regime label {label} is blocked."
     if phase and phase in set(cfg.blocked_daily_policy_phases):
-        return False, "daily_policy_phase_blocked", f"Daily policy phase {phase} is blocked."
+        return True, "daily_policy_phase_blocked", f"Daily policy phase {phase} is blocked."
     if label and phase:
         pair = f"{label}:{phase}"
         if pair in set(cfg.blocked_regime_phase_pairs):
-            return False, "regime_phase_pair_blocked", f"Regime/phase pair {pair} is blocked."
+            return True, "regime_phase_pair_blocked", f"Regime/phase pair {pair} is blocked."
+    return False, "", ""
+
+
+def _regime_is_tradeable(cfg: IntentConfig) -> tuple[bool, str, str]:
+    label = _world_regime_label(cfg)
+    if not label and cfg.require_world_regime_label:
+        return False, "world_regime_missing", "World regime label is missing."
+    blocked, code, text = _explicit_regime_block(cfg)
+    if blocked:
+        return False, code, text
+    if cfg.allowed_world_regime_labels and label and label not in set(cfg.allowed_world_regime_labels):
+        return False, "world_regime_not_allowed", f"World regime label {label} is not allowed."
     return True, "", ""
 
 
@@ -512,6 +526,19 @@ def evaluate_position_exit(
     mae = min(float(getattr(pos, "model_mae_pct", low_return)), low_return)
     setattr(pos, "model_mfe_pct", mfe)
     setattr(pos, "model_mae_pct", mae)
+
+    if cfg.regime_exit_enabled and total_bars >= cfg.regime_exit_min_bars:
+        blocked, code, text = _explicit_regime_block(cfg)
+        if blocked and current_return <= cfg.regime_exit_max_return_pct:
+            return {
+                "exit": True,
+                "status": "MODEL_SELECTOR_REGIME_EXIT",
+                "price": float(close),
+                "reason": (
+                    f"Selector regime exit {code}: {text} Current return {current_return:.2f}% "
+                    f"with MFE {mfe:.2f}% and MAE {mae:.2f}% after {total_bars} bars."
+                ),
+            }
 
     if total_bars >= cfg.hard_loss_exit_min_bars:
         if current_return <= cfg.hard_loss_return_pct and mfe <= cfg.hard_loss_mfe_cap_pct:
