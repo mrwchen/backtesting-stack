@@ -354,6 +354,7 @@ def build_daily_position_policy_context(
 
 def apply_daily_policy_context_to_config(cfg: object, context: DailyPositionPolicyContext) -> None:
     setattr(cfg, "daily_policy_phase", context.phase)
+    setattr(cfg, "daily_policy_world_regime_label", context.regime_label)
     setattr(cfg, "daily_policy_world_regime_ma_score", context.world_regime_ma_score)
     setattr(cfg, "daily_policy_blocked_long_sectors", context.blocked_long_sectors)
     setattr(cfg, "daily_policy_preferred_industry", context.preferred_industry)
