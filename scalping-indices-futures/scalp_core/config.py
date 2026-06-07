@@ -267,8 +267,10 @@ _validate_decision_gate("GLOBAL_DECISION_GATE", GLOBAL_DECISION_GATE)
 SIDE_REGIME_GATES = {
     ("LONG", 0): _decision_gate("LONG_REGIME0", False, 0.58, None, 0.28, None),
     ("LONG", 1): _decision_gate("LONG_REGIME1", False, 0.58, None, 0.28, None),
+    ("LONG", 2): _decision_gate("LONG_REGIME2", False, 0.62, None, 0.45, None),
     ("SHORT", 0): _decision_gate("SHORT_REGIME0", True, 0.52, None, 0.04, None),
     ("SHORT", 1): _decision_gate("SHORT_REGIME1", True, 0.52, None, 0.04, None),
+    ("SHORT", 2): _decision_gate("SHORT_REGIME2", False, 0.58, None, 0.16, None),
 }
 HIGH_VOL_GATE_ENABLED = env_bool("HIGH_VOL_GATE_ENABLED", False)
 HIGH_VOL_GATES = {

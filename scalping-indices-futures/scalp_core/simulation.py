@@ -132,6 +132,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     c = features["close"].to_numpy(dtype=np.float64)
     log_ret = features["log_ret"].to_numpy(dtype=np.float64)
     abs_ret = features["abs_ret"].to_numpy(dtype=np.float64)
+    roll_vol = features["roll_vol"].to_numpy(dtype=np.float64)
     momentum = features["momentum"].to_numpy(dtype=np.float64)
     rsi = features["rsi"].to_numpy(dtype=np.float64)
     atr = features["atr"].to_numpy(dtype=np.float64)
@@ -141,7 +142,7 @@ def run_simulation(features: pd.DataFrame) -> SimulationResult:
     entry_end: time = session_entry_end()
     cutoff: time = session_flat_cutoff()
 
-    regime_feats = np.column_stack([log_ret, abs_ret])
+    regime_feats = np.column_stack([log_ret, abs_ret, roll_vol, momentum])
     progress = _session_progress(local_time, entry_start, entry_end)
     minutes_from_entry_start = _minutes_from_start(local_time, entry_start)
     opening_high = _opening_high_prior(h, session_date, local_time, entry_start)

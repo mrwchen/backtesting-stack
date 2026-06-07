@@ -77,10 +77,11 @@ services:
 
       # ═════════════════════════════════════════════════════════════════════════
       # LAYER 1 — REGIME (HMM)
-      # Hidden-Markov-Modell erkennt Marktphasen (ruhig vs. turbulent).
-      # High-Vol wird vorerst hart geblockt; der letzte Lauf zeigte dort negative Edge.
+      # Hidden-Markov-Modell erkennt semantische Marktphasen:
+      # 0 normal/chop, 1 bearish/fade, 2 turbulent/high-vol.
+      # Roh-HMM-Labels werden nach jedem Fit stabil auf diese Codes gemappt.
       # ═════════════════════════════════════════════════════════════════════════
-      - REGIME_STATES=2              # Anzahl versteckter Zustaende
+      - REGIME_STATES=3              # Anzahl versteckter Zustaende
       - REGIME_BLOCK_HIGH_VOL_STATE=true    # true = im turbulentesten Regime hart blocken, wenn HIGH_VOL_GATE_ENABLED=false
       - HMM_N_ITER=100               # max. EM-Iterationen beim Fit
       - HMM_COVARIANCE_TYPE=diag     # diag | full | tied | spherical
@@ -164,6 +165,11 @@ services:
       - LONG_REGIME1_MAX_PROB=none
       - LONG_REGIME1_MIN_EXPECTED_NET_R=0.28
       - LONG_REGIME1_MAX_EXPECTED_NET_R=none
+      - LONG_REGIME2_GATE_ENABLED=false
+      - LONG_REGIME2_MIN_PROB=0.62
+      - LONG_REGIME2_MAX_PROB=none
+      - LONG_REGIME2_MIN_EXPECTED_NET_R=0.45
+      - LONG_REGIME2_MAX_EXPECTED_NET_R=none
       - SHORT_REGIME0_GATE_ENABLED=true
       - SHORT_REGIME0_MIN_PROB=0.52
       - SHORT_REGIME0_MAX_PROB=none
@@ -174,6 +180,11 @@ services:
       - SHORT_REGIME1_MAX_PROB=none
       - SHORT_REGIME1_MIN_EXPECTED_NET_R=0.04
       - SHORT_REGIME1_MAX_EXPECTED_NET_R=none
+      - SHORT_REGIME2_GATE_ENABLED=false
+      - SHORT_REGIME2_MIN_PROB=0.58
+      - SHORT_REGIME2_MAX_PROB=none
+      - SHORT_REGIME2_MIN_EXPECTED_NET_R=0.16
+      - SHORT_REGIME2_MAX_EXPECTED_NET_R=none
       - HIGH_VOL_LONG_GATE_ENABLED=false
       - HIGH_VOL_LONG_MIN_PROB=0.62
       - HIGH_VOL_LONG_MAX_PROB=none

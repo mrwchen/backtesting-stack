@@ -18,7 +18,7 @@ from .layer_candidates import SETUP_FEATURE_COLUMNS, SETUP_QUALITY_FEATURE_COLUM
 log = logging.getLogger(__name__)
 
 FEATURE_COLUMNS = (
-    "regime_state",
+    "semantic_regime_state",
     "high_vol_state",
     "price_deviation_basis",
     "slope_basis",

@@ -1,9 +1,12 @@
-"""Layer 1 — Market regime via Hidden Markov Model.
+"""Layer 1 — Semantic market regime via Hidden Markov Model.
 
-A Gaussian HMM (diagonal covariance) is fit on standardized [log_return,
-|log_return|]. The scaler is fit from the past-only training window at each refit.
-Hidden states are ranked by their emission variance so the highest-variance state
-is flagged as the "turbulent" regime.
+A Gaussian HMM is fit on standardized causal market features. Raw HMM labels are
+not stable across refits, so they are never exposed directly. After each fit the
+raw states are remapped to stable semantic codes:
+
+    0 = normal/chop
+    1 = bearish/fade
+    2 = turbulent/high-vol
 
 For per-bar state assignment we use a **causal forward filter**: the filtered
 posterior P(state_t | observations up to t) is computed from the fitted parameters
@@ -21,7 +24,11 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-REGIME_FEATURES = ("log_ret", "abs_ret")
+SEMANTIC_NORMAL = 0
+SEMANTIC_BEARISH = 1
+SEMANTIC_TURBULENT = 2
+
+REGIME_FEATURES = ("log_ret", "abs_ret", "roll_vol", "momentum")
 
 
 class RegimeModel:
@@ -38,7 +45,8 @@ class RegimeModel:
         self._means = None      # (k, d)
         self._inv_cov = None    # (k, d, d) full inverse covariance
         self._log_norm = None   # (k,) constant part of the multivariate-Gaussian log pdf
-        self._high_vol_state = -1
+        self._semantic_map = None
+        self._raw_high_vol_state = -1
 
     def fit(self, features: np.ndarray) -> None:
         """features: (n_obs, d) array, e.g. [log_ret, abs_ret]."""
@@ -76,9 +84,47 @@ class RegimeModel:
         self._inv_cov = np.linalg.inv(cov)                           # (k, d, d)
         sign, logdet = np.linalg.slogdet(cov)
         self._log_norm = -0.5 * (d * np.log(2.0 * np.pi) + logdet)   # (k,)
-        # Rank states by log_ret emission variance -> highest is "turbulent".
-        self._high_vol_state = int(np.argmax(cov[:, 0, 0]))
+        unscaled_means = self._unscale_means(means)
+        unscaled_cov = self._unscale_cov(cov)
+        self._semantic_map = self._build_semantic_map(unscaled_means, unscaled_cov)
+        self._raw_high_vol_state = int(np.flatnonzero(self._semantic_map == SEMANTIC_TURBULENT)[0])
         self._fitted = True
+
+    def _unscale_means(self, means: np.ndarray) -> np.ndarray:
+        scale = np.asarray(self._feature_scale, dtype=np.float64)
+        offset = np.asarray(self._feature_mean, dtype=np.float64)
+        return means * scale[None, :] + offset[None, :]
+
+    def _unscale_cov(self, cov: np.ndarray) -> np.ndarray:
+        scale = np.asarray(self._feature_scale, dtype=np.float64)
+        return cov * scale[None, :, None] * scale[None, None, :]
+
+    def _build_semantic_map(self, means: np.ndarray, cov: np.ndarray) -> np.ndarray:
+        """Map unstable raw HMM states to stable semantic regime ids."""
+        k, d = means.shape
+        mapping = np.full(k, SEMANTIC_NORMAL, dtype=np.int64)
+        if k == 0:
+            return mapping
+
+        abs_ret_idx = 1 if d > 1 else 0
+        roll_vol_idx = 2 if d > 2 else abs_ret_idx
+        momentum_idx = 3 if d > 3 else 0
+
+        ret_sigma = np.sqrt(np.maximum(cov[:, 0, 0], 0.0))
+        vol_score = np.abs(means[:, abs_ret_idx]) + np.abs(means[:, roll_vol_idx]) + ret_sigma
+        high_raw = int(np.argmax(vol_score))
+        mapping[high_raw] = SEMANTIC_TURBULENT
+
+        remaining = [idx for idx in range(k) if idx != high_raw]
+        if not remaining:
+            return mapping
+
+        # The short setup family wants the non-turbulent bearish/fade state,
+        # not just "a second arbitrary HMM label".
+        bearish_score = -means[:, momentum_idx] - 0.5 * means[:, 0]
+        bearish_raw = max(remaining, key=lambda idx: (bearish_score[idx], vol_score[idx]))
+        mapping[bearish_raw] = SEMANTIC_BEARISH
+        return mapping
 
     def _standardize_for_fit(self, features: np.ndarray) -> np.ndarray:
         """Fit a past-only scaler and return standardized HMM features."""
@@ -129,8 +175,8 @@ class RegimeModel:
     def filtered_states(self, features: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Causal forward filter over all bars.
 
-        Returns (states, high_vol_mask), both length n. When unfitted, returns
-        all-zero states and an all-False mask.
+        Returns semantic states and high-vol mask. When unfitted, returns all
+        normal states and an all-False mask.
         """
         n = features.shape[0]
         if not self._fitted or n == 0:
@@ -139,13 +185,13 @@ class RegimeModel:
         features_scaled = self._standardize(features)
         logB = self._emission_logprob(features_scaled)     # (n, k)
         k = self.n_states
-        states = np.empty(n, dtype=np.int64)
+        raw_states = np.empty(n, dtype=np.int64)
 
         # t = 0
         logb = logB[0] - logB[0].max()
         alpha = self._startprob * np.exp(logb)
         alpha /= alpha.sum() if alpha.sum() > 0 else 1.0
-        states[0] = int(np.argmax(alpha))
+        raw_states[0] = int(np.argmax(alpha))
 
         for t in range(1, n):
             pred = alpha @ self._transmat                  # (k,)
@@ -153,7 +199,8 @@ class RegimeModel:
             alpha = pred * np.exp(logb)
             s = alpha.sum()
             alpha = alpha / s if s > 0 else np.full(k, 1.0 / k)
-            states[t] = int(np.argmax(alpha))
+            raw_states[t] = int(np.argmax(alpha))
 
-        high_vol_mask = states == self._high_vol_state
-        return states, high_vol_mask
+        semantic_states = self._semantic_map[raw_states]
+        high_vol_mask = semantic_states == SEMANTIC_TURBULENT
+        return semantic_states, high_vol_mask

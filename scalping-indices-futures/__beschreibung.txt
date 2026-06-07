@@ -4,7 +4,7 @@ Statistisches Scalping-Backtesting (scalping-indices-futures)
 Eigenstaendiger Stack (eigenes docker-compose) fuer Intraday-Scalping auf
 Index-/Futures-Daten. Fuenf-Schichten-Pipeline:
 
-  1. Marktregime    : Hidden Markov Model (hmmlearn)
+  1. Marktregime    : HMM mit semantischem State-Remapping (hmmlearn)
   2. Preisprozess   : Kalman-Filter | State-Space-Modell   (PRICE_MODEL)
   3. Volatilitaet   : GARCH | EGARCH                        (VOL_MODEL)
   4. Trade-Entscheid: Setup-Kandidaten + Bayes/Logit-Filter (DECISION_MODEL)
@@ -34,8 +34,11 @@ Methodik / Look-Ahead-Schutz
 Walk-Forward: alle Schichten werden alle REFIT_EVERY_BARS Bars auf einem reinen
 Vergangenheitsfenster (WARMUP_BARS, optional rollierend TRAIN_WINDOW_BARS) neu
 gefittet. Jede Bar-Inferenz nutzt nur Daten bis zur jeweiligen Bar (kausale
-Forward-Filter fuer Regime/Preis/Volatilitaet). Ein Signal am Close von Bar t
-wird am Open von Bar t+1 ausgefuehrt.
+Forward-Filter fuer Regime/Preis/Volatilitaet). Das HMM sieht kausale
+Features aus log_ret, abs_ret, roll_vol und momentum. Rohe HMM-State-Labels
+werden nach jedem Fit stabil gemappt: 0=normal/chop, 1=bearish/fade,
+2=turbulent/high-vol. Ein Signal am Close von Bar t wird am Open von Bar t+1
+ausgefuehrt.
 Technische Setups werden zuerst aus bekannten Bar-Close-Daten erzeugt
 (z.B. Short-Regime0-Fade, Short-Level-Reject, Short-Bounce-Reject oder
 Opening-Range-Reject). Das Entscheidungsmodell trainiert und scored nur noch
@@ -49,10 +52,9 @@ Setup; wenn die juengste Phase nach Winrate oder Netto-PnL kippt, pausiert das
 Setup fuer eine konfigurierbare Cooldown-Zeit und testet danach wieder an.
 Labels werden weiterhin nur verwendet, wenn der komplette Exit vor dem Refit-Bar
 bekannt war. Nach der letzten Diagnose sind Long-Setups und Short-Continuation
-standardmaessig aus. State 0 hat eigene Short-Rejection-/Fade-Setups bekommen,
-damit normale Markttage nicht leer bleiben; die im letzten Run klar negativen
-State-0-Fade-/Momentum-Setups sind standardmaessig wieder deaktiviert. High-Vol
-ist nach der Diagnose wieder hart blockiert, bis dort ein eigener positiver
+standardmaessig aus. Semantic State 0 hat eigene Short-Rejection-/Fade-Setups
+fuer normale Markttage; Semantic State 1 ist fuer bearish/fade Setups. State 2
+ist turbulent/high-vol und bleibt hart blockiert, bis dort ein eigener positiver
 Setup-Pfad nachweisbar ist.
 
 Ergebnis-Tabellen (public)
