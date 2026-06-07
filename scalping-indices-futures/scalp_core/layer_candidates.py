@@ -87,9 +87,10 @@ def _score_allowed(candidate: SetupCandidate, minutes_from_open: float) -> bool:
     gate = config.CANDIDATE_SETUP_SCORE_GATES.get(candidate.setup_id)
     if gate is None:
         return candidate.score >= config.MIN_CANDIDATE_SCORE
-    if candidate.score < gate.min_score:
-        return False
-    if gate.max_score is not None and candidate.score >= gate.max_score:
+    if not any(
+        low <= candidate.score and (high is None or candidate.score < high)
+        for low, high in gate.score_ranges
+    ):
         return False
     if gate.entry_minute_ranges:
         if not np.isfinite(minutes_from_open):
