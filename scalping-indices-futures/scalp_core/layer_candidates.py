@@ -83,7 +83,7 @@ def _enabled(setup_id: str) -> bool:
     return config.CANDIDATE_SETUP_ENABLED.get(setup_id, True)
 
 
-def _score_allowed(candidate: SetupCandidate) -> bool:
+def _score_allowed(candidate: SetupCandidate, minutes_from_open: float) -> bool:
     gate = config.CANDIDATE_SETUP_SCORE_GATES.get(candidate.setup_id)
     if gate is None:
         return candidate.score >= config.MIN_CANDIDATE_SCORE
@@ -91,6 +91,11 @@ def _score_allowed(candidate: SetupCandidate) -> bool:
         return False
     if gate.max_score is not None and candidate.score >= gate.max_score:
         return False
+    if gate.entry_minute_ranges:
+        if not np.isfinite(minutes_from_open):
+            return False
+        if not any(start <= minutes_from_open < end for start, end in gate.entry_minute_ranges):
+            return False
     return True
 
 
@@ -569,6 +574,6 @@ def build_setup_candidates(
                 time_quality,
             ))
 
-    candidates = [c for c in candidates if _score_allowed(c)]
+    candidates = [c for c in candidates if _score_allowed(c, minutes_from_open)]
     candidates.sort(key=lambda c: (c.score, c.direction == "SHORT"), reverse=True)
     return candidates[: config.MAX_CANDIDATES_PER_BAR]

@@ -85,6 +85,7 @@ class DecisionGate:
 class CandidateScoreGate:
     min_score: float
     max_score: Optional[float]
+    entry_minute_ranges: tuple[tuple[float, float], ...]
 
 
 def _decision_gate(
@@ -139,10 +140,15 @@ def _candidate_score_gate(
     setup_id: str,
     min_score_default: float,
     max_score_default: Optional[float],
+    entry_minute_ranges_default: tuple[tuple[float, float], ...] = (),
 ) -> CandidateScoreGate:
     gate = CandidateScoreGate(
         min_score=env_float(f"{setup_id}_MIN_SCORE", min_score_default),
         max_score=env_optional_float(f"{setup_id}_MAX_SCORE", max_score_default),
+        entry_minute_ranges=_env_entry_minute_ranges(
+            f"{setup_id}_ENTRY_MINUTE_RANGES",
+            entry_minute_ranges_default,
+        ),
     )
     if gate.min_score < 0.0:
         raise ValueError(f"{setup_id}_MIN_SCORE must be >= 0")
@@ -151,9 +157,39 @@ def _candidate_score_gate(
     return gate
 
 
+def _env_entry_minute_ranges(name: str, default: tuple[tuple[float, float], ...]) -> tuple[tuple[float, float], ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if not text:
+        return default
+    if text.lower() in {"all", "any", "*", "none", "off", "disabled"}:
+        return ()
+
+    ranges: list[tuple[float, float]] = []
+    for part in text.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "-" not in item:
+            raise ValueError(f"{name} entry minute range {item!r} must use start-end")
+        start_text, end_text = (piece.strip() for piece in item.split("-", 1))
+        start = 0.0 if start_text in {"", "*"} else float(start_text)
+        end = 1440.0 if end_text in {"", "*"} else float(end_text)
+        if start < 0.0 or end > 1440.0 or end <= start:
+            raise ValueError(f"{name} entry minute range {item!r} is invalid")
+        ranges.append((start, end))
+    return tuple(ranges)
+
+
 def _candidate_setup_spec(setup_id: str, enabled: bool, gate: CandidateScoreGate) -> str:
     max_score = "*" if gate.max_score is None else f"{gate.max_score:g}"
-    return f"{setup_id}:{'on' if enabled else 'off'},score>={gate.min_score:g},score<{max_score}"
+    if gate.entry_minute_ranges:
+        minutes = "|".join(f"{start:g}-{end:g}" for start, end in gate.entry_minute_ranges)
+    else:
+        minutes = "*"
+    return f"{setup_id}:{'on' if enabled else 'off'},score>={gate.min_score:g},score<{max_score},minutes={minutes}"
 
 
 # ── data source ────────────────────────────────────────────────────────────────
@@ -255,10 +291,10 @@ CANDIDATE_SETUP_ENABLED = {
     "SHORT_REGIME0_OPENING_RANGE_REJECT": env_bool("SHORT_REGIME0_OPENING_RANGE_REJECT_ENABLED", True),
     "SHORT_REGIME0_MOMENTUM_ROLLOVER": env_bool("SHORT_REGIME0_MOMENTUM_ROLLOVER_ENABLED", False),
     "SHORT_REGIME1_BOUNCE_REJECT": env_bool("SHORT_REGIME1_BOUNCE_REJECT_ENABLED", True),
-    "SHORT_REGIME1_WEAK_BOUNCE_REJECT": env_bool("SHORT_REGIME1_WEAK_BOUNCE_REJECT_ENABLED", True),
+    "SHORT_REGIME1_WEAK_BOUNCE_REJECT": env_bool("SHORT_REGIME1_WEAK_BOUNCE_REJECT_ENABLED", False),
     "SHORT_REGIME1_STRONG_BOUNCE_REJECT": env_bool("SHORT_REGIME1_STRONG_BOUNCE_REJECT_ENABLED", False),
     "SHORT_REGIME1_FAILED_RECLAIM": env_bool("SHORT_REGIME1_FAILED_RECLAIM_ENABLED", False),
-    "SHORT_REGIME1_OPENING_RANGE_REJECT": env_bool("SHORT_REGIME1_OPENING_RANGE_REJECT_ENABLED", True),
+    "SHORT_REGIME1_OPENING_RANGE_REJECT": env_bool("SHORT_REGIME1_OPENING_RANGE_REJECT_ENABLED", False),
     "SHORT_REGIME1_LEVEL_REJECT": env_bool("SHORT_REGIME1_LEVEL_REJECT_ENABLED", True),
     "SHORT_REGIME1_CONTINUATION": env_bool("SHORT_REGIME1_CONTINUATION_ENABLED", False),
 }
@@ -273,16 +309,16 @@ CANDIDATE_SETUP_SCORE_GATES = {
         "SHORT_REGIME0_PULLBACK_FADE", MIN_CANDIDATE_SCORE, None,
     ),
     "SHORT_REGIME0_LEVEL_REJECT": _candidate_score_gate(
-        "SHORT_REGIME0_LEVEL_REJECT", 0.35, 0.65,
+        "SHORT_REGIME0_LEVEL_REJECT", 0.35, 0.65, ((90.0, 150.0), (270.0, 330.0)),
     ),
     "SHORT_REGIME0_OPENING_RANGE_REJECT": _candidate_score_gate(
-        "SHORT_REGIME0_OPENING_RANGE_REJECT", 0.45, None,
+        "SHORT_REGIME0_OPENING_RANGE_REJECT", 0.45, None, ((0.0, 90.0),),
     ),
     "SHORT_REGIME0_MOMENTUM_ROLLOVER": _candidate_score_gate(
         "SHORT_REGIME0_MOMENTUM_ROLLOVER", MIN_CANDIDATE_SCORE, None,
     ),
     "SHORT_REGIME1_BOUNCE_REJECT": _candidate_score_gate(
-        "SHORT_REGIME1_BOUNCE_REJECT", 0.45, None,
+        "SHORT_REGIME1_BOUNCE_REJECT", 0.45, None, ((0.0, 30.0), (270.0, 375.0)),
     ),
     "SHORT_REGIME1_WEAK_BOUNCE_REJECT": _candidate_score_gate(
         "SHORT_REGIME1_WEAK_BOUNCE_REJECT", MIN_CANDIDATE_SCORE, 0.55,
@@ -297,7 +333,7 @@ CANDIDATE_SETUP_SCORE_GATES = {
         "SHORT_REGIME1_OPENING_RANGE_REJECT", MIN_CANDIDATE_SCORE, None,
     ),
     "SHORT_REGIME1_LEVEL_REJECT": _candidate_score_gate(
-        "SHORT_REGIME1_LEVEL_REJECT", 0.65, None,
+        "SHORT_REGIME1_LEVEL_REJECT", 0.65, None, ((210.0, 375.0),),
     ),
     "SHORT_REGIME1_CONTINUATION": _candidate_score_gate(
         "SHORT_REGIME1_CONTINUATION", MIN_CANDIDATE_SCORE, None,
