@@ -56,6 +56,11 @@ def _env_float(name: str, default: float) -> float:
     return default if value is None or value.strip() == "" else float(value)
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return default if value is None or value.strip() == "" else int(value)
+
+
 def _env_optional_float(name: str) -> float | None:
     value = os.getenv(name)
     return None if value is None or value.strip() == "" else float(value)
@@ -84,6 +89,9 @@ DEFAULT_REQUIRE_USD_FUNDAMENTALS = _env_bool("REQUIRE_USD_FUNDAMENTALS", True)
 DEFAULT_MARKET_TABLE = os.getenv("SOURCE_MARKET_DATA_1H_TABLE", "alpaca_market_data_1h")
 DEFAULT_FUNDAMENTAL_TABLE = os.getenv("SOURCE_FUNDAMENTAL_SCORES_TABLE", "stock_scorer_fundamental_scores")
 DEFAULT_PEPPERSTONE_TABLE = os.getenv("PS_TRADABLE_SYMBOLS_TABLE", "public.pepperstone_data")
+DEFAULT_WORLD_REGIME_TABLE = os.getenv("SOURCE_WORLD_REGIME_TABLE", "world_regime_daily_scores_mv")
+DEFAULT_MARKET_REGIME_TABLE = os.getenv("SOURCE_MARKET_REGIME_TABLE", "alpaca_market_data_1h_daily_regime_scores")
+DEFAULT_MARKET_REGIME_LOOKBACK_DAYS = _env_int("MARKET_REGIME_LOOKBACK_DAYS", 60)
 DEFAULT_FUNDAMENTAL_SCORE_MODE = os.getenv("FUNDAMENTAL_SCORE_MODE", "peer").strip().lower()
 DEFAULT_FUNDAMENTAL_PEER_WEIGHT = _env_float("FUNDAMENTAL_PEER_WEIGHT", 1.0)
 DEFAULT_FUNDAMENTAL_ABS_WEIGHT = _env_float("FUNDAMENTAL_ABS_WEIGHT", 0.0)
@@ -92,11 +100,26 @@ DEFAULT_SHORT_MAX_ABSOLUTE_SCORE = _env_optional_float("SHORT_MAX_ABSOLUTE_SCORE
 
 
 @dataclass(frozen=True)
+class RegimeContext:
+    world_regime_label: str = "UNKNOWN"
+    world_regime_score: float | None = None
+    market_regime_label: str = "UNKNOWN"
+    market_regime_lookback_days: int | None = None
+    market_regime_trend_up_score: float | None = None
+    market_regime_trend_down_score: float | None = None
+    market_regime_range_score: float | None = None
+    market_regime_unclear_score: float | None = None
+    market_regime_atr_pct: float | None = None
+    market_regime_close_change_pct: float | None = None
+
+
+@dataclass(frozen=True)
 class CandidateMetrics:
     day: date
     direction: str
     as_of_ts: datetime
     fundamental: FundamentalRow
+    regime: RegimeContext
     history_close: float
     scorer_alpha: float
     price_alpha: float
@@ -176,6 +199,84 @@ class StatBucket:
         }
 
 
+@dataclass
+class SliceBucket:
+    count: int = 0
+    price_momentum_sum: float = 0.0
+    entry_pullback_sum: float = 0.0
+    price_alpha_sum: float = 0.0
+    scorer_alpha_sum: float = 0.0
+    swing_alpha_sum: float = 0.0
+    return_sum: float = 0.0
+    excess_sum: float = 0.0
+    mae_sum: float = 0.0
+    mfe_sum: float = 0.0
+    win_count: int = 0
+    excess_win_count: int = 0
+    returns: list[float] | None = None
+    excess_returns: list[float] | None = None
+
+    def add(self, metric: CandidateMetrics, forward: ForwardMetrics, entry_pullback_pct: float) -> None:
+        self.count += 1
+        self.price_momentum_sum += metric.score_values.get("directional_price_momentum", 0.0)
+        self.entry_pullback_sum += entry_pullback_pct
+        self.price_alpha_sum += metric.price_alpha
+        self.scorer_alpha_sum += metric.scorer_alpha
+        self.swing_alpha_sum += metric.swing_alpha
+        self.return_sum += forward.return_pct
+        self.mae_sum += forward.mae_pct
+        self.mfe_sum += forward.mfe_pct
+        if forward.return_pct > 0.0:
+            self.win_count += 1
+        if self.returns is None:
+            self.returns = []
+        self.returns.append(forward.return_pct)
+        if forward.excess_benchmark_pct is not None:
+            self.excess_sum += forward.excess_benchmark_pct
+            if forward.excess_benchmark_pct > 0.0:
+                self.excess_win_count += 1
+            if self.excess_returns is None:
+                self.excess_returns = []
+            self.excess_returns.append(forward.excess_benchmark_pct)
+
+    def as_row(
+        self,
+        direction: str,
+        horizon_days: int,
+        regime_source: str,
+        regime_label: str,
+        price_momentum_decile: int,
+        entry_pullback_bucket: str,
+    ) -> dict[str, object]:
+        excess_count = len(self.excess_returns or [])
+        avg_mae = self.mae_sum / self.count if self.count else 0.0
+        avg_mfe = self.mfe_sum / self.count if self.count else 0.0
+        return {
+            "direction": direction,
+            "horizon_days": horizon_days,
+            "regime_source": regime_source,
+            "regime_label": regime_label,
+            "price_momentum_decile": price_momentum_decile,
+            "entry_pullback_bucket": entry_pullback_bucket,
+            "count": self.count,
+            "avg_directional_price_momentum": self.price_momentum_sum / self.count if self.count else None,
+            "avg_entry_pullback_pct": self.entry_pullback_sum / self.count if self.count else None,
+            "avg_price_alpha": self.price_alpha_sum / self.count if self.count else None,
+            "avg_scorer_alpha": self.scorer_alpha_sum / self.count if self.count else None,
+            "avg_swing_alpha": self.swing_alpha_sum / self.count if self.count else None,
+            "avg_return_pct": self.return_sum / self.count if self.count else None,
+            "median_return_pct": median(self.returns or []) if self.returns else None,
+            "win_rate_pct": self.win_count / self.count * 100.0 if self.count else None,
+            "avg_excess_benchmark_pct": self.excess_sum / excess_count if excess_count else None,
+            "median_excess_benchmark_pct": median(self.excess_returns or []) if self.excess_returns else None,
+            "positive_excess_rate_pct": self.excess_win_count / excess_count * 100.0 if excess_count else None,
+            "avg_mae_pct": avg_mae if self.count else None,
+            "avg_mfe_pct": avg_mfe if self.count else None,
+            "avg_mfe_to_abs_mae": avg_mfe / abs(avg_mae) if avg_mae < 0.0 else None,
+            "avg_mfe_minus_abs_mae_pct": avg_mfe - abs(avg_mae) if self.count else None,
+        }
+
+
 def configure_logging(level: str) -> None:
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
@@ -234,6 +335,121 @@ def fetch_trading_days(conn, market_table: str, calendar_symbol: str, start_date
     with conn.cursor() as cur:
         cur.execute(query, (calendar_symbol.upper(), start_date, end_date))
         return [row[0] for row in cur.fetchall()]
+
+
+def relation_exists(conn, relation_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s)", (relation_name,))
+        return cur.fetchone()[0] is not None
+
+
+def fetch_world_regime(conn, world_regime_table: str, day: date, available: bool) -> tuple[str, float | None]:
+    if not available:
+        return "UNKNOWN", None
+    from psycopg2 import sql
+
+    from backtest_core.sql_utils import relation_identifier
+
+    query = sql.SQL(
+        """
+        SELECT regime_label, composite_score
+        FROM {}
+        WHERE day <= %s
+        ORDER BY day DESC
+        LIMIT 1
+        """
+    ).format(relation_identifier(world_regime_table))
+    with conn.cursor() as cur:
+        cur.execute(query, (day,))
+        row = cur.fetchone()
+    if not row:
+        return "UNKNOWN", None
+    label = str(row[0] or "").strip().upper() or "UNKNOWN"
+    score = float(row[1]) if row[1] is not None else None
+    return label, score
+
+
+def fetch_market_regime(
+    conn,
+    market_regime_table: str,
+    benchmark_symbol: str,
+    as_of_ts: datetime,
+    preferred_lookback_days: int,
+    available: bool,
+) -> dict[str, object]:
+    if not available:
+        return {}
+    from psycopg2 import sql
+
+    from backtest_core.sql_utils import relation_identifier
+
+    query = sql.SQL(
+        """
+        SELECT
+            market_state,
+            lookback_days,
+            trend_up_score,
+            trend_down_score,
+            range_score,
+            unclear_score,
+            atr_pct,
+            close_change_pct
+        FROM {}
+        WHERE symbol = %s
+          AND end_ts <= %s
+        ORDER BY
+            end_ts DESC,
+            CASE WHEN lookback_days = %s THEN 0 ELSE 1 END,
+            lookback_days DESC
+        LIMIT 1
+        """
+    ).format(relation_identifier(market_regime_table))
+    with conn.cursor() as cur:
+        cur.execute(query, (benchmark_symbol.upper(), as_of_ts, preferred_lookback_days))
+        row = cur.fetchone()
+    if not row:
+        return {}
+    return {
+        "market_regime_label": str(row[0] or "").strip().upper() or "UNKNOWN",
+        "market_regime_lookback_days": int(row[1]) if row[1] is not None else None,
+        "market_regime_trend_up_score": float(row[2]) if row[2] is not None else None,
+        "market_regime_trend_down_score": float(row[3]) if row[3] is not None else None,
+        "market_regime_range_score": float(row[4]) if row[4] is not None else None,
+        "market_regime_unclear_score": float(row[5]) if row[5] is not None else None,
+        "market_regime_atr_pct": float(row[6]) if row[6] is not None else None,
+        "market_regime_close_change_pct": float(row[7]) if row[7] is not None else None,
+    }
+
+
+def fetch_regime_context(
+    conn,
+    args: argparse.Namespace,
+    day: date,
+    as_of_ts: datetime,
+    world_regime_available: bool,
+    market_regime_available: bool,
+) -> RegimeContext:
+    world_label, world_score = fetch_world_regime(conn, args.world_regime_table, day, world_regime_available)
+    market = fetch_market_regime(
+        conn,
+        args.market_regime_table,
+        args.benchmark_symbol,
+        as_of_ts,
+        args.market_regime_lookback_days,
+        market_regime_available,
+    )
+    return RegimeContext(
+        world_regime_label=world_label,
+        world_regime_score=world_score,
+        market_regime_label=str(market.get("market_regime_label") or "UNKNOWN"),
+        market_regime_lookback_days=market.get("market_regime_lookback_days"),
+        market_regime_trend_up_score=market.get("market_regime_trend_up_score"),
+        market_regime_trend_down_score=market.get("market_regime_trend_down_score"),
+        market_regime_range_score=market.get("market_regime_range_score"),
+        market_regime_unclear_score=market.get("market_regime_unclear_score"),
+        market_regime_atr_pct=market.get("market_regime_atr_pct"),
+        market_regime_close_change_pct=market.get("market_regime_close_change_pct"),
+    )
 
 
 def apply_frequency(days: list[date], frequency: str) -> list[date]:
@@ -422,6 +638,7 @@ def build_candidate_metrics(
     bars: list[Bar],
     cfg: IntentConfig,
     lookback_bars: int,
+    regime: RegimeContext,
 ) -> CandidateMetrics | None:
     history = [bar for bar in bars if bar.ts <= as_of_ts]
     if len(history) < lookback_bars:
@@ -456,6 +673,7 @@ def build_candidate_metrics(
         direction=direction,
         as_of_ts=as_of_ts,
         fundamental=fundamental,
+        regime=regime,
         history_close=history[-1].close,
         scorer_alpha=scorer_alpha,
         price_alpha=price_alpha,
@@ -479,6 +697,60 @@ def assign_deciles(metrics: list[CandidateMetrics]) -> None:
             metric.score_deciles[score_name] = decile
 
 
+def entry_pullback_value(metric: CandidateMetrics) -> float | None:
+    if metric.direction == "SHORT":
+        return finite_score(metric.price_metrics.get("bounce"))
+    return finite_score(metric.price_metrics.get("drawdown"))
+
+
+def entry_pullback_bucket(metric: CandidateMetrics) -> str:
+    value = entry_pullback_value(metric)
+    if value is None:
+        return "unknown"
+    if metric.direction == "SHORT":
+        prefix = "short_bounce"
+    else:
+        prefix = "long_drawdown"
+    if value <= 2.0:
+        return f"{prefix}_00_02"
+    if value <= 5.0:
+        return f"{prefix}_02_05"
+    if value <= 10.0:
+        return f"{prefix}_05_10"
+    if value <= 15.0:
+        return f"{prefix}_10_15"
+    return f"{prefix}_15_plus"
+
+
+def slice_regime_labels(metric: CandidateMetrics) -> list[tuple[str, str]]:
+    return [
+        ("market", metric.regime.market_regime_label or "UNKNOWN"),
+        ("world", metric.regime.world_regime_label or "UNKNOWN"),
+    ]
+
+
+def add_slice_buckets(
+    slice_buckets: dict[tuple[str, int, str, str, int, str], SliceBucket],
+    metric: CandidateMetrics,
+    forward: ForwardMetrics,
+) -> None:
+    price_momentum_decile = metric.score_deciles.get("directional_price_momentum")
+    pullback_value = entry_pullback_value(metric)
+    if price_momentum_decile is None or pullback_value is None:
+        return
+    pullback_bucket = entry_pullback_bucket(metric)
+    for regime_source, regime_label in slice_regime_labels(metric):
+        key = (
+            metric.direction,
+            forward.horizon_days,
+            regime_source,
+            regime_label,
+            price_momentum_decile,
+            pullback_bucket,
+        )
+        slice_buckets[key].add(metric, forward, pullback_value)
+
+
 def write_run_metadata(path: Path, args: argparse.Namespace, sample_days: list[date]) -> None:
     metadata = {
         "created_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -490,6 +762,9 @@ def write_run_metadata(path: Path, args: argparse.Namespace, sample_days: list[d
         "market_table": args.market_table,
         "fundamental_table": args.fundamental_table,
         "pepperstone_table": args.pepperstone_table,
+        "world_regime_table": args.world_regime_table,
+        "market_regime_table": args.market_regime_table,
+        "market_regime_lookback_days": args.market_regime_lookback_days,
         "benchmark_symbol": args.benchmark_symbol,
         "calendar_symbol": args.calendar_symbol,
         "sample_days": len(sample_days),
@@ -509,6 +784,7 @@ def write_run_metadata(path: Path, args: argparse.Namespace, sample_days: list[d
         "fundamental_abs_weight": args.fundamental_abs_weight,
         "long_min_absolute_score": args.long_min_absolute_score,
         "short_max_absolute_score": args.short_max_absolute_score,
+        "min_slice_count": args.min_slice_count,
         "any_currency": args.any_currency,
     }
     path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
@@ -524,6 +800,16 @@ def candidate_fieldnames(horizons: list[int]) -> list[str]:
         "cik",
         "sector",
         "industry",
+        "world_regime_label",
+        "world_regime_score",
+        "market_regime_label",
+        "market_regime_lookback_days",
+        "market_regime_trend_up_score",
+        "market_regime_trend_down_score",
+        "market_regime_range_score",
+        "market_regime_unclear_score",
+        "market_regime_atr_pct",
+        "market_regime_close_change_pct",
         "market_cap_m",
         "composite_score",
         "composite_score_abs",
@@ -551,6 +837,8 @@ def candidate_fieldnames(horizons: list[int]) -> list[str]:
         "atr",
         "fast_ma",
         "slow_ma",
+        "entry_pullback_bucket",
+        "entry_pullback_pct",
         "horizon_days",
         "entry_ts",
         "entry_price",
@@ -586,6 +874,16 @@ def candidate_row(metric: CandidateMetrics, forward: ForwardMetrics) -> dict[str
         "cik": f.cik,
         "sector": f.sector,
         "industry": f.industry,
+        "world_regime_label": metric.regime.world_regime_label,
+        "world_regime_score": metric.regime.world_regime_score,
+        "market_regime_label": metric.regime.market_regime_label,
+        "market_regime_lookback_days": metric.regime.market_regime_lookback_days,
+        "market_regime_trend_up_score": metric.regime.market_regime_trend_up_score,
+        "market_regime_trend_down_score": metric.regime.market_regime_trend_down_score,
+        "market_regime_range_score": metric.regime.market_regime_range_score,
+        "market_regime_unclear_score": metric.regime.market_regime_unclear_score,
+        "market_regime_atr_pct": metric.regime.market_regime_atr_pct,
+        "market_regime_close_change_pct": metric.regime.market_regime_close_change_pct,
         "market_cap_m": f.market_cap_m,
         "composite_score": f.composite_score,
         "composite_score_abs": f.composite_score_abs,
@@ -613,6 +911,8 @@ def candidate_row(metric: CandidateMetrics, forward: ForwardMetrics) -> dict[str
         "mfe_pct": forward.mfe_pct,
         "benchmark_return_pct": forward.benchmark_return_pct,
         "excess_benchmark_pct": forward.excess_benchmark_pct,
+        "entry_pullback_bucket": entry_pullback_bucket(metric),
+        "entry_pullback_pct": entry_pullback_value(metric),
     }
     for key in ("trend", "intermediate", "confirmation", "drawdown", "breakout_gap", "bounce", "rsi", "atr", "fast_ma", "slow_ma"):
         row[key] = metric.price_metrics.get(key)
@@ -703,6 +1003,81 @@ def write_spreads(path: Path, buckets: dict[tuple[str, str, int, int], StatBucke
             })
 
 
+SLICE_FIELDNAMES = [
+    "direction",
+    "horizon_days",
+    "regime_source",
+    "regime_label",
+    "price_momentum_decile",
+    "entry_pullback_bucket",
+    "count",
+    "avg_directional_price_momentum",
+    "avg_entry_pullback_pct",
+    "avg_price_alpha",
+    "avg_scorer_alpha",
+    "avg_swing_alpha",
+    "avg_return_pct",
+    "median_return_pct",
+    "win_rate_pct",
+    "avg_excess_benchmark_pct",
+    "median_excess_benchmark_pct",
+    "positive_excess_rate_pct",
+    "avg_mae_pct",
+    "avg_mfe_pct",
+    "avg_mfe_to_abs_mae",
+    "avg_mfe_minus_abs_mae_pct",
+]
+
+
+def slice_row(
+    key: tuple[str, int, str, str, int, str],
+    bucket: SliceBucket,
+) -> dict[str, object]:
+    direction, horizon_days, regime_source, regime_label, price_momentum_decile, pullback_bucket = key
+    return bucket.as_row(
+        direction,
+        horizon_days,
+        regime_source,
+        regime_label,
+        price_momentum_decile,
+        pullback_bucket,
+    )
+
+
+def write_slices(path: Path, slice_buckets: dict[tuple[str, int, str, str, int, str], SliceBucket]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SLICE_FIELDNAMES)
+        writer.writeheader()
+        for key in sorted(slice_buckets):
+            writer.writerow(slice_row(key, slice_buckets[key]))
+
+
+def _leader_sort_value(row: dict[str, object]) -> tuple[float, float, int]:
+    excess = row.get("avg_excess_benchmark_pct")
+    avg_return = row.get("avg_return_pct")
+    count = row.get("count") or 0
+    excess_value = float(excess) if excess is not None else -999.0
+    return_value = float(avg_return) if avg_return is not None else -999.0
+    return (excess_value, return_value, int(count))
+
+
+def write_slice_leaders(
+    path: Path,
+    slice_buckets: dict[tuple[str, int, str, str, int, str], SliceBucket],
+    min_slice_count: int,
+) -> None:
+    rows = [
+        slice_row(key, bucket)
+        for key, bucket in slice_buckets.items()
+        if bucket.count >= min_slice_count
+    ]
+    rows.sort(key=_leader_sort_value, reverse=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SLICE_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-date", type=parse_date, default=DEFAULT_START_DATE)
@@ -718,6 +1093,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--market-table", default=DEFAULT_MARKET_TABLE)
     parser.add_argument("--fundamental-table", default=DEFAULT_FUNDAMENTAL_TABLE)
     parser.add_argument("--pepperstone-table", default=DEFAULT_PEPPERSTONE_TABLE)
+    parser.add_argument("--world-regime-table", default=DEFAULT_WORLD_REGIME_TABLE)
+    parser.add_argument("--market-regime-table", default=DEFAULT_MARKET_REGIME_TABLE)
+    parser.add_argument("--market-regime-lookback-days", type=int, default=DEFAULT_MARKET_REGIME_LOOKBACK_DAYS)
     parser.add_argument("--long-min-fundamental", type=float, default=DEFAULT_LONG_MIN_FUNDAMENTAL)
     parser.add_argument("--short-max-fundamental", type=float, default=DEFAULT_SHORT_MAX_FUNDAMENTAL)
     parser.add_argument("--min-market-cap-m", type=float, default=DEFAULT_MIN_MARKET_CAP_M)
@@ -737,6 +1115,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--short-label-blocklist", nargs="*", default=list(DEFAULT_SHORT_LABEL_BLOCKLIST))
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "analysis" / "output" / "swing_alpha_forward_research")
     parser.add_argument("--write-candidates", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-slice-count", type=int, default=30)
     parser.add_argument("--progress-every-days", type=int, default=10)
     parser.add_argument("--log-level", default="INFO")
     return parser
@@ -751,8 +1130,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--as-of-minute-utc must be between 0 and 59")
     if args.lookback_days <= 0:
         raise ValueError("--lookback-days must be positive")
+    if args.market_regime_lookback_days <= 0:
+        raise ValueError("--market-regime-lookback-days must be positive")
     if args.max_candidates_per_day < 0:
         raise ValueError("--max-candidates-per-day must be >= 0")
+    if args.min_slice_count < 1:
+        raise ValueError("--min-slice-count must be >= 1")
     if args.fundamental_peer_weight < 0.0 or args.fundamental_abs_weight < 0.0:
         raise ValueError("--fundamental-peer-weight and --fundamental-abs-weight must be >= 0")
     if args.fundamental_score_mode == "blend" and args.fundamental_peer_weight + args.fundamental_abs_weight <= 0.0:
@@ -774,6 +1157,8 @@ def run() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = args.output_dir / "swing_alpha_forward_summary.csv"
     spreads_path = args.output_dir / "swing_alpha_forward_spreads.csv"
+    slices_path = args.output_dir / "swing_alpha_forward_slices.csv"
+    slice_leaders_path = args.output_dir / "swing_alpha_forward_slice_leaders.csv"
     metadata_path = args.output_dir / "swing_alpha_forward_run.json"
     candidates_path = args.output_dir / "swing_alpha_forward_candidates.csv"
 
@@ -781,6 +1166,7 @@ def run() -> None:
     lookback_bars = required_bar_lookback(cfg)
     max_horizon = max(args.horizons)
     buckets: dict[tuple[str, str, int, int], StatBucket] = defaultdict(StatBucket)
+    slice_buckets: dict[tuple[str, int, str, str, int, str], SliceBucket] = defaultdict(SliceBucket)
     total_candidate_rows = 0
     total_forward_rows = 0
     skipped_no_history = 0
@@ -795,14 +1181,18 @@ def run() -> None:
             args.end_date,
         )
         sample_days = apply_frequency(trading_days, args.frequency)
+        world_regime_available = relation_exists(conn, args.world_regime_table)
+        market_regime_available = relation_exists(conn, args.market_regime_table)
         write_run_metadata(metadata_path, args, sample_days)
         LOG.info(
-            "Research starting days %d frequency %s directions %s horizons %s output %s",
+            "Research starting days %d frequency %s directions %s horizons %s output %s world regime available %s market regime available %s",
             len(sample_days),
             args.frequency,
             ",".join(args.directions),
             ",".join(str(item) for item in args.horizons),
             args.output_dir,
+            world_regime_available,
+            market_regime_available,
         )
 
         candidate_handle = None
@@ -817,6 +1207,14 @@ def run() -> None:
                 as_of_ts = utc_as_of(day, args.as_of_hour_utc, args.as_of_minute_utc)
                 load_start = as_of_ts - timedelta(days=args.lookback_days)
                 load_end = as_of_ts + timedelta(days=max_horizon + 14)
+                regime_context = fetch_regime_context(
+                    conn,
+                    args,
+                    day,
+                    as_of_ts,
+                    world_regime_available,
+                    market_regime_available,
+                )
                 day_metrics: list[CandidateMetrics] = []
                 day_bars_by_identity: dict[InstrumentKey, list[Bar]] = {}
                 raw_candidate_count = 0
@@ -852,6 +1250,7 @@ def run() -> None:
                             bars,
                             cfg,
                             lookback_bars,
+                            regime_context,
                         )
                         if metric is None:
                             skipped_no_history += 1
@@ -875,6 +1274,7 @@ def run() -> None:
                             if score_value is None:
                                 continue
                             buckets[(metric.direction, score_name, horizon, decile)].add(score_value, forward)
+                        add_slice_buckets(slice_buckets, metric, forward)
                         if candidate_writer is not None:
                             candidate_writer.writerow(candidate_row(metric, forward))
 
@@ -898,14 +1298,18 @@ def run() -> None:
 
     write_summary(summary_path, buckets)
     write_spreads(spreads_path, buckets)
+    write_slices(slices_path, slice_buckets)
+    write_slice_leaders(slice_leaders_path, slice_buckets, args.min_slice_count)
     LOG.info(
-        "Research complete candidates %d forward rows %d skipped history %d skipped forward %d summary %s spreads %s",
+        "Research complete candidates %d forward rows %d skipped history %d skipped forward %d summary %s spreads %s slices %s slice leaders %s",
         total_candidate_rows,
         total_forward_rows,
         skipped_no_history,
         skipped_no_forward,
         summary_path,
         spreads_path,
+        slices_path,
+        slice_leaders_path,
     )
 
 
