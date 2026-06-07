@@ -2,10 +2,10 @@
 
 Model idea:
   - LONG only.
-  - QQQ is the market/exposure benchmark and can be traded as a fallback.
+  - QQQ is only the market/exposure benchmark; the model never buys QQQ.
   - Fundamental score is a quality floor, not the ranking edge.
-  - Stock ranking is driven by relative strength vs QQQ, recent confirmation,
-    controlled pullback, and volatility-normalized trend quality.
+  - Stock entries must pass one concrete alpha setup instead of accumulating
+    many weak partial scores.
   - A model exit closes trades that fail to produce early MFE.
 """
 
@@ -33,7 +33,7 @@ MODEL_NAME = "relative_strength_market_aware_swing_v2"
 BENCHMARK_SYMBOL = "QQQ"
 BENCHMARK_SYMBOLS = (BENCHMARK_SYMBOL,)
 BENCHMARK_BAR_LOOKBACK = 520
-DIRECT_CANDIDATE_SYMBOLS = (BENCHMARK_SYMBOL,)
+DIRECT_CANDIDATE_SYMBOLS = ()
 DIRECT_CANDIDATE_MODE = "append"
 DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY = False
 
@@ -51,23 +51,19 @@ class IntentConfig:
     benchmark_fast_ma_bars: int = 65
     benchmark_slow_ma_bars: int = 260
     benchmark_drawdown_bars: int = 260
-    min_benchmark_market_score: float = 4.8
-    min_benchmark_short_return_pct: float = -4.0
-    min_benchmark_mid_return_pct: float = -8.0
-    max_benchmark_drawdown_pct: float = 18.0
+    min_benchmark_market_score: float = 6.5
+    min_benchmark_short_return_pct: float = -3.0
+    min_benchmark_mid_return_pct: float = -6.0
+    max_benchmark_drawdown_pct: float = 14.0
 
     allowed_world_regime_labels: tuple[str, ...] = ("CONSTRUCTIVE", "NEUTRAL")
     blocked_world_regime_labels: tuple[str, ...] = ("DEFENSIVE",)
     require_world_regime_label: bool = True
     blocked_daily_policy_phases: tuple[str, ...] = ("STRESS_HIGH",)
 
-    enable_benchmark_fallback: bool = True
-    benchmark_fallback_score: float = 5.4
-    min_benchmark_fallback_market_score: float = 5.2
-
-    min_long_composite_score: float = 45.0
-    min_long_price_momentum_score: float = 50.0
-    min_long_intent_score: float = 4.75
+    min_long_composite_score: float = 50.0
+    min_long_price_momentum_score: float = 55.0
+    min_long_intent_score: float = 6.25
     use_mispricing_score: bool = False
     mispricing_weight: float = 0.0
     fundamental_score_mode: str = "peer"
@@ -85,28 +81,39 @@ class IntentConfig:
     slow_ma_bars: int = 260
     atr_bars: int = 65
 
-    min_trend_return_pct: float = -2.0
-    min_swing_return_pct: float = -3.0
-    min_confirmation_pct: float = -0.25
-    min_relative_trend_pct: float = -3.0
-    min_relative_swing_pct: float = -2.0
-    min_relative_confirmation_pct: float = -1.0
-    min_rebound_from_recent_low_pct: float = 0.4
+    min_trend_return_pct: float = 0.0
+    min_swing_return_pct: float = 0.0
+    min_confirmation_pct: float = 1.0
+    min_relative_trend_pct: float = -2.0
+    max_relative_trend_pct: float = 55.0
+    min_relative_swing_pct: float = 0.0
+    min_relative_confirmation_pct: float = 0.5
+    min_rebound_from_recent_low_pct: float = 1.0
     long_min_pullback_pct: float = 0.0
-    long_max_pullback_pct: float = 12.0
+    long_max_pullback_pct: float = 10.0
     long_ideal_pullback_pct: float = 4.0
-    long_min_rsi: float = 48.0
-    long_max_rsi: float = 72.0
-    max_atr_pct: float = 6.5
-    max_below_slow_ma_pct: float = 1.5
+    long_min_rsi: float = 52.0
+    long_max_rsi: float = 71.0
+    max_atr_pct: float = 3.0
+    max_below_slow_ma_pct: float = 0.5
+
+    min_breakout_confirmation_pct: float = 5.0
+    min_breakout_relative_swing_pct: float = 3.0
+    min_breakout_relative_confirmation_pct: float = 1.5
+    max_breakout_pullback_pct: float = 4.0
+    min_reclaim_pullback_pct: float = 5.0
+    min_reclaim_rebound_pct: float = 3.0
+    min_reclaim_confirmation_pct: float = 2.0
+    min_reclaim_relative_swing_pct: float = 0.0
+    max_chase_rsi: float = 68.0
 
     failure_fast_enabled: bool = True
-    failure_fast_min_bars: int = 35
-    failure_fast_min_mfe_pct: float = 2.0
-    failure_fast_max_return_pct: float = 0.25
-    relative_failure_min_bars: int = 55
-    relative_failure_loss_pct: float = 3.0
-    relative_failure_mfe_cap_pct: float = 3.0
+    failure_fast_min_bars: int = 28
+    failure_fast_min_mfe_pct: float = 1.75
+    failure_fast_max_return_pct: float = 0.0
+    relative_failure_min_bars: int = 45
+    relative_failure_loss_pct: float = 2.5
+    relative_failure_mfe_cap_pct: float = 2.75
 
 
 def intent_config_from_env() -> IntentConfig:
@@ -142,12 +149,6 @@ def intent_config_from_env() -> IntentConfig:
             for phase in env_list("BLOCKED_DAILY_POLICY_PHASES", d.blocked_daily_policy_phases)
             if phase.strip()
         ),
-        enable_benchmark_fallback=env_bool("ENABLE_BENCHMARK_FALLBACK", d.enable_benchmark_fallback),
-        benchmark_fallback_score=env_float("BENCHMARK_FALLBACK_SCORE", d.benchmark_fallback_score),
-        min_benchmark_fallback_market_score=env_float(
-            "MIN_BENCHMARK_FALLBACK_MARKET_SCORE",
-            d.min_benchmark_fallback_market_score,
-        ),
         min_long_composite_score=env_float("MIN_LONG_COMPOSITE_SCORE", d.min_long_composite_score),
         min_long_price_momentum_score=env_float("MIN_LONG_PRICE_MOMENTUM_SCORE", d.min_long_price_momentum_score),
         min_long_intent_score=env_float("MIN_LONG_INTENT_SCORE", d.min_long_intent_score),
@@ -170,6 +171,7 @@ def intent_config_from_env() -> IntentConfig:
         min_swing_return_pct=env_float("MIN_SWING_RETURN_PCT", d.min_swing_return_pct),
         min_confirmation_pct=env_float("MIN_CONFIRMATION_PCT", d.min_confirmation_pct),
         min_relative_trend_pct=env_float("MIN_RELATIVE_TREND_PCT", d.min_relative_trend_pct),
+        max_relative_trend_pct=env_float("MAX_RELATIVE_TREND_PCT", d.max_relative_trend_pct),
         min_relative_swing_pct=env_float("MIN_RELATIVE_SWING_PCT", d.min_relative_swing_pct),
         min_relative_confirmation_pct=env_float(
             "MIN_RELATIVE_CONFIRMATION_PCT",
@@ -186,6 +188,27 @@ def intent_config_from_env() -> IntentConfig:
         long_max_rsi=env_float("LONG_MAX_RSI", d.long_max_rsi),
         max_atr_pct=env_float("MAX_ATR_PCT", d.max_atr_pct),
         max_below_slow_ma_pct=env_float("MAX_BELOW_SLOW_MA_PCT", d.max_below_slow_ma_pct),
+        min_breakout_confirmation_pct=env_float(
+            "MIN_BREAKOUT_CONFIRMATION_PCT",
+            d.min_breakout_confirmation_pct,
+        ),
+        min_breakout_relative_swing_pct=env_float(
+            "MIN_BREAKOUT_RELATIVE_SWING_PCT",
+            d.min_breakout_relative_swing_pct,
+        ),
+        min_breakout_relative_confirmation_pct=env_float(
+            "MIN_BREAKOUT_RELATIVE_CONFIRMATION_PCT",
+            d.min_breakout_relative_confirmation_pct,
+        ),
+        max_breakout_pullback_pct=env_float("MAX_BREAKOUT_PULLBACK_PCT", d.max_breakout_pullback_pct),
+        min_reclaim_pullback_pct=env_float("MIN_RECLAIM_PULLBACK_PCT", d.min_reclaim_pullback_pct),
+        min_reclaim_rebound_pct=env_float("MIN_RECLAIM_REBOUND_PCT", d.min_reclaim_rebound_pct),
+        min_reclaim_confirmation_pct=env_float("MIN_RECLAIM_CONFIRMATION_PCT", d.min_reclaim_confirmation_pct),
+        min_reclaim_relative_swing_pct=env_float(
+            "MIN_RECLAIM_RELATIVE_SWING_PCT",
+            d.min_reclaim_relative_swing_pct,
+        ),
+        max_chase_rsi=env_float("MAX_CHASE_RSI", d.max_chase_rsi),
         failure_fast_enabled=env_bool("FAILURE_FAST_ENABLED", d.failure_fast_enabled),
         failure_fast_min_bars=env_int("FAILURE_FAST_MIN_BARS", d.failure_fast_min_bars),
         failure_fast_min_mfe_pct=env_float("FAILURE_FAST_MIN_MFE_PCT", d.failure_fast_min_mfe_pct),
@@ -356,31 +379,51 @@ def _pullback_score(pullback: float, cfg: IntentConfig) -> float:
 
 
 def _evaluate_benchmark_long(fundamental: FundamentalRow, cfg: IntentConfig) -> IntentEvaluation:
-    if not cfg.enable_benchmark_fallback:
-        return IntentEvaluation(None, "rejected", "benchmark_fallback_disabled", "Benchmark fallback is disabled.")
-    ok, reason_code, reason_text, state = _market_is_tradeable(cfg)
-    if not ok:
-        return IntentEvaluation(None, "rejected", reason_code, reason_text)
-    if float(state.get("score", 0.0)) < cfg.min_benchmark_fallback_market_score:
-        return IntentEvaluation(
-            None,
-            "rejected",
-            "benchmark_fallback_market_score_below_min",
-            f"Benchmark fallback score {float(state.get('score', 0.0)):.2f} below minimum.",
-        )
-    score = cfg.benchmark_fallback_score + clamp((float(state["score"]) - 5.0) / 5.0, 0.0, 1.0) * 1.2
-    reason = (
-        f"RSv2 QQQ fallback | market {float(state['score']):.2f} | "
-        f"QQQ{cfg.benchmark_short_lookback_bars} {float(state['ret_short']):.1f}% | "
-        f"QQQ{cfg.benchmark_mid_lookback_bars} {float(state['ret_mid']):.1f}% | "
-        f"DD {float(state['drawdown']):.1f}%"
-    )
     return IntentEvaluation(
-        TradeIntent(fundamental.symbol, "LONG", round(score, 4), reason),
-        "intent",
-        "benchmark_fallback_long_passed",
-        reason,
+        None,
+        "rejected",
+        "benchmark_symbol_context_only",
+        f"{cfg.benchmark_symbol} is used only as benchmark context; this model does not trade it.",
     )
+
+
+def _stock_setup(
+    *,
+    confirmation: float,
+    relative_swing: float,
+    relative_confirmation: float,
+    pullback: float,
+    rebound: float,
+    rsi: float,
+    atr: float,
+    cfg: IntentConfig,
+) -> tuple[Optional[str], str]:
+    breakout = (
+        confirmation >= cfg.min_breakout_confirmation_pct
+        and relative_swing >= cfg.min_breakout_relative_swing_pct
+        and relative_confirmation >= cfg.min_breakout_relative_confirmation_pct
+        and pullback <= cfg.max_breakout_pullback_pct
+        and rsi <= cfg.max_chase_rsi
+    )
+    if breakout:
+        return "BREAKOUT_CONFIRMATION", "Strong confirmation while still close to the lookback high."
+
+    reclaim = (
+        pullback >= cfg.min_reclaim_pullback_pct
+        and rebound >= cfg.min_reclaim_rebound_pct
+        and confirmation >= cfg.min_reclaim_confirmation_pct
+        and relative_swing >= cfg.min_reclaim_relative_swing_pct
+        and rsi <= cfg.long_max_rsi
+    )
+    if reclaim:
+        return "PULLBACK_RECLAIM", "Controlled pullback with rebound and positive swing-relative strength."
+
+    reason = (
+        f"No stock alpha setup passed: confirmation {confirmation:.2f}%, relative swing "
+        f"{relative_swing:.2f}%, relative confirmation {relative_confirmation:.2f}%, "
+        f"pullback {pullback:.2f}%, rebound {rebound:.2f}%, RSI {rsi:.1f}, ATR {atr:.2f}%."
+    )
+    return None, reason
 
 
 def compute_long_intent(
@@ -444,6 +487,13 @@ def evaluate_long_intent(
         return IntentEvaluation(None, "rejected", "confirmation_below_min", f"Confirmation {confirmation:.2f}% below minimum.")
     if relative_trend < cfg.min_relative_trend_pct:
         return IntentEvaluation(None, "rejected", "relative_trend_below_min", f"Relative trend {relative_trend:.2f}% below minimum.")
+    if relative_trend > cfg.max_relative_trend_pct:
+        return IntentEvaluation(
+            None,
+            "rejected",
+            "relative_trend_too_extended",
+            f"Relative trend {relative_trend:.2f}% above maximum; avoid late crowded momentum.",
+        )
     if relative_swing < cfg.min_relative_swing_pct:
         return IntentEvaluation(None, "rejected", "relative_swing_below_min", f"Relative swing {relative_swing:.2f}% below minimum.")
     if relative_confirmation < cfg.min_relative_confirmation_pct:
@@ -477,36 +527,51 @@ def evaluate_long_intent(
     if atr > cfg.max_atr_pct:
         return IntentEvaluation(None, "rejected", "atr_above_max", f"ATR {atr:.2f}% above maximum.")
 
+    setup_name, setup_text = _stock_setup(
+        confirmation=confirmation,
+        relative_swing=relative_swing,
+        relative_confirmation=relative_confirmation,
+        pullback=pullback,
+        rebound=rebound,
+        rsi=rsi,
+        atr=atr,
+        cfg=cfg,
+    )
+    if setup_name is None:
+        return IntentEvaluation(None, "rejected", "no_stock_alpha_setup", setup_text)
+
     relative_score = (
-        clamp((relative_trend - cfg.min_relative_trend_pct) / 18.0, 0.0, 1.0) * 0.45
-        + clamp((relative_swing - cfg.min_relative_swing_pct) / 10.0, 0.0, 1.0) * 0.35
-        + clamp((relative_confirmation - cfg.min_relative_confirmation_pct) / 5.0, 0.0, 1.0) * 0.20
+        clamp((relative_swing - cfg.min_relative_swing_pct) / 12.0, 0.0, 1.0) * 0.50
+        + clamp((relative_confirmation - cfg.min_relative_confirmation_pct) / 6.0, 0.0, 1.0) * 0.30
+        + clamp((relative_trend - cfg.min_relative_trend_pct) / 24.0, 0.0, 1.0) * 0.20
     )
     timing_score = (
-        clamp((confirmation - cfg.min_confirmation_pct) / 6.0, 0.0, 1.0) * 0.30
-        + clamp(rebound / 4.0, 0.0, 1.0) * 0.20
-        + _pullback_score(pullback, cfg) * 0.20
-        + clamp((rsi - cfg.long_min_rsi) / max(58.0 - cfg.long_min_rsi, 1.0), 0.0, 1.0) * 0.15
-        + (1.0 if fast_ma >= slow_ma else 0.4) * 0.15
+        clamp((confirmation - cfg.min_confirmation_pct) / 7.0, 0.0, 1.0) * 0.30
+        + clamp(rebound / 6.0, 0.0, 1.0) * 0.20
+        + _pullback_score(pullback, cfg) * 0.18
+        + clamp((rsi - cfg.long_min_rsi) / max(66.0 - cfg.long_min_rsi, 1.0), 0.0, 1.0) * 0.12
+        + (1.0 if fast_ma >= slow_ma else 0.4) * 0.20
     )
     market_score = clamp(float(market.get("score", 0.0)) / 10.0, 0.0, 1.0)
     quality_score = _fund(fundamental, cfg, short=False)
     price_momentum_score = _score01(price_momentum)
     volatility_score = clamp((cfg.max_atr_pct - atr) / max(cfg.max_atr_pct, 0.01), 0.0, 1.0)
+    setup_score = 1.0 if setup_name == "BREAKOUT_CONFIRMATION" else 0.82
 
     combined = (
-        relative_score * 0.34
-        + timing_score * 0.28
-        + market_score * 0.14
-        + price_momentum_score * 0.10
-        + quality_score * 0.08
-        + volatility_score * 0.06
+        setup_score * 0.24
+        + relative_score * 0.24
+        + timing_score * 0.22
+        + market_score * 0.12
+        + price_momentum_score * 0.08
+        + quality_score * 0.06
+        + volatility_score * 0.04
     ) * 10.0
     if combined < cfg.min_long_intent_score:
         return IntentEvaluation(None, "rejected", "intent_score_below_min", f"Intent score {combined:.2f} below minimum.")
 
     reason = (
-        f"RSv2 stock | market {float(market.get('score', 0.0)):.2f} | "
+        f"RSv2 stock | setup {setup_name} | market {float(market.get('score', 0.0)):.2f} | "
         f"rel{cfg.trend_lookback_bars} {relative_trend:.1f}% | "
         f"rel{cfg.swing_lookback_bars} {relative_swing:.1f}% | "
         f"rel{cfg.confirmation_bars} {relative_confirmation:.1f}% | "

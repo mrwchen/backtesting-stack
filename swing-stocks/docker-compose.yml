@@ -191,10 +191,10 @@ services:
       #- ACCOUNT_PROFILE=all
       - ACCOUNT_PROFILE=ps_acc
       - INITIAL_EQUITY_USD=5000
-      - RISK_PER_TRADE_EQUITY_PCT=1.5
-      - MAX_OPEN_POSITIONS=5
-      - MAX_POSITION_OPENS_PER_DAY=4
-      - MAX_POSITION_OPENS_PER_HOUR=2
+      - RISK_PER_TRADE_EQUITY_PCT=1.25
+      - MAX_OPEN_POSITIONS=4
+      - MAX_POSITION_OPENS_PER_DAY=2
+      - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
@@ -321,11 +321,11 @@ services:
       # SEC-8-K-Events werden fuer historische Backtests als N Tage vorher
       # oeffentlich bekannt modelliert; yfinance nutzt strikt known_as_of_ts.
       # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=45.0
+      - COMMON_LONG_MIN_FUNDAMENTAL=50.0
       - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
       - COMMON_LONG_LABEL_BLOCKLIST= insufficient_data, value_trap,overvalued,overvalued_weak,expensive_quality
       - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data, deep_value,quality_value,compounder,undervalued
-      - COMMON_MIN_MARKET_CAP_USD_M=10000.0
+      - COMMON_MIN_MARKET_CAP_USD_M=20000.0
       - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
       - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
@@ -361,19 +361,19 @@ services:
       - TAKE_PROFIT_MODE=trailing
       - EXECUTION_LONG_TAKE_PROFIT_PCT=6.0
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=6.5
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=6.0
       - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=3.0
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=3.0
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=2.8
       - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=1.5
-      - EXECUTION_LONG_MAX_HOLD_DAYS=20.0
+      - EXECUTION_LONG_MAX_HOLD_DAYS=16.0
       - EXECUTION_SHORT_MAX_HOLD_DAYS=7.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=120
       - COMMON_STOP_BUFFER_RATIO=0.010
       - COMMON_STOP_ATR_LOOKBACK_BARS=120
-      - COMMON_STOP_ATR_MULT=1.8
-      - COMMON_MIN_STOP_PCT=3.5
-      - COMMON_MAX_STOP_PCT=9.0
+      - COMMON_STOP_ATR_MULT=1.5
+      - COMMON_MIN_STOP_PCT=3.0
+      - COMMON_MAX_STOP_PCT=7.5
 
       # ---------------------------------------------------------------------
       # Pepperstone-Profil: EU Retail US Share CFD
