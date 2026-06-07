@@ -31,6 +31,8 @@ services:
     depends_on:
       init-backtest-schema:
         condition: service_completed_successfully
+    volumes:
+      - ./analysis:/app/analysis
     environment:
       # ---------------------------------------------------------------------
       # Datenbankverbindung und Ergebnis-Schema

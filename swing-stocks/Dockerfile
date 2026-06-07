@@ -11,5 +11,6 @@ COPY backtest_shared.py .
 COPY backtest_core/ ./backtest_core/
 COPY backtest_models/ ./backtest_models/
 COPY backtest_model_configs/ ./backtest_model_configs/
+COPY analysis/ ./analysis/
 COPY backtest_runner.py .
 CMD ["python", "backtest_runner.py"]
