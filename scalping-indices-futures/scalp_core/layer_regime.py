@@ -49,7 +49,7 @@ class RegimeModel:
         self._raw_high_vol_state = -1
 
     def fit(self, features: np.ndarray) -> None:
-        """features: (n_obs, d) array, e.g. [log_ret, abs_ret]."""
+        """features: (n_obs, d) array, e.g. [log_ret, abs_ret, roll_vol, momentum]."""
         from hmmlearn.hmm import GaussianHMM
 
         self._fitted = False
