@@ -194,7 +194,7 @@ services:
       - RISK_PER_TRADE_EQUITY_PCT=1.25
       - MAX_OPEN_POSITIONS=10
       - MAX_POSITION_OPENS_PER_DAY=3
-      - MAX_POSITION_OPENS_PER_HOUR=2
+      - MAX_POSITION_OPENS_PER_HOUR=1
       - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
@@ -244,8 +244,8 @@ services:
 
       # High-Stress-Budget: harte Direction-Caps, wenn der World-Regime-MA
       # oberhalb der High-Stress-Schwelle liegt.
-      - DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS=4
-      - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=0
+      - DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS=1
+      - DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS=2
 
       # Entry-Taktung und SL-Cluster-Halt: begrenzt Abstand zwischen Opens und
       # stoppt neue Entries nach zu vielen SL-Closes im Zeitfenster.
@@ -284,15 +284,15 @@ services:
 
       # Tech-Stress-Sektorblock: blockiert Long-Entries im konfigurierten
       # Sektor, wenn Tech-Stress im Lookback ueber der Schwelle lag.
-      - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=3
+      - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=4
       - DAILY_POLICY_TECH_STRESS_THRESHOLD=60.0
-      - DAILY_POLICY_BLOCK_LONG_SECTOR=__NONE__
+      - "DAILY_POLICY_BLOCK_LONG_SECTOR=06 Technology"
 
       # Energy-Shock-Industry-Praeferenz: gibt eine bevorzugte Industry an die
       # Modelle weiter, wenn Energy-Shock an allen Lookback-Tagen hoch war.
       - DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS=3
       - DAILY_POLICY_ENERGY_SHOCK_THRESHOLD=60.0
-      - DAILY_POLICY_PREFERRED_INDUSTRY=1311 Crude Petroleum & Natural Gas
+      - "DAILY_POLICY_PREFERRED_INDUSTRY=1311 Crude Petroleum & Natural Gas"
 
       # Historischer Lookback: Kalenderfenster, aus dem vorherige Handelstage
       # fuer Regime-MA, Trend und Sonderregeln geladen werden.
@@ -337,7 +337,7 @@ services:
       - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE=false
       - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS=100
       - COMMON_EARNINGS_BLACKOUT_ENABLED=true
-      - COMMON_EARNINGS_BLACKOUT_DAYS=5
+      - COMMON_EARNINGS_BLACKOUT_DAYS=10
       - COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE=21
 
       # ---------------------------------------------------------------------
@@ -363,14 +363,14 @@ services:
       # inklusive Mindest- und Maximalabstand.
       # ---------------------------------------------------------------------
       - TAKE_PROFIT_MODE=trailing
-      - EXECUTION_LONG_TAKE_PROFIT_PCT=30.0
+      - EXECUTION_LONG_TAKE_PROFIT_PCT=15.0
       - EXECUTION_SHORT_TAKE_PROFIT_PCT=6.0
-      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=18.0
-      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=3.0
-      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=8.0
-      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=1.5
-      - EXECUTION_LONG_MAX_HOLD_DAYS=63.0
-      - EXECUTION_SHORT_MAX_HOLD_DAYS=7.0
+      - EXECUTION_LONG_TRAILING_ACTIVATION_PCT=10.0
+      - EXECUTION_SHORT_TRAILING_ACTIVATION_PCT=4.0
+      - EXECUTION_LONG_TRAILING_DISTANCE_PCT=5.0
+      - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=2.0
+      - EXECUTION_LONG_MAX_HOLD_DAYS=21.0
+      - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=260
       - COMMON_STOP_BUFFER_RATIO=0.010
@@ -450,13 +450,13 @@ services:
       - PS_24_ENTRY_SL_TP_ACTIVE=false
       - PS_ENTRY_WINDOW_ENABLED=true
       - PS_ENTRY_WINDOW_TZ=America/New_York
-      - PS_ENTRY_WINDOW=11:00-16:00
+      - PS_ENTRY_WINDOW=10:30-16:00
       # Der Runner bewertet eine Modellentscheidung nach jedem wirklich geschlossenen 1h-Bar.
       - PS_SL_TP_WINDOW_TZ=America/New_York
       - PS_SL_TP_WINDOW=09:30-16:00
       - IBKR_ENTRY_WINDOW_ENABLED=true
       - IBKR_ENTRY_WINDOW_TZ=America/New_York
-      - IBKR_ENTRY_WINDOW=11:00-17:00
+      - IBKR_ENTRY_WINDOW=10:30-16:00
       - IBKR_SL_TP_WINDOW_TZ=America/New_York
       - IBKR_SL_TP_WINDOW=09:30-17:00
 
