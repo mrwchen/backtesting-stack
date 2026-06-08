@@ -37,12 +37,16 @@ from .config import (
     DAILY_POLICY_PREVIOUS_MARKET_DROP_THRESHOLD_PCT,
     DAILY_POLICY_PRUNE_TIME,
     DAILY_POLICY_PRUNE_TIME_TZ,
+    DAILY_POLICY_SHORT_RISK_MULTIPLIER,
     DAILY_POLICY_SL_HALT_COUNT,
     DAILY_POLICY_SL_HALT_STATUSES,
     DAILY_POLICY_SL_HALT_WINDOW_HOURS,
+    DAILY_POLICY_STRESS_BUILD_MAX_SHORT_POSITIONS,
     DAILY_POLICY_STRESS_BUILD_MAX_LONG_DELTA,
+    DAILY_POLICY_STRESS_RECOVERY_MAX_SHORT_POSITIONS,
     DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA,
     DAILY_POLICY_STRESS_RISK_REDUCTION_PCT,
+    DAILY_POLICY_STRESS_SIDEWAYS_MAX_SHORT_POSITIONS,
     DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA,
     DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS,
     DAILY_POLICY_TECH_STRESS_THRESHOLD,
@@ -321,7 +325,11 @@ def build_daily_position_policy_context(
     )
     exposure = {
         "long_risk_multiplier": risk_multiplier if max_long_positions > 0 else 0.0,
-        "short_risk_multiplier": risk_multiplier if max_short_positions > 0 else 0.0,
+        "short_risk_multiplier": (
+            risk_multiplier * DAILY_POLICY_SHORT_RISK_MULTIPLIER
+            if max_short_positions > 0
+            else 0.0
+        ),
         "max_long_positions": max_long_positions,
         "max_short_positions": max_short_positions,
         "max_total_positions": max_total_positions,
@@ -510,15 +518,15 @@ def _daily_exposure_numbers(
         elif rising:
             phase = "STRESS_BUILDING"
             max_long = previous_max_long_positions + DAILY_POLICY_STRESS_BUILD_MAX_LONG_DELTA
-            max_short = 0
+            max_short = DAILY_POLICY_STRESS_BUILD_MAX_SHORT_POSITIONS
         elif falling:
             phase = "STRESS_RECEDING"
             max_long = previous_max_long_positions + DAILY_POLICY_STRESS_RECOVERY_MAX_LONG_DELTA
-            max_short = 0
+            max_short = DAILY_POLICY_STRESS_RECOVERY_MAX_SHORT_POSITIONS
         else:
             phase = "STRESS_SIDEWAYS"
             max_long = previous_max_long_positions + DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA
-            max_short = 0
+            max_short = DAILY_POLICY_STRESS_SIDEWAYS_MAX_SHORT_POSITIONS
 
     max_long = _clamp_position_count(max_long)
     max_short = _clamp_position_count(max_short)
