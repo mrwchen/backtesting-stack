@@ -700,11 +700,27 @@ def preload_identity_bars(
     conn: psycopg2.extensions.connection,
     identities: list[InstrumentKey],
     up_to_ts: datetime,
+    *,
+    batch_size: int = BAR_CACHE_BATCH_SIZE,
+    log_batches: bool = False,
 ) -> None:
     unique = sorted({instrument_key(*identity) for identity in identities})
     started = _time.perf_counter()
-    for identity in unique:
-        _ensure_identity_bars_loaded(conn, identity, up_to_ts)
+    batch_size = max(1, int(batch_size))
+    batches = _chunked(unique, batch_size)
+    for batch_idx, batch in enumerate(batches, start=1):
+        batch_started = _time.perf_counter()
+        for identity in batch:
+            _ensure_identity_bars_loaded(conn, identity, up_to_ts)
+        if log_batches:
+            log.info(
+                "Preloaded bar batch %d/%d identities %d through %s in %.1f s",
+                batch_idx,
+                len(batches),
+                len(batch),
+                up_to_ts,
+                _time.perf_counter() - batch_started,
+            )
     if unique:
         symbols, rows, mib = _bar_cache_counts()
         log.info(
