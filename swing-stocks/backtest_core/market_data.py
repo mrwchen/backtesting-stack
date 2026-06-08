@@ -238,21 +238,21 @@ def _latest_price_identities_for_symbols(
                 WITH requested AS (
                     SELECT * FROM unnest(%s::text[]) AS u(symbol_norm)
                 )
-                SELECT DISTINCT ON (UPPER(TRIM(b.symbol)))
-                    b.symbol,
+                SELECT
+                    r.symbol_norm,
                     b.exchange,
                     b.cik
                 FROM requested r
                 JOIN LATERAL (
-                    SELECT symbol, exchange, cik, ts, close
+                    SELECT exchange, cik, ts, close
                     FROM {} b
-                    WHERE UPPER(TRIM(b.symbol)) = r.symbol_norm
+                    WHERE b.symbol = r.symbol_norm
                       AND b.close > 0
                       {}
                     ORDER BY b.ts DESC
                     LIMIT 1
                 ) b ON TRUE
-                ORDER BY UPPER(TRIM(b.symbol)), b.ts DESC
+                ORDER BY r.symbol_norm
                 """
             ).format(relation_identifier(source_table), cutoff_filter),
             params,
