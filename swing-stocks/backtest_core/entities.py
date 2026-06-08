@@ -30,7 +30,6 @@ class OpenPosition:
     plan: TradePlan
     world_regime_label: str = ""
     world_regime_score: float = 0.0
-    valuation_label: str = ""
     # incremental simulate_outcome state — updated in-place on each day's pass
     trailing_activated: bool = False
     trailing_reference_price: Optional[float] = None
@@ -131,12 +130,6 @@ class DecisionEvent:
     intent_rank: Optional[int] = None
     world_regime_label: str = ""
     world_regime_score: Optional[float] = None
-    valuation_label: str = ""
-    sector: str = ""
-    industry: str = ""
-    fundamental_score: Optional[float] = None
-    mispricing_score: Optional[float] = None
-    market_cap_m: Optional[float] = None
     bar_count: Optional[int] = None
     min_bars: Optional[int] = None
     intent_score: Optional[float] = None

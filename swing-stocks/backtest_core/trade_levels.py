@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from backtest_shared import Bar, FundamentalRow, TradeIntent, TradePlan
+from backtest_shared import Bar, CandidateRow, TradeIntent, TradePlan
 
 from .config import (
     COMMON_MAX_STOP_PCT,
@@ -40,7 +40,7 @@ def common_stop_required_lookback() -> int:
 
 def build_trade_plan(
     intent: TradeIntent,
-    fundamental: FundamentalRow,
+    candidate: CandidateRow,
     bars: list[Bar],
     entry_ts: datetime,
     entry_open: float,
@@ -82,9 +82,8 @@ def build_trade_plan(
         raise ValueError(f"Unknown take-profit mode: {TAKE_PROFIT_MODE!r}")
 
     plan = TradePlan(
-        symbol=fundamental.symbol,
+        symbol=candidate.symbol,
         direction=intent.direction,
-        fundamental_score=fundamental.composite_score,
         intent_score=intent.score,
         intent_reason=intent.reason,
         entry_price=entry_price,
@@ -93,13 +92,10 @@ def build_trade_plan(
         take_profit=take_profit,
         trailing_activation_price=trailing_activation_price,
         trailing_distance_pct=trailing_distance_pct,
-        valuation_label=fundamental.valuation_label,
-        sector=fundamental.sector,
-        industry=fundamental.industry,
         entry_ts=entry_ts,
-        exchange=fundamental.exchange,
-        cik=fundamental.cik,
-        broker_eligibility_bypassed=fundamental.broker_eligibility_bypassed,
+        exchange=candidate.exchange,
+        cik=candidate.cik,
+        broker_eligibility_bypassed=candidate.broker_eligibility_bypassed,
     )
     return TradePlanResult(
         True,
@@ -118,7 +114,7 @@ def execution_max_hold_days(direction: str) -> float:
     raise ValueError(f"Unknown direction: {direction!r}")
 
 
-def validate_intent_for_candidate(intent: TradeIntent, fundamental: FundamentalRow, direction: str) -> TradePlanResult:
+def validate_intent_for_candidate(intent: TradeIntent, candidate: CandidateRow, direction: str) -> TradePlanResult:
     if intent.direction != direction:
         return TradePlanResult(
             False,
@@ -126,12 +122,12 @@ def validate_intent_for_candidate(intent: TradeIntent, fundamental: FundamentalR
             "intent_direction_mismatch",
             f"Model returned {intent.direction} while runner was evaluating {direction}.",
         )
-    if intent.symbol != fundamental.symbol.strip().upper():
+    if intent.symbol != candidate.symbol.strip().upper():
         return TradePlanResult(
             False,
             "intent",
             "intent_symbol_mismatch",
-            f"Model returned symbol {intent.symbol} for candidate {fundamental.symbol}.",
+            f"Model returned symbol {intent.symbol} for candidate {candidate.symbol}.",
         )
     return TradePlanResult(True, "intent", "intent_valid", "Model intent matched the evaluated candidate and direction.")
 

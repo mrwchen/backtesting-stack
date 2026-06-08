@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 import psycopg2
 
-from backtest_shared import InstrumentKey, IntentEvaluation, TradeIntent, TradePlan, fundamental_base_score
+from backtest_shared import InstrumentKey, IntentEvaluation, TradeIntent, TradePlan
 from . import runtime
 from .broker import (
     _account_snapshot_values,
@@ -34,8 +34,6 @@ from .market_data import (
     get_candidates,
     get_direct_symbol_candidates,
     get_trading_days,
-    get_upcoming_earnings_blackout_event,
-    earnings_blackout_reason_text,
     _is_in_entry_window,
     _is_stop_loss_active,
     _is_in_sl_tp_window,
@@ -43,7 +41,6 @@ from .market_data import (
     load_recent_bars_for_identities,
     log_cache_stats,
     preload_identity_bars,
-    preload_candidate_timelines,
     signal_bar_close_decisions_for_day,
 )
 from .daily_position_policy import (
@@ -54,8 +51,6 @@ from .daily_position_policy import (
     build_daily_position_policy_context,
     daily_prune_ts,
     initial_previous_max_long_positions,
-    long_sector_blocked,
-    preferred_industry_tier,
 )
 from .model_loader import (
     get_model_module,
@@ -65,8 +60,6 @@ from .model_loader import (
 )
 from .monte_carlo import run_monte_carlo
 from .policy import (
-    candidate_policy_kwargs,
-    direction_filter_negative_earnings,
     direction_max_positions,
     direction_risk_multiplier,
     exposure_max_total_positions,
@@ -201,16 +194,6 @@ def _ranked_plans_for_direction(
     return ranked
 
 
-def _candidate_score_kwargs(cfg: Any) -> dict:
-    return {
-        "fundamental_score_mode": getattr(cfg, "fundamental_score_mode", "peer"),
-        "fundamental_peer_weight": getattr(cfg, "fundamental_peer_weight", 1.0),
-        "fundamental_abs_weight": getattr(cfg, "fundamental_abs_weight", 0.0),
-        "long_min_absolute_score": getattr(cfg, "long_min_absolute_score", None),
-        "short_max_absolute_score": getattr(cfg, "short_max_absolute_score", None),
-    }
-
-
 def _model_direct_candidate_symbols(model: Any) -> tuple[str, ...]:
     return model_direct_candidate_symbols(model)
 
@@ -264,10 +247,9 @@ def _apply_model_market_context(
             as_of_ts=as_of_ts,
             source_table=SOURCE_MARKET_DATA_1H_TABLE,
             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+            required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
             ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
             require_broker_eligibility=False,
-            require_upcoming_earnings_date=False,
         )
         benchmark_lookback = max(
             _bar_lookback_limit(model, cfg),
@@ -326,15 +308,6 @@ def _filter_signal_decision_points_for_entry_window(
         for signal_bar_start_ts, signal_decision_ts in signal_decision_points
         if _is_in_entry_window(signal_decision_ts)
     ]
-
-
-def _model_fundamental_score(fundamental: Any, cfg: Any) -> float:
-    return fundamental_base_score(
-        fundamental,
-        getattr(cfg, "fundamental_score_mode", "peer"),
-        getattr(cfg, "fundamental_peer_weight", 1.0),
-        getattr(cfg, "fundamental_abs_weight", 0.0),
-    )
 
 
 def _signal_bar_recency_rejection(
@@ -1316,7 +1289,7 @@ def run_backtest(
                     as_of_ts=as_of_ts,
                     source_table=SOURCE_MARKET_DATA_1H_TABLE,
                     pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-                    required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                    required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
                     ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
                     require_broker_eligibility=direct_candidate_require_broker_eligibility,
                 )
@@ -1324,15 +1297,11 @@ def run_backtest(
                 candidates = get_candidates(
                     conn,
                     direction,
-                    **candidate_policy_kwargs(),
-                    **candidate_score_kwargs,
-                    source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
+                    source_table=SOURCE_MARKET_DATA_1H_TABLE,
                     as_of_date=day,
                     as_of_ts=as_of_ts,
                     pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-                    required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-                    allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-                    filter_negative_earnings=direction_filter_negative_earnings(direction),
+                    required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
                     ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
                 )
                 if direct_candidate_symbols:
@@ -1345,7 +1314,7 @@ def run_backtest(
                             as_of_ts=as_of_ts,
                             source_table=SOURCE_MARKET_DATA_1H_TABLE,
                             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-                            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
+                            required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
                             ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
                             require_broker_eligibility=direct_candidate_require_broker_eligibility,
                         ),
@@ -1378,21 +1347,11 @@ def run_backtest(
                             "No model direct-candidate symbols were available in 1h price data "
                             "as of the decision timestamp."
                         )
-                    if COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-                        reason_text += (
-                            f" Upcoming earnings date within {COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS} days "
-                            "was also required."
-                        )
                 else:
-                    reason_code = "no_candidates_after_fundamental_filters"
+                    reason_code = "no_price_candidates_after_broker_filters"
                     reason_text = (
-                        "No symbols passed the point-in-time fundamental, currency, market-cap and broker filters."
+                        "No symbols passed the account broker-universe, currency and point-in-time 1h price filters."
                     )
-                    if COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-                        reason_text = (
-                            "No symbols passed the point-in-time fundamental, currency, market-cap, broker "
-                            f"and upcoming earnings date within {COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS} days filters."
-                        )
                 decision_events.append(DecisionEvent(
                     run_id=run_id,
                     intent_date=day,
@@ -1413,45 +1372,9 @@ def run_backtest(
                 ))
                 continue
 
-            eligible_candidates: list[tuple[int, Any]] = []
-            for candidate_rank, fundamental in enumerate(candidates, start=1):
-                if (
-                    direction == "LONG"
-                    and daily_policy_context is not None
-                    and long_sector_blocked(daily_policy_context, fundamental.sector)
-                ):
-                    decision_events.append(DecisionEvent(
-                        run_id=run_id,
-                        intent_date=day,
-                        as_of_ts=as_of_ts,
-                        symbol=fundamental.symbol,
-                        exchange=fundamental.exchange,
-                        cik=fundamental.cik,
-                        direction=direction,
-                        decision_stage="daily_position_policy",
-                        decision="rejected",
-                        reason_code="daily_policy_tech_sector_block",
-                        reason_text=(
-                            f"Daily policy blocked long entries in sector {fundamental.sector}; "
-                            f"blocked sectors: {', '.join(daily_policy_context.blocked_long_sectors)}."
-                        ),
-                        candidate_rank=candidate_rank,
-                        world_regime_label=regime.label,
-                        world_regime_score=regime.score,
-                        valuation_label=fundamental.valuation_label,
-                        sector=fundamental.sector,
-                        industry=fundamental.industry,
-                        fundamental_score=_model_fundamental_score(fundamental, cfg),
-                        mispricing_score=fundamental.mispricing_score,
-                        market_cap_m=fundamental.market_cap_m,
-                        open_positions=len(active_positions),
-                        max_open_positions=exposure_max_total_positions(regime_exposure),
-                        account_equity=equity,
-                    ))
-                    continue
-                eligible_candidates.append((candidate_rank, fundamental))
+            eligible_candidates: list[tuple[int, Any]] = list(enumerate(candidates, start=1))
 
-            candidate_identities = [fundamental.identity_key for _, fundamental in eligible_candidates]
+            candidate_identities = [candidate.identity_key for _, candidate in eligible_candidates]
             bar_lookback_limit = _bar_lookback_limit(model, cfg)
             bar_load_started = _time.perf_counter()
             recent_bars_by_identity = load_recent_bars_for_identities(
@@ -1481,17 +1404,17 @@ def run_backtest(
             evaluate_fn = model.evaluate_long_intent if direction == "LONG" else model.evaluate_short_intent
             pending_intents: list[dict[str, Any]] = []
 
-            for candidate_rank, fundamental in eligible_candidates:
-                bars = recent_bars_by_identity.get(fundamental.identity_key, [])
+            for candidate_rank, candidate in eligible_candidates:
+                bars = recent_bars_by_identity.get(candidate.identity_key, [])
                 if len(bars) < cfg.min_bars:
                     skipped_no_bars += 1
                     decision_events.append(DecisionEvent(
                         run_id=run_id,
                         intent_date=day,
                         as_of_ts=as_of_ts,
-                        symbol=fundamental.symbol,
-                        exchange=fundamental.exchange,
-                        cik=fundamental.cik,
+                        symbol=candidate.symbol,
+                        exchange=candidate.exchange,
+                        cik=candidate.cik,
                         direction=direction,
                         decision_stage="bar_load",
                         decision="rejected",
@@ -1500,12 +1423,6 @@ def run_backtest(
                         candidate_rank=candidate_rank,
                         world_regime_label=regime.label,
                         world_regime_score=regime.score,
-                        valuation_label=fundamental.valuation_label,
-                        sector=fundamental.sector,
-                        industry=fundamental.industry,
-                        fundamental_score=_model_fundamental_score(fundamental, cfg),
-                        mispricing_score=fundamental.mispricing_score,
-                        market_cap_m=fundamental.market_cap_m,
                         bar_count=len(bars),
                         min_bars=cfg.min_bars,
                         open_positions=len(active_positions),
@@ -1521,9 +1438,9 @@ def run_backtest(
                         run_id=run_id,
                         intent_date=day,
                         as_of_ts=as_of_ts,
-                        symbol=fundamental.symbol,
-                        exchange=fundamental.exchange,
-                        cik=fundamental.cik,
+                        symbol=candidate.symbol,
+                        exchange=candidate.exchange,
+                        cik=candidate.cik,
                         direction=direction,
                         decision_stage="bar_load",
                         decision="rejected",
@@ -1532,12 +1449,6 @@ def run_backtest(
                         candidate_rank=candidate_rank,
                         world_regime_label=regime.label,
                         world_regime_score=regime.score,
-                        valuation_label=fundamental.valuation_label,
-                        sector=fundamental.sector,
-                        industry=fundamental.industry,
-                        fundamental_score=_model_fundamental_score(fundamental, cfg),
-                        mispricing_score=fundamental.mispricing_score,
-                        market_cap_m=fundamental.market_cap_m,
                         bar_count=len(bars),
                         min_bars=cfg.min_bars,
                         open_positions=len(active_positions),
@@ -1546,7 +1457,7 @@ def run_backtest(
                     ))
                     continue
 
-                evaluation = evaluate_fn(bars, fundamental, as_of_ts, cfg)
+                evaluation = evaluate_fn(bars, candidate, as_of_ts, cfg)
                 if not isinstance(evaluation, IntentEvaluation):
                     evaluation = IntentEvaluation(
                         intent=None,
@@ -1563,7 +1474,7 @@ def run_backtest(
                     evaluation.reason_code = "invalid_model_intent"
                     evaluation.reason_text = "Model did not return a TradeIntent."
                 if intent:
-                    intent_check = validate_intent_for_candidate(intent, fundamental, direction)
+                    intent_check = validate_intent_for_candidate(intent, candidate, direction)
                     if not intent_check.accepted:
                         intent = None
                         evaluation.intent = None
@@ -1573,7 +1484,7 @@ def run_backtest(
                 if intent:
                     pending_intents.append({
                         "candidate_rank": candidate_rank,
-                        "fundamental": fundamental,
+                        "candidate": candidate,
                         "bars": bars,
                         "evaluation": evaluation,
                         "intent": intent,
@@ -1588,9 +1499,9 @@ def run_backtest(
                     run_id=run_id,
                     intent_date=day,
                     as_of_ts=as_of_ts,
-                    symbol=fundamental.symbol,
-                    exchange=fundamental.exchange,
-                    cik=fundamental.cik,
+                    symbol=candidate.symbol,
+                    exchange=candidate.exchange,
+                    cik=candidate.cik,
                     direction=direction,
                     decision_stage="intent_eval",
                     decision="rejected",
@@ -1600,12 +1511,6 @@ def run_backtest(
                     candidate_rank=candidate_rank,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
-                    valuation_label=fundamental.valuation_label,
-                    sector=fundamental.sector,
-                    industry=fundamental.industry,
-                    fundamental_score=_model_fundamental_score(fundamental, cfg),
-                    mispricing_score=fundamental.mispricing_score,
-                    market_cap_m=fundamental.market_cap_m,
                     bar_count=len(bars),
                     min_bars=cfg.min_bars,
                     intent_score=None,
@@ -1622,7 +1527,7 @@ def run_backtest(
                 next_bar_opens = load_next_bar_opens(
                     conn,
                     [
-                        (pending["fundamental"].identity_key, pending["after_ts"])
+                        (pending["candidate"].identity_key, pending["after_ts"])
                         for pending in pending_intents
                     ],
                     batch_size=BAR_CACHE_BATCH_SIZE,
@@ -1642,13 +1547,13 @@ def run_backtest(
 
             for pending in pending_intents:
                 candidate_rank = pending["candidate_rank"]
-                fundamental = pending["fundamental"]
+                candidate = pending["candidate"]
                 bars = pending["bars"]
                 evaluation = pending["evaluation"]
                 intent = pending["intent"]
                 after_ts = pending["after_ts"]
                 plan: TradePlan | None = None
-                next_entry = next_bar_opens.get((fundamental.identity_key, after_ts))
+                next_entry = next_bar_opens.get((candidate.identity_key, after_ts))
                 if next_entry is None:
                     intent = None
                     evaluation.intent = None
@@ -1677,7 +1582,7 @@ def run_backtest(
                     else:
                         trade_plan_result = build_trade_plan(
                             intent,
-                            fundamental,
+                            candidate,
                             bars,
                             entry_ts,
                             entry_open,
@@ -1697,7 +1602,6 @@ def run_backtest(
                                 evaluation.reason_code = "execution_plan_missing"
                                 evaluation.reason_text = "Execution risk engine accepted the intent without returning a trade plan."
                             else:
-                                plan.fundamental_score = _model_fundamental_score(fundamental, cfg)
                                 plan.allow_multiple_positions_per_instrument = allow_multiple_positions_per_instrument
                                 plans.append(plan)
                                 plans_by_direction[direction].append(plan)
@@ -1706,9 +1610,9 @@ def run_backtest(
                     run_id=run_id,
                     intent_date=day,
                     as_of_ts=as_of_ts,
-                    symbol=fundamental.symbol,
-                    exchange=fundamental.exchange,
-                    cik=fundamental.cik,
+                    symbol=candidate.symbol,
+                    exchange=candidate.exchange,
+                    cik=candidate.cik,
                     direction=direction,
                     decision_stage="intent_eval",
                     decision="intent" if plan else "rejected",
@@ -1718,12 +1622,6 @@ def run_backtest(
                     candidate_rank=candidate_rank,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
-                    valuation_label=fundamental.valuation_label,
-                    sector=fundamental.sector,
-                    industry=fundamental.industry,
-                    fundamental_score=_model_fundamental_score(fundamental, cfg),
-                    mispricing_score=fundamental.mispricing_score,
-                    market_cap_m=fundamental.market_cap_m,
                     bar_count=len(bars),
                     min_bars=cfg.min_bars,
                     intent_score=plan.intent_score if plan else (intent.score if intent else None),
@@ -1744,7 +1642,7 @@ def run_backtest(
                     plan_events[plan_key] = event
                     plan_entry_contexts[plan_key] = {
                         "intent": intent,
-                        "fundamental": fundamental,
+                        "candidate": candidate,
                         "bars": bars,
                     }
 
@@ -1788,46 +1686,6 @@ def run_backtest(
         daily_policy_state: Optional[DailyPolicyRuntimeState] = None,
         daily_policy_context: Optional[DailyPositionPolicyContext] = None,
     ) -> int:
-        preferred_industry_active = bool(
-            daily_policy_context is not None and daily_policy_context.preferred_industry
-        )
-        if SECTOR_DIVERSIFICATION_ENABLED or preferred_industry_active:
-            open_sectors: set[str] = {p.plan.sector for p in active_positions if p.plan.sector}
-            open_sector_industries: set[tuple[str, str]] = {
-                (p.plan.sector, p.plan.industry)
-                for p in active_positions
-                if p.plan.sector
-            }
-
-            def _sector_tier(plan: TradePlan) -> int:
-                if not plan.sector or plan.sector not in open_sectors:
-                    return 0
-                if (plan.sector, plan.industry) not in open_sector_industries:
-                    return 1
-                return 2
-
-            def _daily_policy_tier(plan: TradePlan) -> tuple[int, int]:
-                preferred_tier = (
-                    preferred_industry_tier(daily_policy_context, plan.industry)
-                    if daily_policy_context is not None
-                    else 0
-                )
-                sector_tier = _sector_tier(plan) if SECTOR_DIVERSIFICATION_ENABLED else 0
-                return (preferred_tier, sector_tier)
-
-            for direction, direction_plans in plans_by_direction.items():
-                direction_plans[:] = _ranked_plans_for_direction(
-                    direction_plans,
-                    day=day,
-                    as_of_ts=as_of_ts,
-                    direction=direction,
-                    group_key_fn=_daily_policy_tier,
-                )
-                for intent_rank, plan in enumerate(direction_plans, start=1):
-                    event = plan_events.get(_plan_event_key(plan))
-                    if event:
-                        event.intent_rank = intent_rank
-
         direction_order = sorted(
             DIRECTIONS,
             key=lambda d: (
@@ -1942,28 +1800,6 @@ def run_backtest(
                     event.reason_code = "entry_outside_entry_window"
                     event.reason_text = f"Next entry bar {plan_entry_ts} is outside the configured entry window."
                 continue
-            if COMMON_EARNINGS_BLACKOUT_ENABLED:
-                earnings_event = get_upcoming_earnings_blackout_event(
-                    conn,
-                    plan.identity_key,
-                    plan_entry_ts,
-                    knowledge_ts=as_of_ts,
-                    source_table=SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
-                    blackout_days=COMMON_EARNINGS_BLACKOUT_DAYS,
-                    historical_known_days_before=COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
-                )
-                if earnings_event is not None:
-                    if event:
-                        event.decision_stage = "portfolio_filter"
-                        event.decision = "blocked"
-                        event.reason_code = "upcoming_earnings_blackout"
-                        event.reason_text = earnings_blackout_reason_text(
-                            earnings_event,
-                            plan_entry_ts,
-                            blackout_days=COMMON_EARNINGS_BLACKOUT_DAYS,
-                            historical_known_days_before=COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
-                        )
-                    continue
             if account_equity_current <= 0:
                 if event:
                     event.decision_stage = "portfolio_filter"
@@ -2066,7 +1902,6 @@ def run_backtest(
                 plan=plan,
                 world_regime_label=regime.label,
                 world_regime_score=regime.score,
-                valuation_label=plan.valuation_label,
             ))
             open_identities.add(plan.identity_key)
             blocked_identities.add(plan.identity_key)
@@ -2090,37 +1925,12 @@ def run_backtest(
 
     trading_days = get_trading_days(conn, START_DATE, END_DATE)
     log.info("Trading days to simulate: %d (%s → %s)", len(trading_days), START_DATE, END_DATE)
-    candidate_score_kwargs = _candidate_score_kwargs(cfg)
     run_model = get_model_module()
     run_direct_candidate_symbols = _model_direct_candidate_symbols(run_model)
     run_direct_candidate_mode = _model_direct_candidate_mode(run_model)
-    if trading_days and not (run_direct_candidate_symbols and run_direct_candidate_mode == "replace"):
-        first_signal_decisions = signal_bar_close_decisions_for_day(conn, trading_days[0])
-        preload_as_of_ts = (
-            first_signal_decisions[0][1]
-            if first_signal_decisions
-            else datetime.combine(trading_days[0], datetime.min.time(), tzinfo=timezone.utc)
-        )
-        preload_candidate_timelines(
-            conn,
-            DIRECTIONS,
-            **candidate_policy_kwargs(),
-            **candidate_score_kwargs,
-            source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
-            as_of_date=trading_days[0],
-            as_of_ts=preload_as_of_ts,
-            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-            filter_negative_earnings_by_direction={
-                direction: direction_filter_negative_earnings(direction)
-                for direction in DIRECTIONS
-            },
-            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
-        )
-    elif trading_days and run_direct_candidate_symbols:
+    if trading_days and run_direct_candidate_symbols and run_direct_candidate_mode == "replace":
         log.info(
-            "Skipping fundamental candidate timeline preload for direct symbol model %s symbols %s mode %s",
+            "Using direct candidate symbols model %s symbols %s mode %s",
             runtime.CURRENT_MODEL_FILE,
             ",".join(run_direct_candidate_symbols),
             run_direct_candidate_mode,
@@ -2261,7 +2071,7 @@ def run_backtest(
         day_regime_exposure = regime_exposure
         if log_progress_today:
             log.info(
-                "Regime exposure day %d/%d %s model %s label %s score %.1f phase %s long risk %.2f short risk %.2f max long %d max short %d max total %d preferred industry %s blocked long sectors %s",
+                "Regime exposure day %d/%d %s model %s label %s score %.1f phase %s long risk %.2f short risk %.2f max long %d max short %d max total %d",
                 day_idx,
                 len(trading_days),
                 day,
@@ -2274,8 +2084,6 @@ def run_backtest(
                 direction_max_positions(day_regime_exposure, "LONG"),
                 direction_max_positions(day_regime_exposure, "SHORT"),
                 exposure_max_total_positions(day_regime_exposure),
-                daily_policy_context.preferred_industry,
-                ",".join(daily_policy_context.blocked_long_sectors),
             )
 
         def apply_day_position_events(
@@ -2421,10 +2229,6 @@ def run_backtest(
                     intent_passed=True,
                     world_regime_label=regime.label,
                     world_regime_score=regime.score,
-                    valuation_label=position.valuation_label,
-                    sector=position.plan.sector,
-                    industry=position.plan.industry,
-                    fundamental_score=position.plan.fundamental_score,
                     intent_score=position.plan.intent_score,
                     intent_reason=position.plan.intent_reason,
                     entry_ts=position.entry_ts,

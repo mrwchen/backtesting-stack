@@ -33,30 +33,10 @@ class WorldRegime:
 
 
 @dataclass(frozen=True)
-class FundamentalRow:
+class CandidateRow:
     symbol: str
     exchange: str
     cik: int
-    composite_score: float
-    sector: str
-    industry: str
-    composite_score_abs: float | None = None
-    valuation_label: str = ""
-    mispricing_score: float | None = None
-    leadership_score: float | None = None
-    momentum_score: float | None = None
-    price_momentum_score: float | None = None
-    fundamental_momentum_score: float | None = None
-    quality_score: float | None = None
-    valuation_score: float | None = None
-    negative_earnings_flag: bool = False
-    high_leverage_flag: bool = False
-    market_cap_m: float | None = None
-    long_eligible: bool = False
-    short_eligible: bool = False
-    relative_absolute_divergence: str = ""
-    long_block_reason: str = ""
-    short_block_reason: str = ""
     broker_eligibility_bypassed: bool = False
 
     @property
@@ -104,7 +84,6 @@ class TradeIntent:
 class TradePlan:
     symbol: str
     direction: str
-    fundamental_score: float
     intent_score: float
     intent_reason: str
     entry_price: float
@@ -113,9 +92,6 @@ class TradePlan:
     take_profit: Optional[float]
     trailing_activation_price: Optional[float]
     trailing_distance_pct: Optional[float]
-    valuation_label: str = ""
-    sector: str = ""
-    industry: str = ""
     entry_ts: Optional[datetime] = None
     exchange: str = ""
     cik: int = 0
@@ -204,65 +180,3 @@ def clamp(value: float, lo: float, hi: float) -> float:
 
 def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
-
-
-def normalize_fundamental_score_mode(mode: str) -> str:
-    normalized = str(mode).strip().lower().replace("-", "_")
-    if normalized not in {"peer", "absolute", "blend"}:
-        raise ValueError("FUNDAMENTAL_SCORE_MODE must be one of: peer, absolute, blend")
-    return normalized
-
-
-def combine_peer_absolute_scores(
-    peer_score: float,
-    absolute_score: Optional[float],
-    score_mode: str,
-    peer_weight: float,
-    abs_weight: float,
-) -> float:
-    mode = normalize_fundamental_score_mode(score_mode)
-    peer = float(peer_score)
-    absolute = float(absolute_score) if absolute_score is not None else peer
-
-    if mode == "peer":
-        score = peer
-    elif mode == "absolute":
-        score = absolute
-    else:
-        total_weight = float(peer_weight) + float(abs_weight)
-        if total_weight <= 0.0:
-            raise ValueError("FUNDAMENTAL_PEER_WEIGHT + FUNDAMENTAL_ABS_WEIGHT must be > 0 for blend mode")
-        score = (peer * float(peer_weight) + absolute * float(abs_weight)) / total_weight
-    return clamp(score, 0.0, 100.0)
-
-
-def fundamental_base_score(
-    fundamental: FundamentalRow,
-    score_mode: str,
-    peer_weight: float,
-    abs_weight: float,
-) -> float:
-    return combine_peer_absolute_scores(
-        fundamental.composite_score,
-        fundamental.composite_score_abs,
-        score_mode,
-        peer_weight,
-        abs_weight,
-    )
-
-
-def directional_fundamental_score(
-    fundamental: FundamentalRow,
-    *,
-    short: bool,
-    score_mode: str,
-    peer_weight: float,
-    abs_weight: float,
-    use_mispricing_score: bool,
-    mispricing_weight: float,
-) -> float:
-    score = fundamental_base_score(fundamental, score_mode, peer_weight, abs_weight)
-    if use_mispricing_score and fundamental.mispricing_score is not None:
-        weight = clamp(float(mispricing_weight), 0.0, 1.0)
-        score = score * (1.0 - weight) + float(fundamental.mispricing_score) * weight
-    return clamp((100.0 - score if short else score) / 100.0, 0.0, 1.0)

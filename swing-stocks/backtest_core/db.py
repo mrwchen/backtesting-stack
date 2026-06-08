@@ -144,11 +144,7 @@ def _require_unique_index(
     log.info("Validated relation unique index %s columns %s", relation_name, ",".join(columns))
 
 
-def validate_source_schema(
-    conn: psycopg2.extensions.connection,
-    *,
-    require_fundamental_sources: bool = True,
-) -> None:
+def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
     """Validate source tables/columns and basic date coverage before the run."""
     world_regime_required = {"day", "regime_label", "composite_score"}
     if WORLD_REGIME_SHOCK_FIELDS_ACTIVE:
@@ -168,81 +164,29 @@ def validate_source_schema(
         })
 
     _require_columns(conn, SOURCE_MARKET_DATA_1H_TABLE, {"symbol", "exchange", "cik", "ts", "open", "high", "low", "close", "volume"})
-    if require_fundamental_sources:
-        fundamental_required = {
-            "time",
-            "symbol",
-            "exchange",
-            "cik",
-            "data_available_at",
-            "fundamental_data_available_at",
-            "composite_score",
-            "sector",
-            "industry",
-            "valuation_label",
-            "mispricing_score",
-            "leadership_score",
-            "momentum_score",
-            "price_momentum_score",
-            "fundamental_momentum_score",
-            "quality_score",
-            "valuation_score",
-            "negative_earnings_flag",
-            "high_leverage_flag",
-            "market_cap_m",
-        }
-        if REQUIRE_USD_FUNDAMENTALS:
-            fundamental_required.update({
-                "current_price_currency",
-                "market_cap_currency",
-                "currency",
-                "financial_currency",
-            })
-        if COMMON_FILTER_SCORER_ELIGIBILITY:
-            fundamental_required.update({
-                "long_eligible",
-                "short_eligible",
-            })
-        _require_columns(conn, SOURCE_FUNDAMENTAL_SCORES_TABLE, fundamental_required)
-    else:
-        log.info(
-            "Skipping fundamental source schema validation table %s because selected model uses direct replace candidates",
-            SOURCE_FUNDAMENTAL_SCORES_TABLE,
-        )
-    if COMMON_EARNINGS_BLACKOUT_ENABLED or COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-        _require_columns(conn, SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE, {
-            "symbol",
-            "exchange",
-            "cik",
-            "earnings_date",
-            "announcement_ts",
-            "announcement_time_type",
-            "source",
-            "source_priority",
-            "known_as_of_ts",
-            "is_confirmed",
-        })
     _require_columns(conn, SOURCE_WORLD_REGIME_TABLE, world_regime_required)
 
     if ACCOUNT_PROFILE == "ps_acc":
         pepperstone_required = {"symbol", "symbol_ps", "is_trading_enabled"}
         if PS_24_ENTRY_SL_TP_ACTIVE:
             pepperstone_required.add("symbol_ps24")
+        if REQUIRE_USD_PRICE_DATA:
+            pepperstone_required.add("quote_asset")
         _require_columns(conn, PS_TRADABLE_SYMBOLS_TABLE, pepperstone_required)
     elif ACCOUNT_PROFILE == "ibkr_acc":
-        _require_columns(conn, IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE, {
+        ibkr_required = {
             "source_symbol",
             "action",
             "quantity",
             "initial_margin_pct",
             "maintenance_margin_pct",
             "fetched_at",
-        })
+        }
+        if REQUIRE_USD_PRICE_DATA:
+            ibkr_required.add("currency")
+        _require_columns(conn, IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE, ibkr_required)
 
-    _validate_source_coverage(
-        conn,
-        require_fundamental_sources=require_fundamental_sources,
-    )
+    _validate_source_coverage(conn)
 
 
 def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
@@ -271,7 +215,6 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
         "return_per_margin_hour_pct", "pnl_usd", "equity_after", "intent_score", "intent_reason",
         "take_profit_mode", "take_profit", "trailing_activation_price", "trailing_distance_pct",
         "trailing_activated", "trailing_stop", "trailing_activated_ts",
-        "sector", "industry",
     })
     _require_not_null_columns(conn, f"{RESULT_SCHEMA}.backtest_trades", {"entry_ts"})
     _require_unique_index(
@@ -332,11 +275,7 @@ def validate_result_schema(conn: psycopg2.extensions.connection) -> None:
     })
 
 
-def _validate_source_coverage(
-    conn: psycopg2.extensions.connection,
-    *,
-    require_fundamental_sources: bool = True,
-) -> None:
+def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
     start_ts = datetime.combine(START_DATE - timedelta(days=BAR_CACHE_WARMUP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
     end_ts = _day_close_ts(END_DATE)
 
@@ -354,72 +293,6 @@ def _validate_source_coverage(
             f"No 1h bars in {SOURCE_MARKET_DATA_1H_TABLE} for required window {start_ts} to {end_ts}"
         )
     log.info("Source coverage bars %s min ts %s max ts %s", SOURCE_MARKET_DATA_1H_TABLE, bar_min_ts, bar_max_ts)
-
-    if require_fundamental_sources:
-        fundamental_where = [
-            sql.SQL("time <= %s"),
-            sql.SQL("COALESCE(data_available_at, fundamental_data_available_at) <= %s"),
-        ]
-        fundamental_params: list[object] = [end_ts, end_ts]
-        if REQUIRE_USD_FUNDAMENTALS:
-            fundamental_where.append(sql.SQL(
-                "COALESCE(NULLIF(current_price_currency, ''), "
-                "NULLIF(market_cap_currency, ''), "
-                "NULLIF(currency, ''), "
-                "NULLIF(financial_currency, ''), "
-                "%s) = %s"
-            ))
-            fundamental_params.extend(["USD", "USD"])
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    "SELECT MIN(time), MAX(time), "
-                    "MAX(COALESCE(data_available_at, fundamental_data_available_at)) "
-                    "FROM {} WHERE {}"
-                ).format(
-                    relation_identifier(SOURCE_FUNDAMENTAL_SCORES_TABLE),
-                    sql.SQL(" AND ").join(fundamental_where),
-                ),
-                fundamental_params,
-            )
-            fund_min_ts, fund_max_ts, fund_max_available_ts = cur.fetchone()
-        if fund_min_ts is None:
-            raise RuntimeError(
-                f"No point-in-time fundamental rows in {SOURCE_FUNDAMENTAL_SCORES_TABLE} up to {end_ts}"
-            )
-        log.info(
-            "Source coverage fundamentals %s min time %s max time %s max available at %s",
-            SOURCE_FUNDAMENTAL_SCORES_TABLE,
-            fund_min_ts,
-            fund_max_ts,
-            fund_max_available_ts,
-        )
-    else:
-        log.info(
-            "Skipping fundamental source coverage validation table %s because selected model uses direct replace candidates",
-            SOURCE_FUNDAMENTAL_SCORES_TABLE,
-        )
-
-    if COMMON_EARNINGS_BLACKOUT_ENABLED:
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    "SELECT COUNT(*), MIN(earnings_date), MAX(earnings_date) "
-                    "FROM {} "
-                    "WHERE earnings_date >= %s AND earnings_date <= %s"
-                ).format(relation_identifier(SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE)),
-                (START_DATE, END_DATE + timedelta(days=COMMON_EARNINGS_BLACKOUT_DAYS)),
-            )
-            earnings_event_count, earnings_min_date, earnings_max_date = cur.fetchone()
-        log.info(
-            "Source coverage earnings calendar %s rows %d min date %s max date %s blackout days %d historical known days before %d",
-            SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
-            earnings_event_count,
-            earnings_min_date,
-            earnings_max_date,
-            COMMON_EARNINGS_BLACKOUT_DAYS,
-            COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
-        )
 
     with conn.cursor() as cur:
         cur.execute(

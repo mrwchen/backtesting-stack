@@ -12,9 +12,6 @@ import psycopg2
 from backtest_shared import WorldRegime
 
 from .config import (
-    DAILY_POLICY_BLOCK_LONG_SECTOR,
-    DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS,
-    DAILY_POLICY_ENERGY_SHOCK_THRESHOLD,
     DAILY_POLICY_HIGH_STRESS_MAX_LONG_POSITIONS,
     DAILY_POLICY_HIGH_STRESS_MAX_SHORT_POSITIONS,
     DAILY_POLICY_INITIAL_PREVIOUS_MAX_LONG_POSITIONS,
@@ -29,7 +26,6 @@ from .config import (
     DAILY_POLICY_MARKET_DROP_THRESHOLD_PCT,
     DAILY_POLICY_MARKET_DROP_TZ,
     DAILY_POLICY_MIN_HOURS_BETWEEN_OPENS,
-    DAILY_POLICY_PREFERRED_INDUSTRY,
     DAILY_POLICY_PORTFOLIO_DROP_LOOKBACK_DAYS,
     DAILY_POLICY_PORTFOLIO_DROP_THRESHOLD_PCT,
     DAILY_POLICY_PREVIOUS_MARKET_DROP_PRICE_FIELD,
@@ -48,8 +44,6 @@ from .config import (
     DAILY_POLICY_STRESS_RISK_REDUCTION_PCT,
     DAILY_POLICY_STRESS_SIDEWAYS_MAX_SHORT_POSITIONS,
     DAILY_POLICY_STRESS_SIDEWAYS_MAX_LONG_DELTA,
-    DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS,
-    DAILY_POLICY_TECH_STRESS_THRESHOLD,
     DAILY_POLICY_TZ,
     DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD,
     DAILY_POLICY_WORLD_REGIME_MA_DAYS,
@@ -78,10 +72,6 @@ class DailyPositionPolicyContext:
     world_regime_stress_receding_trend_ma_scores: tuple[float, ...]
     exposure: dict
     calculated_max_long_positions: int
-    blocked_long_sectors: tuple[str, ...]
-    preferred_industry: str
-    tech_stress_active: bool
-    energy_preferred_active: bool
     previous_trading_days: tuple[date, ...]
 
 
@@ -335,10 +325,6 @@ def build_daily_position_policy_context(
         "max_total_positions": max_total_positions,
     }
 
-    tech_stress_active = _tech_stress_active(previous_days, regimes_by_day)
-    energy_preferred_active = _energy_preferred_active(previous_days, regimes_by_day)
-    blocked_long_sectors = (DAILY_POLICY_BLOCK_LONG_SECTOR,) if tech_stress_active and DAILY_POLICY_BLOCK_LONG_SECTOR else ()
-    preferred_industry = DAILY_POLICY_PREFERRED_INDUSTRY if energy_preferred_active else ""
     ma_days = tuple(previous_days[max(0, latest_idx - DAILY_POLICY_WORLD_REGIME_MA_DAYS + 1):latest_idx + 1])
 
     return DailyPositionPolicyContext(
@@ -352,10 +338,6 @@ def build_daily_position_policy_context(
         world_regime_stress_receding_trend_ma_scores=tuple(receding_trend_scores),
         exposure=exposure,
         calculated_max_long_positions=max_long_positions,
-        blocked_long_sectors=blocked_long_sectors,
-        preferred_industry=preferred_industry,
-        tech_stress_active=tech_stress_active,
-        energy_preferred_active=energy_preferred_active,
         previous_trading_days=tuple(previous_days),
     )
 
@@ -364,20 +346,6 @@ def apply_daily_policy_context_to_config(cfg: object, context: DailyPositionPoli
     setattr(cfg, "daily_policy_phase", context.phase)
     setattr(cfg, "daily_policy_world_regime_label", context.regime_label)
     setattr(cfg, "daily_policy_world_regime_ma_score", context.world_regime_ma_score)
-    setattr(cfg, "daily_policy_blocked_long_sectors", context.blocked_long_sectors)
-    setattr(cfg, "daily_policy_preferred_industry", context.preferred_industry)
-
-
-def long_sector_blocked(context: DailyPositionPolicyContext, sector: str) -> bool:
-    blocked = {value.strip().lower() for value in context.blocked_long_sectors if value.strip()}
-    return bool(str(sector or "").strip().lower() in blocked)
-
-
-def preferred_industry_tier(context: DailyPositionPolicyContext, industry: str) -> int:
-    preferred = context.preferred_industry.strip().lower()
-    if not preferred:
-        return 0
-    return 0 if str(industry or "").strip().lower() == preferred else 1
 
 
 def daily_prune_ts(day: date) -> datetime:
@@ -581,36 +549,6 @@ def _world_regime_trend_scores(
             return []
         scores.append(score)
     return scores
-
-
-def _tech_stress_active(
-    previous_days: list[date],
-    regimes_by_day: dict[date, Optional[WorldRegime]],
-) -> bool:
-    days = previous_days[-DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS:]
-    if len(days) < DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS:
-        return False
-    for previous_day in days:
-        regime = regimes_by_day.get(previous_day)
-        score = getattr(regime, "tech_stress_shock_score", None) if regime is not None else None
-        if score is not None and float(score) >= DAILY_POLICY_TECH_STRESS_THRESHOLD:
-            return True
-    return False
-
-
-def _energy_preferred_active(
-    previous_days: list[date],
-    regimes_by_day: dict[date, Optional[WorldRegime]],
-) -> bool:
-    days = previous_days[-DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS:]
-    if len(days) < DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS:
-        return False
-    for previous_day in days:
-        regime = regimes_by_day.get(previous_day)
-        score = getattr(regime, "energy_commodity_shock_score", None) if regime is not None else None
-        if score is None or float(score) < DAILY_POLICY_ENERGY_SHOCK_THRESHOLD:
-            return False
-    return True
 
 
 def _clamp_position_count(value: int) -> int:

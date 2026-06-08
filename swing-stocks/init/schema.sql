@@ -63,11 +63,6 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     entry_window_start   TEXT,
     entry_window_end     TEXT,
 
-    -- Common policy snapshot
-    long_min_fundamental NUMERIC(5,2)  NOT NULL,
-    short_max_fundamental NUMERIC(5,2) NOT NULL,
-    min_market_cap_m     NUMERIC(10,2),
-
     -- Model parameter snapshot
     long_min_pullback    NUMERIC(5,2),
     long_max_pullback    NUMERIC(5,2),
@@ -139,15 +134,9 @@ CREATE TABLE IF NOT EXISTS backtest_decision_events (
     candidate_rank       INTEGER,
     intent_rank          INTEGER,
 
-    -- Market and fundamental context
+    -- Market context
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
-    valuation_label      TEXT,
-    sector               TEXT,
-    industry             TEXT,
-    fundamental_score    NUMERIC(8,4),
-    mispricing_score     NUMERIC(8,4),
-    market_cap_m         NUMERIC(18,2),
 
     -- Bar, intent, and execution context
     bar_count            INTEGER,
@@ -280,13 +269,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     world_regime_label   TEXT,
     world_regime_score   NUMERIC(5,2),
 
-    -- Fundamental label at intent time
-    valuation_label      TEXT,
-    sector               TEXT,
-    industry             TEXT,
-
     -- Intent scores
-    fundamental_score    NUMERIC(5,2),
     intent_score         NUMERIC(8,4),
     intent_reason        TEXT,
 
@@ -453,77 +436,6 @@ BEGIN
                     WHERE composite_score IS NOT NULL
             ';
         END IF;
-    END IF;
-END;
-$$;
-
-DO $$
-BEGIN
-    IF to_regclass('public.stock_scorer_fundamental_scores') IS NOT NULL THEN
-        EXECUTE '
-            CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_pit_cover
-                ON public.stock_scorer_fundamental_scores (
-                    symbol,
-                    exchange,
-                    cik,
-                    (COALESCE(data_available_at, fundamental_data_available_at)) DESC,
-                    "time" DESC
-                )
-                INCLUDE (
-                    composite_score,
-                    composite_score_abs,
-                    sector,
-                    industry,
-                    valuation_label,
-                    mispricing_score,
-                    negative_earnings_flag,
-                    high_leverage_flag,
-                    long_eligible,
-                    short_eligible,
-                    market_cap_m,
-                    current_price_currency,
-                    market_cap_currency,
-                    currency,
-                    financial_currency
-                )
-                WHERE symbol IS NOT NULL
-                  AND exchange IS NOT NULL
-                  AND cik IS NOT NULL
-                  AND composite_score IS NOT NULL
-        ';
-        EXECUTE '
-            CREATE INDEX IF NOT EXISTS idx_backtest_safs_identity_available_full_cover
-                ON public.stock_scorer_fundamental_scores (
-                    symbol,
-                    exchange,
-                    cik,
-                    (COALESCE(data_available_at, fundamental_data_available_at)) DESC NULLS LAST,
-                    "time" DESC
-                )
-                INCLUDE (
-                    composite_score,
-                    composite_score_abs,
-                    sector,
-                    industry,
-                    valuation_label,
-                    mispricing_score,
-                    negative_earnings_flag,
-                    high_leverage_flag,
-                    long_eligible,
-                    short_eligible,
-                    market_cap_m,
-                    relative_absolute_divergence,
-                    long_block_reason,
-                    short_block_reason,
-                    current_price_currency,
-                    market_cap_currency,
-                    currency,
-                    financial_currency
-                )
-                WHERE symbol IS NOT NULL
-                  AND exchange IS NOT NULL
-                  AND cik IS NOT NULL
-        ';
     END IF;
 END;
 $$;

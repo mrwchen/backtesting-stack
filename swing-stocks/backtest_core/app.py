@@ -13,15 +13,13 @@ from .config import *
 from .db import connect_with_retry, validate_result_schema, validate_source_schema
 from .grid_search import _print_grid_summary, run_grid_search
 from .logging_utils import set_log_process_name
-from .market_data import clear_market_data_caches, preload_candidate_timelines
+from .market_data import clear_market_data_caches
 from .model_loader import (
     _validate_model_filename,
     load_model_config_env,
     load_model_module,
-    model_requires_fundamental_sources,
 )
 from .persistence import delete_run_results
-from .policy import COMMON_POLICY, candidate_policy_kwargs
 from .simulation import run_backtest
 
 log = logging.getLogger(__name__)
@@ -78,56 +76,10 @@ def _worker_db_retry_attempts(reserved_run_id: int | None) -> int:
     return BACKTEST_WORKER_DB_RETRY_ATTEMPTS
 
 
-def run_shared_candidate_timeline_prebuilder() -> None:
-    set_log_process_name(f"bt-timeline-{ACCOUNT_PROFILE}")
-    conn = connect_with_retry()
-    try:
-        log.info(
-            "Shared candidate timeline prebuild starting account profile %s application name %s",
-            ACCOUNT_PROFILE,
-            DB["application_name"],
-        )
-        validate_source_schema(conn)
-        timeline_sets, timeline_rows, timeline_identities, timeline_mib = preload_candidate_timelines(
-            conn,
-            ("LONG", "SHORT"),
-            **candidate_policy_kwargs(),
-            source_table=SOURCE_FUNDAMENTAL_SCORES_TABLE,
-            as_of_date=START_DATE,
-            as_of_ts=None,
-            pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
-            required_currency="USD" if REQUIRE_USD_FUNDAMENTALS else None,
-            allow_rebuilt_historical_fundamentals=ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS,
-            filter_negative_earnings_by_direction={"LONG": False, "SHORT": False},
-            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
-            fundamental_score_mode="peer",
-            fundamental_peer_weight=1.0,
-            fundamental_abs_weight=0.0,
-            long_min_absolute_score=None,
-            short_max_absolute_score=None,
-        )
-        if CANDIDATE_TIMELINE_CACHE_ENABLED and timeline_sets <= 0 and not COMMON_REQUIRE_UPCOMING_EARNINGS_DATE:
-            raise RuntimeError(
-                "Shared candidate timeline prebuild produced no cache sets; refusing slow per-worker fallback."
-            )
-        log.info(
-            "Shared candidate timeline prebuild complete account profile %s cache sets %d rows %d identities %d estimated %.0f MiB",
-            ACCOUNT_PROFILE,
-            timeline_sets,
-            timeline_rows,
-            timeline_identities,
-            timeline_mib,
-        )
-    finally:
-        conn.close()
-
-
 def log_backtest_context(model_files: list[str]) -> None:
     log.info(
-        "Source tables bars %s fundamentals %s earnings calendar %s world regime %s account profile %s PS tradable symbols table %s",
+        "Source tables bars %s world regime %s account profile %s PS tradable symbols table %s",
         SOURCE_MARKET_DATA_1H_TABLE,
-        SOURCE_FUNDAMENTAL_SCORES_TABLE,
-        SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
         SOURCE_WORLD_REGIME_TABLE,
         ACCOUNT_PROFILE,
         PS_TRADABLE_SYMBOLS_TABLE,
@@ -149,7 +101,6 @@ def log_backtest_context(model_files: list[str]) -> None:
         MODEL_CONFIG_REQUIRED,
         MODEL_PARALLELISM,
     )
-    log.info("Fundamental relative score only %s", FUNDAMENTAL_RELATIVE_SCORE_ONLY)
     log.info("Account profile %s", ACCOUNT_PROFILE)
     log.info(
         "Portfolio capacity max open positions %d max position opens per day %d max position opens per hour %d",
@@ -223,37 +174,10 @@ def log_backtest_context(model_files: list[str]) -> None:
         COMMON_MIN_STOP_PCT,
         COMMON_MAX_STOP_PCT,
     )
-    log.info(
-        "Common eligibility min market cap %.0f require USD fundamentals %s high leverage filter %s negative earnings long filter %s short filter %s scorer eligibility filter %s require upcoming earnings date %s days %d",
-        COMMON_POLICY.min_market_cap_m,
-        REQUIRE_USD_FUNDAMENTALS,
-        COMMON_POLICY.filter_high_leverage,
-        COMMON_POLICY.filter_negative_earnings_long,
-        COMMON_POLICY.filter_negative_earnings_short,
-        COMMON_POLICY.filter_scorer_eligibility,
-        COMMON_POLICY.require_upcoming_earnings_date,
-        COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS,
-    )
-    log.info(
-        "Common earnings blackout enabled %s days %d historical known days before %d source table %s",
-        COMMON_EARNINGS_BLACKOUT_ENABLED,
-        COMMON_EARNINGS_BLACKOUT_DAYS,
-        COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE,
-        SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE,
-    )
-    log.info(
-        "Common eligibility long min fundamental %.2f short max fundamental %.2f long blocklist %s short blocklist %s",
-        COMMON_POLICY.long_min_fundamental,
-        COMMON_POLICY.short_max_fundamental,
-        ",".join(COMMON_POLICY.long_label_blocklist) or "-",
-        ",".join(COMMON_POLICY.short_label_blocklist) or "-",
-    )
-    log.info("Sector diversification enabled %s", SECTOR_DIVERSIFICATION_ENABLED)
+    log.info("Candidate universe require USD price data %s", REQUIRE_USD_PRICE_DATA)
     log.info("Grid search enabled %s", GRID_SEARCH_ENABLED)
     log.info(
-        "Performance caches — trading days on, world regime on, candidate timeline %s max %.0f MiB, bars incremental PIT batches of %d symbols with %d warmup days decision event mode %s flush batch %d",
-        CANDIDATE_TIMELINE_CACHE_ENABLED,
-        CANDIDATE_TIMELINE_CACHE_MAX_MIB,
+        "Performance caches — trading days on, world regime on, bars incremental PIT batches of %d symbols with %d warmup days decision event mode %s flush batch %d",
         BAR_CACHE_BATCH_SIZE,
         BAR_CACHE_WARMUP_DAYS,
         DECISION_EVENT_MODE,
@@ -272,7 +196,6 @@ def run_single_model_worker() -> None:
     runtime.MODEL_MODULE = load_model_module(model_file)
     load_model_config_env(model_file)
     cfg = runtime.MODEL_MODULE.intent_config_from_env()
-    require_fundamental_sources = model_requires_fundamental_sources(runtime.MODEL_MODULE)
     max_attempts = _worker_db_retry_attempts(reserved_run_id)
 
     for attempt in range(1, max_attempts + 1):
@@ -288,14 +211,7 @@ def run_single_model_worker() -> None:
             max_attempts,
         )
         try:
-            log.info(
-                "Model source requirements fundamentals %s",
-                require_fundamental_sources,
-            )
-            validate_source_schema(
-                conn,
-                require_fundamental_sources=require_fundamental_sources,
-            )
+            validate_source_schema(conn)
             validate_result_schema(conn)
             log_backtest_context(model_files)
             log.info(

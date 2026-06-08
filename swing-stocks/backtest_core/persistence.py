@@ -13,7 +13,6 @@ from psycopg2.extras import execute_values
 from . import runtime
 from .config import *
 from .entities import AccountCurvePoint, ClosedTrade, DailyPolicySnapshot, DecisionEvent
-from .policy import COMMON_POLICY
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +50,6 @@ def create_run(
         PS_SHARE_CFD_SHORT_BORROW_RATE_PCT if ACCOUNT_PROFILE == "ps_acc" else None,
         PS_SHARE_CFD_OVERNIGHT_DAY_COUNT if ACCOUNT_PROFILE == "ps_acc" else None,
         ENTRY_WINDOW_ENABLED, ENTRY_WINDOW_TZ, ENTRY_WINDOW_START, ENTRY_WINDOW_END,
-        COMMON_POLICY.long_min_fundamental, COMMON_POLICY.short_max_fundamental, COMMON_POLICY.min_market_cap_m,
         _cfg_or_none(cfg, "long_min_pullback"),
         _cfg_or_none(cfg, "long_max_pullback"),
         _cfg_or_none(cfg, "long_ideal_pullback"),
@@ -98,7 +96,6 @@ def create_run(
                 ps_share_cfd_arr_pct, ps_share_cfd_admin_fee_pct,
                 ps_share_cfd_short_borrow_rate_pct, ps_share_cfd_overnight_day_count,
                 entry_window_enabled, entry_window_tz, entry_window_start, entry_window_end,
-                long_min_fundamental, short_max_fundamental, min_market_cap_m,
                 long_min_pullback, long_max_pullback, long_ideal_pullback, long_max_rsi,
                 short_min_bounce, short_max_bounce, short_ideal_bounce, short_min_rsi, short_max_rsi,
                 take_profit_mode,
@@ -120,7 +117,6 @@ def create_run(
                 %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s,
@@ -201,10 +197,6 @@ def write_trades(
             p.direction,
             p.world_regime_label or None,
             Decimal(str(round(p.world_regime_score, 2))) if p.world_regime_score else None,
-            p.valuation_label or None,
-            plan.sector or None,
-            plan.industry or None,
-            Decimal(str(round(plan.fundamental_score, 2))),
             Decimal(str(round(plan.intent_score, 4))),
             plan.intent_reason,
             Decimal(str(round(p.entry_price, 4))),
@@ -238,8 +230,7 @@ def write_trades(
         INSERT INTO {table} (
             run_id, intent_date, symbol, exchange, cik, direction,
             world_regime_label, world_regime_score,
-            valuation_label, sector, industry,
-            fundamental_score, intent_score, intent_reason,
+            intent_score, intent_reason,
             entry_price, stop_loss, take_profit_mode, take_profit,
             trailing_activation_price, trailing_distance_pct,
             position_size_usd, shares, margin_used, maintenance_margin_used, equity_before,
@@ -418,12 +409,6 @@ def write_decision_events(
             e.intent_rank,
             e.world_regime_label or None,
             _decimal_or_none(e.world_regime_score, 2),
-            e.valuation_label or None,
-            e.sector or None,
-            e.industry or None,
-            _decimal_or_none(e.fundamental_score, 4),
-            _decimal_or_none(e.mispricing_score, 4),
-            _decimal_or_none(e.market_cap_m, 2),
             e.bar_count,
             e.min_bars,
             _decimal_or_none(e.intent_score, 4),
@@ -457,8 +442,6 @@ def write_decision_events(
             decision_stage, decision, reason_code, reason_text,
             intent_passed, opened, candidate_rank, intent_rank,
             world_regime_label, world_regime_score,
-            valuation_label,
-            sector, industry, fundamental_score, mispricing_score, market_cap_m,
             bar_count, min_bars, intent_score, intent_reason,
             entry_ts, entry_price, stop_loss, take_profit,
             trailing_activation_price, trailing_distance_pct,

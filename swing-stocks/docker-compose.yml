@@ -75,26 +75,19 @@ services:
       # ---------------------------------------------------------------------
       # Quelltabellen und Point-in-Time-Sicherheit
       #
-      # Diese Tabellen liefern 1h-Bars, Fundamentals und World-Regime-Daten.
-      # REQUIRE_USD_FUNDAMENTALS verhindert gemischte Waehrungsdaten in der
-      # Fundamentalauswahl.
-      # ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false ist konservativ: es nutzt
-      # nur historisch verfuegbare/as-of Daten und vermeidet Look-Ahead Bias.
+      # Diese Tabellen liefern 1h-Bars und World-Regime-Daten.
+      # REQUIRE_USD_PRICE_DATA begrenzt das Broker-Universum auf USD-Instrumente.
       # ---------------------------------------------------------------------
       - SOURCE_MARKET_DATA_1H_TABLE=alpaca_market_data_1h
       - TRADING_CALENDAR_SYMBOLS=AAPL,NVDA,GOOG
-      - SOURCE_FUNDAMENTAL_SCORES_TABLE=stock_scorer_fundamental_scores
-      - SOURCE_EARNINGS_CALENDAR_EVENTS_TABLE=stock_core_earnings_calendar_events
       - SOURCE_WORLD_REGIME_TABLE=world_regime_daily_scores_mv
-      - REQUIRE_USD_FUNDAMENTALS=true
-      - ALLOW_REBUILT_HISTORICAL_FUNDAMENTALS=false
+      - REQUIRE_USD_PRICE_DATA=true
 
       # ---------------------------------------------------------------------
       # Backtest-Zeitraum
       #
       # START_DATE und END_DATE begrenzen den Simulationszeitraum.
-      # Die Datenquelle muss fuer diesen Zeitraum 1h-Bars, Fundamentals und
-      # Regime-Daten liefern koennen.
+      # Die Datenquelle muss fuer diesen Zeitraum 1h-Bars und Regime-Daten liefern koennen.
       # ---------------------------------------------------------------------
       - START_DATE=2024-01-01
       - END_DATE=2026-05-01
@@ -119,16 +112,10 @@ services:
       # ---------------------------------------------------------------------
       #- MODEL_SELECTION=all
       - MODEL_SELECTION=single
-      - MODEL_FILE=scorer_decile_long_selector_v2.py
+      - MODEL_FILE=regime_qqq_relative_strength_v1.py
       #- MODEL_SELECTION=multi
-      #- MODEL_FILES=benchmark_qqq.py,qqq_engine_probe.py
-      #- MODEL_FILES=pullback_bounce_fundamental_v1.py,sector_rotation_long_short_v1.py,trend_pullback_reclaim_v1.py,relative_strength_momentum_v1.py
-      # - MODEL_FILES=adaptive_entry_swing_v1.py,deep_pullback_quality_mean_reversion_v1.py,failed_breakout_reversal_v1.py,filing_aware_fundamental_momentum_v1.py,pullback_bounce_fundamental_v1.py,quality_breakout_fundamental_v1.py,relative_strength_momentum_v1.py,sector_rotation_long_short_v1.py,statistical_direction_probability_v1.py,swing_alpha_momentum_v1.py,trend_pullback_reclaim_v1.py,volatility_contraction_breakout_v1.py,weak_fundamental_breakdown_v1.py
       - MODEL_CONFIG_DIR=/app/backtest_model_configs
       - MODEL_CONFIG_REQUIRED=true
-      # true = alle Modell-Configs nutzen nur composite_score (rel/peer).
-      #        composite_score_abs-Mix und absolute Score-Filter werden ignoriert.
-      - FUNDAMENTAL_RELATIVE_SCORE_ONLY=true
       - MODEL_PARALLELISM=4
       - MODEL_FAILURE_MODE=continue
 
@@ -150,8 +137,6 @@ services:
       #
       # BAR_CACHE_* ist der allgemeine 1h-Bar-Cache fuer Positions-/Exit-Logik.
       # SIGNAL_BAR_CACHE_* ist ein kompakter Cache fuer Signalentscheidungen.
-      # CANDIDATE_TIMELINE_CACHE_* baut die Fundamental-Kandidaten zeitlich vor
-      # und teilt den Cache ueber Worker via /tmp.
       # ---------------------------------------------------------------------
       - PROGRESS_LOG_EVERY_DAYS=25
       - DECISION_EVENT_MODE=signals
@@ -165,10 +150,6 @@ services:
       - SIGNAL_BAR_CACHE_ENABLED=true
       - SIGNAL_BAR_MAX_STALENESS_HOURS=2.0
       - SIGNAL_BAR_CACHE_MAX_MIB=3072
-      - CANDIDATE_TIMELINE_CACHE_ENABLED=true
-      - CANDIDATE_TIMELINE_CACHE_MAX_MIB=3072
-      - CANDIDATE_TIMELINE_CURSOR_ITERSIZE=10000
-      - CANDIDATE_TIMELINE_SHARED_CACHE_DIR=/tmp/backtest_candidate_timeline_cache
 
       # ---------------------------------------------------------------------
       # Account-Auswahl und Portfolio-Risiko
@@ -186,7 +167,6 @@ services:
       # Trading-Tag, inklusive initialer Opens und Refill-Opens nach SL/TP.
       # MAX_POSITION_OPENS_PER_HOUR begrenzt alle Positionseroeffnungen pro
       # UTC-Bucket der simulierten Entry-Zeit, inklusive Refill-Opens.
-      # SECTOR_DIVERSIFICATION_ENABLED aktiviert sektorale Streuungsregeln.
       # ---------------------------------------------------------------------
       - ACCOUNT_PROFILE=all
       #- ACCOUNT_PROFILE=ps_acc
@@ -195,7 +175,6 @@ services:
       - MAX_OPEN_POSITIONS=10
       - MAX_POSITION_OPENS_PER_DAY=3
       - MAX_POSITION_OPENS_PER_HOUR=1
-      - SECTOR_DIVERSIFICATION_ENABLED=false
 
       # ---------------------------------------------------------------------
       # Daily Position Policy: Tageslimits, World-Regime-Steuerung und Halts.
@@ -210,8 +189,6 @@ services:
       # PRUNE_TIME schliesst um 11:00 NY die schlechtesten Positionen, falls
       # mehr Positionen offen sind als das Tageslimit erlaubt.
       #
-      # Tech-Stress blockiert Technology-Longs; Energy-Shock kann Oil & Gas
-      # Integrated als bevorzugte Industry an Modelle weitergeben.
       # ---------------------------------------------------------------------
       # Basis der Tageslogik: Zeitzone, World-Regime-MA und getrennte Trend-
       # Laengen fuer die Phasen Stress baut sich auf / Stress nimmt ab.
@@ -282,18 +259,6 @@ services:
       - DAILY_POLICY_PRUNE_TIME_TZ=America/New_York
       - DAILY_POLICY_PRUNE_TIME=11:00
 
-      # Tech-Stress-Sektorblock: blockiert Long-Entries im konfigurierten
-      # Sektor, wenn Tech-Stress im Lookback ueber der Schwelle lag.
-      - DAILY_POLICY_TECH_STRESS_LOOKBACK_DAYS=4
-      - DAILY_POLICY_TECH_STRESS_THRESHOLD=60.0
-      - "DAILY_POLICY_BLOCK_LONG_SECTOR=06 Technology"
-
-      # Energy-Shock-Industry-Praeferenz: gibt eine bevorzugte Industry an die
-      # Modelle weiter, wenn Energy-Shock an allen Lookback-Tagen hoch war.
-      - DAILY_POLICY_ENERGY_SHOCK_LOOKBACK_DAYS=3
-      - DAILY_POLICY_ENERGY_SHOCK_THRESHOLD=60.0
-      - "DAILY_POLICY_PREFERRED_INDUSTRY=1311 Crude Petroleum & Natural Gas"
-
       # Historischer Lookback: Kalenderfenster, aus dem vorherige Handelstage
       # fuer Regime-MA, Trend und Sonderregeln geladen werden.
       - DAILY_POLICY_LOOKBACK_CALENDAR_DAYS=45
@@ -304,41 +269,6 @@ services:
       - INTENT_SCORE_CLUSTER_DELTA=0.50
       - INTENT_SCORE_CLUSTER_MIN_SIZE=2
       - INTENT_SCORE_CLUSTER_RANDOM_SEED=12345
-
-      # ---------------------------------------------------------------------
-      # Gemeinsame Policy: fundamentale Eligibility
-      #
-      # Dieser Vorfilter ist modellunabhaengig. Modelle liefern Symbol,
-      # Richtung, Intent-Score und Begruendung; die gemeinsame Policy entscheidet,
-      # ob ein Symbol aufgrund fundamentaler Mindestanforderungen ueberhaupt
-      # handelbar ist.
-      #
-      # COMMON_LONG_MIN_FUNDAMENTAL = Mindestscore fuer Long-Kandidaten.
-      # COMMON_SHORT_MAX_FUNDAMENTAL = Maximalscore fuer Short-Kandidaten.
-      # *_LABEL_BLOCKLIST blockiert Bewertungslabels.
-      # COMMON_MIN_MARKET_CAP_USD_M ist die Mindest-Marktkapitalisierung in Mio. USD.
-      # Die High-Leverage/Earnings-Filter sind zusaetzliche Qualitaetsfilter.
-      # COMMON_FILTER_SCORER_ELIGIBILITY=true koppelt LONG an long_eligible
-      # und SHORT an short_eligible aus stock_scorer_fundamental_scores.
-      # COMMON_EARNINGS_BLACKOUT_* blockiert neue Entries, wenn ein zum
-      # Entry-Zeitpunkt bekanntes Earnings-Date im kommenden Kalenderfenster liegt.
-      # SEC-8-K-Events werden fuer historische Backtests als N Tage vorher
-      # oeffentlich bekannt modelliert; yfinance nutzt strikt known_as_of_ts.
-      # ---------------------------------------------------------------------
-      - COMMON_LONG_MIN_FUNDAMENTAL=45.0
-      - COMMON_SHORT_MAX_FUNDAMENTAL=30.0
-      - COMMON_LONG_LABEL_BLOCKLIST=insufficient_data,value_trap
-      - COMMON_SHORT_LABEL_BLOCKLIST= insufficient_data, deep_value,quality_value,compounder,undervalued
-      - COMMON_MIN_MARKET_CAP_USD_M=5000.0
-      - COMMON_FILTER_FUNDAMENTAL_HIGH_LEVERAGE=false
-      - COMMON_FILTER_NEGATIVE_EARNINGS_LONG=false
-      - COMMON_FILTER_NEGATIVE_EARNINGS_SHORT=false
-      - COMMON_FILTER_SCORER_ELIGIBILITY=false
-      - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE=false
-      - COMMON_REQUIRE_UPCOMING_EARNINGS_DATE_DAYS=100
-      - COMMON_EARNINGS_BLACKOUT_ENABLED=true
-      - COMMON_EARNINGS_BLACKOUT_DAYS=10
-      - COMMON_HISTORICAL_EARNINGS_KNOWN_DAYS_BEFORE=21
 
       # ---------------------------------------------------------------------
       # Zentrale Execution-/Risk-Policy
@@ -370,7 +300,7 @@ services:
       - EXECUTION_LONG_TRAILING_DISTANCE_PCT=5.0
       - EXECUTION_SHORT_TRAILING_DISTANCE_PCT=2.0
       - EXECUTION_LONG_MAX_HOLD_DAYS=21.0
-      - EXECUTION_SHORT_MAX_HOLD_DAYS=5.0
+      - EXECUTION_SHORT_MAX_HOLD_DAYS=7.0
       - COMMON_STOP_LOSS_ENABLED=true 
       - COMMON_STOP_LOOKBACK_BARS=260
       - COMMON_STOP_BUFFER_RATIO=0.010

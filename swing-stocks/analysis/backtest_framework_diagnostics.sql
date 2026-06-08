@@ -68,49 +68,7 @@ JOIN selected_runs s USING (run_id)
 GROUP BY t.run_id, t.direction, COALESCE(t.world_regime_label, '')
 ORDER BY t.run_id, t.direction, pnl_usd;
 
--- 4) Valuation label x direction.
-WITH selected_runs AS (
-    SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
-)
-SELECT
-    t.run_id,
-    t.direction,
-    COALESCE(t.valuation_label, '') AS valuation_label,
-    COUNT(*) AS trades,
-    ROUND(SUM(t.pnl_usd)::numeric, 2) AS pnl_usd,
-    ROUND(AVG(t.return_pct)::numeric, 4) AS avg_return_pct,
-    ROUND(100.0 * AVG((t.pnl_usd > 0)::int)::numeric, 2) AS win_rate_pct,
-    ROUND((
-        SUM(CASE WHEN t.pnl_usd > 0 THEN t.pnl_usd ELSE 0 END)
-        / NULLIF(ABS(SUM(CASE WHEN t.pnl_usd < 0 THEN t.pnl_usd ELSE 0 END)), 0)
-    )::numeric, 3) AS profit_factor
-FROM public.backtest_trades t
-JOIN selected_runs s USING (run_id)
-GROUP BY t.run_id, t.direction, COALESCE(t.valuation_label, '')
-ORDER BY t.run_id, t.direction, pnl_usd;
-
--- 5) Sector x direction.
-WITH selected_runs AS (
-    SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
-)
-SELECT
-    t.run_id,
-    t.direction,
-    COALESCE(t.sector, '') AS sector,
-    COUNT(*) AS trades,
-    ROUND(SUM(t.pnl_usd)::numeric, 2) AS pnl_usd,
-    ROUND(AVG(t.return_pct)::numeric, 4) AS avg_return_pct,
-    ROUND(100.0 * AVG((t.pnl_usd > 0)::int)::numeric, 2) AS win_rate_pct,
-    ROUND((
-        SUM(CASE WHEN t.pnl_usd > 0 THEN t.pnl_usd ELSE 0 END)
-        / NULLIF(ABS(SUM(CASE WHEN t.pnl_usd < 0 THEN t.pnl_usd ELSE 0 END)), 0)
-    )::numeric, 3) AS profit_factor
-FROM public.backtest_trades t
-JOIN selected_runs s USING (run_id)
-GROUP BY t.run_id, t.direction, COALESCE(t.sector, '')
-ORDER BY t.run_id, t.direction, pnl_usd;
-
--- 6) Worst monthly periods.
+-- 4) Worst monthly periods.
 WITH selected_runs AS (
     SELECT unnest(ARRAY[1, 2]::int[]) AS run_id
 )

@@ -9,7 +9,6 @@ from types import ModuleType
 
 from . import runtime
 from .config import (
-    FUNDAMENTAL_RELATIVE_SCORE_ONLY,
     MODEL_CONFIG_DIR,
     MODEL_CONFIG_REQUIRED,
     MODEL_DIR,
@@ -24,7 +23,7 @@ def _validate_model_filename(model_file: str) -> None:
     model_path = Path(model_file)
     if not model_file or model_path.name != model_file or model_path.suffix != ".py":
         raise ValueError(
-            f"Invalid model file {model_file!r}. Use a plain Python filename like pullback_bounce_fundamental_v1.py"
+            f"Invalid model file {model_file!r}. Use a plain Python filename like regime_qqq_relative_strength_v1.py"
         )
 
 
@@ -115,32 +114,11 @@ def model_direct_candidate_require_broker_eligibility(model: ModuleType) -> bool
     return bool(getattr(model, "DIRECT_CANDIDATE_REQUIRE_BROKER_ELIGIBILITY", True))
 
 
-def model_requires_fundamental_sources(model: ModuleType) -> bool:
-    return not (
-        model_direct_candidate_symbols(model)
-        and model_direct_candidate_mode(model) == "replace"
-    )
-
-
 def _parse_env_value(raw: str) -> str:
     value = raw.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
-
-
-def _apply_global_model_config_overrides(model_file: str) -> None:
-    if not FUNDAMENTAL_RELATIVE_SCORE_ONLY:
-        return
-    os.environ["FUNDAMENTAL_SCORE_MODE"] = "peer"
-    os.environ["FUNDAMENTAL_PEER_WEIGHT"] = "1.0"
-    os.environ["FUNDAMENTAL_ABS_WEIGHT"] = "0.0"
-    os.environ["LONG_MIN_ABSOLUTE_SCORE"] = ""
-    os.environ["SHORT_MAX_ABSOLUTE_SCORE"] = ""
-    log.info(
-        "Applied global model override model %s fundamental relative score only true mode peer peer weight 1.0 abs weight 0.0 absolute score filters disabled",
-        model_file,
-    )
 
 
 def load_model_config_env(model_file: str) -> Path | None:
@@ -151,7 +129,6 @@ def load_model_config_env(model_file: str) -> Path | None:
         if MODEL_CONFIG_REQUIRED:
             raise FileNotFoundError(f"Model config file not found: {config_path}")
         log.info("No model config file found model %s path %s", model_file, config_path)
-        _apply_global_model_config_overrides(model_file)
         return None
 
     loaded = 0
@@ -170,7 +147,6 @@ def load_model_config_env(model_file: str) -> Path | None:
         os.environ[key] = _parse_env_value(raw_value)
         loaded += 1
 
-    _apply_global_model_config_overrides(model_file)
     log.info("Loaded model config model %s path %s variables %d", model_file, config_path, loaded)
     return config_path
 
