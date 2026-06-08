@@ -223,7 +223,7 @@ services:
       # World-Regime-Schwellen: bis STRESS_THRESHOLD gilt Low Stress; ueber
       # HIGH_STRESS_THRESHOLD gilt harte High-Stress-Positionierung.
       - DAILY_POLICY_WORLD_REGIME_STRESS_THRESHOLD=55.0
-      - DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD=75.0
+      - DAILY_POLICY_WORLD_REGIME_HIGH_STRESS_THRESHOLD=65.0
 
       # Low-Stress-Budget und Startwert: legt Long/Short-Caps ohne Stress fest
       # und initialisiert den Vortagswert fuer berechnete Long-Caps.
