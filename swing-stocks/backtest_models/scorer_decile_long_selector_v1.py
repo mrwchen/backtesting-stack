@@ -78,9 +78,6 @@ class IntentConfig:
     max_atr_pct: float = 7.5
 
     model_exit_enabled: bool = True
-    regime_exit_enabled: bool = False
-    regime_exit_min_bars: int = 26
-    regime_exit_max_return_pct: float = 4.0
     hard_loss_exit_min_bars: int = 130
     hard_loss_return_pct: float = -11.0
     hard_loss_mfe_cap_pct: float = 3.0
@@ -163,9 +160,6 @@ def intent_config_from_env() -> IntentConfig:
         long_max_rsi=env_float("LONG_MAX_RSI", d.long_max_rsi),
         max_atr_pct=env_float("MAX_ATR_PCT", d.max_atr_pct),
         model_exit_enabled=env_bool("MODEL_EXIT_ENABLED", d.model_exit_enabled),
-        regime_exit_enabled=env_bool("REGIME_EXIT_ENABLED", d.regime_exit_enabled),
-        regime_exit_min_bars=env_int("REGIME_EXIT_MIN_BARS", d.regime_exit_min_bars),
-        regime_exit_max_return_pct=env_float("REGIME_EXIT_MAX_RETURN_PCT", d.regime_exit_max_return_pct),
         hard_loss_exit_min_bars=env_int("HARD_LOSS_EXIT_MIN_BARS", d.hard_loss_exit_min_bars),
         hard_loss_return_pct=env_float("HARD_LOSS_RETURN_PCT", d.hard_loss_return_pct),
         hard_loss_mfe_cap_pct=env_float("HARD_LOSS_MFE_CAP_PCT", d.hard_loss_mfe_cap_pct),
@@ -526,19 +520,6 @@ def evaluate_position_exit(
     mae = min(float(getattr(pos, "model_mae_pct", low_return)), low_return)
     setattr(pos, "model_mfe_pct", mfe)
     setattr(pos, "model_mae_pct", mae)
-
-    if cfg.regime_exit_enabled and total_bars >= cfg.regime_exit_min_bars:
-        blocked, code, text = _explicit_regime_block(cfg)
-        if blocked and current_return <= cfg.regime_exit_max_return_pct:
-            return {
-                "exit": True,
-                "status": "MODEL_SELECTOR_REGIME_EXIT",
-                "price": float(close),
-                "reason": (
-                    f"Selector regime exit {code}: {text} Current return {current_return:.2f}% "
-                    f"with MFE {mfe:.2f}% and MAE {mae:.2f}% after {total_bars} bars."
-                ),
-            }
 
     if total_bars >= cfg.hard_loss_exit_min_bars:
         if current_return <= cfg.hard_loss_return_pct and mfe <= cfg.hard_loss_mfe_cap_pct:
