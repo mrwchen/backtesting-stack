@@ -30,7 +30,7 @@ BENCHMARK_BAR_LOOKBACK = 520
 class IntentConfig:
     min_bars: int = 520
     enable_shorts: bool = False
-    entry_weekdays: tuple[int, ...] = (0, 2)
+    entry_weekdays: tuple[int, ...] = (0, 1, 2, 3, 4)
 
     benchmark_symbol: str = BENCHMARK_SYMBOL
     require_benchmark_context: bool = True
