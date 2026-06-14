@@ -7,7 +7,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2 import sql
 
-from .config import IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE
+from .config import IBKR_SYMBOLS_TABLE
 from .sql_utils import relation_identifier
 
 log = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def ibkr_action_for_direction(direction: str) -> str:
 def get_ibkr_margin_symbols(
     conn: psycopg2.extensions.connection,
     action: str,
-    margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    margin_table: str = IBKR_SYMBOLS_TABLE,
 ) -> tuple[str, ...]:
     normalized_action = action.strip().upper()
     cache_key = (margin_table, normalized_action)
@@ -80,7 +80,7 @@ def get_ibkr_margin_symbols(
 def get_ibkr_margin_universe(
     conn: psycopg2.extensions.connection,
     action: str,
-    margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    margin_table: str = IBKR_SYMBOLS_TABLE,
 ) -> tuple[tuple[object, ...], tuple[str, ...]]:
     normalized_action = action.strip().upper()
     cache_key = (margin_table, normalized_action)
@@ -129,7 +129,7 @@ def get_ibkr_margin_requirement(
     conn: psycopg2.extensions.connection,
     symbol: str,
     direction: str,
-    margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    margin_table: str = IBKR_SYMBOLS_TABLE,
 ) -> IbkrMarginRequirement:
     action = ibkr_action_for_direction(direction)
     cache_key = (margin_table, symbol.strip().upper(), action)

@@ -343,13 +343,13 @@ services:
       #
       # Wird genutzt, wenn ACCOUNT_PROFILE=ibkr_acc oder ACCOUNT_PROFILE=all.
       # Die Margin-Anforderungen kommen symbolgenau aus
-      # IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE.
+      # IBKR_SYMBOLS_TABLE.
       #
       # Explizit gesetzte IBKR_* Werte entsprechen Code-Defaults fuer Kommission,
       # Spread/Slippage, Fractional Shares und Margin-Finanzierung.
       # *_PCT Werte sind Prozentpunkte: 50.0 = 50%, 5.14 = 5.14%.
       # ---------------------------------------------------------------------
-      - IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE=public.ibkr_symbol_margin_requirements
+      - IBKR_SYMBOLS_TABLE=public.ibkr_symbols
       - IBKR_LONG_INITIAL_MARGIN_PCT=50.0
       - IBKR_LONG_MAINTENANCE_MARGIN_PCT=25.0
       - IBKR_SHORT_INITIAL_MARGIN_PCT=50.0

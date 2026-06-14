@@ -496,10 +496,10 @@ $$;
 
 DO $$
 BEGIN
-    IF to_regclass('public.ibkr_symbol_margin_requirements') IS NOT NULL THEN
+    IF to_regclass('public.ibkr_symbols') IS NOT NULL THEN
         EXECUTE '
             CREATE INDEX IF NOT EXISTS idx_backtest_ibkr_margin_action_symbol_usable
-                ON public.ibkr_symbol_margin_requirements (
+                ON public.ibkr_symbols (
                     (UPPER(TRIM(action))),
                     (UPPER(TRIM(source_symbol)))
                 )

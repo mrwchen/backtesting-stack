@@ -280,7 +280,7 @@ def get_direct_symbol_candidates(
     source_table: str = SOURCE_MARKET_DATA_1H_TABLE,
     pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
     required_currency: Optional[str] = "USD",
-    ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    ibkr_margin_table: str = IBKR_SYMBOLS_TABLE,
     require_broker_eligibility: bool = True,
 ) -> list[CandidateRow]:
     normalized_symbols = tuple(dict.fromkeys(
@@ -322,7 +322,7 @@ def get_candidates(
     as_of_ts: Optional[object],
     pepperstone_table: str = PS_TRADABLE_SYMBOLS_TABLE,
     required_currency: Optional[str] = "USD",
-    ibkr_margin_table: str = IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+    ibkr_margin_table: str = IBKR_SYMBOLS_TABLE,
 ) -> list[CandidateRow]:
     cutoff_ts = _candidate_cutoff_ts(as_of_date, as_of_ts)
     cache_key = (

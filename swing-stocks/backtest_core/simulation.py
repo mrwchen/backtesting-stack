@@ -248,7 +248,7 @@ def _apply_model_market_context(
             source_table=SOURCE_MARKET_DATA_1H_TABLE,
             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
             required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
-            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            ibkr_margin_table=IBKR_SYMBOLS_TABLE,
             require_broker_eligibility=False,
         )
         benchmark_lookback = max(
@@ -1290,7 +1290,7 @@ def run_backtest(
                     source_table=SOURCE_MARKET_DATA_1H_TABLE,
                     pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                     required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
-                    ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                    ibkr_margin_table=IBKR_SYMBOLS_TABLE,
                     require_broker_eligibility=direct_candidate_require_broker_eligibility,
                 )
             else:
@@ -1302,7 +1302,7 @@ def run_backtest(
                     as_of_ts=as_of_ts,
                     pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                     required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
-                    ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                    ibkr_margin_table=IBKR_SYMBOLS_TABLE,
                 )
                 if direct_candidate_symbols:
                     candidates = _merge_direct_candidates(
@@ -1315,7 +1315,7 @@ def run_backtest(
                             source_table=SOURCE_MARKET_DATA_1H_TABLE,
                             pepperstone_table=PS_TRADABLE_SYMBOLS_TABLE,
                             required_currency="USD" if REQUIRE_USD_PRICE_DATA else None,
-                            ibkr_margin_table=IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                            ibkr_margin_table=IBKR_SYMBOLS_TABLE,
                             require_broker_eligibility=direct_candidate_require_broker_eligibility,
                         ),
                     )

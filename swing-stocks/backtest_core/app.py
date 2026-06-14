@@ -125,7 +125,7 @@ def log_backtest_context(model_files: list[str]) -> None:
     else:
         log.info(
             "IBKR margin policy reads symbol margin percentages from %s",
-            IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+            IBKR_SYMBOLS_TABLE,
         )
     log.info(
         "Execution model fractional shares %s spread bps %.2f slippage bps %.2f commission per order %.2f commission per share %.4f commission min %.2f commission max pct %.2f commission bps %.2f",

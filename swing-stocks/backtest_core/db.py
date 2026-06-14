@@ -184,7 +184,7 @@ def validate_source_schema(conn: psycopg2.extensions.connection) -> None:
         }
         if REQUIRE_USD_PRICE_DATA:
             ibkr_required.add("currency")
-        _require_columns(conn, IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE, ibkr_required)
+        _require_columns(conn, IBKR_SYMBOLS_TABLE, ibkr_required)
 
     _validate_source_coverage(conn)
 
@@ -372,18 +372,18 @@ def _validate_source_coverage(conn: psycopg2.extensions.connection) -> None:
                         ) AS short_symbols
                     FROM {}
                     """
-                ).format(relation_identifier(IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE)),
+                ).format(relation_identifier(IBKR_SYMBOLS_TABLE)),
             )
             usable_rows, usable_symbols, long_symbols, short_symbols = cur.fetchone()
         if usable_rows <= 0:
             log.warning(
                 "IBKR margin source %s has no usable rows; candidate selection will return no symbols",
-                IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                IBKR_SYMBOLS_TABLE,
             )
         else:
             log.info(
                 "IBKR margin percentage source %s usable rows %d symbols %d long symbols %d short symbols %d",
-                IBKR_SYMBOL_MARGIN_REQUIREMENTS_TABLE,
+                IBKR_SYMBOLS_TABLE,
                 usable_rows,
                 usable_symbols,
                 long_symbols,
