@@ -324,17 +324,105 @@ def evaluate_many(
     keep_trades: bool,
 ) -> list[Evaluation]:
     tasks = [(stage, candidate, fold, role, keep_trades) for candidate in candidates]
+    total = len(tasks)
+    if total <= 0:
+        return []
+
+    started = time.monotonic()
+    log.info(
+        "Stage %s fold %d %s evaluate start candidates %d processes %d chunk_size %d progress_every %d progress_seconds %d",
+        stage,
+        fold.fold_index,
+        role,
+        total,
+        opt_cfg.processes if total > 1 else 1,
+        opt_cfg.process_chunk_size if opt_cfg.processes > 1 and total > 1 else 1,
+        opt_cfg.progress_log_every,
+        opt_cfg.progress_log_seconds,
+    )
+
     if opt_cfg.processes <= 1 or len(tasks) <= 1:
-        return [_evaluate_task_direct(task, ticks, bars, base_cfg) for task in tasks]
+        results: list[Evaluation] = []
+        progress = _ProgressLogState(started_at=started, last_logged_at=started)
+        for completed, task in enumerate(tasks, start=1):
+            results.append(_evaluate_task_direct(task, ticks, bars, base_cfg))
+            _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
+        _log_evaluation_complete(stage, fold.fold_index, role, total, started)
+        return results
 
     ctx_name = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
     ctx = mp.get_context(ctx_name)
+    chunk_size = min(total, opt_cfg.process_chunk_size)
+    results: list[Evaluation] = []
+    progress = _ProgressLogState(started_at=started, last_logged_at=started)
     with ctx.Pool(
         processes=opt_cfg.processes,
         initializer=_init_worker,
         initargs=(ticks, bars, base_cfg),
     ) as pool:
-        return list(pool.imap_unordered(_evaluate_task, tasks, chunksize=max(1, len(tasks) // (opt_cfg.processes * 8))))
+        for completed, evaluation in enumerate(pool.imap_unordered(_evaluate_task, tasks, chunksize=chunk_size), start=1):
+            results.append(evaluation)
+            _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
+    _log_evaluation_complete(stage, fold.fold_index, role, total, started)
+    return results
+
+
+@dataclass
+class _ProgressLogState:
+    started_at: float
+    last_logged_at: float
+    last_logged_completed: int = 0
+
+
+def _log_evaluation_progress(
+    stage: str,
+    fold_index: int,
+    role: str,
+    completed: int,
+    total: int,
+    progress: _ProgressLogState,
+    opt_cfg: OptimizerConfig,
+) -> None:
+    if completed >= total:
+        return
+
+    now = time.monotonic()
+    completed_delta = completed - progress.last_logged_completed
+    seconds_delta = now - progress.last_logged_at
+    if completed_delta < opt_cfg.progress_log_every and seconds_delta < opt_cfg.progress_log_seconds:
+        return
+
+    elapsed = now - progress.started_at
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    remaining = total - completed
+    eta = remaining / rate if rate > 0 else 0.0
+    log.info(
+        "Stage %s fold %d %s progress %d/%d elapsed %.1fs rate %.2f/s eta %.1fs",
+        stage,
+        fold_index,
+        role,
+        completed,
+        total,
+        elapsed,
+        rate,
+        eta,
+    )
+    progress.last_logged_at = now
+    progress.last_logged_completed = completed
+
+
+def _log_evaluation_complete(stage: str, fold_index: int, role: str, total: int, started: float) -> None:
+    elapsed = time.monotonic() - started
+    rate = total / elapsed if elapsed > 0 else 0.0
+    log.info(
+        "Stage %s fold %d %s complete candidates %d elapsed %.1fs rate %.2f/s",
+        stage,
+        fold_index,
+        role,
+        total,
+        elapsed,
+        rate,
+    )
 
 
 def _init_worker(ticks: pd.DataFrame, bars: pd.DataFrame, base_cfg: RunConfig) -> None:

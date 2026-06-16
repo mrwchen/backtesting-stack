@@ -153,6 +153,9 @@ WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
 WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
 WF_TRAIN_TOP_N_PER_FOLD = max(1, env_int("WF_TRAIN_TOP_N_PER_FOLD", 50))
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
+OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
+OPTIMIZER_PROGRESS_LOG_EVERY = max(1, env_int("OPTIMIZER_PROGRESS_LOG_EVERY", 5000))
+OPTIMIZER_PROGRESS_LOG_SECONDS = max(1, env_int("OPTIMIZER_PROGRESS_LOG_SECONDS", 60))
 STAGE1_MAX_PARAMETER_SETS = max(0, env_int("STAGE1_MAX_PARAMETER_SETS", 0))
 STAGE2_ENABLED = env_bool("STAGE2_ENABLED", True)
 STAGE2_SEED_TOP_N = max(1, env_int("STAGE2_SEED_TOP_N", 20))
@@ -237,6 +240,9 @@ class OptimizerConfig:
     step_days: int
     train_top_n_per_fold: int
     processes: int
+    process_chunk_size: int
+    progress_log_every: int
+    progress_log_seconds: int
     stage1_max_parameter_sets: int
     stage2_enabled: bool
     stage2_seed_top_n: int
@@ -300,6 +306,9 @@ def active_optimizer_config() -> OptimizerConfig:
         step_days=WF_STEP_DAYS,
         train_top_n_per_fold=WF_TRAIN_TOP_N_PER_FOLD,
         processes=OPTIMIZER_PROCESSES,
+        process_chunk_size=OPTIMIZER_PROCESS_CHUNK_SIZE,
+        progress_log_every=OPTIMIZER_PROGRESS_LOG_EVERY,
+        progress_log_seconds=OPTIMIZER_PROGRESS_LOG_SECONDS,
         stage1_max_parameter_sets=STAGE1_MAX_PARAMETER_SETS,
         stage2_enabled=STAGE2_ENABLED,
         stage2_seed_top_n=STAGE2_SEED_TOP_N,
