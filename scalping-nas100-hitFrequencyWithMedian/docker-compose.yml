@@ -7,7 +7,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_HFMED_TABLES_ON_START: "false"
+      DROP_ALL_HFMED_TABLES_ON_START: "true"
     command:
       - sh
       - -c
