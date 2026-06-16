@@ -11,6 +11,7 @@ $$;
 
 GRANT CONNECT ON DATABASE postgres TO "market-data-account";
 GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
+GRANT SELECT ON public.pepperstone_ticks_data TO "market-data-account";
 
 \if :drop_hfmed_tables_on_start
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_monte_carlo CASCADE;
@@ -203,4 +204,3 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     TO "market-data-account";
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "market-data-account";
-
