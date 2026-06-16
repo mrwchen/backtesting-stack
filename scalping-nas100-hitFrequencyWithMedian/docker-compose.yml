@@ -55,7 +55,7 @@ services:
       # Hit-frequency profile: 10 closed 10-second bars, exact 50% hit median.
       - BAR_SECONDS=10
       - LOOKBACK_BARS=90
-      - MIN_LOOKBACK_BARS=10
+      - MIN_LOOKBACK_BARS=90
       - PRICE_STEP=1.0
 
       # Trade rule: tick-level median crossing.
