@@ -35,7 +35,12 @@ def _notes() -> str:
         f"bar_seconds={config.BAR_SECONDS}",
         f"lookback={config.LOOKBACK_BARS}",
         f"median=0.5",
-        f"stop={config.STOP_POINTS:g}",
+        f"stop_mode={config.STOP_MODE}",
+        f"band={config.BAND_LOWER_QUANTILE:g}-{config.BAND_UPPER_QUANTILE:g}",
+        f"min_band={config.MIN_BAND_POINTS:g}",
+        f"band_buffer={config.BAND_STOP_BUFFER_POINTS:g}",
+        f"stop_limits={config.MIN_STOP_POINTS:g}-{config.MAX_STOP_POINTS:g}",
+        f"fixed_stop={config.STOP_POINTS:g}",
         f"tp={config.TAKE_PROFIT_POINTS:g}",
         f"account={config.ACCOUNT_PROFILE}",
         "spread=live_bid_ask",
@@ -235,4 +240,3 @@ def write_monte_carlo(conn, run_id: int, mc: dict | None) -> None:
         cur.execute(query, [_db_value(payload[col]) for col in cols])
     conn.commit()
     log.info("Wrote Monte-Carlo results for run_id %d", run_id)
-

@@ -58,9 +58,15 @@ services:
       - MIN_LOOKBACK_BARS=10
       - PRICE_STEP=1.0
 
-      # Trade rule: tick-level median crossing, fixed 10-point stop and target.
-      - STOP_POINTS=15.0
-      - TAKE_PROFIT_POINTS=15.0
+      # Trade rule: tick-level median crossing.
+      # STOP_MODE=fixed uses STOP_POINTS. STOP_MODE=band uses q45/q55 as the stop band.
+      - STOP_MODE=band
+      - STOP_POINTS=10.0
+      - TAKE_PROFIT_POINTS=10.0
+      - MIN_BAND_POINTS=40.0
+      - BAND_STOP_BUFFER_POINTS=0.5
+      - MIN_STOP_POINTS=3.0
+      - MAX_STOP_POINTS=30.0
 
       # Pepperstone-style account profile.
       - ACCOUNT_PROFILE=PS_ACC

@@ -36,6 +36,13 @@ def env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _one_of(name: str, default: str, choices: set[str]) -> str:
+    value = env_str(name, default).lower()
+    if value not in choices:
+        raise ValueError(f"{name}={value!r} invalid; expected one of {sorted(choices)}")
+    return value
+
+
 def env_optional_ts_utc(name: str) -> Optional[datetime]:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -75,12 +82,25 @@ PRICE_STEP = env_float("PRICE_STEP", 1.0)
 if PRICE_STEP <= 0:
     raise ValueError("PRICE_STEP must be positive")
 MEDIAN_QUANTILE = 0.5
+BAND_LOWER_QUANTILE = 0.45
+BAND_UPPER_QUANTILE = 0.55
 
 # Trade rules.
+STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
 STOP_POINTS = env_float("STOP_POINTS", 10.0)
 TAKE_PROFIT_POINTS = env_float("TAKE_PROFIT_POINTS", 10.0)
 if STOP_POINTS <= 0 or TAKE_PROFIT_POINTS <= 0:
     raise ValueError("STOP_POINTS and TAKE_PROFIT_POINTS must be positive")
+MIN_BAND_POINTS = env_float("MIN_BAND_POINTS", 40.0)
+BAND_STOP_BUFFER_POINTS = env_float("BAND_STOP_BUFFER_POINTS", 0.5)
+MIN_STOP_POINTS = env_float("MIN_STOP_POINTS", 3.0)
+MAX_STOP_POINTS = env_float("MAX_STOP_POINTS", 30.0)
+if MIN_BAND_POINTS < 0:
+    raise ValueError("MIN_BAND_POINTS must be >= 0")
+if BAND_STOP_BUFFER_POINTS < 0:
+    raise ValueError("BAND_STOP_BUFFER_POINTS must be >= 0")
+if MIN_STOP_POINTS <= 0 or MAX_STOP_POINTS <= MIN_STOP_POINTS:
+    raise ValueError("MAX_STOP_POINTS must be greater than MIN_STOP_POINTS")
 
 # Account profile: PS_ACC.
 ACCOUNT_PROFILE = env_str("ACCOUNT_PROFILE", "PS_ACC").upper()
@@ -146,8 +166,15 @@ class RunConfig:
     min_lookback_bars: int
     price_step: float
     median_quantile: float
+    band_lower_quantile: float
+    band_upper_quantile: float
+    stop_mode: str
     stop_points: float
     take_profit_points: float
+    min_band_points: float
+    band_stop_buffer_points: float
+    min_stop_points: float
+    max_stop_points: float
     account_profile: str
     initial_equity: float
     account_currency: str
@@ -179,8 +206,15 @@ def active_run_config() -> RunConfig:
         min_lookback_bars=MIN_LOOKBACK_BARS,
         price_step=PRICE_STEP,
         median_quantile=MEDIAN_QUANTILE,
+        band_lower_quantile=BAND_LOWER_QUANTILE,
+        band_upper_quantile=BAND_UPPER_QUANTILE,
+        stop_mode=STOP_MODE,
         stop_points=STOP_POINTS,
         take_profit_points=TAKE_PROFIT_POINTS,
+        min_band_points=MIN_BAND_POINTS,
+        band_stop_buffer_points=BAND_STOP_BUFFER_POINTS,
+        min_stop_points=MIN_STOP_POINTS,
+        max_stop_points=MAX_STOP_POINTS,
         account_profile=ACCOUNT_PROFILE,
         initial_equity=INITIAL_EQUITY,
         account_currency=ACCOUNT_CURRENCY,
