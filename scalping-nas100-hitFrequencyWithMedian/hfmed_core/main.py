@@ -1,4 +1,4 @@
-"""Orchestration: load ticks -> build bars -> simulate -> summarise -> persist."""
+"""Orchestration: load ticks, build bars and run single or walk-forward mode."""
 
 import logging
 import time
@@ -6,8 +6,7 @@ import time
 from . import config, persistence
 from .data import build_mid_bars, load_ticks
 from .db import connect_with_retry
-from .risk import run_monte_carlo, summarize_trades
-from .simulation import run_simulation
+from .optimizer import run_single_backtest, run_walk_forward_optimizer
 
 log = logging.getLogger(__name__)
 
@@ -15,46 +14,26 @@ log = logging.getLogger(__name__)
 def main() -> None:
     started = time.time()
     cfg = config.active_run_config()
+    opt_cfg = config.active_optimizer_config()
     log.info(
-        "NAS100 hit-frequency median backtest start symbol %s source %s start %s end %s bar_seconds %d lookback %d stop %.2f tp %.2f stop_profile %.2f-%.2f stop_buffer %.2f stop_distance_filter %.2f-%.2f",
-        cfg.symbol, cfg.source_table, cfg.start_ts_utc, cfg.end_ts_utc,
-        cfg.bar_seconds, cfg.lookback_bars, cfg.stop_points, cfg.take_profit_points,
-        cfg.stop_profile_lower_quantile, cfg.stop_profile_upper_quantile,
-        cfg.stop_profile_buffer_points,
-        cfg.min_stop_distance_points, cfg.max_stop_distance_points,
+        "NAS100 hit-frequency median start mode %s symbol %s source %s start %s end %s bar_seconds %d baseline_lookback %d",
+        config.RUN_MODE,
+        cfg.symbol,
+        cfg.source_table,
+        cfg.start_ts_utc,
+        cfg.end_ts_utc,
+        cfg.bar_seconds,
+        cfg.lookback_bars,
     )
 
     conn = connect_with_retry()
     try:
         persistence.validate_schema(conn)
-        ticks = load_ticks(conn)
-        bars = build_mid_bars(ticks)
-        data_start_ts = ticks["tick_time"].iloc[0].to_pydatetime()
-        data_end_ts = ticks["tick_time"].iloc[-1].to_pydatetime()
-
-        run_id = persistence.create_run(conn, cfg, data_start_ts, data_end_ts, len(ticks), len(bars))
-        result = run_simulation(ticks, bars)
-        summary = summarize_trades(result.trades, result.initial_equity, result.final_equity)
-        mc = run_monte_carlo(result.trades, result.initial_equity)
-
-        persistence.write_trades(conn, run_id, result.trades)
-        persistence.write_monte_carlo(conn, run_id, mc)
-        persistence.update_run_summary(
-            conn,
-            run_id,
-            summary,
-            result,
-            run_duration_seconds=time.time() - started,
-        )
-
-        log.info(
-            "Run %d complete trades %d final_equity %.2f return %.2f%% max_drawdown %.2f%% win_rate %.2f%%",
-            run_id,
-            summary["total_trades"],
-            result.final_equity,
-            summary["total_return_pct"],
-            summary["max_drawdown_pct"],
-            summary["win_rate_pct"],
-        )
+        ticks = load_ticks(conn, cfg)
+        bars = build_mid_bars(ticks, cfg)
+        if config.RUN_MODE == "walk_forward":
+            run_walk_forward_optimizer(conn, cfg, opt_cfg, ticks, bars, started)
+        else:
+            run_single_backtest(conn, cfg, opt_cfg, ticks, bars, started)
     finally:
         conn.close()

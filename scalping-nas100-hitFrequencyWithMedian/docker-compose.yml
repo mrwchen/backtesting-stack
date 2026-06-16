@@ -45,6 +45,7 @@ services:
       - LOG_LEVEL=INFO
       - RUN_LABEL_TZ=Europe/Berlin
       - RUN_NOTES_EXTRA=
+      - RUN_MODE=walk_forward
 
       # Tick data source. Leave START_TS_UTC empty to use all available ticks.
       - SOURCE_TABLE=public.pepperstone_ticks_data
@@ -52,7 +53,7 @@ services:
       - START_TS_UTC=
       - END_TS_UTC=
 
-      # Hit-frequency profile: 10 closed 10-second bars, exact 50% hit median.
+      # Baseline values for single mode and non-optimized settings.
       - BAR_SECONDS=10
       - LOOKBACK_BARS=90
       - MIN_LOOKBACK_BARS=90
@@ -98,6 +99,24 @@ services:
       - MC_BLOCK_SIZE=5
       - MC_RUIN_DRAWDOWN_PCT=50.0
       - MC_RANDOM_SEED=12345
+
+      # Walk-forward parameter optimizer.
+      - PARAMETER_GRID_PATH=parameter_grid.ini
+      - WF_TRAIN_DAYS=60
+      - WF_TEST_DAYS=20
+      - WF_STEP_DAYS=20
+      - WF_TRAIN_TOP_N_PER_FOLD=50
+      - OPTIMIZER_PROCESSES=4
+      - STAGE1_MAX_PARAMETER_SETS=0
+      - STAGE2_ENABLED=true
+      - STAGE2_SEED_TOP_N=20
+      - STAGE2_MAX_PARAMETER_SETS=0
+      - MC_SCORE_TOP_N=100
+      - PERSIST_TOP_TRADES_N=20
+      - MIN_OOS_TRADES=100
+      - MIN_OOS_PROFIT_FACTOR=1.1
+      - MAX_OOS_DRAWDOWN_PCT=25.0
+      - MAX_MC_RUIN_PCT=5.0
     networks:
       - shared_net
 

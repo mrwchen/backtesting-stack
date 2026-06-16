@@ -22,7 +22,8 @@ abgeschlossenen Lookback-Bars berechnet.
 
 Default:
   BAR_SECONDS=10
-  LOOKBACK_BARS=10
+  LOOKBACK_BARS=90
+  MIN_LOOKBACK_BARS=90
   PRICE_STEP=1.0
 
 Je Lookback-Bar werden alle ganzzahligen Preislevel zwischen Low und High
@@ -50,12 +51,12 @@ einer offenen Position ignoriert.
 
 Default:
   STOP_MODE=band
-  MIN_PROFILE_RANGE_POINTS=40.0
+  MIN_PROFILE_RANGE_POINTS=60.0
   STOP_PROFILE_LOWER_QUANTILE=0.0
   STOP_PROFILE_UPPER_QUANTILE=1.0
-  STOP_PROFILE_BUFFER_POINTS=0.5
+  STOP_PROFILE_BUFFER_POINTS=1.0
   MIN_STOP_DISTANCE_POINTS=12.0
-  MAX_STOP_DISTANCE_POINTS=20.0
+  MAX_STOP_DISTANCE_POINTS=30.0
   TAKE_PROFIT_POINTS=10.0
 
 Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens
@@ -79,10 +80,26 @@ Ergebnis-Tabellen
 -----------------
 Die Tabellen werden ausschliesslich durch init/schema.sql angelegt:
   backtest2_nas100_hfmed_runs
+  backtest2_nas100_hfmed_parameter_sets
+  backtest2_nas100_hfmed_fold_results
   backtest2_nas100_hfmed_trades
   backtest2_nas100_hfmed_monte_carlo
 
 DROP_ALL_HFMED_TABLES_ON_START=false ist der Default.
+
+Parameter-Optimizer
+-------------------
+RUN_MODE=walk_forward startet den zweistufigen Parameter-Optimizer.
+Die getesteten Werte liegen in parameter_grid.ini, nicht in docker-compose.yml.
+
+Default Walk-Forward:
+  WF_TRAIN_DAYS=60
+  WF_TEST_DAYS=20
+  WF_STEP_DAYS=20
+
+Stage 1 nutzt das grobe Grid. Stage 2 erzeugt lokale Midpoint-Varianten um die
+besten Stage-1-Kandidaten. Bewertet wird der Out-of-Sample-Teil. Einzeltrades
+werden nur fuer die Top-N Parametersets gespeichert.
 
 Ausfuehrung auf dem Server
 --------------------------

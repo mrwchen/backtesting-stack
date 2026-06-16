@@ -7,29 +7,29 @@ import pandas as pd
 import psycopg2
 from psycopg2 import sql
 
-from . import config
+from .config import RunConfig
 
 log = logging.getLogger(__name__)
 
 
-def _source_table() -> sql.Composed:
-    return sql.Identifier(*config.SOURCE_TABLE.split("."))
+def _source_table(source_table: str) -> sql.Composed:
+    return sql.Identifier(*source_table.split("."))
 
 
-def load_ticks(conn: psycopg2.extensions.connection) -> pd.DataFrame:
+def load_ticks(conn: psycopg2.extensions.connection, cfg: RunConfig) -> pd.DataFrame:
     where = [sql.SQL("symbol = %s")]
-    params: list[object] = [config.SYMBOL]
-    if config.START_TS_UTC is not None:
+    params: list[object] = [cfg.symbol]
+    if cfg.start_ts_utc is not None:
         where.append(sql.SQL("tick_time >= %s"))
-        params.append(config.START_TS_UTC)
-    if config.END_TS_UTC is not None:
+        params.append(cfg.start_ts_utc)
+    if cfg.end_ts_utc is not None:
         where.append(sql.SQL("tick_time < %s"))
-        params.append(config.END_TS_UTC)
+        params.append(cfg.end_ts_utc)
 
     query = sql.SQL(
         "SELECT tick_time, bid, ask FROM {tbl} WHERE {where} ORDER BY tick_time"
     ).format(
-        tbl=_source_table(),
+        tbl=_source_table(cfg.source_table),
         where=sql.SQL(" AND ").join(where),
     )
 
@@ -39,8 +39,8 @@ def load_ticks(conn: psycopg2.extensions.connection) -> pd.DataFrame:
 
     if not rows:
         raise RuntimeError(
-            f"No ticks found in {config.SOURCE_TABLE} for symbol={config.SYMBOL!r} "
-            f"start={config.START_TS_UTC} end={config.END_TS_UTC}"
+            f"No ticks found in {cfg.source_table} for symbol={cfg.symbol!r} "
+            f"start={cfg.start_ts_utc} end={cfg.end_ts_utc}"
         )
 
     df = pd.DataFrame(rows, columns=["tick_time", "bid", "ask"])
@@ -51,16 +51,16 @@ def load_ticks(conn: psycopg2.extensions.connection) -> pd.DataFrame:
     if df.empty:
         raise RuntimeError("All loaded ticks had ask < bid")
     df["mid"] = (df["bid"] + df["ask"]) / 2.0
-    df["bar_start"] = df["tick_time"].dt.floor(f"{config.BAR_SECONDS}s")
+    df["bar_start"] = df["tick_time"].dt.floor(f"{cfg.bar_seconds}s")
     df = df.sort_values("tick_time").reset_index(drop=True)
     log.info(
         "Loaded ticks %d for %s from %s to %s",
-        len(df), config.SYMBOL, _fmt_ts(df["tick_time"].iloc[0]), _fmt_ts(df["tick_time"].iloc[-1]),
+        len(df), cfg.symbol, _fmt_ts(df["tick_time"].iloc[0]), _fmt_ts(df["tick_time"].iloc[-1]),
     )
     return df
 
 
-def build_mid_bars(ticks: pd.DataFrame) -> pd.DataFrame:
+def build_mid_bars(ticks: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
     bars = (
         ticks.groupby("bar_start", sort=True)
         .agg(
@@ -75,7 +75,7 @@ def build_mid_bars(ticks: pd.DataFrame) -> pd.DataFrame:
     bars = bars.sort_values("bar_start").reset_index(drop=True)
     log.info(
         "Built %d mid-price bars of %ds from %d ticks",
-        len(bars), config.BAR_SECONDS, len(ticks),
+        len(bars), cfg.bar_seconds, len(ticks),
     )
     return bars
 
@@ -84,4 +84,3 @@ def _fmt_ts(value: datetime) -> str:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
-

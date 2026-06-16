@@ -2,7 +2,7 @@
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -69,6 +69,9 @@ def _validate_identifier_path(value: str, name: str) -> None:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
             raise ValueError(f"{name} contains invalid identifier part {part!r}")
 
+
+# Runner mode.
+RUN_MODE = _one_of("RUN_MODE", "single", {"single", "walk_forward"})
 
 # Data source.
 SOURCE_TABLE = env_str("SOURCE_TABLE", "public.pepperstone_ticks_data")
@@ -143,6 +146,24 @@ MC_RANDOM_SEED = env_int("MC_RANDOM_SEED", 12345)
 RUN_LABEL_TZ = env_str("RUN_LABEL_TZ", "Europe/Berlin")
 RUN_NOTES_EXTRA = env_str("RUN_NOTES_EXTRA", "")
 
+# Walk-forward optimizer.
+PARAMETER_GRID_PATH = env_str("PARAMETER_GRID_PATH", "parameter_grid.ini")
+WF_TRAIN_DAYS = max(1, env_int("WF_TRAIN_DAYS", 60))
+WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
+WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
+WF_TRAIN_TOP_N_PER_FOLD = max(1, env_int("WF_TRAIN_TOP_N_PER_FOLD", 50))
+OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
+STAGE1_MAX_PARAMETER_SETS = max(0, env_int("STAGE1_MAX_PARAMETER_SETS", 0))
+STAGE2_ENABLED = env_bool("STAGE2_ENABLED", True)
+STAGE2_SEED_TOP_N = max(1, env_int("STAGE2_SEED_TOP_N", 20))
+STAGE2_MAX_PARAMETER_SETS = max(0, env_int("STAGE2_MAX_PARAMETER_SETS", 0))
+MC_SCORE_TOP_N = max(0, env_int("MC_SCORE_TOP_N", 100))
+PERSIST_TOP_TRADES_N = max(0, env_int("PERSIST_TOP_TRADES_N", 20))
+MIN_OOS_TRADES = max(0, env_int("MIN_OOS_TRADES", 100))
+MIN_OOS_PROFIT_FACTOR = env_float("MIN_OOS_PROFIT_FACTOR", 1.1)
+MAX_OOS_DRAWDOWN_PCT = env_float("MAX_OOS_DRAWDOWN_PCT", 25.0)
+MAX_MC_RUIN_PCT = env_float("MAX_MC_RUIN_PCT", 5.0)
+
 # Result schema and DB.
 RESULT_SCHEMA = env_str("RESULT_SCHEMA", "public")
 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", RESULT_SCHEMA):
@@ -208,6 +229,26 @@ class RunConfig:
     mc_random_seed: int
 
 
+@dataclass(frozen=True)
+class OptimizerConfig:
+    parameter_grid_path: str
+    train_days: int
+    test_days: int
+    step_days: int
+    train_top_n_per_fold: int
+    processes: int
+    stage1_max_parameter_sets: int
+    stage2_enabled: bool
+    stage2_seed_top_n: int
+    stage2_max_parameter_sets: int
+    mc_score_top_n: int
+    persist_top_trades_n: int
+    min_oos_trades: int
+    min_oos_profit_factor: float
+    max_oos_drawdown_pct: float
+    max_mc_ruin_pct: float
+
+
 def active_run_config() -> RunConfig:
     return RunConfig(
         source_table=SOURCE_TABLE,
@@ -249,3 +290,53 @@ def active_run_config() -> RunConfig:
         mc_ruin_drawdown_pct=MC_RUIN_DRAWDOWN_PCT,
         mc_random_seed=MC_RANDOM_SEED,
     )
+
+
+def active_optimizer_config() -> OptimizerConfig:
+    return OptimizerConfig(
+        parameter_grid_path=PARAMETER_GRID_PATH,
+        train_days=WF_TRAIN_DAYS,
+        test_days=WF_TEST_DAYS,
+        step_days=WF_STEP_DAYS,
+        train_top_n_per_fold=WF_TRAIN_TOP_N_PER_FOLD,
+        processes=OPTIMIZER_PROCESSES,
+        stage1_max_parameter_sets=STAGE1_MAX_PARAMETER_SETS,
+        stage2_enabled=STAGE2_ENABLED,
+        stage2_seed_top_n=STAGE2_SEED_TOP_N,
+        stage2_max_parameter_sets=STAGE2_MAX_PARAMETER_SETS,
+        mc_score_top_n=MC_SCORE_TOP_N,
+        persist_top_trades_n=PERSIST_TOP_TRADES_N,
+        min_oos_trades=MIN_OOS_TRADES,
+        min_oos_profit_factor=MIN_OOS_PROFIT_FACTOR,
+        max_oos_drawdown_pct=MAX_OOS_DRAWDOWN_PCT,
+        max_mc_ruin_pct=MAX_MC_RUIN_PCT,
+    )
+
+
+def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> RunConfig:
+    fields = {
+        "lookback_bars": int(values["LOOKBACK_BARS"]),
+        "take_profit_points": float(values["TAKE_PROFIT_POINTS"]),
+        "min_profile_range_points": float(values["MIN_PROFILE_RANGE_POINTS"]),
+        "stop_profile_lower_quantile": float(values["STOP_PROFILE_LOWER_QUANTILE"]),
+        "stop_profile_upper_quantile": float(values["STOP_PROFILE_UPPER_QUANTILE"]),
+        "stop_profile_buffer_points": float(values["STOP_PROFILE_BUFFER_POINTS"]),
+        "min_stop_distance_points": float(values["MIN_STOP_DISTANCE_POINTS"]),
+        "max_stop_distance_points": float(values["MAX_STOP_DISTANCE_POINTS"]),
+    }
+    fields["min_lookback_bars"] = min(base.min_lookback_bars, fields["lookback_bars"])
+    if fields["lookback_bars"] < 1:
+        raise ValueError("LOOKBACK_BARS must be positive")
+    if fields["take_profit_points"] <= 0:
+        raise ValueError("TAKE_PROFIT_POINTS must be positive")
+    if fields["min_profile_range_points"] < 0:
+        raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
+    if not 0.0 <= fields["stop_profile_lower_quantile"] < fields["stop_profile_upper_quantile"] <= 1.0:
+        raise ValueError("STOP_PROFILE quantiles must satisfy 0 <= lower < upper <= 1")
+    if fields["stop_profile_buffer_points"] < 0:
+        raise ValueError("STOP_PROFILE_BUFFER_POINTS must be >= 0")
+    if fields["min_stop_distance_points"] <= 0:
+        raise ValueError("MIN_STOP_DISTANCE_POINTS must be positive")
+    if fields["max_stop_distance_points"] <= fields["min_stop_distance_points"]:
+        raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
+    return replace(base, **fields)

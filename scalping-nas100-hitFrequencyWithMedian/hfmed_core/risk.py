@@ -4,7 +4,8 @@ import logging
 
 import numpy as np
 
-from . import broker, config
+from . import broker
+from .config import RunConfig
 from .entities import ClosedTrade
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ def summarize_trades(trades: list[ClosedTrade], initial_equity: float, final_equ
             "max_drawdown_pct": 0.0,
             "avg_win_pct": 0.0,
             "avg_loss_pct": 0.0,
+            "gross_profit_eur": 0.0,
+            "gross_loss_eur": 0.0,
+            "net_profit_eur": 0.0,
+            "avg_trade_pnl_eur": 0.0,
             "final_equity": round(float(final_equity), 2),
         }
 
@@ -55,6 +60,10 @@ def summarize_trades(trades: list[ClosedTrade], initial_equity: float, final_equ
         "max_drawdown_pct": round(float(drawdown.min()), 4),
         "avg_win_pct": round(float(rets[wins].mean()), 4) if wins.any() else 0.0,
         "avg_loss_pct": round(float(rets[losses].mean()), 4) if losses.any() else 0.0,
+        "gross_profit_eur": round(float(gross_win), 2),
+        "gross_loss_eur": round(float(gross_loss), 2),
+        "net_profit_eur": round(float(pnls.sum()), 2),
+        "avg_trade_pnl_eur": round(float(pnls.mean()), 4),
         "final_equity": round(float(final_equity), 2),
     }
 
@@ -73,8 +82,8 @@ def _block_bootstrap(fractions: np.ndarray, n_sims: int, block: int, rng: np.ran
     return fractions[idx].reshape(n_sims, n_blocks * block)[:, :n]
 
 
-def _curve_stats(fractions: np.ndarray, n_sims: int, initial_equity: float, rng: np.random.Generator, method: str) -> dict:
-    sampled = _block_bootstrap(fractions, n_sims, config.MC_BLOCK_SIZE, rng) if method == "block" else _permute(fractions, n_sims, rng)
+def _curve_stats(fractions: np.ndarray, n_sims: int, initial_equity: float, rng: np.random.Generator, method: str, cfg: RunConfig) -> dict:
+    sampled = _block_bootstrap(fractions, n_sims, cfg.mc_block_size, rng) if method == "block" else _permute(fractions, n_sims, rng)
     curves = np.empty((n_sims, fractions.shape[0] + 1), dtype=np.float64)
     curves[:, 0] = initial_equity
     curves[:, 1:] = initial_equity * np.cumprod(1.0 + sampled, axis=1)
@@ -84,7 +93,7 @@ def _curve_stats(fractions: np.ndarray, n_sims: int, initial_equity: float, rng:
     drawdown = (curves - running_max) / running_max * 100.0
     max_drawdown = drawdown.min(axis=1)
     total_return = (final_eq - initial_equity) / initial_equity * 100.0
-    ruin_threshold = initial_equity * (1.0 - config.MC_RUIN_DRAWDOWN_PCT / 100.0)
+    ruin_threshold = initial_equity * (1.0 - cfg.mc_ruin_drawdown_pct / 100.0)
 
     def p(values: np.ndarray, q: int) -> float:
         return round(float(np.percentile(values, q)), 4)
@@ -113,22 +122,22 @@ def _curve_stats(fractions: np.ndarray, n_sims: int, initial_equity: float, rng:
     }
 
 
-def run_monte_carlo(trades: list[ClosedTrade], initial_equity: float) -> dict | None:
-    n_sims = config.MONTE_CARLO_SIMULATIONS
-    if not config.MONTE_CARLO_ENABLED or n_sims <= 0 or len(trades) < 2:
+def run_monte_carlo(trades: list[ClosedTrade], initial_equity: float, cfg: RunConfig, seed_offset: int = 0) -> dict | None:
+    n_sims = cfg.monte_carlo_simulations
+    if not cfg.monte_carlo_enabled or n_sims <= 0 or len(trades) < 2:
         return None
 
     equity_before = np.array([t.equity_before for t in trades], dtype=np.float64)
     pnl = np.array([t.pnl_eur for t in trades], dtype=np.float64)
     base_frac = pnl / equity_before
 
-    extra_cost = np.array([broker.usd_to_eur(t.units * config.MC_EXTRA_SLIPPAGE_POINTS * config.CONTRACT_MULTIPLIER) for t in trades])
+    extra_cost = np.array([broker.usd_to_eur(t.units * cfg.mc_extra_slippage_points * cfg.contract_multiplier, cfg) for t in trades])
     slip_frac = (pnl - extra_cost) / equity_before
 
-    rng = np.random.default_rng(config.MC_RANDOM_SEED)
-    base = _curve_stats(base_frac, n_sims, initial_equity, rng, "permute")
-    slippage = _curve_stats(slip_frac, n_sims, initial_equity, rng, "permute")
-    sequence = _curve_stats(base_frac, n_sims, initial_equity, rng, "block")
+    rng = np.random.default_rng(cfg.mc_random_seed + seed_offset)
+    base = _curve_stats(base_frac, n_sims, initial_equity, rng, "permute", cfg)
+    slippage = _curve_stats(slip_frac, n_sims, initial_equity, rng, "permute", cfg)
+    sequence = _curve_stats(base_frac, n_sims, initial_equity, rng, "block", cfg)
 
     out = {"n_simulations": n_sims}
     out.update({f"base_{key}": value for key, value in base.items()})
@@ -139,4 +148,3 @@ def run_monte_carlo(trades: list[ClosedTrade], initial_equity: float) -> dict | 
         n_sims, base["prob_of_ruin_pct"], sequence["prob_of_ruin_pct"],
     )
     return out
-

@@ -1,0 +1,202 @@
+"""Parameter grid loading and deterministic candidate generation."""
+
+from __future__ import annotations
+
+import configparser
+import hashlib
+import itertools
+from pathlib import Path
+from typing import Iterable
+
+from .config import RunConfig
+
+
+PARAMETER_NAMES = [
+    "LOOKBACK_BARS",
+    "TAKE_PROFIT_POINTS",
+    "MIN_PROFILE_RANGE_POINTS",
+    "STOP_PROFILE_LOWER_QUANTILE",
+    "STOP_PROFILE_UPPER_QUANTILE",
+    "STOP_PROFILE_BUFFER_POINTS",
+    "MIN_STOP_DISTANCE_POINTS",
+    "MAX_STOP_DISTANCE_POINTS",
+]
+
+INTEGER_PARAMETERS = {"LOOKBACK_BARS"}
+QUANTILE_PARAMETERS = {"STOP_PROFILE_LOWER_QUANTILE", "STOP_PROFILE_UPPER_QUANTILE"}
+
+
+def load_grid(path: str) -> dict[str, list[int | float]]:
+    parser = configparser.ConfigParser()
+    loaded = parser.read(path)
+    if not loaded:
+        raise RuntimeError(f"Parameter grid file not found: {Path(path).resolve()}")
+    if "coarse" not in parser:
+        raise RuntimeError("Parameter grid needs a [coarse] section")
+
+    grid: dict[str, list[int | float]] = {}
+    section = parser["coarse"]
+    for name in PARAMETER_NAMES:
+        if name not in section:
+            raise RuntimeError(f"Parameter grid misses {name}")
+        grid[name] = _parse_values(name, section[name])
+    return grid
+
+
+def build_stage1_candidates(grid: dict[str, list[int | float]], max_sets: int = 0) -> list[dict[str, int | float]]:
+    candidates = [
+        dict(zip(PARAMETER_NAMES, values))
+        for values in itertools.product(*(grid[name] for name in PARAMETER_NAMES))
+    ]
+    candidates = [candidate for candidate in candidates if is_valid(candidate)]
+    return _limit_candidates(_dedupe_candidates(candidates), max_sets)
+
+
+def build_stage2_candidates(
+    seed_candidates: Iterable[dict[str, int | float]],
+    coarse_grid: dict[str, list[int | float]],
+    previous_hashes: set[str],
+    max_sets: int = 0,
+) -> list[dict[str, int | float]]:
+    out: list[dict[str, int | float]] = []
+    seen = set(previous_hashes)
+    for seed in seed_candidates:
+        local_values = [_local_values(name, seed[name], coarse_grid[name]) for name in PARAMETER_NAMES]
+        for values in itertools.product(*local_values):
+            candidate = dict(zip(PARAMETER_NAMES, values))
+            if not is_valid(candidate):
+                continue
+            digest = parameter_hash(candidate)
+            if digest in seen:
+                continue
+            seen.add(digest)
+            out.append(candidate)
+    return _limit_candidates(out, max_sets)
+
+
+def is_valid(values: dict[str, int | float]) -> bool:
+    try:
+        if int(values["LOOKBACK_BARS"]) < 1:
+            return False
+        if float(values["TAKE_PROFIT_POINTS"]) <= 0:
+            return False
+        if float(values["MIN_PROFILE_RANGE_POINTS"]) < 0:
+            return False
+        if not 0.0 <= float(values["STOP_PROFILE_LOWER_QUANTILE"]) < float(values["STOP_PROFILE_UPPER_QUANTILE"]) <= 1.0:
+            return False
+        if float(values["STOP_PROFILE_BUFFER_POINTS"]) < 0:
+            return False
+        if float(values["MIN_STOP_DISTANCE_POINTS"]) <= 0:
+            return False
+        if float(values["MAX_STOP_DISTANCE_POINTS"]) <= float(values["MIN_STOP_DISTANCE_POINTS"]):
+            return False
+    except (KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
+def parameter_hash(values: dict[str, int | float]) -> str:
+    text = parameter_signature(values)
+    return hashlib.sha1(text.encode("ascii")).hexdigest()
+
+
+def parameter_signature(values: dict[str, int | float]) -> str:
+    parts = []
+    for name in PARAMETER_NAMES:
+        parts.append(f"{name}:{_format_value(values[name])}")
+    return "|".join(parts)
+
+
+def parameter_label(values: dict[str, int | float]) -> str:
+    return (
+        f"lb{int(values['LOOKBACK_BARS'])}_"
+        f"tp{_format_value(values['TAKE_PROFIT_POINTS'])}_"
+        f"range{_format_value(values['MIN_PROFILE_RANGE_POINTS'])}_"
+        f"q{_format_value(values['STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['STOP_PROFILE_UPPER_QUANTILE'])}_"
+        f"buf{_format_value(values['STOP_PROFILE_BUFFER_POINTS'])}_"
+        f"stop{_format_value(values['MIN_STOP_DISTANCE_POINTS'])}-{_format_value(values['MAX_STOP_DISTANCE_POINTS'])}"
+    )
+
+
+def values_from_config(cfg: RunConfig) -> dict[str, int | float]:
+    return {
+        "LOOKBACK_BARS": cfg.lookback_bars,
+        "TAKE_PROFIT_POINTS": cfg.take_profit_points,
+        "MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
+        "STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,
+        "STOP_PROFILE_UPPER_QUANTILE": cfg.stop_profile_upper_quantile,
+        "STOP_PROFILE_BUFFER_POINTS": cfg.stop_profile_buffer_points,
+        "MIN_STOP_DISTANCE_POINTS": cfg.min_stop_distance_points,
+        "MAX_STOP_DISTANCE_POINTS": cfg.max_stop_distance_points,
+    }
+
+
+def _parse_values(name: str, raw: str) -> list[int | float]:
+    values: list[int | float] = []
+    for part in raw.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if name in INTEGER_PARAMETERS:
+            value: int | float = int(float(text))
+        else:
+            value = round(float(text), 6)
+        values.append(value)
+    if not values:
+        raise RuntimeError(f"Parameter grid {name} has no values")
+    return sorted(set(values))
+
+
+def _local_values(name: str, value: int | float, coarse_values: list[int | float]) -> list[int | float]:
+    values = sorted(set(coarse_values))
+    current = int(value) if name in INTEGER_PARAMETERS else float(value)
+    out = {current}
+    lowers = [item for item in values if item < current]
+    uppers = [item for item in values if item > current]
+    if lowers:
+        out.add(_midpoint(name, lowers[-1], current))
+    if uppers:
+        out.add(_midpoint(name, current, uppers[0]))
+    if name in QUANTILE_PARAMETERS:
+        return sorted(_clamp_quantile(float(item)) for item in out)
+    return sorted(out)
+
+
+def _midpoint(name: str, left: int | float, right: int | float) -> int | float:
+    value = (float(left) + float(right)) / 2.0
+    if name in INTEGER_PARAMETERS:
+        return max(1, int(round(value)))
+    return round(value, 6)
+
+
+def _clamp_quantile(value: float) -> float:
+    return round(min(1.0, max(0.0, value)), 6)
+
+
+def _dedupe_candidates(candidates: Iterable[dict[str, int | float]]) -> list[dict[str, int | float]]:
+    seen: set[str] = set()
+    out: list[dict[str, int | float]] = []
+    for candidate in candidates:
+        digest = parameter_hash(candidate)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        out.append(candidate)
+    return out
+
+
+def _limit_candidates(candidates: list[dict[str, int | float]], max_sets: int) -> list[dict[str, int | float]]:
+    if max_sets <= 0 or len(candidates) <= max_sets:
+        return candidates
+    if max_sets == 1:
+        return [candidates[0]]
+    step = (len(candidates) - 1) / (max_sets - 1)
+    indexes = sorted({round(i * step) for i in range(max_sets)})
+    return [candidates[index] for index in indexes]
+
+
+def _format_value(value: int | float) -> str:
+    if isinstance(value, int):
+        return str(value)
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return text if text else "0"

@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from . import config
+from .config import RunConfig
 
 
 def level_indices_between(low: float, high: float, step: float) -> list[int]:
@@ -21,11 +21,11 @@ def level_indices_between(low: float, high: float, step: float) -> list[int]:
     return list(range(first_idx, last_idx + 1))
 
 
-def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
+def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
     """Compute profile levels from prior completed bars only."""
-    step = config.PRICE_STEP
-    lookback = config.LOOKBACK_BARS
-    min_lookback = config.MIN_LOOKBACK_BARS
+    step = cfg.price_step
+    lookback = cfg.lookback_bars
+    min_lookback = cfg.min_lookback_bars
     counts: dict[int, int] = {}
     window: deque[list[int]] = deque()
     total_hits = 0
@@ -71,12 +71,12 @@ def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
     for pos, row in enumerate(bars.itertuples(index=False)):
         if len(window) >= min_lookback and total_hits > 0:
             q0[pos] = current_min_level()
-            q45[pos] = current_quantile(config.BAND_LOWER_QUANTILE)
-            q50[pos] = current_quantile(config.MEDIAN_QUANTILE)
-            q55[pos] = current_quantile(config.BAND_UPPER_QUANTILE)
+            q45[pos] = current_quantile(cfg.band_lower_quantile)
+            q50[pos] = current_quantile(cfg.median_quantile)
+            q55[pos] = current_quantile(cfg.band_upper_quantile)
             q100[pos] = current_max_level()
-            stop_lower[pos] = current_quantile(config.STOP_PROFILE_LOWER_QUANTILE)
-            stop_upper[pos] = current_quantile(config.STOP_PROFILE_UPPER_QUANTILE)
+            stop_lower[pos] = current_quantile(cfg.stop_profile_lower_quantile)
+            stop_upper[pos] = current_quantile(cfg.stop_profile_upper_quantile)
 
         levels = level_indices_between(float(row.low), float(row.high), step)
         window.append(levels)
@@ -100,6 +100,6 @@ def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def rolling_median_levels(bars: pd.DataFrame) -> pd.Series:
+def rolling_median_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.Series:
     """Compute median profile levels for each bar from prior completed bars only."""
-    return rolling_profile_levels(bars)["median_level"]
+    return rolling_profile_levels(bars, cfg)["median_level"]

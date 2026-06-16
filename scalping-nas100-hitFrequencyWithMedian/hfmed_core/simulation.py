@@ -5,16 +5,24 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import broker, config
+from . import broker
+from .config import RunConfig
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
 
 log = logging.getLogger(__name__)
 
 
-def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
+def run_simulation(
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+    cfg: RunConfig,
+    trade_start_ts=None,
+    trade_end_ts=None,
+    log_result: bool = True,
+) -> SimulationResult:
     bars = bars.copy()
-    profile = rolling_profile_levels(bars)
+    profile = rolling_profile_levels(bars, cfg)
     bars = pd.concat([bars, profile], axis=1)
     profile_by_bar = bars.set_index("bar_start")[
         [
@@ -34,21 +42,21 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
     sim_ticks = sim_ticks.join(profile_by_bar, on="bar_start")
 
     result = SimulationResult(
-        initial_equity=config.INITIAL_EQUITY,
-        final_equity=config.INITIAL_EQUITY,
+        initial_equity=cfg.initial_equity,
+        final_equity=cfg.initial_equity,
         ticks_total=len(sim_ticks),
         bars_total=len(bars),
     )
-    equity = config.INITIAL_EQUITY
+    equity = cfg.initial_equity
     prev_mid: float | None = None
     position: dict | None = None
 
     def trade_levels(row, direction: str, entry_price: float) -> tuple[tuple[float, float, float] | None, str | None]:
-        if config.STOP_MODE == "fixed":
-            stop_distance = config.STOP_POINTS
+        if cfg.stop_mode == "fixed":
+            stop_distance = cfg.stop_points
             if direction == "LONG":
-                return (entry_price - stop_distance, entry_price + config.TAKE_PROFIT_POINTS, stop_distance), None
-            return (entry_price + stop_distance, entry_price - config.TAKE_PROFIT_POINTS, stop_distance), None
+                return (entry_price - stop_distance, entry_price + cfg.take_profit_points, stop_distance), None
+            return (entry_price + stop_distance, entry_price - cfg.take_profit_points, stop_distance), None
 
         profile_low = float(row.profile_low) if pd.notna(row.profile_low) else np.nan
         profile_high = float(row.profile_high) if pd.notna(row.profile_high) else np.nan
@@ -63,21 +71,21 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
             and np.isfinite(profile_range)
         ):
             return None, "missing_band"
-        if profile_range < config.MIN_PROFILE_RANGE_POINTS:
+        if profile_range < cfg.min_profile_range_points:
             return None, "band_too_narrow"
 
         if direction == "LONG":
-            stop_price = stop_profile_lower - config.STOP_PROFILE_BUFFER_POINTS
-            take_profit_price = entry_price + config.TAKE_PROFIT_POINTS
+            stop_price = stop_profile_lower - cfg.stop_profile_buffer_points
+            take_profit_price = entry_price + cfg.take_profit_points
             stop_distance = entry_price - stop_price
         else:
-            stop_price = stop_profile_upper + config.STOP_PROFILE_BUFFER_POINTS
-            take_profit_price = entry_price - config.TAKE_PROFIT_POINTS
+            stop_price = stop_profile_upper + cfg.stop_profile_buffer_points
+            take_profit_price = entry_price - cfg.take_profit_points
             stop_distance = stop_price - entry_price
 
-        if stop_distance < config.MIN_STOP_DISTANCE_POINTS:
+        if stop_distance < cfg.min_stop_distance_points:
             return None, "stop_too_small"
-        if stop_distance > config.MAX_STOP_DISTANCE_POINTS:
+        if stop_distance > cfg.max_stop_distance_points:
             return None, "stop_too_large"
         return (stop_price, take_profit_price, stop_distance), None
 
@@ -97,7 +105,7 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
             return
         stop_price, take_profit_price, stop_distance = levels
 
-        sizing = broker.size_position(equity, entry_price, stop_distance)
+        sizing = broker.size_position(equity, entry_price, stop_distance, cfg)
         if sizing.units <= 0:
             result.skipped_signals_no_size += 1
             return
@@ -150,8 +158,8 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
 
         direction = position["direction"]
         units = position["units"]
-        gross = broker.gross_pnl(units, position["entry_price"], exit_price, direction)
-        extra_costs = broker.extra_round_trip_costs(units)
+        gross = broker.gross_pnl(units, position["entry_price"], exit_price, direction, cfg)
+        extra_costs = broker.extra_round_trip_costs(units, cfg)
         pnl = gross - extra_costs
         equity_before = position["equity_before"]
         equity_after = equity + pnl
@@ -193,6 +201,7 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
         position = None
 
     for idx, row in enumerate(sim_ticks.itertuples(index=False), start=1):
+        tick_ts = row.tick_time
         had_position = position is not None
         if had_position:
             maybe_close_position(row)
@@ -205,7 +214,13 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
 
         median = float(row.median_level) if pd.notna(row.median_level) else np.nan
         mid = float(row.mid)
-        if prev_mid is not None and np.isfinite(median):
+        entries_allowed = True
+        if trade_start_ts is not None and tick_ts < trade_start_ts:
+            entries_allowed = False
+        if trade_end_ts is not None and tick_ts >= trade_end_ts:
+            entries_allowed = False
+
+        if entries_allowed and prev_mid is not None and np.isfinite(median):
             direction = None
             if prev_mid < median <= mid:
                 direction = "LONG"
@@ -229,12 +244,13 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
         close_position(row, exit_price, "END_OF_DATA")
 
     result.final_equity = equity
-    log.info(
-        "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
-        result.ticks_simulated, result.bars_total, result.signals_total,
-        len(result.trades), result.rejected_signals_missing_band,
-        result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
-        result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
-        result.final_equity, result.ruined,
-    )
+    if log_result:
+        log.info(
+            "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
+            result.ticks_simulated, result.bars_total, result.signals_total,
+            len(result.trades), result.rejected_signals_missing_band,
+            result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
+            result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
+            result.final_equity, result.ruined,
+        )
     return result
