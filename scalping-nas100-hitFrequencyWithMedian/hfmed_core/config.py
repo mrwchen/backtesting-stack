@@ -91,12 +91,12 @@ STOP_POINTS = env_float("STOP_POINTS", 10.0)
 TAKE_PROFIT_POINTS = env_float("TAKE_PROFIT_POINTS", 10.0)
 if STOP_POINTS <= 0 or TAKE_PROFIT_POINTS <= 0:
     raise ValueError("STOP_POINTS and TAKE_PROFIT_POINTS must be positive")
-MIN_BAND_POINTS = env_float("MIN_BAND_POINTS", 40.0)
+MIN_PROFILE_RANGE_POINTS = env_float("MIN_PROFILE_RANGE_POINTS", env_float("MIN_BAND_POINTS", 40.0))
 BAND_STOP_BUFFER_POINTS = env_float("BAND_STOP_BUFFER_POINTS", 0.5)
 MIN_STOP_POINTS = env_float("MIN_STOP_POINTS", 3.0)
 MAX_STOP_POINTS = env_float("MAX_STOP_POINTS", 30.0)
-if MIN_BAND_POINTS < 0:
-    raise ValueError("MIN_BAND_POINTS must be >= 0")
+if MIN_PROFILE_RANGE_POINTS < 0:
+    raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
 if BAND_STOP_BUFFER_POINTS < 0:
     raise ValueError("BAND_STOP_BUFFER_POINTS must be >= 0")
 if MIN_STOP_POINTS <= 0 or MAX_STOP_POINTS <= MIN_STOP_POINTS:
@@ -171,7 +171,7 @@ class RunConfig:
     stop_mode: str
     stop_points: float
     take_profit_points: float
-    min_band_points: float
+    min_profile_range_points: float
     band_stop_buffer_points: float
     min_stop_points: float
     max_stop_points: float
@@ -211,7 +211,7 @@ def active_run_config() -> RunConfig:
         stop_mode=STOP_MODE,
         stop_points=STOP_POINTS,
         take_profit_points=TAKE_PROFIT_POINTS,
-        min_band_points=MIN_BAND_POINTS,
+        min_profile_range_points=MIN_PROFILE_RANGE_POINTS,
         band_stop_buffer_points=BAND_STOP_BUFFER_POINTS,
         min_stop_points=MIN_STOP_POINTS,
         max_stop_points=MAX_STOP_POINTS,

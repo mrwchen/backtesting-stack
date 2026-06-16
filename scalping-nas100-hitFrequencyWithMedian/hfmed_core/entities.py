@@ -55,6 +55,9 @@ class SimulationResult:
     signals_total: int = 0
     long_signals: int = 0
     short_signals: int = 0
+    rejected_signals_missing_band: int = 0
+    rejected_signals_band_too_narrow: int = 0
+    rejected_signals_stop_too_small: int = 0
+    rejected_signals_stop_too_large: int = 0
     skipped_signals_no_size: int = 0
     ruined: bool = False
-

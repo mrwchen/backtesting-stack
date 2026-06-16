@@ -37,7 +37,7 @@ def _notes() -> str:
         f"median=0.5",
         f"stop_mode={config.STOP_MODE}",
         f"band={config.BAND_LOWER_QUANTILE:g}-{config.BAND_UPPER_QUANTILE:g}",
-        f"min_band={config.MIN_BAND_POINTS:g}",
+        f"min_profile_range={config.MIN_PROFILE_RANGE_POINTS:g}",
         f"band_buffer={config.BAND_STOP_BUFFER_POINTS:g}",
         f"stop_limits={config.MIN_STOP_POINTS:g}-{config.MAX_STOP_POINTS:g}",
         f"fixed_stop={config.STOP_POINTS:g}",

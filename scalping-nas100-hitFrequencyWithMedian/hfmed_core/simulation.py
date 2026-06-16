@@ -17,7 +17,7 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
     profile = rolling_profile_levels(bars)
     bars = pd.concat([bars, profile], axis=1)
     profile_by_bar = bars.set_index("bar_start")[
-        ["band_lower", "median_level", "band_upper", "band_width_points"]
+        ["profile_low", "band_lower", "median_level", "band_upper", "profile_high", "band_width_points", "profile_range_points"]
     ]
 
     sim_ticks = ticks.copy()
@@ -33,20 +33,20 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
     prev_mid: float | None = None
     position: dict | None = None
 
-    def trade_levels(row, direction: str, entry_price: float) -> tuple[float, float, float] | None:
+    def trade_levels(row, direction: str, entry_price: float) -> tuple[tuple[float, float, float] | None, str | None]:
         if config.STOP_MODE == "fixed":
             stop_distance = config.STOP_POINTS
             if direction == "LONG":
-                return entry_price - stop_distance, entry_price + config.TAKE_PROFIT_POINTS, stop_distance
-            return entry_price + stop_distance, entry_price - config.TAKE_PROFIT_POINTS, stop_distance
+                return (entry_price - stop_distance, entry_price + config.TAKE_PROFIT_POINTS, stop_distance), None
+            return (entry_price + stop_distance, entry_price - config.TAKE_PROFIT_POINTS, stop_distance), None
 
         band_lower = float(row.band_lower) if pd.notna(row.band_lower) else np.nan
         band_upper = float(row.band_upper) if pd.notna(row.band_upper) else np.nan
-        band_width = float(row.band_width_points) if pd.notna(row.band_width_points) else np.nan
-        if not (np.isfinite(band_lower) and np.isfinite(band_upper) and np.isfinite(band_width)):
-            return None
-        if band_width < config.MIN_BAND_POINTS:
-            return None
+        profile_range = float(row.profile_range_points) if pd.notna(row.profile_range_points) else np.nan
+        if not (np.isfinite(band_lower) and np.isfinite(band_upper) and np.isfinite(profile_range)):
+            return None, "missing_band"
+        if profile_range < config.MIN_PROFILE_RANGE_POINTS:
+            return None, "band_too_narrow"
 
         if direction == "LONG":
             stop_price = band_lower - config.BAND_STOP_BUFFER_POINTS
@@ -57,15 +57,25 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
             take_profit_price = entry_price - config.TAKE_PROFIT_POINTS
             stop_distance = stop_price - entry_price
 
-        if stop_distance < config.MIN_STOP_POINTS or stop_distance > config.MAX_STOP_POINTS:
-            return None
-        return stop_price, take_profit_price, stop_distance
+        if stop_distance < config.MIN_STOP_POINTS:
+            return None, "stop_too_small"
+        if stop_distance > config.MAX_STOP_POINTS:
+            return None, "stop_too_large"
+        return (stop_price, take_profit_price, stop_distance), None
 
     def open_position(row, direction: str, median_level: float, previous_mid: float) -> None:
         nonlocal position
         entry_price = float(row.ask) if direction == "LONG" else float(row.bid)
-        levels = trade_levels(row, direction, entry_price)
+        levels, reject_reason = trade_levels(row, direction, entry_price)
         if levels is None:
+            if reject_reason == "missing_band":
+                result.rejected_signals_missing_band += 1
+            elif reject_reason == "band_too_narrow":
+                result.rejected_signals_band_too_narrow += 1
+            elif reject_reason == "stop_too_small":
+                result.rejected_signals_stop_too_small += 1
+            elif reject_reason == "stop_too_large":
+                result.rejected_signals_stop_too_large += 1
             return
         stop_price, take_profit_price, stop_distance = levels
 
@@ -202,8 +212,11 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
 
     result.final_equity = equity
     log.info(
-        "Simulation done ticks %d bars %d signals %d trades %d final_equity %.2f ruined %s",
+        "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
         result.ticks_simulated, result.bars_total, result.signals_total,
-        len(result.trades), result.final_equity, result.ruined,
+        len(result.trades), result.rejected_signals_missing_band,
+        result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
+        result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
+        result.final_equity, result.ruined,
     )
     return result

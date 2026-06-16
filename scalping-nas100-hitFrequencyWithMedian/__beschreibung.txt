@@ -30,8 +30,8 @@ gezaehlt. Der Median-Level ist exakt das 50%-Quantil dieser Hit-Counts:
 der kleinste Preislevel, bei dem die kumulierten Hits mindestens 50% aller
 Hits erreichen. Das ist nicht die Mitte der Preisrange.
 
-Zusaetzlich werden q45 und q55 aus derselben Hit-Verteilung berechnet. Dieses
-Band dient fuer Entry-Filter und Band-Stop.
+Zusaetzlich werden q0, q45, q55 und q100 aus derselben Hit-Verteilung berechnet.
+q0 bis q100 dient fuer den Entry-Filter; q45 bis q55 dient fuer den Band-Stop.
 
 Entry / Exit
 ------------
@@ -48,14 +48,14 @@ einer offenen Position ignoriert.
 
 Default:
   STOP_MODE=band
-  MIN_BAND_POINTS=40.0
+  MIN_PROFILE_RANGE_POINTS=40.0
   BAND_STOP_BUFFER_POINTS=0.5
   MIN_STOP_POINTS=3.0
   MAX_STOP_POINTS=30.0
   TAKE_PROFIT_POINTS=10.0
 
-Bei STOP_MODE=band sind Entries nur erlaubt, wenn q55 - q45 mindestens
-MIN_BAND_POINTS betraegt. Long-Stop liegt am unteren Bandrand q45 minus Buffer.
+Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens
+MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren Bandrand q45 minus Buffer.
 Short-Stop liegt am oberen Bandrand q55 plus Buffer. Der TP bleibt fix:
 Long entry + TAKE_PROFIT_POINTS, Short entry - TAKE_PROFIT_POINTS.
 Wenn die dadurch entstehende Stopdistanz ausserhalb MIN_STOP_POINTS und

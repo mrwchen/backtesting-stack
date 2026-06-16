@@ -29,9 +29,11 @@ def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
     counts: dict[int, int] = {}
     window: deque[list[int]] = deque()
     total_hits = 0
+    q0 = np.full(len(bars), np.nan, dtype=np.float64)
     q45 = np.full(len(bars), np.nan, dtype=np.float64)
     q50 = np.full(len(bars), np.nan, dtype=np.float64)
     q55 = np.full(len(bars), np.nan, dtype=np.float64)
+    q100 = np.full(len(bars), np.nan, dtype=np.float64)
 
     def add_levels(levels: list[int]) -> None:
         nonlocal total_hits
@@ -58,11 +60,19 @@ def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
                 return float(level) * step
         return float("nan")
 
+    def current_min_level() -> float:
+        return float(min(counts)) * step if counts else float("nan")
+
+    def current_max_level() -> float:
+        return float(max(counts)) * step if counts else float("nan")
+
     for pos, row in enumerate(bars.itertuples(index=False)):
         if len(window) >= min_lookback and total_hits > 0:
+            q0[pos] = current_min_level()
             q45[pos] = current_quantile(config.BAND_LOWER_QUANTILE)
             q50[pos] = current_quantile(config.MEDIAN_QUANTILE)
             q55[pos] = current_quantile(config.BAND_UPPER_QUANTILE)
+            q100[pos] = current_max_level()
 
         levels = level_indices_between(float(row.low), float(row.high), step)
         window.append(levels)
@@ -72,10 +82,13 @@ def rolling_profile_levels(bars: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(
         {
+            "profile_low": q0,
             "band_lower": q45,
             "median_level": q50,
             "band_upper": q55,
+            "profile_high": q100,
             "band_width_points": q55 - q45,
+            "profile_range_points": q100 - q0,
         },
         index=bars.index,
     )
