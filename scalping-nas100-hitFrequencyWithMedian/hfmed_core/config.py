@@ -154,9 +154,14 @@ WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
 WF_TRAIN_TOP_N_PER_FOLD = max(1, env_int("WF_TRAIN_TOP_N_PER_FOLD", 50))
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
 OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
+OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
 OPTIMIZER_PROGRESS_LOG_EVERY = max(1, env_int("OPTIMIZER_PROGRESS_LOG_EVERY", 5000))
 OPTIMIZER_PROGRESS_LOG_SECONDS = max(1, env_int("OPTIMIZER_PROGRESS_LOG_SECONDS", 60))
 STAGE1_MAX_PARAMETER_SETS = max(0, env_int("STAGE1_MAX_PARAMETER_SETS", 0))
+STAGE1_SCREENING_ENABLED = env_bool("STAGE1_SCREENING_ENABLED", True)
+STAGE1_SCREENING_ROUNDS = max(1, env_int("STAGE1_SCREENING_ROUNDS", 2))
+STAGE1_SCREENING_TRAIN_DAYS = max(1, env_int("STAGE1_SCREENING_TRAIN_DAYS", 10))
+STAGE1_SCREENING_TOP_N = max(1, env_int("STAGE1_SCREENING_TOP_N", 512))
 STAGE2_ENABLED = env_bool("STAGE2_ENABLED", True)
 STAGE2_SEED_TOP_N = max(1, env_int("STAGE2_SEED_TOP_N", 20))
 STAGE2_MAX_PARAMETER_SETS = max(0, env_int("STAGE2_MAX_PARAMETER_SETS", 0))
@@ -241,9 +246,14 @@ class OptimizerConfig:
     train_top_n_per_fold: int
     processes: int
     process_chunk_size: int
+    profile_cache_size: int
     progress_log_every: int
     progress_log_seconds: int
     stage1_max_parameter_sets: int
+    stage1_screening_enabled: bool
+    stage1_screening_rounds: int
+    stage1_screening_train_days: int
+    stage1_screening_top_n: int
     stage2_enabled: bool
     stage2_seed_top_n: int
     stage2_max_parameter_sets: int
@@ -307,9 +317,14 @@ def active_optimizer_config() -> OptimizerConfig:
         train_top_n_per_fold=WF_TRAIN_TOP_N_PER_FOLD,
         processes=OPTIMIZER_PROCESSES,
         process_chunk_size=OPTIMIZER_PROCESS_CHUNK_SIZE,
+        profile_cache_size=OPTIMIZER_PROFILE_CACHE_SIZE,
         progress_log_every=OPTIMIZER_PROGRESS_LOG_EVERY,
         progress_log_seconds=OPTIMIZER_PROGRESS_LOG_SECONDS,
         stage1_max_parameter_sets=STAGE1_MAX_PARAMETER_SETS,
+        stage1_screening_enabled=STAGE1_SCREENING_ENABLED,
+        stage1_screening_rounds=STAGE1_SCREENING_ROUNDS,
+        stage1_screening_train_days=STAGE1_SCREENING_TRAIN_DAYS,
+        stage1_screening_top_n=STAGE1_SCREENING_TOP_N,
         stage2_enabled=STAGE2_ENABLED,
         stage2_seed_top_n=STAGE2_SEED_TOP_N,
         stage2_max_parameter_sets=STAGE2_MAX_PARAMETER_SETS,

@@ -20,9 +20,11 @@ def run_simulation(
     trade_start_ts=None,
     trade_end_ts=None,
     log_result: bool = True,
+    profile: pd.DataFrame | None = None,
 ) -> SimulationResult:
     bars = bars.copy()
-    profile = rolling_profile_levels(bars, cfg)
+    if profile is None:
+        profile = rolling_profile_levels(bars, cfg)
     bars = pd.concat([bars, profile], axis=1)
     profile_by_bar = bars.set_index("bar_start")[
         [

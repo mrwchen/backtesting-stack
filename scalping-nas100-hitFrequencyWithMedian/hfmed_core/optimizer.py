@@ -6,6 +6,7 @@ import logging
 import math
 import multiprocessing as mp
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -14,14 +15,14 @@ import pandas as pd
 from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values
 from .entities import ClosedTrade, SimulationResult
+from .profile import rolling_profile_levels
 from .risk import run_monte_carlo, summarize_trades
 from .simulation import run_simulation
 
 log = logging.getLogger(__name__)
 
-_WORKER_TICKS: pd.DataFrame | None = None
-_WORKER_BARS: pd.DataFrame | None = None
 _WORKER_BASE_CFG: RunConfig | None = None
+_WORKER_WINDOW: WindowData | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,16 @@ class FoldSpec:
     train_end: object
     test_start: object
     test_end: object
+
+
+@dataclass
+class WindowData:
+    ticks: pd.DataFrame
+    bars: pd.DataFrame
+    trade_start: object
+    trade_end: object
+    profile_cache_size: int
+    profile_cache: OrderedDict[tuple, pd.DataFrame] = field(default_factory=OrderedDict)
 
 
 @dataclass
@@ -95,6 +106,7 @@ def run_walk_forward_optimizer(
 
     grid = parameters.load_grid(opt_cfg.parameter_grid_path)
     stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets)
+    stage1_candidates = screen_stage1_candidates(stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     log.info("Stage 1 candidates %d folds %d", len(stage1_candidates), len(folds))
     stage1 = run_stage("stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     stage1.parameter_ids = persistence.insert_parameter_sets(conn, run_id, stage1.aggregates)
@@ -236,6 +248,74 @@ def run_single_backtest(
     )
 
 
+def screen_stage1_candidates(
+    candidates: list[dict[str, int | float]],
+    folds: list[FoldSpec],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+) -> list[dict[str, int | float]]:
+    if not opt_cfg.stage1_screening_enabled:
+        return candidates
+    if len(candidates) <= opt_cfg.stage1_screening_top_n:
+        log.info("Stage 1 screening skipped candidates %d top_n %d", len(candidates), opt_cfg.stage1_screening_top_n)
+        return candidates
+
+    active = candidates
+    initial_count = len(active)
+    rounds = max(1, opt_cfg.stage1_screening_rounds)
+    for round_no in range(1, rounds + 1):
+        if len(active) <= opt_cfg.stage1_screening_top_n:
+            break
+        keep_n = _screening_keep_count(len(active), opt_cfg.stage1_screening_top_n, rounds - round_no + 1)
+        train_days = min(opt_cfg.train_days, opt_cfg.stage1_screening_train_days * round_no)
+        fold = _shortened_train_fold(folds[(round_no - 1) % len(folds)], train_days)
+        log.info(
+            "Stage 1 screening round %d candidates %d keep %d train_days %d fold %d",
+            round_no,
+            len(active),
+            keep_n,
+            train_days,
+            fold.fold_index,
+        )
+        evaluations = evaluate_many(
+            f"screen{round_no}",
+            active,
+            fold,
+            "train",
+            base_cfg,
+            opt_cfg,
+            ticks,
+            bars,
+            keep_trades=False,
+        )
+        active = [item.values for item in sorted(evaluations, key=lambda evaluation: evaluation.score, reverse=True)[:keep_n]]
+
+    log.info("Stage 1 screening complete initial %d selected %d", initial_count, len(active))
+    return active
+
+
+def _screening_keep_count(active_count: int, final_top_n: int, remaining_rounds: int) -> int:
+    if remaining_rounds <= 1:
+        return min(active_count, final_top_n)
+    ratio = final_top_n / max(1, active_count)
+    keep = int(math.ceil(active_count * (ratio ** (1.0 / remaining_rounds))))
+    return min(active_count, max(final_top_n, keep))
+
+
+def _shortened_train_fold(fold: FoldSpec, train_days: int) -> FoldSpec:
+    train_start = pd.Timestamp(fold.train_start)
+    train_end = min(pd.Timestamp(fold.train_end), train_start + pd.Timedelta(days=train_days))
+    return FoldSpec(
+        fold_index=fold.fold_index,
+        train_start=fold.train_start,
+        train_end=train_end.to_pydatetime(),
+        test_start=fold.test_start,
+        test_end=fold.test_end,
+    )
+
+
 def run_stage(
     stage: str,
     candidates: list[dict[str, int | float]],
@@ -324,6 +404,7 @@ def evaluate_many(
     keep_trades: bool,
 ) -> list[Evaluation]:
     tasks = [(stage, candidate, fold, role, keep_trades) for candidate in candidates]
+    tasks.sort(key=_task_profile_sort_key)
     total = len(tasks)
     if total <= 0:
         return []
@@ -343,9 +424,10 @@ def evaluate_many(
 
     if opt_cfg.processes <= 1 or len(tasks) <= 1:
         results: list[Evaluation] = []
+        window = _prepare_window_data(ticks, bars, fold, role, opt_cfg.profile_cache_size)
         progress = _ProgressLogState(started_at=started, last_logged_at=started)
         for completed, task in enumerate(tasks, start=1):
-            results.append(_evaluate_task_direct(task, ticks, bars, base_cfg))
+            results.append(_evaluate_task_with_window(task, window, base_cfg))
             _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
         _log_evaluation_complete(stage, fold.fold_index, role, total, started)
         return results
@@ -358,7 +440,7 @@ def evaluate_many(
     with ctx.Pool(
         processes=opt_cfg.processes,
         initializer=_init_worker,
-        initargs=(ticks, bars, base_cfg),
+        initargs=(ticks, bars, base_cfg, fold, role, opt_cfg.profile_cache_size),
     ) as pool:
         for completed, evaluation in enumerate(pool.imap_unordered(_evaluate_task, tasks, chunksize=chunk_size), start=1):
             results.append(evaluation)
@@ -425,42 +507,71 @@ def _log_evaluation_complete(stage: str, fold_index: int, role: str, total: int,
     )
 
 
-def _init_worker(ticks: pd.DataFrame, bars: pd.DataFrame, base_cfg: RunConfig) -> None:
-    global _WORKER_TICKS, _WORKER_BARS, _WORKER_BASE_CFG
-    _WORKER_TICKS = ticks
-    _WORKER_BARS = bars
+def _task_profile_sort_key(task) -> tuple:
+    values = task[1]
+    return (
+        int(values["LOOKBACK_BARS"]),
+        round(float(values["STOP_PROFILE_LOWER_QUANTILE"]), 8),
+        round(float(values["STOP_PROFILE_UPPER_QUANTILE"]), 8),
+    )
+
+
+def _init_worker(
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+    base_cfg: RunConfig,
+    fold: FoldSpec,
+    role: str,
+    profile_cache_size: int,
+) -> None:
+    global _WORKER_BASE_CFG, _WORKER_WINDOW
     _WORKER_BASE_CFG = base_cfg
+    _WORKER_WINDOW = _prepare_window_data(ticks, bars, fold, role, profile_cache_size)
 
 
 def _evaluate_task(task) -> Evaluation:
-    if _WORKER_TICKS is None or _WORKER_BARS is None or _WORKER_BASE_CFG is None:
+    if _WORKER_BASE_CFG is None or _WORKER_WINDOW is None:
         raise RuntimeError("Worker data was not initialized")
-    return _evaluate_task_direct(task, _WORKER_TICKS, _WORKER_BARS, _WORKER_BASE_CFG)
+    return _evaluate_task_with_window(task, _WORKER_WINDOW, _WORKER_BASE_CFG)
 
 
-def _evaluate_task_direct(task, ticks: pd.DataFrame, bars: pd.DataFrame, base_cfg: RunConfig) -> Evaluation:
-    stage, values, fold, role, keep_trades = task
-    cfg = apply_parameter_values(base_cfg, values)
-    if role == "train":
-        slice_start = fold.train_start
-        slice_end = fold.train_end
-        trade_start = fold.train_start
-        trade_end = fold.train_end
-    else:
-        slice_start = fold.train_start
-        slice_end = fold.test_end
-        trade_start = fold.test_start
-        trade_end = fold.test_end
-
+def _prepare_window_data(
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+    fold: FoldSpec,
+    role: str,
+    profile_cache_size: int,
+) -> WindowData:
+    slice_start, slice_end, trade_start, trade_end = _window_bounds(fold, role)
     tick_slice = ticks[(ticks["tick_time"] >= slice_start) & (ticks["tick_time"] < slice_end)].copy()
     bar_slice = bars[(bars["bar_start"] >= slice_start) & (bars["bar_start"] < slice_end)].copy()
+    return WindowData(
+        ticks=tick_slice,
+        bars=bar_slice,
+        trade_start=trade_start,
+        trade_end=trade_end,
+        profile_cache_size=profile_cache_size,
+    )
+
+
+def _window_bounds(fold: FoldSpec, role: str) -> tuple[object, object, object, object]:
+    if role == "train":
+        return fold.train_start, fold.train_end, fold.train_start, fold.train_end
+    return fold.train_start, fold.test_end, fold.test_start, fold.test_end
+
+
+def _evaluate_task_with_window(task, window: WindowData, base_cfg: RunConfig) -> Evaluation:
+    stage, values, fold, role, keep_trades = task
+    cfg = apply_parameter_values(base_cfg, values)
+    profile = _profile_for_config(window, cfg)
     result = run_simulation(
-        tick_slice,
-        bar_slice,
+        window.ticks,
+        window.bars,
         cfg,
-        trade_start_ts=trade_start,
-        trade_end_ts=trade_end,
+        trade_start_ts=window.trade_start,
+        trade_end_ts=window.trade_end,
         log_result=False,
+        profile=profile,
     )
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
     score = score_evaluation(summary, result)
@@ -473,8 +584,8 @@ def _evaluate_task_direct(task, ticks: pd.DataFrame, bars: pd.DataFrame, base_cf
         values=dict(values),
         parameter_hash=parameters.parameter_hash(values),
         parameter_label=parameters.parameter_label(values),
-        window_start=trade_start,
-        window_end=trade_end,
+        window_start=window.trade_start,
+        window_end=window.trade_end,
         ticks_simulated=result.ticks_simulated,
         bars_total=result.bars_total,
         signals_total=result.signals_total,
@@ -489,6 +600,36 @@ def _evaluate_task_direct(task, ticks: pd.DataFrame, bars: pd.DataFrame, base_cf
         summary=summary,
         score=score,
         trades=result.trades,
+    )
+
+
+def _profile_for_config(window: WindowData, cfg: RunConfig) -> pd.DataFrame:
+    if window.profile_cache_size <= 0:
+        return rolling_profile_levels(window.bars, cfg)
+
+    key = _profile_cache_key(cfg)
+    cached = window.profile_cache.get(key)
+    if cached is not None:
+        window.profile_cache.move_to_end(key)
+        return cached
+
+    profile = rolling_profile_levels(window.bars, cfg)
+    window.profile_cache[key] = profile
+    while len(window.profile_cache) > window.profile_cache_size:
+        window.profile_cache.popitem(last=False)
+    return profile
+
+
+def _profile_cache_key(cfg: RunConfig) -> tuple:
+    return (
+        cfg.lookback_bars,
+        cfg.min_lookback_bars,
+        round(float(cfg.price_step), 8),
+        round(float(cfg.median_quantile), 8),
+        round(float(cfg.band_lower_quantile), 8),
+        round(float(cfg.band_upper_quantile), 8),
+        round(float(cfg.stop_profile_lower_quantile), 8),
+        round(float(cfg.stop_profile_upper_quantile), 8),
     )
 
 
