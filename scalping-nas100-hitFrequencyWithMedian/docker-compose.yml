@@ -1,0 +1,93 @@
+services:
+  # One-shot init job. Creates only the result tables from ./init/schema.sql.
+  init-hfmed-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: postgres-ts-root-pw
+      DROP_ALL_HFMED_TABLES_ON_START: "false"
+    command:
+      - sh
+      - -c
+      - >
+        psql -v ON_ERROR_STOP=1
+        -v drop_hfmed_tables_on_start="$${DROP_ALL_HFMED_TABLES_ON_START:-false}"
+        -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
+    networks:
+      - shared_net
+
+  nas100-hfmed-backtest-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      init-hfmed-schema:
+        condition: service_completed_successfully
+    environment:
+      # Database.
+      - PGHOST=timescaledb
+      - PGPORT=5432
+      - PGDATABASE=postgres
+      - PGUSER=market-data-account
+      - PGPASSWORD=market-data-account-pw
+      - PGAPPNAME=nas100_hfmed_backtest_runner
+      - PGOPTIONS=-c search_path=public
+      - RESULT_SCHEMA=public
+      - DB_CONNECT_TIMEOUT_SECONDS=10
+      - DB_CONNECT_RETRIES=5
+      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0
+      - DB_STATEMENT_TIMEOUT_MS=120000
+      - DB_LOCK_TIMEOUT_MS=5000
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=120000
+      - LOG_LEVEL=INFO
+      - RUN_LABEL_TZ=Europe/Berlin
+      - RUN_NOTES_EXTRA=
+
+      # Tick data source. Leave START_TS_UTC empty to use all available ticks.
+      - SOURCE_TABLE=public.pepperstone_ticks_data
+      - SYMBOL=NAS100
+      - START_TS_UTC=
+      - END_TS_UTC=
+
+      # Hit-frequency profile: 10 closed 10-second bars, exact 50% hit median.
+      - BAR_SECONDS=10
+      - LOOKBACK_BARS=10
+      - MIN_LOOKBACK_BARS=10
+      - PRICE_STEP=1.0
+
+      # Trade rule: tick-level median crossing, fixed 10-point stop and target.
+      - STOP_POINTS=10.0
+      - TAKE_PROFIT_POINTS=10.0
+
+      # Pepperstone-style account profile.
+      - ACCOUNT_PROFILE=PS_ACC
+      - INITIAL_EQUITY=5000
+      - ACCOUNT_CURRENCY=EUR
+      - MARGIN_REQUIREMENT_PCT=5
+      - RISK_PER_TRADE_PCT=1.5
+      - MAX_MARGIN_PCT=45
+      - CONTRACT_MULTIPLIER=1.0
+      - LOT_SIZE=0.1
+      - EURUSD_RATE=1.0
+
+      # Live bid/ask ticks already include spread. Keep extra spread/slippage off by default.
+      - SPREAD_POINTS=0.0
+      - SLIPPAGE_POINTS=0.0
+      - COMMISSION_PER_UNIT=0.0
+
+      # Risk resampling.
+      - MONTE_CARLO_ENABLED=true
+      - MONTE_CARLO_SIMULATIONS=2000
+      - MC_EXTRA_SLIPPAGE_POINTS=0.5
+      - MC_BLOCK_SIZE=5
+      - MC_RUIN_DRAWDOWN_PCT=50.0
+      - MC_RANDOM_SEED=12345
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true

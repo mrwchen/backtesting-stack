@@ -1,0 +1,63 @@
+NAS100 Hit-Frequency Median Tick Backtest
+========================================
+
+Eigenstaendiger Backtesting-Stack fuer public.pepperstone_ticks_data.
+
+Datenquelle
+-----------
+Quelle: public.pepperstone_ticks_data mit symbol, tick_time, bid, ask.
+Standard-Symbol: NAS100.
+
+START_TS_UTC ist optional. Beispiel:
+  START_TS_UTC=2026-06-01T00:00:00Z
+
+END_TS_UTC ist ebenfalls optional und wird als exklusives Ende behandelt.
+Leere Werte bedeuten: alle verfuegbaren Ticks.
+
+Strategielogik
+--------------
+Aus jedem Tick wird der Midpreis (bid + ask) / 2 gebildet. Daraus entstehen
+10-Sekunden-Bars. Fuer jede aktuelle Bar wird das Profil nur aus bereits
+abgeschlossenen Lookback-Bars berechnet.
+
+Default:
+  BAR_SECONDS=10
+  LOOKBACK_BARS=10
+  PRICE_STEP=1.0
+
+Je Lookback-Bar werden alle ganzzahligen Preislevel zwischen Low und High
+gezaehlt. Der Median-Level ist exakt das 50%-Quantil dieser Hit-Counts:
+der kleinste Preislevel, bei dem die kumulierten Hits mindestens 50% aller
+Hits erreichen. Das ist nicht die Mitte der Preisrange.
+
+Entry / Exit
+------------
+Die Signalpruefung passiert tickgenau auf dem Midpreis:
+  LONG  wenn der Midpreis von unten nach oben ueber den Median-Level kreuzt
+  SHORT wenn der Midpreis von oben nach unten unter den Median-Level kreuzt
+
+Fills nutzen echte Quotes:
+  LONG entry  = ask, exit = bid
+  SHORT entry = bid, exit = ask
+
+Es ist immer nur eine Position gleichzeitig offen. Neue Signale werden waehrend
+einer offenen Position ignoriert. Stop und Take Profit sind fix:
+  STOP_POINTS=10.0
+  TAKE_PROFIT_POINTS=10.0
+
+Es gibt keinen Session-Filter; der Backtest laeuft 24h ueber alle geladenen
+Ticks.
+
+Ergebnis-Tabellen
+-----------------
+Die Tabellen werden ausschliesslich durch init/schema.sql angelegt:
+  backtest2_nas100_hfmed_runs
+  backtest2_nas100_hfmed_trades
+  backtest2_nas100_hfmed_monte_carlo
+
+DROP_ALL_HFMED_TABLES_ON_START=false ist der Default.
+
+Ausfuehrung auf dem Server
+--------------------------
+cd backtesting-stack/scalping-nas100-hitFrequencyWithMedian
+docker compose up --build
