@@ -62,7 +62,7 @@ services:
 
       # General trade parameters.
       - STOP_MODE=band
-      - TAKE_PROFIT_POINTS=15.0
+      - TAKE_PROFIT_POINTS=10.0
 
       # Only used when STOP_MODE=fixed.
       - STOP_POINTS=10.0
