@@ -36,6 +36,8 @@ def _notes() -> str:
         f"lookback={config.LOOKBACK_BARS}",
         f"median=0.5",
         f"stop_mode={config.STOP_MODE}",
+        f"entry_range=q0-q100",
+        f"stop_range=q0-q100",
         f"band={config.BAND_LOWER_QUANTILE:g}-{config.BAND_UPPER_QUANTILE:g}",
         f"min_profile_range={config.MIN_PROFILE_RANGE_POINTS:g}",
         f"band_buffer={config.BAND_STOP_BUFFER_POINTS:g}",

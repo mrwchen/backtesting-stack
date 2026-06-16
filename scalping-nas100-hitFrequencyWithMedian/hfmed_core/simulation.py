@@ -40,20 +40,20 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
                 return (entry_price - stop_distance, entry_price + config.TAKE_PROFIT_POINTS, stop_distance), None
             return (entry_price + stop_distance, entry_price - config.TAKE_PROFIT_POINTS, stop_distance), None
 
-        band_lower = float(row.band_lower) if pd.notna(row.band_lower) else np.nan
-        band_upper = float(row.band_upper) if pd.notna(row.band_upper) else np.nan
+        profile_low = float(row.profile_low) if pd.notna(row.profile_low) else np.nan
+        profile_high = float(row.profile_high) if pd.notna(row.profile_high) else np.nan
         profile_range = float(row.profile_range_points) if pd.notna(row.profile_range_points) else np.nan
-        if not (np.isfinite(band_lower) and np.isfinite(band_upper) and np.isfinite(profile_range)):
+        if not (np.isfinite(profile_low) and np.isfinite(profile_high) and np.isfinite(profile_range)):
             return None, "missing_band"
         if profile_range < config.MIN_PROFILE_RANGE_POINTS:
             return None, "band_too_narrow"
 
         if direction == "LONG":
-            stop_price = band_lower - config.BAND_STOP_BUFFER_POINTS
+            stop_price = profile_low - config.BAND_STOP_BUFFER_POINTS
             take_profit_price = entry_price + config.TAKE_PROFIT_POINTS
             stop_distance = entry_price - stop_price
         else:
-            stop_price = band_upper + config.BAND_STOP_BUFFER_POINTS
+            stop_price = profile_high + config.BAND_STOP_BUFFER_POINTS
             take_profit_price = entry_price - config.TAKE_PROFIT_POINTS
             stop_distance = stop_price - entry_price
 

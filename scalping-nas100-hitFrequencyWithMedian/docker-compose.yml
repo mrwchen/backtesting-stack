@@ -7,7 +7,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_HFMED_TABLES_ON_START: "true"
+      DROP_ALL_HFMED_TABLES_ON_START: "false"
     command:
       - sh
       - -c
@@ -59,14 +59,14 @@ services:
       - PRICE_STEP=1.0
 
       # Trade rule: tick-level median crossing.
-      # STOP_MODE=fixed uses STOP_POINTS. STOP_MODE=band uses q45/q55 as the stop band.
+      # STOP_MODE=fixed uses STOP_POINTS. STOP_MODE=band uses q0/q100 as the stop range.
       - STOP_MODE=band
       - STOP_POINTS=10.0
       - TAKE_PROFIT_POINTS=10.0
       - MIN_PROFILE_RANGE_POINTS=40.0
       - BAND_STOP_BUFFER_POINTS=0.5
-      - MIN_STOP_POINTS=3.0
-      - MAX_STOP_POINTS=30.0
+      - MIN_STOP_POINTS=5.0
+      - MAX_STOP_POINTS=50.0
 
       # Pepperstone-style account profile.
       - ACCOUNT_PROFILE=PS_ACC
