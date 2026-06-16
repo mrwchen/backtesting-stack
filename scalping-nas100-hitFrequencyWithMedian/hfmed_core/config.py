@@ -29,6 +29,13 @@ def env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def env_float_alias(name: str, legacy_name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is not None and raw.strip():
+        return float(raw)
+    return env_float(legacy_name, default)
+
+
 def env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -93,14 +100,14 @@ if STOP_POINTS <= 0 or TAKE_PROFIT_POINTS <= 0:
     raise ValueError("STOP_POINTS and TAKE_PROFIT_POINTS must be positive")
 MIN_PROFILE_RANGE_POINTS = env_float("MIN_PROFILE_RANGE_POINTS", env_float("MIN_BAND_POINTS", 40.0))
 BAND_STOP_BUFFER_POINTS = env_float("BAND_STOP_BUFFER_POINTS", 0.5)
-MIN_STOP_POINTS = env_float("MIN_STOP_POINTS", 3.0)
-MAX_STOP_POINTS = env_float("MAX_STOP_POINTS", 150.0)
+MIN_STOP_DISTANCE_POINTS = env_float_alias("MIN_STOP_DISTANCE_POINTS", "MIN_STOP_POINTS", 12.0)
+MAX_STOP_DISTANCE_POINTS = env_float_alias("MAX_STOP_DISTANCE_POINTS", "MAX_STOP_POINTS", 20.0)
 if MIN_PROFILE_RANGE_POINTS < 0:
     raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
 if BAND_STOP_BUFFER_POINTS < 0:
     raise ValueError("BAND_STOP_BUFFER_POINTS must be >= 0")
-if MIN_STOP_POINTS <= 0 or MAX_STOP_POINTS <= MIN_STOP_POINTS:
-    raise ValueError("MAX_STOP_POINTS must be greater than MIN_STOP_POINTS")
+if MIN_STOP_DISTANCE_POINTS <= 0 or MAX_STOP_DISTANCE_POINTS <= MIN_STOP_DISTANCE_POINTS:
+    raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
 
 # Account profile: PS_ACC.
 ACCOUNT_PROFILE = env_str("ACCOUNT_PROFILE", "PS_ACC").upper()
@@ -173,8 +180,8 @@ class RunConfig:
     take_profit_points: float
     min_profile_range_points: float
     band_stop_buffer_points: float
-    min_stop_points: float
-    max_stop_points: float
+    min_stop_distance_points: float
+    max_stop_distance_points: float
     account_profile: str
     initial_equity: float
     account_currency: str
@@ -213,8 +220,8 @@ def active_run_config() -> RunConfig:
         take_profit_points=TAKE_PROFIT_POINTS,
         min_profile_range_points=MIN_PROFILE_RANGE_POINTS,
         band_stop_buffer_points=BAND_STOP_BUFFER_POINTS,
-        min_stop_points=MIN_STOP_POINTS,
-        max_stop_points=MAX_STOP_POINTS,
+        min_stop_distance_points=MIN_STOP_DISTANCE_POINTS,
+        max_stop_distance_points=MAX_STOP_DISTANCE_POINTS,
         account_profile=ACCOUNT_PROFILE,
         initial_equity=INITIAL_EQUITY,
         account_currency=ACCOUNT_CURRENCY,

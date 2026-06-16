@@ -57,9 +57,9 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
             take_profit_price = entry_price - config.TAKE_PROFIT_POINTS
             stop_distance = stop_price - entry_price
 
-        if stop_distance < config.MIN_STOP_POINTS:
+        if stop_distance < config.MIN_STOP_DISTANCE_POINTS:
             return None, "stop_too_small"
-        if stop_distance > config.MAX_STOP_POINTS:
+        if stop_distance > config.MAX_STOP_DISTANCE_POINTS:
             return None, "stop_too_large"
         return (stop_price, take_profit_price, stop_distance), None
 

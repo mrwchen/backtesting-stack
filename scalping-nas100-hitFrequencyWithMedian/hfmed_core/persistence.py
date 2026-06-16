@@ -41,7 +41,7 @@ def _notes() -> str:
         f"band={config.BAND_LOWER_QUANTILE:g}-{config.BAND_UPPER_QUANTILE:g}",
         f"min_profile_range={config.MIN_PROFILE_RANGE_POINTS:g}",
         f"band_buffer={config.BAND_STOP_BUFFER_POINTS:g}",
-        f"stop_limits={config.MIN_STOP_POINTS:g}-{config.MAX_STOP_POINTS:g}",
+        f"stop_distance_filter={config.MIN_STOP_DISTANCE_POINTS:g}-{config.MAX_STOP_DISTANCE_POINTS:g}",
         f"fixed_stop={config.STOP_POINTS:g}",
         f"tp={config.TAKE_PROFIT_POINTS:g}",
         f"account={config.ACCOUNT_PROFILE}",
