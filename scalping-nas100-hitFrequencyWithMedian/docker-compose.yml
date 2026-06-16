@@ -73,7 +73,7 @@ services:
       - STOP_PROFILE_UPPER_QUANTILE=1.0
       - STOP_PROFILE_BUFFER_POINTS=1
       - MIN_STOP_DISTANCE_POINTS=12.0
-      - MAX_STOP_DISTANCE_POINTS=20.0
+      - MAX_STOP_DISTANCE_POINTS=30.0
 
       # Pepperstone-style account profile.
       - ACCOUNT_PROFILE=PS_ACC
