@@ -30,8 +30,10 @@ gezaehlt. Der Median-Level ist exakt das 50%-Quantil dieser Hit-Counts:
 der kleinste Preislevel, bei dem die kumulierten Hits mindestens 50% aller
 Hits erreichen. Das ist nicht die Mitte der Preisrange.
 
-Zusaetzlich werden q0, q45, q55 und q100 aus derselben Hit-Verteilung berechnet.
-q0 bis q100 dient fuer den Entry-Filter und fuer den Profilrand-Stop.
+Zusaetzlich werden q0, q45, q55, q100 und die konfigurierten Stop-Quantile
+aus derselben Hit-Verteilung berechnet. q0 bis q100 dient fuer den
+Entry-Filter. Die Stop-Position wird ueber STOP_PROFILE_LOWER_QUANTILE und
+STOP_PROFILE_UPPER_QUANTILE gesteuert.
 
 Entry / Exit
 ------------
@@ -49,19 +51,23 @@ einer offenen Position ignoriert.
 Default:
   STOP_MODE=band
   MIN_PROFILE_RANGE_POINTS=40.0
-  BAND_STOP_BUFFER_POINTS=0.5
+  STOP_PROFILE_LOWER_QUANTILE=0.0
+  STOP_PROFILE_UPPER_QUANTILE=1.0
+  STOP_PROFILE_BUFFER_POINTS=0.5
   MIN_STOP_DISTANCE_POINTS=12.0
   MAX_STOP_DISTANCE_POINTS=20.0
   TAKE_PROFIT_POINTS=10.0
 
 Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens
-MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren Profilrand q0 minus Buffer.
-Short-Stop liegt am oberen Profilrand q100 plus Buffer. Der TP bleibt fix:
+MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren Stop-Quantil
+minus STOP_PROFILE_BUFFER_POINTS. Short-Stop liegt am oberen Stop-Quantil plus
+STOP_PROFILE_BUFFER_POINTS. Der TP bleibt fix:
 Long entry + TAKE_PROFIT_POINTS, Short entry - TAKE_PROFIT_POINTS.
 Wenn die dadurch entstehende Entry-zu-Stop-Distanz ausserhalb
 MIN_STOP_DISTANCE_POINTS und MAX_STOP_DISTANCE_POINTS liegt, wird der Trade
-uebersprungen. Damit bleibt p0/p100 der strukturelle Stop, aber Entries mit
-unpassendem Chance-Risiko-Verhaeltnis werden herausgefiltert.
+uebersprungen. Mit STOP_PROFILE_LOWER_QUANTILE=0.0 und
+STOP_PROFILE_UPPER_QUANTILE=1.0 bleibt q0/q100 der strukturelle Stop. Fuer
+q10/q90 werden 0.10 und 0.90 gesetzt.
 
 Bei STOP_MODE=fixed wird der alte feste Stop genutzt:
   STOP_POINTS=10.0

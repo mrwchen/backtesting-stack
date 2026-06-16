@@ -99,13 +99,17 @@ TAKE_PROFIT_POINTS = env_float("TAKE_PROFIT_POINTS", 10.0)
 if STOP_POINTS <= 0 or TAKE_PROFIT_POINTS <= 0:
     raise ValueError("STOP_POINTS and TAKE_PROFIT_POINTS must be positive")
 MIN_PROFILE_RANGE_POINTS = env_float("MIN_PROFILE_RANGE_POINTS", env_float("MIN_BAND_POINTS", 40.0))
-BAND_STOP_BUFFER_POINTS = env_float("BAND_STOP_BUFFER_POINTS", 0.5)
+STOP_PROFILE_LOWER_QUANTILE = env_float("STOP_PROFILE_LOWER_QUANTILE", 0.0)
+STOP_PROFILE_UPPER_QUANTILE = env_float("STOP_PROFILE_UPPER_QUANTILE", 1.0)
+STOP_PROFILE_BUFFER_POINTS = env_float_alias("STOP_PROFILE_BUFFER_POINTS", "BAND_STOP_BUFFER_POINTS", 0.5)
 MIN_STOP_DISTANCE_POINTS = env_float_alias("MIN_STOP_DISTANCE_POINTS", "MIN_STOP_POINTS", 12.0)
 MAX_STOP_DISTANCE_POINTS = env_float_alias("MAX_STOP_DISTANCE_POINTS", "MAX_STOP_POINTS", 20.0)
 if MIN_PROFILE_RANGE_POINTS < 0:
     raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
-if BAND_STOP_BUFFER_POINTS < 0:
-    raise ValueError("BAND_STOP_BUFFER_POINTS must be >= 0")
+if not 0.0 <= STOP_PROFILE_LOWER_QUANTILE < STOP_PROFILE_UPPER_QUANTILE <= 1.0:
+    raise ValueError("STOP_PROFILE_LOWER_QUANTILE and STOP_PROFILE_UPPER_QUANTILE must satisfy 0 <= lower < upper <= 1")
+if STOP_PROFILE_BUFFER_POINTS < 0:
+    raise ValueError("STOP_PROFILE_BUFFER_POINTS must be >= 0")
 if MIN_STOP_DISTANCE_POINTS <= 0 or MAX_STOP_DISTANCE_POINTS <= MIN_STOP_DISTANCE_POINTS:
     raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
 
@@ -179,7 +183,9 @@ class RunConfig:
     stop_points: float
     take_profit_points: float
     min_profile_range_points: float
-    band_stop_buffer_points: float
+    stop_profile_lower_quantile: float
+    stop_profile_upper_quantile: float
+    stop_profile_buffer_points: float
     min_stop_distance_points: float
     max_stop_distance_points: float
     account_profile: str
@@ -219,7 +225,9 @@ def active_run_config() -> RunConfig:
         stop_points=STOP_POINTS,
         take_profit_points=TAKE_PROFIT_POINTS,
         min_profile_range_points=MIN_PROFILE_RANGE_POINTS,
-        band_stop_buffer_points=BAND_STOP_BUFFER_POINTS,
+        stop_profile_lower_quantile=STOP_PROFILE_LOWER_QUANTILE,
+        stop_profile_upper_quantile=STOP_PROFILE_UPPER_QUANTILE,
+        stop_profile_buffer_points=STOP_PROFILE_BUFFER_POINTS,
         min_stop_distance_points=MIN_STOP_DISTANCE_POINTS,
         max_stop_distance_points=MAX_STOP_DISTANCE_POINTS,
         account_profile=ACCOUNT_PROFILE,

@@ -16,9 +16,11 @@ def main() -> None:
     started = time.time()
     cfg = config.active_run_config()
     log.info(
-        "NAS100 hit-frequency median backtest start symbol %s source %s start %s end %s bar_seconds %d lookback %d stop %.2f tp %.2f stop_distance_filter %.2f-%.2f",
+        "NAS100 hit-frequency median backtest start symbol %s source %s start %s end %s bar_seconds %d lookback %d stop %.2f tp %.2f stop_profile %.2f-%.2f stop_buffer %.2f stop_distance_filter %.2f-%.2f",
         cfg.symbol, cfg.source_table, cfg.start_ts_utc, cfg.end_ts_utc,
         cfg.bar_seconds, cfg.lookback_bars, cfg.stop_points, cfg.take_profit_points,
+        cfg.stop_profile_lower_quantile, cfg.stop_profile_upper_quantile,
+        cfg.stop_profile_buffer_points,
         cfg.min_stop_distance_points, cfg.max_stop_distance_points,
     )
 

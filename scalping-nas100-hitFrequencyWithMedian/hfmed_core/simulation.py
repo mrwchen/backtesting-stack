@@ -17,7 +17,17 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
     profile = rolling_profile_levels(bars)
     bars = pd.concat([bars, profile], axis=1)
     profile_by_bar = bars.set_index("bar_start")[
-        ["profile_low", "band_lower", "median_level", "band_upper", "profile_high", "band_width_points", "profile_range_points"]
+        [
+            "profile_low",
+            "band_lower",
+            "median_level",
+            "band_upper",
+            "profile_high",
+            "stop_profile_lower",
+            "stop_profile_upper",
+            "band_width_points",
+            "profile_range_points",
+        ]
     ]
 
     sim_ticks = ticks.copy()
@@ -42,18 +52,26 @@ def run_simulation(ticks: pd.DataFrame, bars: pd.DataFrame) -> SimulationResult:
 
         profile_low = float(row.profile_low) if pd.notna(row.profile_low) else np.nan
         profile_high = float(row.profile_high) if pd.notna(row.profile_high) else np.nan
+        stop_profile_lower = float(row.stop_profile_lower) if pd.notna(row.stop_profile_lower) else np.nan
+        stop_profile_upper = float(row.stop_profile_upper) if pd.notna(row.stop_profile_upper) else np.nan
         profile_range = float(row.profile_range_points) if pd.notna(row.profile_range_points) else np.nan
-        if not (np.isfinite(profile_low) and np.isfinite(profile_high) and np.isfinite(profile_range)):
+        if not (
+            np.isfinite(profile_low)
+            and np.isfinite(profile_high)
+            and np.isfinite(stop_profile_lower)
+            and np.isfinite(stop_profile_upper)
+            and np.isfinite(profile_range)
+        ):
             return None, "missing_band"
         if profile_range < config.MIN_PROFILE_RANGE_POINTS:
             return None, "band_too_narrow"
 
         if direction == "LONG":
-            stop_price = profile_low - config.BAND_STOP_BUFFER_POINTS
+            stop_price = stop_profile_lower - config.STOP_PROFILE_BUFFER_POINTS
             take_profit_price = entry_price + config.TAKE_PROFIT_POINTS
             stop_distance = entry_price - stop_price
         else:
-            stop_price = profile_high + config.BAND_STOP_BUFFER_POINTS
+            stop_price = stop_profile_upper + config.STOP_PROFILE_BUFFER_POINTS
             take_profit_price = entry_price - config.TAKE_PROFIT_POINTS
             stop_distance = stop_price - entry_price
 
