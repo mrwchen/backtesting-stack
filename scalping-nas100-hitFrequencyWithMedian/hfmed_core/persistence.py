@@ -11,7 +11,7 @@ from psycopg2 import sql
 from psycopg2.extras import execute_values
 from zoneinfo import ZoneInfo
 
-from . import config
+from . import config, parameters
 from .config import OptimizerConfig, RunConfig
 from .entities import ClosedTrade
 
@@ -377,6 +377,121 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
     conn.commit()
     log.info("Inserted parameter sets %d", len(returned))
     return {digest: parameter_set_id for parameter_set_id, digest in returned}
+
+
+def insert_parameter_stubs(conn, run_id: int, stage: str, candidates: list[dict[str, int | float]]) -> dict[str, int]:
+    if not candidates:
+        return {}
+    columns = [
+        "run_id",
+        "stage",
+        "parameter_hash",
+        "parameter_label",
+        "parameter_signature",
+        "lookback_bars",
+        "take_profit_points",
+        "min_profile_range_points",
+        "stop_profile_lower_quantile",
+        "stop_profile_upper_quantile",
+        "stop_profile_buffer_points",
+        "min_stop_distance_points",
+        "max_stop_distance_points",
+    ]
+    rows = [
+        (
+            run_id,
+            stage,
+            parameters.parameter_hash(values),
+            parameters.parameter_label(values),
+            parameters.parameter_signature(values),
+            int(values["LOOKBACK_BARS"]),
+            values["TAKE_PROFIT_POINTS"],
+            values["MIN_PROFILE_RANGE_POINTS"],
+            values["STOP_PROFILE_LOWER_QUANTILE"],
+            values["STOP_PROFILE_UPPER_QUANTILE"],
+            values["STOP_PROFILE_BUFFER_POINTS"],
+            values["MIN_STOP_DISTANCE_POINTS"],
+            values["MAX_STOP_DISTANCE_POINTS"],
+        )
+        for values in candidates
+    ]
+    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s RETURNING parameter_set_id, parameter_hash").format(
+        tbl=_table(PARAMETER_TABLE),
+        cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+    )
+    with conn.cursor() as cur:
+        returned = execute_values(cur, query.as_string(conn), rows, page_size=2000, fetch=True)
+    conn.commit()
+    log.info("Inserted parameter stubs stage %s count %d", stage, len(returned))
+    return {digest: parameter_set_id for parameter_set_id, digest in returned}
+
+
+def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> None:
+    if not aggregates:
+        return
+    columns = [
+        "run_id",
+        "stage",
+        "parameter_hash",
+        "stage_rank",
+        "pre_mc_score",
+        "score",
+        "mc_scored",
+        "mc_prob_of_ruin_pct",
+        "passed_pre_mc_filters",
+        "passed_filters",
+    ]
+    columns.extend(f"train_{key}" for key in METRIC_KEYS)
+    columns.extend(f"oos_{key}" for key in METRIC_KEYS)
+
+    rows = []
+    for item in aggregates:
+        row = [
+            run_id,
+            item["stage"],
+            item["parameter_hash"],
+            item["stage_rank"],
+            item["pre_mc_score"],
+            item["score"],
+            item["mc_scored"],
+            item["mc_prob_of_ruin_pct"],
+            item["passed_pre_mc_filters"],
+            item["passed_filters"],
+        ]
+        row.extend(item.get(f"train_{key}") for key in METRIC_KEYS)
+        row.extend(item.get(f"oos_{key}") for key in METRIC_KEYS)
+        rows.append(tuple(_db_value(value) for value in row))
+
+    assignments = [
+        "stage_rank",
+        "pre_mc_score",
+        "score",
+        "mc_scored",
+        "mc_prob_of_ruin_pct",
+        "passed_pre_mc_filters",
+        "passed_filters",
+    ]
+    assignments.extend(f"train_{key}" for key in METRIC_KEYS)
+    assignments.extend(f"oos_{key}" for key in METRIC_KEYS)
+    set_sql = sql.SQL(", ").join(
+        sql.SQL("{col} = v.{col}").format(col=sql.Identifier(column)) for column in assignments
+    )
+    values_sql = sql.SQL("""
+        UPDATE {tbl} AS p
+        SET {set_sql}
+        FROM (VALUES %s) AS v ({value_cols})
+        WHERE p.run_id = v.run_id
+          AND p.stage = v.stage
+          AND p.parameter_hash = v.parameter_hash
+    """).format(
+        tbl=_table(PARAMETER_TABLE),
+        set_sql=set_sql,
+        value_cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+    )
+    with conn.cursor() as cur:
+        execute_values(cur, values_sql.as_string(conn), rows, page_size=2000)
+    conn.commit()
+    log.info("Updated parameter set results %d", len(rows))
 
 
 def insert_fold_results(conn, run_id: int, evaluations: list, parameter_ids: dict[str, int]) -> None:

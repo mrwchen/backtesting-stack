@@ -12,6 +12,23 @@ from .profile import rolling_profile_levels
 
 log = logging.getLogger(__name__)
 
+PROFILE_COLUMNS = [
+    "profile_low",
+    "band_lower",
+    "median_level",
+    "band_upper",
+    "profile_high",
+    "stop_profile_lower",
+    "stop_profile_upper",
+    "band_width_points",
+    "profile_range_points",
+]
+
+
+def attach_profile_to_ticks(ticks: pd.DataFrame, bars: pd.DataFrame, profile: pd.DataFrame) -> pd.DataFrame:
+    profile_by_bar = pd.concat([bars[["bar_start"]], profile[PROFILE_COLUMNS]], axis=1).set_index("bar_start")
+    return ticks.join(profile_by_bar, on="bar_start")
+
 
 def run_simulation(
     ticks: pd.DataFrame,
@@ -21,27 +38,14 @@ def run_simulation(
     trade_end_ts=None,
     log_result: bool = True,
     profile: pd.DataFrame | None = None,
+    profiled_ticks: pd.DataFrame | None = None,
 ) -> SimulationResult:
-    bars = bars.copy()
-    if profile is None:
-        profile = rolling_profile_levels(bars, cfg)
-    bars = pd.concat([bars, profile], axis=1)
-    profile_by_bar = bars.set_index("bar_start")[
-        [
-            "profile_low",
-            "band_lower",
-            "median_level",
-            "band_upper",
-            "profile_high",
-            "stop_profile_lower",
-            "stop_profile_upper",
-            "band_width_points",
-            "profile_range_points",
-        ]
-    ]
-
-    sim_ticks = ticks.copy()
-    sim_ticks = sim_ticks.join(profile_by_bar, on="bar_start")
+    if profiled_ticks is None:
+        if profile is None:
+            profile = rolling_profile_levels(bars, cfg)
+        sim_ticks = attach_profile_to_ticks(ticks, bars, profile)
+    else:
+        sim_ticks = profiled_ticks
 
     result = SimulationResult(
         initial_equity=cfg.initial_equity,

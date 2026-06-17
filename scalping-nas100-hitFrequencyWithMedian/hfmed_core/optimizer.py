@@ -17,7 +17,7 @@ from .config import OptimizerConfig, RunConfig, apply_parameter_values
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
 from .risk import run_monte_carlo, summarize_trades
-from .simulation import run_simulation
+from .simulation import attach_profile_to_ticks, run_simulation
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +75,6 @@ class StageResult:
     stage: str
     candidates: list[dict[str, int | float]]
     aggregates: list[dict]
-    selected_train_evals: list[Evaluation]
     oos_evals: list[Evaluation]
     mc_by_hash: dict[str, dict]
     parameter_ids: dict[str, int] = field(default_factory=dict)
@@ -108,10 +107,7 @@ def run_walk_forward_optimizer(
     stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets)
     stage1_candidates = screen_stage1_candidates(stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     log.info("Stage 1 candidates %d folds %d", len(stage1_candidates), len(folds))
-    stage1 = run_stage("stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
-    stage1.parameter_ids = persistence.insert_parameter_sets(conn, run_id, stage1.aggregates)
-    persistence.insert_fold_results(conn, run_id, stage1.selected_train_evals, stage1.parameter_ids)
-    persistence.insert_fold_results(conn, run_id, stage1.oos_evals, stage1.parameter_ids)
+    stage1 = run_stage(conn, run_id, "stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     persistence.insert_monte_carlo(conn, stage1.mc_by_hash, stage1.parameter_ids)
 
     final_stage = stage1
@@ -132,10 +128,7 @@ def run_walk_forward_optimizer(
         stage2_count = len(stage2_candidates)
         if stage2_candidates:
             log.info("Stage 2 candidates %d seeds %d folds %d", len(stage2_candidates), len(seed_values), len(folds))
-            stage2 = run_stage("stage2", stage2_candidates, folds, base_cfg, opt_cfg, ticks, bars)
-            stage2.parameter_ids = persistence.insert_parameter_sets(conn, run_id, stage2.aggregates)
-            persistence.insert_fold_results(conn, run_id, stage2.selected_train_evals, stage2.parameter_ids)
-            persistence.insert_fold_results(conn, run_id, stage2.oos_evals, stage2.parameter_ids)
+            stage2 = run_stage(conn, run_id, "stage2", stage2_candidates, folds, base_cfg, opt_cfg, ticks, bars)
             persistence.insert_monte_carlo(conn, stage2.mc_by_hash, stage2.parameter_ids)
             final_stage = stage2
         else:
@@ -317,6 +310,8 @@ def _shortened_train_fold(fold: FoldSpec, train_days: int) -> FoldSpec:
 
 
 def run_stage(
+    conn,
+    run_id: int,
     stage: str,
     candidates: list[dict[str, int | float]],
     folds: list[FoldSpec],
@@ -325,9 +320,9 @@ def run_stage(
     ticks: pd.DataFrame,
     bars: pd.DataFrame,
 ) -> StageResult:
+    parameter_ids = persistence.insert_parameter_stubs(conn, run_id, stage, candidates)
     train_by_hash: dict[str, list[Evaluation]] = {parameters.parameter_hash(candidate): [] for candidate in candidates}
     oos_by_hash: dict[str, list[Evaluation]] = {}
-    selected_train_evals: list[Evaluation] = []
     oos_evals: list[Evaluation] = []
 
     for fold in folds:
@@ -337,13 +332,18 @@ def run_stage(
             train_by_hash[evaluation.parameter_hash].append(evaluation)
 
         selected = sorted(train_evals, key=lambda item: item.score, reverse=True)[: opt_cfg.train_top_n_per_fold]
-        selected_train_evals.extend(selected)
+        persistence.insert_fold_results(conn, run_id, selected, parameter_ids)
+        aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
+        persistence.update_parameter_set_results(conn, run_id, aggregates)
         selected_candidates = [evaluation.values for evaluation in selected]
         log.info("Stage %s fold %d oos candidates %d", stage, fold.fold_index, len(selected_candidates))
         fold_oos = evaluate_many(stage, selected_candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=True)
         for evaluation in fold_oos:
             oos_by_hash.setdefault(evaluation.parameter_hash, []).append(evaluation)
+        persistence.insert_fold_results(conn, run_id, fold_oos, parameter_ids)
         oos_evals.extend(fold_oos)
+        aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
+        persistence.update_parameter_set_results(conn, run_id, aggregates)
 
     aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
     mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, base_cfg, opt_cfg)
@@ -351,7 +351,8 @@ def run_stage(
     aggregates.sort(key=lambda row: row["score"], reverse=True)
     for rank, row in enumerate(aggregates, start=1):
         row["stage_rank"] = rank
-    return StageResult(stage, candidates, aggregates, selected_train_evals, oos_evals, mc_by_hash)
+    persistence.update_parameter_set_results(conn, run_id, aggregates)
+    return StageResult(stage, candidates, aggregates, oos_evals, mc_by_hash, parameter_ids)
 
 
 def build_folds(ticks: pd.DataFrame, opt_cfg: OptimizerConfig) -> list[FoldSpec]:
@@ -403,38 +404,42 @@ def evaluate_many(
     bars: pd.DataFrame,
     keep_trades: bool,
 ) -> list[Evaluation]:
-    tasks = [(stage, candidate, fold, role, keep_trades) for candidate in candidates]
-    tasks.sort(key=_task_profile_sort_key)
-    total = len(tasks)
+    tasks = _group_evaluation_tasks(stage, candidates, fold, role, keep_trades, base_cfg)
+    total = len(candidates)
     if total <= 0:
         return []
+    total_groups = len(tasks)
 
     started = time.monotonic()
     log.info(
-        "Stage %s fold %d %s evaluate start candidates %d processes %d chunk_size %d progress_every %d progress_seconds %d",
+        "Stage %s fold %d %s evaluate start candidates %d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
         stage,
         fold.fold_index,
         role,
         total,
+        total_groups,
         opt_cfg.processes if total > 1 else 1,
-        opt_cfg.process_chunk_size if opt_cfg.processes > 1 and total > 1 else 1,
+        1 if opt_cfg.processes > 1 and total_groups > 1 else 1,
         opt_cfg.progress_log_every,
         opt_cfg.progress_log_seconds,
     )
 
-    if opt_cfg.processes <= 1 or len(tasks) <= 1:
+    if opt_cfg.processes <= 1 or total_groups <= 1:
         results: list[Evaluation] = []
         window = _prepare_window_data(ticks, bars, fold, role, opt_cfg.profile_cache_size)
         progress = _ProgressLogState(started_at=started, last_logged_at=started)
-        for completed, task in enumerate(tasks, start=1):
-            results.append(_evaluate_task_with_window(task, window, base_cfg))
+        completed = 0
+        for task in tasks:
+            evaluations = _evaluate_group_with_window(task, window, base_cfg)
+            results.extend(evaluations)
+            completed += len(evaluations)
             _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
         _log_evaluation_complete(stage, fold.fold_index, role, total, started)
         return results
 
     ctx_name = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
     ctx = mp.get_context(ctx_name)
-    chunk_size = min(total, opt_cfg.process_chunk_size)
+    chunk_size = 1
     results: list[Evaluation] = []
     progress = _ProgressLogState(started_at=started, last_logged_at=started)
     with ctx.Pool(
@@ -442,8 +447,10 @@ def evaluate_many(
         initializer=_init_worker,
         initargs=(ticks, bars, base_cfg, fold, role, opt_cfg.profile_cache_size),
     ) as pool:
-        for completed, evaluation in enumerate(pool.imap_unordered(_evaluate_task, tasks, chunksize=chunk_size), start=1):
-            results.append(evaluation)
+        completed = 0
+        for evaluations in pool.imap_unordered(_evaluate_group_task, tasks, chunksize=chunk_size):
+            results.extend(evaluations)
+            completed += len(evaluations)
             _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
     _log_evaluation_complete(stage, fold.fold_index, role, total, started)
     return results
@@ -507,13 +514,22 @@ def _log_evaluation_complete(stage: str, fold_index: int, role: str, total: int,
     )
 
 
-def _task_profile_sort_key(task) -> tuple:
-    values = task[1]
-    return (
-        int(values["LOOKBACK_BARS"]),
-        round(float(values["STOP_PROFILE_LOWER_QUANTILE"]), 8),
-        round(float(values["STOP_PROFILE_UPPER_QUANTILE"]), 8),
-    )
+def _group_evaluation_tasks(
+    stage: str,
+    candidates: list[dict[str, int | float]],
+    fold: FoldSpec,
+    role: str,
+    keep_trades: bool,
+    base_cfg: RunConfig,
+) -> list[tuple]:
+    groups: OrderedDict[tuple, list[dict[str, int | float]]] = OrderedDict()
+    for candidate in sorted(candidates, key=lambda values: _candidate_profile_key(values, base_cfg)):
+        groups.setdefault(_candidate_profile_key(candidate, base_cfg), []).append(candidate)
+    return [(stage, group, fold, role, keep_trades) for group in groups.values()]
+
+
+def _candidate_profile_key(values: dict[str, int | float], base_cfg: RunConfig) -> tuple:
+    return _profile_cache_key(apply_parameter_values(base_cfg, values))
 
 
 def _init_worker(
@@ -529,10 +545,10 @@ def _init_worker(
     _WORKER_WINDOW = _prepare_window_data(ticks, bars, fold, role, profile_cache_size)
 
 
-def _evaluate_task(task) -> Evaluation:
+def _evaluate_group_task(task) -> list[Evaluation]:
     if _WORKER_BASE_CFG is None or _WORKER_WINDOW is None:
         raise RuntimeError("Worker data was not initialized")
-    return _evaluate_task_with_window(task, _WORKER_WINDOW, _WORKER_BASE_CFG)
+    return _evaluate_group_with_window(task, _WORKER_WINDOW, _WORKER_BASE_CFG)
 
 
 def _prepare_window_data(
@@ -560,10 +576,30 @@ def _window_bounds(fold: FoldSpec, role: str) -> tuple[object, object, object, o
     return fold.train_start, fold.test_end, fold.test_start, fold.test_end
 
 
-def _evaluate_task_with_window(task, window: WindowData, base_cfg: RunConfig) -> Evaluation:
-    stage, values, fold, role, keep_trades = task
+def _evaluate_group_with_window(task, window: WindowData, base_cfg: RunConfig) -> list[Evaluation]:
+    stage, group, fold, role, keep_trades = task
+    if not group:
+        return []
+    profile_cfg = apply_parameter_values(base_cfg, group[0])
+    profile = rolling_profile_levels(window.bars, profile_cfg)
+    profiled_ticks = attach_profile_to_ticks(window.ticks, window.bars, profile)
+    return [
+        _evaluate_candidate_with_profiled_ticks(stage, values, fold, role, keep_trades, window, base_cfg, profiled_ticks)
+        for values in group
+    ]
+
+
+def _evaluate_candidate_with_profiled_ticks(
+    stage: str,
+    values: dict[str, int | float],
+    fold: FoldSpec,
+    role: str,
+    keep_trades: bool,
+    window: WindowData,
+    base_cfg: RunConfig,
+    profiled_ticks: pd.DataFrame,
+) -> Evaluation:
     cfg = apply_parameter_values(base_cfg, values)
-    profile = _profile_for_config(window, cfg)
     result = run_simulation(
         window.ticks,
         window.bars,
@@ -571,7 +607,7 @@ def _evaluate_task_with_window(task, window: WindowData, base_cfg: RunConfig) ->
         trade_start_ts=window.trade_start,
         trade_end_ts=window.trade_end,
         log_result=False,
-        profile=profile,
+        profiled_ticks=profiled_ticks,
     )
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
     score = score_evaluation(summary, result)
