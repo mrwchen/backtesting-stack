@@ -126,9 +126,46 @@ MC_KEYS = [
     "seq_worst_max_drawdown_pct",
 ]
 
+METRIC_COLUMN_TYPES = {
+    "folds": "INTEGER",
+    "expected_folds": "INTEGER",
+    "total_trades": "INTEGER",
+    "total_return_pct": "NUMERIC",
+    "mean_return_pct": "NUMERIC",
+    "median_return_pct": "NUMERIC",
+    "std_return_pct": "NUMERIC",
+    "max_drawdown_pct": "NUMERIC",
+    "profit_factor": "NUMERIC",
+    "win_rate_pct": "NUMERIC",
+    "profitable_folds_pct": "NUMERIC",
+    "gross_profit_eur": "NUMERIC",
+    "gross_loss_eur": "NUMERIC",
+    "net_profit_eur": "NUMERIC",
+    "avg_trade_pnl_eur": "NUMERIC",
+    "signals_total": "BIGINT",
+    "ruined_folds": "INTEGER",
+}
+
+PARAMETER_SET_UPDATE_COLUMN_TYPES = {
+    "stage_rank": "INTEGER",
+    "pre_mc_score": "NUMERIC",
+    "score": "NUMERIC",
+    "mc_scored": "BOOLEAN",
+    "mc_prob_of_ruin_pct": "NUMERIC",
+    "passed_pre_mc_filters": "BOOLEAN",
+    "passed_filters": "BOOLEAN",
+}
+for _prefix in ("train", "oos"):
+    for _metric, _type_name in METRIC_COLUMN_TYPES.items():
+        PARAMETER_SET_UPDATE_COLUMN_TYPES[f"{_prefix}_{_metric}"] = _type_name
+
 
 def _table(name: str) -> sql.Composed:
     return sql.SQL("{}.{}").format(sql.Identifier(config.RESULT_SCHEMA), sql.Identifier(name))
+
+
+def _parameter_set_update_type(column: str) -> str:
+    return PARAMETER_SET_UPDATE_COLUMN_TYPES[column]
 
 
 def _run_label() -> str:
@@ -473,8 +510,14 @@ def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> N
     ]
     assignments.extend(f"train_{key}" for key in METRIC_KEYS)
     assignments.extend(f"oos_{key}" for key in METRIC_KEYS)
+    # PostgreSQL can infer all-NULL VALUES columns as text, so cast every update
+    # source column to the destination type before assigning it.
     set_sql = sql.SQL(", ").join(
-        sql.SQL("{col} = v.{col}").format(col=sql.Identifier(column)) for column in assignments
+        sql.SQL("{col} = v.{col}::{type_name}").format(
+            col=sql.Identifier(column),
+            type_name=sql.SQL(_parameter_set_update_type(column)),
+        )
+        for column in assignments
     )
     values_sql = sql.SQL("""
         UPDATE {tbl} AS p
