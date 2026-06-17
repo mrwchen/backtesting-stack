@@ -711,6 +711,7 @@ def build_aggregates(
             "pre_mc_score": pre_mc_score,
             "score": pre_mc_score,
             "mc_scored": False,
+            "mc_prob_of_ruin_pct": None,
             "passed_pre_mc_filters": passed_pre_mc_filters(oos_metrics, opt_cfg),
             "passed_filters": False,
             **_prefix_metrics("train", train_metrics),
