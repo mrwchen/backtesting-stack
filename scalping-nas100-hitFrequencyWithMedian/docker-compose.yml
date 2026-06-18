@@ -44,6 +44,7 @@ services:
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
       - RUN_NOTES_EXTRA= # Optional extra run note.
       - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
       - SYMBOL=NAS100 # Symbol filter for source ticks.
       - START_TS_UTC=2026-01-15T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
@@ -52,8 +53,8 @@ services:
       - LOOKBACK_BARS=90 # Rolling profile lookback window in bars.
       - MIN_LOOKBACK_BARS=90 # Minimum completed bars before profile signals are valid.
       - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
-      - LONG_CROSS_QUANTILE=0.50 # Long entry when mid crosses this profile quantile upward.
-      - SHORT_CROSS_QUANTILE=0.50 # Short entry when mid crosses this profile quantile downward.
+      - LONG_CROSS_QUANTILE=0.40 # Long entry when mid crosses this profile quantile upward.
+      - SHORT_CROSS_QUANTILE=0.60 # Short entry when mid crosses this profile quantile downward.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
       - SESSION_PRE_MARKET_ENABLED=false # Enable new entries from 04:00-09:30.
       - SESSION_NY_OPEN_POWER_ENABLED=true # Enable new entries from 09:30-11:30.
