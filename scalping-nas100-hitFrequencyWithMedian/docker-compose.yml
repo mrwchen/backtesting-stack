@@ -56,12 +56,12 @@ services:
       - LONG_CROSS_QUANTILE=0.40 # Long entry when mid crosses this profile quantile upward.
       - SHORT_CROSS_QUANTILE=0.60 # Short entry when mid crosses this profile quantile downward.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
-      - SESSION_PRE_MARKET_ENABLED=false # Enable new entries from 04:00-09:30.
+      - SESSION_PRE_MARKET_ENABLED=true # Enable new entries from 04:00-09:30.
       - SESSION_NY_OPEN_POWER_ENABLED=true # Enable new entries from 09:30-11:30.
       - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
-      - SESSION_NY_LATE_ENABLED=false # Enable new entries from 14:00-15:00.
-      - SESSION_NY_POWER_HOUR_ENABLED=false # Enable new entries from 15:00-16:00.
-      - SESSION_AFTER_HOURS_ENABLED=false # Enable new entries from 16:00-20:00.
+      - SESSION_NY_LATE_ENABLED=true # Enable new entries from 14:00-15:00.
+      - SESSION_NY_POWER_HOUR_ENABLED=true # Enable new entries from 15:00-16:00.
+      - SESSION_AFTER_HOURS_ENABLED=true # Enable new entries from 16:00-20:00.
       - SESSION_OVERNIGHT_ENABLED=true # Enable new entries from 20:00-04:00.
       - STOP_MODE=band # Stop mode; band uses profile quantiles, fixed uses STOP_POINTS.
       - TAKE_PROFIT_POINTS=10.0 # Fixed take-profit distance in points.
