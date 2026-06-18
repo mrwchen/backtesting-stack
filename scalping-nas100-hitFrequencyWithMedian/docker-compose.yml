@@ -50,7 +50,7 @@ services:
       # Tick data source. Leave START_TS_UTC empty to use all available ticks.
       - SOURCE_TABLE=public.pepperstone_ticks_data
       - SYMBOL=NAS100
-      - START_TS_UTC=
+      - START_TS_UTC=2026-01-15T00:00:00Z
       - END_TS_UTC=
 
       # Baseline values for single mode and non-optimized settings.
@@ -60,6 +60,17 @@ services:
       - PRICE_STEP=1.0
 
       # Trade rule: tick-level median crossing.
+
+      # Entry session switches. Times are interpreted in SESSION_TIMEZONE.
+      # Disabled sessions suppress new entries only; open trades still exit tick-by-tick.
+      - SESSION_TIMEZONE=America/New_York
+      - SESSION_PRE_MARKET_ENABLED=false       # 04:00-09:30
+      - SESSION_NY_OPEN_POWER_ENABLED=true    # 09:30-11:30
+      - SESSION_NY_MIDDAY_ENABLED=true        # 11:30-14:00
+      - SESSION_NY_LATE_ENABLED=false          # 14:00-15:00
+      - SESSION_NY_POWER_HOUR_ENABLED=false    # 15:00-16:00
+      - SESSION_AFTER_HOURS_ENABLED=false      # 16:00-20:00
+      - SESSION_OVERNIGHT_ENABLED=true        # 20:00-04:00
 
       # General trade parameters.
       - STOP_MODE=band
@@ -102,11 +113,11 @@ services:
 
       # Walk-forward parameter optimizer.
       - PARAMETER_GRID_PATH=parameter_grid.ini
-      - WF_TRAIN_DAYS=60
+      - WF_TRAIN_DAYS=30
       - WF_TEST_DAYS=20
       - WF_STEP_DAYS=20
       - WF_TRAIN_TOP_N_PER_FOLD=30
-      - OPTIMIZER_PROCESSES=5
+      - OPTIMIZER_PROCESSES=6
       - OPTIMIZER_PROCESS_CHUNK_SIZE=64
       - OPTIMIZER_PROFILE_CACHE_SIZE=4
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000

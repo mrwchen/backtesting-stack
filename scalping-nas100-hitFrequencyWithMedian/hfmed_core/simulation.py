@@ -12,6 +12,14 @@ from .profile import rolling_profile_levels
 
 log = logging.getLogger(__name__)
 
+PRE_MARKET_START_MINUTE = 4 * 60
+NY_OPEN_POWER_START_MINUTE = 9 * 60 + 30
+NY_MIDDAY_START_MINUTE = 11 * 60 + 30
+NY_LATE_START_MINUTE = 14 * 60
+NY_POWER_HOUR_START_MINUTE = 15 * 60
+AFTER_HOURS_START_MINUTE = 16 * 60
+OVERNIGHT_START_MINUTE = 20 * 60
+
 PROFILE_COLUMNS = [
     "profile_low",
     "band_lower",
@@ -23,6 +31,41 @@ PROFILE_COLUMNS = [
     "band_width_points",
     "profile_range_points",
 ]
+
+
+def _all_sessions_enabled(cfg: RunConfig) -> bool:
+    return (
+        cfg.session_pre_market_enabled
+        and cfg.session_ny_open_power_enabled
+        and cfg.session_ny_midday_enabled
+        and cfg.session_ny_late_enabled
+        and cfg.session_ny_power_hour_enabled
+        and cfg.session_after_hours_enabled
+        and cfg.session_overnight_enabled
+    )
+
+
+def _entry_session_allowed_mask(ticks: pd.DataFrame, cfg: RunConfig) -> np.ndarray | None:
+    if _all_sessions_enabled(cfg):
+        return None
+    local = pd.to_datetime(ticks["tick_time"], utc=True).dt.tz_convert(cfg.session_timezone)
+    minute_of_day = local.dt.hour.to_numpy(dtype=np.int16) * 60 + local.dt.minute.to_numpy(dtype=np.int16)
+    allowed = np.zeros(len(ticks), dtype=bool)
+    if cfg.session_pre_market_enabled:
+        allowed |= (PRE_MARKET_START_MINUTE <= minute_of_day) & (minute_of_day < NY_OPEN_POWER_START_MINUTE)
+    if cfg.session_ny_open_power_enabled:
+        allowed |= (NY_OPEN_POWER_START_MINUTE <= minute_of_day) & (minute_of_day < NY_MIDDAY_START_MINUTE)
+    if cfg.session_ny_midday_enabled:
+        allowed |= (NY_MIDDAY_START_MINUTE <= minute_of_day) & (minute_of_day < NY_LATE_START_MINUTE)
+    if cfg.session_ny_late_enabled:
+        allowed |= (NY_LATE_START_MINUTE <= minute_of_day) & (minute_of_day < NY_POWER_HOUR_START_MINUTE)
+    if cfg.session_ny_power_hour_enabled:
+        allowed |= (NY_POWER_HOUR_START_MINUTE <= minute_of_day) & (minute_of_day < AFTER_HOURS_START_MINUTE)
+    if cfg.session_after_hours_enabled:
+        allowed |= (AFTER_HOURS_START_MINUTE <= minute_of_day) & (minute_of_day < OVERNIGHT_START_MINUTE)
+    if cfg.session_overnight_enabled:
+        allowed |= (minute_of_day < PRE_MARKET_START_MINUTE) | (OVERNIGHT_START_MINUTE <= minute_of_day)
+    return allowed
 
 
 def attach_profile_to_ticks(ticks: pd.DataFrame, bars: pd.DataFrame, profile: pd.DataFrame) -> pd.DataFrame:
@@ -47,6 +90,7 @@ def run_simulation(
     else:
         sim_ticks = profiled_ticks
 
+    entry_session_allowed = _entry_session_allowed_mask(sim_ticks, cfg)
     result = SimulationResult(
         initial_equity=cfg.initial_equity,
         final_equity=cfg.initial_equity,
@@ -224,6 +268,8 @@ def run_simulation(
         if trade_start_ts is not None and tick_ts < trade_start_ts:
             entries_allowed = False
         if trade_end_ts is not None and tick_ts >= trade_end_ts:
+            entries_allowed = False
+        if entry_session_allowed is not None and not entry_session_allowed[idx - 1]:
             entries_allowed = False
 
         if entries_allowed and prev_mid is not None and np.isfinite(median):

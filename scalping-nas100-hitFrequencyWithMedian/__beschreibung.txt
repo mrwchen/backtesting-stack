@@ -73,8 +73,21 @@ q10/q90 werden 0.10 und 0.90 gesetzt.
 Bei STOP_MODE=fixed wird der alte feste Stop genutzt:
   STOP_POINTS=10.0
 
-Es gibt keinen Session-Filter; der Backtest laeuft 24h ueber alle geladenen
-Ticks.
+Entry-Session-Filter
+--------------------
+Neue Entries koennen pro New-York-Session ein- oder ausgeschaltet werden.
+Die Session-Grenzen werden in SESSION_TIMEZONE interpretiert, Default:
+America/New_York. Offene Positionen werden auch ausserhalb aktivierter
+Entry-Sessions weiter tickgenau ueber SL/TP geschlossen.
+
+Default: alle Sessions true.
+  SESSION_PRE_MARKET_ENABLED=true       # 04:00-09:30
+  SESSION_NY_OPEN_POWER_ENABLED=true    # 09:30-11:30
+  SESSION_NY_MIDDAY_ENABLED=true        # 11:30-14:00
+  SESSION_NY_LATE_ENABLED=true          # 14:00-15:00
+  SESSION_NY_POWER_HOUR_ENABLED=true    # 15:00-16:00
+  SESSION_AFTER_HOURS_ENABLED=true      # 16:00-20:00
+  SESSION_OVERNIGHT_ENABLED=true        # 20:00-04:00
 
 Ergebnis-Tabellen
 -----------------

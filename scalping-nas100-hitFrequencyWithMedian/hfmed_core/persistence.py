@@ -181,6 +181,7 @@ def _notes(cfg: RunConfig, mode: str) -> str:
         f"median {cfg.median_quantile:g}",
         f"stop_mode {cfg.stop_mode}",
         f"account {cfg.account_profile}",
+        f"sessions {config.session_filter_summary(cfg)}",
         "spread live_bid_ask",
     ]
     if config.RUN_NOTES_EXTRA:

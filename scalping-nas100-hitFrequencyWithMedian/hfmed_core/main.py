@@ -16,7 +16,7 @@ def main() -> None:
     cfg = config.active_run_config()
     opt_cfg = config.active_optimizer_config()
     log.info(
-        "NAS100 hit-frequency median start mode %s symbol %s source %s start %s end %s bar_seconds %d baseline_lookback %d",
+        "NAS100 hit-frequency median start mode %s symbol %s source %s start %s end %s bar_seconds %d baseline_lookback %d sessions %s",
         config.RUN_MODE,
         cfg.symbol,
         cfg.source_table,
@@ -24,6 +24,7 @@ def main() -> None:
         cfg.end_ts_utc,
         cfg.bar_seconds,
         cfg.lookback_bars,
+        config.session_filter_summary(cfg),
     )
 
     conn = connect_with_retry()

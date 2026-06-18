@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 
 def env_str(name: str, default: str) -> str:
@@ -70,6 +71,13 @@ def _validate_identifier_path(value: str, name: str) -> None:
             raise ValueError(f"{name} contains invalid identifier part {part!r}")
 
 
+def _validate_timezone(value: str, name: str) -> None:
+    try:
+        ZoneInfo(value)
+    except Exception as exc:
+        raise ValueError(f"{name} must be a valid IANA timezone, got {value!r}") from exc
+
+
 # Runner mode.
 RUN_MODE = _one_of("RUN_MODE", "single", {"single", "walk_forward"})
 
@@ -115,6 +123,17 @@ if STOP_PROFILE_BUFFER_POINTS < 0:
     raise ValueError("STOP_PROFILE_BUFFER_POINTS must be >= 0")
 if MIN_STOP_DISTANCE_POINTS <= 0 or MAX_STOP_DISTANCE_POINTS <= MIN_STOP_DISTANCE_POINTS:
     raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
+
+# Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
+SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
+_validate_timezone(SESSION_TIMEZONE, "SESSION_TIMEZONE")
+SESSION_PRE_MARKET_ENABLED = env_bool("SESSION_PRE_MARKET_ENABLED", True)
+SESSION_NY_OPEN_POWER_ENABLED = env_bool("SESSION_NY_OPEN_POWER_ENABLED", True)
+SESSION_NY_MIDDAY_ENABLED = env_bool("SESSION_NY_MIDDAY_ENABLED", True)
+SESSION_NY_LATE_ENABLED = env_bool("SESSION_NY_LATE_ENABLED", True)
+SESSION_NY_POWER_HOUR_ENABLED = env_bool("SESSION_NY_POWER_HOUR_ENABLED", True)
+SESSION_AFTER_HOURS_ENABLED = env_bool("SESSION_AFTER_HOURS_ENABLED", True)
+SESSION_OVERNIGHT_ENABLED = env_bool("SESSION_OVERNIGHT_ENABLED", True)
 
 # Account profile: PS_ACC.
 ACCOUNT_PROFILE = env_str("ACCOUNT_PROFILE", "PS_ACC").upper()
@@ -229,6 +248,14 @@ class RunConfig:
     spread_points: float
     slippage_points: float
     commission_per_unit: float
+    session_timezone: str
+    session_pre_market_enabled: bool
+    session_ny_open_power_enabled: bool
+    session_ny_midday_enabled: bool
+    session_ny_late_enabled: bool
+    session_ny_power_hour_enabled: bool
+    session_after_hours_enabled: bool
+    session_overnight_enabled: bool
     monte_carlo_enabled: bool
     monte_carlo_simulations: int
     mc_extra_slippage_points: float
@@ -299,6 +326,14 @@ def active_run_config() -> RunConfig:
         spread_points=SPREAD_POINTS,
         slippage_points=SLIPPAGE_POINTS,
         commission_per_unit=COMMISSION_PER_UNIT,
+        session_timezone=SESSION_TIMEZONE,
+        session_pre_market_enabled=SESSION_PRE_MARKET_ENABLED,
+        session_ny_open_power_enabled=SESSION_NY_OPEN_POWER_ENABLED,
+        session_ny_midday_enabled=SESSION_NY_MIDDAY_ENABLED,
+        session_ny_late_enabled=SESSION_NY_LATE_ENABLED,
+        session_ny_power_hour_enabled=SESSION_NY_POWER_HOUR_ENABLED,
+        session_after_hours_enabled=SESSION_AFTER_HOURS_ENABLED,
+        session_overnight_enabled=SESSION_OVERNIGHT_ENABLED,
         monte_carlo_enabled=MONTE_CARLO_ENABLED,
         monte_carlo_simulations=MONTE_CARLO_SIMULATIONS,
         mc_extra_slippage_points=MC_EXTRA_SLIPPAGE_POINTS,
@@ -364,3 +399,27 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
     if fields["max_stop_distance_points"] <= fields["min_stop_distance_points"]:
         raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
     return replace(base, **fields)
+
+
+SESSION_CONFIG_FIELDS = (
+    ("session_pre_market_enabled", "pre_market_0400_0930"),
+    ("session_ny_open_power_enabled", "ny_open_power_0930_1130"),
+    ("session_ny_midday_enabled", "ny_midday_1130_1400"),
+    ("session_ny_late_enabled", "ny_late_1400_1500"),
+    ("session_ny_power_hour_enabled", "ny_power_hour_1500_1600"),
+    ("session_after_hours_enabled", "after_hours_1600_2000"),
+    ("session_overnight_enabled", "overnight_2000_0400"),
+)
+
+
+def enabled_session_labels(cfg: RunConfig) -> list[str]:
+    return [label for field, label in SESSION_CONFIG_FIELDS if getattr(cfg, field)]
+
+
+def session_filter_summary(cfg: RunConfig) -> str:
+    labels = enabled_session_labels(cfg)
+    if len(labels) == len(SESSION_CONFIG_FIELDS):
+        return f"all {cfg.session_timezone}"
+    if not labels:
+        return f"none {cfg.session_timezone}"
+    return f"{','.join(labels)} {cfg.session_timezone}"
