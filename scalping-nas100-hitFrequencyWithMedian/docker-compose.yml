@@ -101,7 +101,7 @@ services:
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
       - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
-      - STAGE1_MAX_PARAMETER_SETS=16384  # Max coarse-grid Stage 1 candidates; 0 means unlimited. #ggfs. 32768 nehmen
+      - STAGE1_MAX_PARAMETER_SETS=65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited. 
       - STAGE1_SCREENING_ENABLED=true # Enable short-window Stage 1 pre-screening.
       - STAGE1_SCREENING_ROUNDS=2 # Number of Stage 1 screening rounds.
       - STAGE1_SCREENING_TRAIN_DAYS=10 # Base train days used in screening windows.
