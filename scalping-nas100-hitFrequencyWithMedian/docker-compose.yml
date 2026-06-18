@@ -1,14 +1,13 @@
 services:
-  # One-shot init job. Creates only the result tables from ./init/schema.sql.
-  init-hfmed-schema:
-    image: postgres:17-alpine
-    restart: "no"
+  init-hfmed-schema: # One-shot init job; creates only the result tables from ./init/schema.sql.
+    image: postgres:17-alpine # Provides psql for schema initialization.
+    restart: "no" # Do not restart this one-shot job.
     volumes:
-      - ./init/schema.sql:/init.sql:ro
+      - ./init/schema.sql:/init.sql:ro # Mount schema SQL read-only into the init container.
     environment:
-      PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_HFMED_TABLES_ON_START: "true"
-    command:
+      PGPASSWORD: postgres-ts-root-pw # Password for the postgres-ts init connection.
+      DROP_ALL_HFMED_TABLES_ON_START: "true" # Drop existing hfmed result tables before recreating them.
+    command: # Run schema.sql against the TimescaleDB/PostgreSQL service.
       - sh
       - -c
       - >
@@ -16,131 +15,107 @@ services:
         -v drop_hfmed_tables_on_start="$${DROP_ALL_HFMED_TABLES_ON_START:-false}"
         -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
     networks:
-      - shared_net
+      - shared_net # Shared Docker network used to reach timescaledb.
 
   nas100-hfmed-backtest-runner:
     build:
-      context: .
-      dockerfile: Dockerfile
-    restart: "no"
+      context: . # Build from this stack directory.
+      dockerfile: Dockerfile # Python runner image definition.
+    restart: "no" # Do not restart after the backtest job exits.
     depends_on:
       init-hfmed-schema:
-        condition: service_completed_successfully
+        condition: service_completed_successfully # Start runner only after schema init succeeded.
     environment:
-      # Database.
-      - PGHOST=timescaledb
-      - PGPORT=5432
-      - PGDATABASE=postgres
-      - PGUSER=market-data-account
-      - PGPASSWORD=market-data-account-pw
-      - PGAPPNAME=nas100_hfmed_backtest_runner
-      - PGOPTIONS=-c search_path=public
-      - RESULT_SCHEMA=public
-      - DB_CONNECT_TIMEOUT_SECONDS=10
-      - DB_CONNECT_RETRIES=5
-      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0
-      - DB_STATEMENT_TIMEOUT_MS=120000
-      - DB_LOCK_TIMEOUT_MS=5000
-      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=120000
-      - LOG_LEVEL=INFO
-      - RUN_LABEL_TZ=Europe/Berlin
-      - RUN_NOTES_EXTRA=
-      - RUN_MODE=walk_forward
-
-      # Tick data source. Leave START_TS_UTC empty to use all available ticks.
-      - SOURCE_TABLE=public.pepperstone_ticks_data
-      - SYMBOL=NAS100
-      - START_TS_UTC=2026-01-15T00:00:00Z
-      - END_TS_UTC=
-
-      # Baseline values for single mode and non-optimized settings.
-      - BAR_SECONDS=10
-      - LOOKBACK_BARS=90
-      - MIN_LOOKBACK_BARS=90
-      - PRICE_STEP=1.0
-
-      # Trade rule: tick-level median crossing.
-      - LONG_CROSS_QUANTILE=0.50
-      - SHORT_CROSS_QUANTILE=0.50
-
-      # Entry session switches. Times are interpreted in SESSION_TIMEZONE.
-      # Disabled sessions suppress new entries only; open trades still exit tick-by-tick.
-      - SESSION_TIMEZONE=America/New_York
-      - SESSION_PRE_MARKET_ENABLED=false       # 04:00-09:30
-      - SESSION_NY_OPEN_POWER_ENABLED=true    # 09:30-11:30
-      - SESSION_NY_MIDDAY_ENABLED=true        # 11:30-14:00
-      - SESSION_NY_LATE_ENABLED=false          # 14:00-15:00
-      - SESSION_NY_POWER_HOUR_ENABLED=false    # 15:00-16:00
-      - SESSION_AFTER_HOURS_ENABLED=false      # 16:00-20:00
-      - SESSION_OVERNIGHT_ENABLED=true        # 20:00-04:00
-
-      # General trade parameters.
-      - STOP_MODE=band
-      - TAKE_PROFIT_POINTS=10.0
-
-      # Only used when STOP_MODE=fixed.
-      - STOP_POINTS=10.0
-
-      # Only used when STOP_MODE=band.
-      - MIN_PROFILE_RANGE_POINTS=60.0
-      - STOP_PROFILE_LOWER_QUANTILE=0.0
-      - STOP_PROFILE_UPPER_QUANTILE=1.0
-      - STOP_PROFILE_BUFFER_POINTS=1
-      - MIN_STOP_DISTANCE_POINTS=12.0
-      - MAX_STOP_DISTANCE_POINTS=30.0
-
-      # Pepperstone-style account profile.
-      - ACCOUNT_PROFILE=PS_ACC
-      - INITIAL_EQUITY=5000
-      - ACCOUNT_CURRENCY=EUR
-      - MARGIN_REQUIREMENT_PCT=5
-      - RISK_PER_TRADE_PCT=1.5
-      - MAX_MARGIN_PCT=45
-      - CONTRACT_MULTIPLIER=1.0
-      - LOT_SIZE=0.1
-      - EURUSD_RATE=1.0
-
-      # Live bid/ask ticks already include spread. Keep extra spread/slippage off by default.
-      - SPREAD_POINTS=0.0
-      - SLIPPAGE_POINTS=0.0
-      - COMMISSION_PER_UNIT=0.0
-
-      # Risk resampling.
-      - MONTE_CARLO_ENABLED=true
-      - MONTE_CARLO_SIMULATIONS=2000
-      - MC_EXTRA_SLIPPAGE_POINTS=0.5
-      - MC_BLOCK_SIZE=5
-      - MC_RUIN_DRAWDOWN_PCT=50.0
-      - MC_RANDOM_SEED=12345
-
-      # Walk-forward parameter optimizer.
-      - PARAMETER_GRID_PATH=parameter_grid.ini
-      - WF_TRAIN_DAYS=30
-      - WF_TEST_DAYS=20
-      - WF_STEP_DAYS=20
-      - WF_TRAIN_TOP_N_PER_FOLD=30
-      - OPTIMIZER_PROCESSES=6
-      - OPTIMIZER_PROCESS_CHUNK_SIZE=64
-      - OPTIMIZER_PROFILE_CACHE_SIZE=4
-      - OPTIMIZER_PROGRESS_LOG_EVERY=5000
-      - OPTIMIZER_PROGRESS_LOG_SECONDS=60
-      - STAGE1_MAX_PARAMETER_SETS=4096
-      - STAGE1_SCREENING_ENABLED=true
-      - STAGE1_SCREENING_ROUNDS=2
-      - STAGE1_SCREENING_TRAIN_DAYS=10
-      - STAGE1_SCREENING_TOP_N=512
-      - STAGE2_ENABLED=false
-      - STAGE2_SEED_TOP_N=8
-      - STAGE2_MAX_PARAMETER_SETS=512
-      - MC_SCORE_TOP_N=30
-      - PERSIST_TOP_TRADES_N=10
-      - MIN_OOS_TRADES=100
-      - MIN_OOS_PROFIT_FACTOR=1.1
-      - MAX_OOS_DRAWDOWN_PCT=25.0
-      - MAX_MC_RUIN_PCT=5.0
+      - PGHOST=timescaledb # PostgreSQL host in shared_net.
+      - PGPORT=5432 # PostgreSQL port.
+      - PGDATABASE=postgres # Target database.
+      - PGUSER=market-data-account # Runner database user.
+      - PGPASSWORD=market-data-account-pw # Runner database password.
+      - PGAPPNAME=nas100_hfmed_backtest_runner # Application name sent to PostgreSQL.
+      - PGOPTIONS=-c search_path=public # Set the database search_path.
+      - RESULT_SCHEMA=public # Schema for hfmed result tables.
+      - DB_CONNECT_TIMEOUT_SECONDS=10 # Timeout for one DB connection attempt.
+      - DB_CONNECT_RETRIES=5 # Number of DB connection attempts.
+      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0 # Base delay between DB retries; code backs off exponentially.
+      - DB_STATEMENT_TIMEOUT_MS=120000 # Max runtime per SQL statement.
+      - DB_LOCK_TIMEOUT_MS=5000 # Max wait time for DB locks.
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=120000 # Timeout for idle DB transactions.
+      - LOG_LEVEL=INFO # Python logging level.
+      - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
+      - RUN_NOTES_EXTRA= # Optional extra run note.
+      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
+      - SYMBOL=NAS100 # Symbol filter for source ticks.
+      - START_TS_UTC=2026-01-15T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
+      - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
+      - BAR_SECONDS=10 # Mid-price bar duration built from ticks.
+      - LOOKBACK_BARS=90 # Rolling profile lookback window in bars.
+      - MIN_LOOKBACK_BARS=90 # Minimum completed bars before profile signals are valid.
+      - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
+      - LONG_CROSS_QUANTILE=0.50 # Long entry when mid crosses this profile quantile upward.
+      - SHORT_CROSS_QUANTILE=0.50 # Short entry when mid crosses this profile quantile downward.
+      - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
+      - SESSION_PRE_MARKET_ENABLED=false # Enable new entries from 04:00-09:30.
+      - SESSION_NY_OPEN_POWER_ENABLED=true # Enable new entries from 09:30-11:30.
+      - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
+      - SESSION_NY_LATE_ENABLED=false # Enable new entries from 14:00-15:00.
+      - SESSION_NY_POWER_HOUR_ENABLED=false # Enable new entries from 15:00-16:00.
+      - SESSION_AFTER_HOURS_ENABLED=false # Enable new entries from 16:00-20:00.
+      - SESSION_OVERNIGHT_ENABLED=true # Enable new entries from 20:00-04:00.
+      - STOP_MODE=band # Stop mode; band uses profile quantiles, fixed uses STOP_POINTS.
+      - TAKE_PROFIT_POINTS=10.0 # Fixed take-profit distance in points.
+      - STOP_POINTS=10.0 # Fixed stop distance in points when STOP_MODE=fixed.
+      - MIN_PROFILE_RANGE_POINTS=60.0 # Minimum q100-q0 profile range required for entries.
+      - STOP_PROFILE_LOWER_QUANTILE=0.0 # Lower profile quantile used for long stops.
+      - STOP_PROFILE_UPPER_QUANTILE=1.0 # Upper profile quantile used for short stops.
+      - STOP_PROFILE_BUFFER_POINTS=1 # Buffer added outside the stop profile quantile.
+      - MIN_STOP_DISTANCE_POINTS=12.0 # Reject entries with a smaller stop distance.
+      - MAX_STOP_DISTANCE_POINTS=30.0 # Reject entries with a larger stop distance.
+      - ACCOUNT_PROFILE=PS_ACC # Pepperstone-style CFD account profile label.
+      - INITIAL_EQUITY=5000 # Starting account equity.
+      - ACCOUNT_CURRENCY=EUR # Account currency used for persisted metrics.
+      - MARGIN_REQUIREMENT_PCT=5 # Margin requirement percentage.
+      - RISK_PER_TRADE_PCT=1.5 # Equity risk budget per trade.
+      - MAX_MARGIN_PCT=45 # Maximum equity share allowed as position margin.
+      - CONTRACT_MULTIPLIER=1.0 # PnL multiplier per unit and point.
+      - LOT_SIZE=0.1 # Position units are rounded down to this lot size.
+      - EURUSD_RATE=1.0 # USD-to-EUR conversion rate; USD values are divided by this rate.
+      - SPREAD_POINTS=0.0 # Extra spread cost; live bid/ask ticks already include spread.
+      - SLIPPAGE_POINTS=0.0 # Extra round-trip slippage cost in points.
+      - COMMISSION_PER_UNIT=0.0 # Commission per unit per entry and exit.
+      - MONTE_CARLO_ENABLED=true # Enable Monte-Carlo risk scoring.
+      - MONTE_CARLO_SIMULATIONS=2000 # Number of Monte-Carlo simulations.
+      - MC_EXTRA_SLIPPAGE_POINTS=0.5 # Extra slippage applied in the MC slippage scenario.
+      - MC_BLOCK_SIZE=5 # Block size for sequence-risk bootstrap.
+      - MC_RUIN_DRAWDOWN_PCT=50.0 # Ruin threshold as drawdown from initial equity.
+      - MC_RANDOM_SEED=12345 # Seed for reproducible Monte-Carlo results.
+      - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
+      - WF_TRAIN_DAYS=30 # Walk-forward train window length in days.
+      - WF_TEST_DAYS=20 # Walk-forward out-of-sample test window length in days.
+      - WF_STEP_DAYS=20 # Days to move forward between folds.
+      - WF_TRAIN_TOP_N_PER_FOLD=30 # Top train candidates per fold evaluated OOS.
+      - OPTIMIZER_PROCESSES=6 # Number of worker processes for candidate evaluation.
+      - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Configured chunk size; current code does not use it as Pool chunksize.
+      - OPTIMIZER_PROFILE_CACHE_SIZE=4 # Rolling profile cache size per worker window.
+      - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
+      - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
+      - STAGE1_MAX_PARAMETER_SETS=4096 # Max coarse-grid Stage 1 candidates; 0 means unlimited.
+      - STAGE1_SCREENING_ENABLED=true # Enable short-window Stage 1 pre-screening.
+      - STAGE1_SCREENING_ROUNDS=2 # Number of Stage 1 screening rounds.
+      - STAGE1_SCREENING_TRAIN_DAYS=10 # Base train days used in screening windows.
+      - STAGE1_SCREENING_TOP_N=512 # Candidates kept after Stage 1 screening.
+      - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
+      - STAGE2_SEED_TOP_N=8 # Number of Stage 1 seeds for Stage 2 refinement.
+      - STAGE2_MAX_PARAMETER_SETS=512 # Max Stage 2 candidates; 0 means unlimited.
+      - MC_SCORE_TOP_N=30 # Number of top parameter sets scored with Monte-Carlo.
+      - PERSIST_TOP_TRADES_N=10 # Persist individual trades only for top N parameter sets.
+      - MIN_OOS_TRADES=100 # Minimum out-of-sample trades for filters and scoring.
+      - MIN_OOS_PROFIT_FACTOR=1.1 # Minimum OOS profit factor filter.
+      - MAX_OOS_DRAWDOWN_PCT=25.0 # Maximum allowed OOS drawdown percentage.
+      - MAX_MC_RUIN_PCT=5.0 # Maximum allowed Monte-Carlo ruin probability.
     networks:
-      - shared_net
+      - shared_net # Shared Docker network used to reach timescaledb.
 
 networks:
   shared_net:
-    external: true
+    external: true # Use an existing shared_net network.
