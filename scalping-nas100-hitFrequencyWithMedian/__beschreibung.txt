@@ -25,22 +25,27 @@ Default:
   LOOKBACK_BARS=90
   MIN_LOOKBACK_BARS=90
   PRICE_STEP=1.0
+  LONG_CROSS_QUANTILE=0.50
+  SHORT_CROSS_QUANTILE=0.50
 
 Je Lookback-Bar werden alle ganzzahligen Preislevel zwischen Low und High
 gezaehlt. Der Median-Level ist exakt das 50%-Quantil dieser Hit-Counts:
 der kleinste Preislevel, bei dem die kumulierten Hits mindestens 50% aller
 Hits erreichen. Das ist nicht die Mitte der Preisrange.
 
-Zusaetzlich werden q0, q45, q55, q100 und die konfigurierten Stop-Quantile
-aus derselben Hit-Verteilung berechnet. q0 bis q100 dient fuer den
-Entry-Filter. Die Stop-Position wird ueber STOP_PROFILE_LOWER_QUANTILE und
-STOP_PROFILE_UPPER_QUANTILE gesteuert.
+Zusaetzlich werden q0, q45, q55, q100, die konfigurierten Long-/Short-Cross-
+Quantile und die konfigurierten Stop-Quantile aus derselben Hit-Verteilung
+berechnet. q0 bis q100 dient fuer den Entry-Filter. Die Stop-Position wird
+ueber STOP_PROFILE_LOWER_QUANTILE und STOP_PROFILE_UPPER_QUANTILE gesteuert.
 
 Entry / Exit
 ------------
 Die Signalpruefung passiert tickgenau auf dem Midpreis:
-  LONG  wenn der Midpreis von unten nach oben ueber den Median-Level kreuzt
-  SHORT wenn der Midpreis von oben nach unten unter den Median-Level kreuzt
+  LONG  wenn der Midpreis von unten nach oben ueber LONG_CROSS_QUANTILE kreuzt
+  SHORT wenn der Midpreis von oben nach unten unter SHORT_CROSS_QUANTILE kreuzt
+
+Mit LONG_CROSS_QUANTILE=0.50 und SHORT_CROSS_QUANTILE=0.50 entspricht das
+dem bisherigen Median-Cross. Fuer 45%/55% werden 0.45 bzw. 0.55 gesetzt.
 
 Fills nutzen echte Quotes:
   LONG entry  = ask, exit = bid

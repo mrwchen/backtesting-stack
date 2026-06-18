@@ -33,6 +33,8 @@ def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
     q45 = np.full(len(bars), np.nan, dtype=np.float64)
     q50 = np.full(len(bars), np.nan, dtype=np.float64)
     q55 = np.full(len(bars), np.nan, dtype=np.float64)
+    long_cross = np.full(len(bars), np.nan, dtype=np.float64)
+    short_cross = np.full(len(bars), np.nan, dtype=np.float64)
     q100 = np.full(len(bars), np.nan, dtype=np.float64)
     stop_lower = np.full(len(bars), np.nan, dtype=np.float64)
     stop_upper = np.full(len(bars), np.nan, dtype=np.float64)
@@ -74,6 +76,8 @@ def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
             q45[pos] = current_quantile(cfg.band_lower_quantile)
             q50[pos] = current_quantile(cfg.median_quantile)
             q55[pos] = current_quantile(cfg.band_upper_quantile)
+            long_cross[pos] = current_quantile(cfg.long_cross_quantile)
+            short_cross[pos] = current_quantile(cfg.short_cross_quantile)
             q100[pos] = current_max_level()
             stop_lower[pos] = current_quantile(cfg.stop_profile_lower_quantile)
             stop_upper[pos] = current_quantile(cfg.stop_profile_upper_quantile)
@@ -90,6 +94,8 @@ def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
             "band_lower": q45,
             "median_level": q50,
             "band_upper": q55,
+            "long_cross_level": long_cross,
+            "short_cross_level": short_cross,
             "profile_high": q100,
             "stop_profile_lower": stop_lower,
             "stop_profile_upper": stop_upper,

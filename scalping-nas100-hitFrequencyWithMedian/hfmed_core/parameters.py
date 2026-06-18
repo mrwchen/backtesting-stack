@@ -13,6 +13,8 @@ from .config import RunConfig
 
 PARAMETER_NAMES = [
     "LOOKBACK_BARS",
+    "LONG_CROSS_QUANTILE",
+    "SHORT_CROSS_QUANTILE",
     "TAKE_PROFIT_POINTS",
     "MIN_PROFILE_RANGE_POINTS",
     "STOP_PROFILE_LOWER_QUANTILE",
@@ -23,7 +25,12 @@ PARAMETER_NAMES = [
 ]
 
 INTEGER_PARAMETERS = {"LOOKBACK_BARS"}
-QUANTILE_PARAMETERS = {"STOP_PROFILE_LOWER_QUANTILE", "STOP_PROFILE_UPPER_QUANTILE"}
+QUANTILE_PARAMETERS = {
+    "LONG_CROSS_QUANTILE",
+    "SHORT_CROSS_QUANTILE",
+    "STOP_PROFILE_LOWER_QUANTILE",
+    "STOP_PROFILE_UPPER_QUANTILE",
+}
 
 
 def load_grid(path: str) -> dict[str, list[int | float]]:
@@ -78,6 +85,10 @@ def is_valid(values: dict[str, int | float]) -> bool:
     try:
         if int(values["LOOKBACK_BARS"]) < 1:
             return False
+        if not 0.0 <= float(values["LONG_CROSS_QUANTILE"]) <= 1.0:
+            return False
+        if not 0.0 <= float(values["SHORT_CROSS_QUANTILE"]) <= 1.0:
+            return False
         if float(values["TAKE_PROFIT_POINTS"]) <= 0:
             return False
         if float(values["MIN_PROFILE_RANGE_POINTS"]) < 0:
@@ -110,6 +121,8 @@ def parameter_signature(values: dict[str, int | float]) -> str:
 def parameter_label(values: dict[str, int | float]) -> str:
     return (
         f"lb{int(values['LOOKBACK_BARS'])}_"
+        f"lq{_format_value(values['LONG_CROSS_QUANTILE'])}_"
+        f"sq{_format_value(values['SHORT_CROSS_QUANTILE'])}_"
         f"tp{_format_value(values['TAKE_PROFIT_POINTS'])}_"
         f"range{_format_value(values['MIN_PROFILE_RANGE_POINTS'])}_"
         f"q{_format_value(values['STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['STOP_PROFILE_UPPER_QUANTILE'])}_"
@@ -121,6 +134,8 @@ def parameter_label(values: dict[str, int | float]) -> str:
 def values_from_config(cfg: RunConfig) -> dict[str, int | float]:
     return {
         "LOOKBACK_BARS": cfg.lookback_bars,
+        "LONG_CROSS_QUANTILE": cfg.long_cross_quantile,
+        "SHORT_CROSS_QUANTILE": cfg.short_cross_quantile,
         "TAKE_PROFIT_POINTS": cfg.take_profit_points,
         "MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
         "STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,

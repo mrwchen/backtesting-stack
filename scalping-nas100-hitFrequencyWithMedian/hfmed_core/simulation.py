@@ -25,6 +25,8 @@ PROFILE_COLUMNS = [
     "band_lower",
     "median_level",
     "band_upper",
+    "long_cross_level",
+    "short_cross_level",
     "profile_high",
     "stop_profile_lower",
     "stop_profile_upper",
@@ -139,7 +141,7 @@ def run_simulation(
             return None, "stop_too_large"
         return (stop_price, take_profit_price, stop_distance), None
 
-    def open_position(row, direction: str, median_level: float, previous_mid: float) -> None:
+    def open_position(row, direction: str, cross_level: float, median_level: float, previous_mid: float) -> None:
         nonlocal position
         entry_price = float(row.ask) if direction == "LONG" else float(row.bid)
         levels, reject_reason = trade_levels(row, direction, entry_price)
@@ -164,6 +166,8 @@ def run_simulation(
             "signal_ts": row.tick_time,
             "entry_ts": row.tick_time,
             "direction": direction,
+            "cross_quantile": cfg.long_cross_quantile if direction == "LONG" else cfg.short_cross_quantile,
+            "cross_level": cross_level,
             "median_level": median_level,
             "signal_mid": float(row.mid),
             "previous_mid": previous_mid,
@@ -222,6 +226,8 @@ def run_simulation(
             entry_ts=position["entry_ts"],
             exit_ts=row.tick_time,
             direction=direction,
+            cross_quantile=position["cross_quantile"],
+            cross_level=position["cross_level"],
             median_level=position["median_level"],
             signal_mid=position["signal_mid"],
             previous_mid=position["previous_mid"],
@@ -263,6 +269,8 @@ def run_simulation(
             continue
 
         median = float(row.median_level) if pd.notna(row.median_level) else np.nan
+        long_cross = float(row.long_cross_level) if pd.notna(row.long_cross_level) else np.nan
+        short_cross = float(row.short_cross_level) if pd.notna(row.short_cross_level) else np.nan
         mid = float(row.mid)
         entries_allowed = True
         if trade_start_ts is not None and tick_ts < trade_start_ts:
@@ -272,12 +280,15 @@ def run_simulation(
         if entry_session_allowed is not None and not entry_session_allowed[idx - 1]:
             entries_allowed = False
 
-        if entries_allowed and prev_mid is not None and np.isfinite(median):
+        if entries_allowed and prev_mid is not None:
             direction = None
-            if prev_mid < median <= mid:
+            cross_level = np.nan
+            if np.isfinite(long_cross) and prev_mid < long_cross <= mid:
                 direction = "LONG"
-            elif prev_mid > median >= mid:
+                cross_level = long_cross
+            elif np.isfinite(short_cross) and prev_mid > short_cross >= mid:
                 direction = "SHORT"
+                cross_level = short_cross
 
             if direction is not None:
                 result.signals_total += 1
@@ -285,7 +296,7 @@ def run_simulation(
                     result.long_signals += 1
                 else:
                     result.short_signals += 1
-                open_position(row, direction, median, prev_mid)
+                open_position(row, direction, cross_level, median, prev_mid)
 
         prev_mid = mid
         result.ticks_simulated = idx

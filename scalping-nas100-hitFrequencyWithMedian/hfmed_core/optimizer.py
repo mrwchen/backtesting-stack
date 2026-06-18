@@ -664,6 +664,8 @@ def _profile_cache_key(cfg: RunConfig) -> tuple:
         round(float(cfg.median_quantile), 8),
         round(float(cfg.band_lower_quantile), 8),
         round(float(cfg.band_upper_quantile), 8),
+        round(float(cfg.long_cross_quantile), 8),
+        round(float(cfg.short_cross_quantile), 8),
         round(float(cfg.stop_profile_lower_quantile), 8),
         round(float(cfg.stop_profile_upper_quantile), 8),
     )

@@ -102,6 +102,12 @@ if PRICE_STEP <= 0:
 MEDIAN_QUANTILE = 0.5
 BAND_LOWER_QUANTILE = 0.45
 BAND_UPPER_QUANTILE = 0.55
+LONG_CROSS_QUANTILE = env_float("LONG_CROSS_QUANTILE", MEDIAN_QUANTILE)
+SHORT_CROSS_QUANTILE = env_float("SHORT_CROSS_QUANTILE", MEDIAN_QUANTILE)
+if not 0.0 <= LONG_CROSS_QUANTILE <= 1.0:
+    raise ValueError("LONG_CROSS_QUANTILE must be between 0.0 and 1.0")
+if not 0.0 <= SHORT_CROSS_QUANTILE <= 1.0:
+    raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
 
 # Trade rules.
 STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
@@ -227,6 +233,8 @@ class RunConfig:
     median_quantile: float
     band_lower_quantile: float
     band_upper_quantile: float
+    long_cross_quantile: float
+    short_cross_quantile: float
     stop_mode: str
     stop_points: float
     take_profit_points: float
@@ -305,6 +313,8 @@ def active_run_config() -> RunConfig:
         median_quantile=MEDIAN_QUANTILE,
         band_lower_quantile=BAND_LOWER_QUANTILE,
         band_upper_quantile=BAND_UPPER_QUANTILE,
+        long_cross_quantile=LONG_CROSS_QUANTILE,
+        short_cross_quantile=SHORT_CROSS_QUANTILE,
         stop_mode=STOP_MODE,
         stop_points=STOP_POINTS,
         take_profit_points=TAKE_PROFIT_POINTS,
@@ -375,6 +385,8 @@ def active_optimizer_config() -> OptimizerConfig:
 def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> RunConfig:
     fields = {
         "lookback_bars": int(values["LOOKBACK_BARS"]),
+        "long_cross_quantile": float(values["LONG_CROSS_QUANTILE"]),
+        "short_cross_quantile": float(values["SHORT_CROSS_QUANTILE"]),
         "take_profit_points": float(values["TAKE_PROFIT_POINTS"]),
         "min_profile_range_points": float(values["MIN_PROFILE_RANGE_POINTS"]),
         "stop_profile_lower_quantile": float(values["STOP_PROFILE_LOWER_QUANTILE"]),
@@ -386,6 +398,10 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
     fields["min_lookback_bars"] = min(base.min_lookback_bars, fields["lookback_bars"])
     if fields["lookback_bars"] < 1:
         raise ValueError("LOOKBACK_BARS must be positive")
+    if not 0.0 <= fields["long_cross_quantile"] <= 1.0:
+        raise ValueError("LONG_CROSS_QUANTILE must be between 0.0 and 1.0")
+    if not 0.0 <= fields["short_cross_quantile"] <= 1.0:
+        raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
     if fields["take_profit_points"] <= 0:
         raise ValueError("TAKE_PROFIT_POINTS must be positive")
     if fields["min_profile_range_points"] < 0:

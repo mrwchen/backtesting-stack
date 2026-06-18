@@ -18,6 +18,8 @@ class ClosedTrade:
     entry_ts: datetime
     exit_ts: datetime
     direction: str
+    cross_quantile: float
+    cross_level: float
     median_level: float
     signal_mid: float
     previous_mid: float

@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_runs (
     median_quantile                     NUMERIC(8,6)  NOT NULL,
     band_lower_quantile                 NUMERIC(8,6)  NOT NULL,
     band_upper_quantile                 NUMERIC(8,6)  NOT NULL,
+    baseline_long_cross_quantile        NUMERIC(8,6)  NOT NULL,
+    baseline_short_cross_quantile       NUMERIC(8,6)  NOT NULL,
     stop_mode                           TEXT          NOT NULL,
     baseline_stop_points                NUMERIC(12,4) NOT NULL,
     baseline_take_profit_points         NUMERIC(12,4) NOT NULL,
@@ -111,6 +113,8 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets (
     parameter_signature                 TEXT          NOT NULL,
 
     lookback_bars                       INTEGER       NOT NULL,
+    long_cross_quantile                 NUMERIC(8,6)  NOT NULL,
+    short_cross_quantile                NUMERIC(8,6)  NOT NULL,
     take_profit_points                  NUMERIC(12,4) NOT NULL,
     min_profile_range_points            NUMERIC(12,4) NOT NULL,
     stop_profile_lower_quantile         NUMERIC(8,6)  NOT NULL,
@@ -302,6 +306,8 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_trades (
     exit_ts                             TIMESTAMPTZ   NOT NULL,
     direction                           TEXT          NOT NULL,
 
+    cross_quantile                      NUMERIC(8,6)  NOT NULL,
+    cross_level                         NUMERIC(15,4) NOT NULL,
     median_level                        NUMERIC(15,4) NOT NULL,
     signal_mid                          NUMERIC(15,4) NOT NULL,
     previous_mid                        NUMERIC(15,4) NOT NULL,

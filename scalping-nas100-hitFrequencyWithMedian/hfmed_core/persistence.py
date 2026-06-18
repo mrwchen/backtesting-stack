@@ -178,7 +178,8 @@ def _notes(cfg: RunConfig, mode: str) -> str:
         f"mode {mode}",
         f"source {cfg.source_table}",
         f"bar_seconds {cfg.bar_seconds}",
-        f"median {cfg.median_quantile:g}",
+        f"cross long {cfg.long_cross_quantile:g}",
+        f"cross short {cfg.short_cross_quantile:g}",
         f"stop_mode {cfg.stop_mode}",
         f"account {cfg.account_profile}",
         f"sessions {config.session_filter_summary(cfg)}",
@@ -216,16 +217,42 @@ def _db_round(value, digits: int):
 def validate_schema(conn: psycopg2.extensions.connection) -> None:
     required = [RUN_TABLE, PARAMETER_TABLE, FOLD_TABLE, MC_TABLE, TRADES_TABLE]
     missing = []
+    missing_columns = []
     with conn.cursor() as cur:
         for table in required:
             cur.execute("SELECT to_regclass(%s)", (f"{config.RESULT_SCHEMA}.{table}",))
             if cur.fetchone()[0] is None:
                 missing.append(f"{config.RESULT_SCHEMA}.{table}")
+        required_columns = {
+            RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile"),
+            PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile"),
+            TRADES_TABLE: ("cross_quantile", "cross_level"),
+        }
+        for table, columns in required_columns.items():
+            for column in columns:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = %s
+                      AND table_name = %s
+                      AND column_name = %s
+                    """,
+                    (config.RESULT_SCHEMA, table, column),
+                )
+                if cur.fetchone() is None:
+                    missing_columns.append(f"{config.RESULT_SCHEMA}.{table}.{column}")
     if missing:
         raise RuntimeError(
             "Missing result tables: "
             + ", ".join(missing)
             + ". Run the init container so init/schema.sql creates the schema."
+        )
+    if missing_columns:
+        raise RuntimeError(
+            "Missing result columns: "
+            + ", ".join(missing_columns)
+            + ". Recreate the HFMED result tables with init/schema.sql."
         )
 
 
@@ -261,6 +288,8 @@ def create_run(
         "median_quantile": cfg.median_quantile,
         "band_lower_quantile": cfg.band_lower_quantile,
         "band_upper_quantile": cfg.band_upper_quantile,
+        "baseline_long_cross_quantile": cfg.long_cross_quantile,
+        "baseline_short_cross_quantile": cfg.short_cross_quantile,
         "stop_mode": cfg.stop_mode,
         "baseline_stop_points": cfg.stop_points,
         "baseline_take_profit_points": cfg.take_profit_points,
@@ -360,6 +389,8 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
         "parameter_label",
         "parameter_signature",
         "lookback_bars",
+        "long_cross_quantile",
+        "short_cross_quantile",
         "take_profit_points",
         "min_profile_range_points",
         "stop_profile_lower_quantile",
@@ -388,6 +419,8 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
             item["parameter_label"],
             item["parameter_signature"],
             int(values["LOOKBACK_BARS"]),
+            values["LONG_CROSS_QUANTILE"],
+            values["SHORT_CROSS_QUANTILE"],
             values["TAKE_PROFIT_POINTS"],
             values["MIN_PROFILE_RANGE_POINTS"],
             values["STOP_PROFILE_LOWER_QUANTILE"],
@@ -427,6 +460,8 @@ def insert_parameter_stubs(conn, run_id: int, stage: str, candidates: list[dict[
         "parameter_label",
         "parameter_signature",
         "lookback_bars",
+        "long_cross_quantile",
+        "short_cross_quantile",
         "take_profit_points",
         "min_profile_range_points",
         "stop_profile_lower_quantile",
@@ -443,6 +478,8 @@ def insert_parameter_stubs(conn, run_id: int, stage: str, candidates: list[dict[
             parameters.parameter_label(values),
             parameters.parameter_signature(values),
             int(values["LOOKBACK_BARS"]),
+            values["LONG_CROSS_QUANTILE"],
+            values["SHORT_CROSS_QUANTILE"],
             values["TAKE_PROFIT_POINTS"],
             values["MIN_PROFILE_RANGE_POINTS"],
             values["STOP_PROFILE_LOWER_QUANTILE"],
@@ -638,6 +675,8 @@ def trade_rows(parameter_set_id: int, stage: str, fold_index: int, window_role: 
                 _db_scalar(t.entry_ts),
                 _db_scalar(t.exit_ts),
                 t.direction,
+                _db_round(t.cross_quantile, 6),
+                _db_round(t.cross_level, 4),
                 _db_round(t.median_level, 4),
                 _db_round(t.signal_mid, 4),
                 _db_round(t.previous_mid, 4),
@@ -679,6 +718,8 @@ def insert_trade_rows(conn, rows: list[tuple]) -> None:
         "entry_ts",
         "exit_ts",
         "direction",
+        "cross_quantile",
+        "cross_level",
         "median_level",
         "signal_mid",
         "previous_mid",
