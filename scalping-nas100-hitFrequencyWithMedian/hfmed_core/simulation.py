@@ -1,14 +1,19 @@
-"""Tick-level simulation for the hit-frequency median crossing rule."""
+"""Tick-level simulation for the hit-frequency median crossing rule.
+
+The O(ticks) hot loop lives in :mod:`hfmed_core.sim_core` (Numba-compiled). This
+module prepares the numpy arrays, runs the core and turns the returned per-trade
+arrays into ``ClosedTrade`` objects.
+"""
 
 import logging
 
 import numpy as np
 import pandas as pd
 
-from . import broker
 from .config import RunConfig
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
+from .sim_core import simulate_core
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +80,30 @@ def attach_profile_to_ticks(ticks: pd.DataFrame, bars: pd.DataFrame, profile: pd
     return ticks.join(profile_by_bar, on="bar_start")
 
 
+def _build_entry_allowed(
+    sim_ticks: pd.DataFrame,
+    cfg: RunConfig,
+    trade_start_ts,
+    trade_end_ts,
+) -> np.ndarray:
+    n = len(sim_ticks)
+    allow = np.ones(n, dtype=bool)
+    session_mask = _entry_session_allowed_mask(sim_ticks, cfg)
+    if session_mask is not None:
+        allow &= session_mask
+    if trade_start_ts is not None or trade_end_ts is not None:
+        ts = pd.to_datetime(sim_ticks["tick_time"], utc=True)
+        if trade_start_ts is not None:
+            allow &= (ts >= trade_start_ts).to_numpy()
+        if trade_end_ts is not None:
+            allow &= (ts < trade_end_ts).to_numpy()
+    return allow.astype(np.uint8)
+
+
+def _column(sim_ticks: pd.DataFrame, name: str) -> np.ndarray:
+    return np.ascontiguousarray(sim_ticks[name].to_numpy(dtype=np.float64))
+
+
 def run_simulation(
     ticks: pd.DataFrame,
     bars: pd.DataFrame,
@@ -92,228 +121,175 @@ def run_simulation(
     else:
         sim_ticks = profiled_ticks
 
-    entry_session_allowed = _entry_session_allowed_mask(sim_ticks, cfg)
     result = SimulationResult(
         initial_equity=cfg.initial_equity,
         final_equity=cfg.initial_equity,
         ticks_total=len(sim_ticks),
         bars_total=len(bars),
     )
-    equity = cfg.initial_equity
-    prev_mid: float | None = None
-    position: dict | None = None
 
-    def trade_levels(row, direction: str, entry_price: float) -> tuple[tuple[float, float, float] | None, str | None]:
-        if cfg.stop_mode == "fixed":
-            stop_distance = cfg.stop_points
-            if direction == "LONG":
-                return (entry_price - stop_distance, entry_price + cfg.take_profit_points, stop_distance), None
-            return (entry_price + stop_distance, entry_price - cfg.take_profit_points, stop_distance), None
+    n = len(sim_ticks)
+    if n == 0:
+        if log_result:
+            _log_result(result)
+        return result
 
-        profile_low = float(row.profile_low) if pd.notna(row.profile_low) else np.nan
-        profile_high = float(row.profile_high) if pd.notna(row.profile_high) else np.nan
-        stop_profile_lower = float(row.stop_profile_lower) if pd.notna(row.stop_profile_lower) else np.nan
-        stop_profile_upper = float(row.stop_profile_upper) if pd.notna(row.stop_profile_upper) else np.nan
-        profile_range = float(row.profile_range_points) if pd.notna(row.profile_range_points) else np.nan
-        if not (
-            np.isfinite(profile_low)
-            and np.isfinite(profile_high)
-            and np.isfinite(stop_profile_lower)
-            and np.isfinite(stop_profile_upper)
-            and np.isfinite(profile_range)
-        ):
-            return None, "missing_band"
-        if profile_range < cfg.min_profile_range_points:
-            return None, "band_too_narrow"
+    mid = _column(sim_ticks, "mid")
+    bid = _column(sim_ticks, "bid")
+    ask = _column(sim_ticks, "ask")
+    median_level = _column(sim_ticks, "median_level")
+    long_cross = _column(sim_ticks, "long_cross_level")
+    short_cross = _column(sim_ticks, "short_cross_level")
+    profile_low = _column(sim_ticks, "profile_low")
+    profile_high = _column(sim_ticks, "profile_high")
+    stop_lower = _column(sim_ticks, "stop_profile_lower")
+    stop_upper = _column(sim_ticks, "stop_profile_upper")
+    profile_range = _column(sim_ticks, "profile_range_points")
+    entry_allowed = _build_entry_allowed(sim_ticks, cfg, trade_start_ts, trade_end_ts)
 
-        if direction == "LONG":
-            stop_price = stop_profile_lower - cfg.stop_profile_buffer_points
-            take_profit_price = entry_price + cfg.take_profit_points
-            stop_distance = entry_price - stop_price
-        else:
-            stop_price = stop_profile_upper + cfg.stop_profile_buffer_points
-            take_profit_price = entry_price - cfg.take_profit_points
-            stop_distance = stop_price - entry_price
+    stop_mode_fixed = 1 if cfg.stop_mode == "fixed" else 0
+    scalar_args = (
+        stop_mode_fixed,
+        float(cfg.stop_points),
+        float(cfg.take_profit_points),
+        float(cfg.min_profile_range_points),
+        float(cfg.stop_profile_buffer_points),
+        float(cfg.min_stop_distance_points),
+        float(cfg.max_stop_distance_points),
+        float(cfg.initial_equity),
+        float(cfg.contract_multiplier),
+        float(cfg.eurusd_rate),
+        float(cfg.risk_per_trade_pct),
+        float(cfg.margin_requirement_pct),
+        float(cfg.max_margin_pct),
+        float(cfg.lot_size),
+        float(cfg.spread_points),
+        float(cfg.slippage_points),
+        float(cfg.commission_per_unit),
+    )
+    price_args = (
+        mid, bid, ask, median_level, long_cross, short_cross,
+        profile_low, profile_high, stop_lower, stop_upper, profile_range,
+        entry_allowed,
+    )
 
-        if stop_distance < cfg.min_stop_distance_points:
-            return None, "stop_too_small"
-        if stop_distance > cfg.max_stop_distance_points:
-            return None, "stop_too_large"
-        return (stop_price, take_profit_price, stop_distance), None
+    def _empty_outputs(cap: int) -> tuple:
+        return (
+            np.empty(cap, dtype=np.int64),    # entry_idx
+            np.empty(cap, dtype=np.int64),    # exit_idx
+            np.empty(cap, dtype=np.int8),     # direction
+            np.empty(cap, dtype=np.float64),  # cross_level
+            np.empty(cap, dtype=np.float64),  # median
+            np.empty(cap, dtype=np.float64),  # prev_mid
+            np.empty(cap, dtype=np.float64),  # signal_mid
+            np.empty(cap, dtype=np.float64),  # entry_price
+            np.empty(cap, dtype=np.float64),  # exit_price
+            np.empty(cap, dtype=np.float64),  # stop_price
+            np.empty(cap, dtype=np.float64),  # tp_price
+            np.empty(cap, dtype=np.float64),  # units
+            np.empty(cap, dtype=np.float64),  # notional
+            np.empty(cap, dtype=np.float64),  # margin
+            np.empty(cap, dtype=np.float64),  # gross
+            np.empty(cap, dtype=np.float64),  # extra
+            np.empty(cap, dtype=np.float64),  # pnl
+            np.empty(cap, dtype=np.float64),  # equity_before
+            np.empty(cap, dtype=np.float64),  # equity_after
+            np.empty(cap, dtype=np.int8),     # status
+            np.empty(cap, dtype=np.int64),    # ticks_held
+        )
 
-    def open_position(row, direction: str, cross_level: float, median_level: float, previous_mid: float) -> None:
-        nonlocal position
-        entry_price = float(row.ask) if direction == "LONG" else float(row.bid)
-        levels, reject_reason = trade_levels(row, direction, entry_price)
-        if levels is None:
-            if reject_reason == "missing_band":
-                result.rejected_signals_missing_band += 1
-            elif reject_reason == "band_too_narrow":
-                result.rejected_signals_band_too_narrow += 1
-            elif reject_reason == "stop_too_small":
-                result.rejected_signals_stop_too_small += 1
-            elif reject_reason == "stop_too_large":
-                result.rejected_signals_stop_too_large += 1
-            return
-        stop_price, take_profit_price, stop_distance = levels
+    # First pass counts trades (cap=0, no writes), second pass fills exact-size arrays.
+    count_out = _empty_outputs(0)
+    counted = simulate_core(*price_args, *scalar_args, *count_out, 0)
+    n_trades = counted[0]
 
-        sizing = broker.size_position(equity, entry_price, stop_distance, cfg)
-        if sizing.units <= 0:
-            result.skipped_signals_no_size += 1
-            return
+    cap = max(int(n_trades), 1)
+    out = _empty_outputs(cap)
+    stats = simulate_core(*price_args, *scalar_args, *out, cap)
+    n_trades = stats[0]
 
-        position = {
-            "signal_ts": row.tick_time,
-            "entry_ts": row.tick_time,
-            "direction": direction,
-            "cross_quantile": cfg.long_cross_quantile if direction == "LONG" else cfg.short_cross_quantile,
-            "cross_level": cross_level,
-            "median_level": median_level,
-            "signal_mid": float(row.mid),
-            "previous_mid": previous_mid,
-            "entry_bid": float(row.bid),
-            "entry_ask": float(row.ask),
-            "entry_price": entry_price,
-            "stop_price": stop_price,
-            "take_profit_price": take_profit_price,
-            "units": sizing.units,
-            "notional_eur": sizing.notional_eur,
-            "margin_used_eur": sizing.margin_used_eur,
-            "equity_before": equity,
-            "ticks_held": 0,
-        }
+    (
+        out_entry_idx, out_exit_idx, out_direction, out_cross_level, out_median,
+        out_prev_mid, out_signal_mid, out_entry_price, out_exit_price, out_stop_price,
+        out_tp_price, out_units, out_notional, out_margin, out_gross, out_extra,
+        out_pnl, out_equity_before, out_equity_after, out_status, out_ticks_held,
+    ) = out
 
-    def maybe_close_position(row) -> bool:
-        nonlocal equity, position
-        if position is None:
-            return False
+    tick_time = sim_ticks["tick_time"]
+    if not isinstance(tick_time, pd.Series):
+        tick_time = pd.Series(tick_time)
+    tick_time = tick_time.reset_index(drop=True)
 
-        position["ticks_held"] += 1
-        direction = position["direction"]
-        exit_quote = float(row.bid) if direction == "LONG" else float(row.ask)
-        if direction == "LONG":
-            hit_stop = exit_quote <= position["stop_price"]
-            hit_tp = exit_quote >= position["take_profit_price"]
-        else:
-            hit_stop = exit_quote >= position["stop_price"]
-            hit_tp = exit_quote <= position["take_profit_price"]
-
-        if not hit_stop and not hit_tp:
-            return False
-
-        status = "HIT_SL" if hit_stop else "HIT_TP"
-        close_position(row, exit_quote, status)
-        return True
-
-    def close_position(row, exit_price: float, status: str) -> None:
-        nonlocal equity, position
-        if position is None:
-            return
-
-        direction = position["direction"]
-        units = position["units"]
-        gross = broker.gross_pnl(units, position["entry_price"], exit_price, direction, cfg)
-        extra_costs = broker.extra_round_trip_costs(units, cfg)
-        pnl = gross - extra_costs
-        equity_before = position["equity_before"]
-        equity_after = equity + pnl
-        sign = 1.0 if direction == "LONG" else -1.0
-        price_pnl_points = (exit_price - position["entry_price"]) * sign
-        seconds_held = (row.tick_time - position["entry_ts"]).total_seconds()
-
-        result.trades.append(ClosedTrade(
-            signal_ts=position["signal_ts"],
-            entry_ts=position["entry_ts"],
-            exit_ts=row.tick_time,
-            direction=direction,
-            cross_quantile=position["cross_quantile"],
-            cross_level=position["cross_level"],
-            median_level=position["median_level"],
-            signal_mid=position["signal_mid"],
-            previous_mid=position["previous_mid"],
-            entry_bid=position["entry_bid"],
-            entry_ask=position["entry_ask"],
-            entry_price=position["entry_price"],
-            exit_bid=float(row.bid),
-            exit_ask=float(row.ask),
+    status_labels = ("HIT_SL", "HIT_TP", "END_OF_DATA")
+    trades: list[ClosedTrade] = []
+    for k in range(n_trades):
+        d = int(out_direction[k])
+        e = int(out_entry_idx[k])
+        x = int(out_exit_idx[k])
+        entry_ts = tick_time.iloc[e]
+        exit_ts = tick_time.iloc[x]
+        entry_price = float(out_entry_price[k])
+        exit_price = float(out_exit_price[k])
+        equity_before = float(out_equity_before[k])
+        pnl = float(out_pnl[k])
+        sign = 1.0 if d == 1 else -1.0
+        trades.append(ClosedTrade(
+            signal_ts=entry_ts,
+            entry_ts=entry_ts,
+            exit_ts=exit_ts,
+            direction="LONG" if d == 1 else "SHORT",
+            cross_quantile=cfg.long_cross_quantile if d == 1 else cfg.short_cross_quantile,
+            cross_level=float(out_cross_level[k]),
+            median_level=float(out_median[k]),
+            signal_mid=float(out_signal_mid[k]),
+            previous_mid=float(out_prev_mid[k]),
+            entry_bid=float(bid[e]),
+            entry_ask=float(ask[e]),
+            entry_price=entry_price,
+            exit_bid=float(bid[x]),
+            exit_ask=float(ask[x]),
             exit_price=exit_price,
-            stop_price=position["stop_price"],
-            take_profit_price=position["take_profit_price"],
-            units=units,
-            notional_eur=position["notional_eur"],
-            margin_used_eur=position["margin_used_eur"],
-            gross_pnl_eur=gross,
-            extra_costs_eur=extra_costs,
+            stop_price=float(out_stop_price[k]),
+            take_profit_price=float(out_tp_price[k]),
+            units=float(out_units[k]),
+            notional_eur=float(out_notional[k]),
+            margin_used_eur=float(out_margin[k]),
+            gross_pnl_eur=float(out_gross[k]),
+            extra_costs_eur=float(out_extra[k]),
             pnl_eur=pnl,
             equity_before=equity_before,
-            equity_after=equity_after,
+            equity_after=float(out_equity_after[k]),
             return_pct=(pnl / equity_before * 100.0) if equity_before > 0 else 0.0,
-            price_pnl_points=price_pnl_points,
-            outcome_status=status,
-            ticks_held=position["ticks_held"],
-            seconds_held=float(seconds_held),
+            price_pnl_points=(exit_price - entry_price) * sign,
+            outcome_status=status_labels[int(out_status[k])],
+            ticks_held=int(out_ticks_held[k]),
+            seconds_held=float((exit_ts - entry_ts).total_seconds()),
         ))
-        equity = equity_after
-        position = None
 
-    for idx, row in enumerate(sim_ticks.itertuples(index=False), start=1):
-        tick_ts = row.tick_time
-        had_position = position is not None
-        if had_position:
-            maybe_close_position(row)
-            prev_mid = float(row.mid)
-            result.ticks_simulated = idx
-            if equity <= 0:
-                result.ruined = True
-                break
-            continue
+    result.trades = trades
+    result.signals_total = int(stats[1])
+    result.long_signals = int(stats[2])
+    result.short_signals = int(stats[3])
+    result.rejected_signals_missing_band = int(stats[4])
+    result.rejected_signals_band_too_narrow = int(stats[5])
+    result.rejected_signals_stop_too_small = int(stats[6])
+    result.rejected_signals_stop_too_large = int(stats[7])
+    result.skipped_signals_no_size = int(stats[8])
+    result.ruined = bool(stats[9])
+    result.ticks_simulated = int(stats[10])
+    result.final_equity = float(stats[11])
 
-        median = float(row.median_level) if pd.notna(row.median_level) else np.nan
-        long_cross = float(row.long_cross_level) if pd.notna(row.long_cross_level) else np.nan
-        short_cross = float(row.short_cross_level) if pd.notna(row.short_cross_level) else np.nan
-        mid = float(row.mid)
-        entries_allowed = True
-        if trade_start_ts is not None and tick_ts < trade_start_ts:
-            entries_allowed = False
-        if trade_end_ts is not None and tick_ts >= trade_end_ts:
-            entries_allowed = False
-        if entry_session_allowed is not None and not entry_session_allowed[idx - 1]:
-            entries_allowed = False
-
-        if entries_allowed and prev_mid is not None:
-            direction = None
-            cross_level = np.nan
-            if np.isfinite(long_cross) and prev_mid < long_cross <= mid:
-                direction = "LONG"
-                cross_level = long_cross
-            elif np.isfinite(short_cross) and prev_mid > short_cross >= mid:
-                direction = "SHORT"
-                cross_level = short_cross
-
-            if direction is not None:
-                result.signals_total += 1
-                if direction == "LONG":
-                    result.long_signals += 1
-                else:
-                    result.short_signals += 1
-                open_position(row, direction, cross_level, median, prev_mid)
-
-        prev_mid = mid
-        result.ticks_simulated = idx
-
-    if position is not None and not sim_ticks.empty:
-        row = sim_ticks.iloc[-1]
-        exit_price = float(row["bid"]) if position["direction"] == "LONG" else float(row["ask"])
-        close_position(row, exit_price, "END_OF_DATA")
-
-    result.final_equity = equity
     if log_result:
-        log.info(
-            "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
-            result.ticks_simulated, result.bars_total, result.signals_total,
-            len(result.trades), result.rejected_signals_missing_band,
-            result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
-            result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
-            result.final_equity, result.ruined,
-        )
+        _log_result(result)
     return result
+
+
+def _log_result(result: SimulationResult) -> None:
+    log.info(
+        "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
+        result.ticks_simulated, result.bars_total, result.signals_total,
+        len(result.trades), result.rejected_signals_missing_band,
+        result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
+        result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
+        result.final_equity, result.ruined,
+    )

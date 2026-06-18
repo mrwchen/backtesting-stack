@@ -17,6 +17,7 @@ from .config import OptimizerConfig, RunConfig, apply_parameter_values
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
 from .risk import run_monte_carlo, summarize_trades
+from .sim_core import warmup as warmup_sim_core
 from .simulation import attach_profile_to_ticks, run_simulation
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ def run_walk_forward_optimizer(
     bars: pd.DataFrame,
     started: float,
 ) -> None:
+    warmup_sim_core()
     folds = build_folds(ticks, opt_cfg)
     data_start_ts = ticks["tick_time"].iloc[0].to_pydatetime()
     data_end_ts = ticks["tick_time"].iloc[-1].to_pydatetime()
@@ -166,6 +168,7 @@ def run_single_backtest(
     bars: pd.DataFrame,
     started: float,
 ) -> None:
+    warmup_sim_core()
     data_start_ts = ticks["tick_time"].iloc[0].to_pydatetime()
     data_end_ts = ticks["tick_time"].iloc[-1].to_pydatetime()
     run_id = persistence.create_run(
