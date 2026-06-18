@@ -7,7 +7,7 @@ import math
 import multiprocessing as mp
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -137,7 +137,7 @@ def run_walk_forward_optimizer(
         else:
             log.info("Stage 2 skipped no new candidates")
 
-    persist_top_trades(conn, run_id, final_stage, opt_cfg)
+    persist_top_trades(conn, run_id, final_stage, opt_cfg, base_cfg, folds, ticks, bars)
     best = max((row for row in final_stage.aggregates if row["oos_folds"] > 0), key=lambda row: row["score"], default=None)
     persistence.update_run_complete(
         conn,
@@ -341,7 +341,7 @@ def run_stage(
         persistence.update_parameter_set_results(conn, run_id, aggregates)
         selected_candidates = [evaluation.values for evaluation in selected]
         log.info("Stage %s fold %d oos candidates %d", stage, fold.fold_index, len(selected_candidates))
-        fold_oos = evaluate_many(stage, selected_candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=True)
+        fold_oos = evaluate_many(stage, selected_candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
         for evaluation in fold_oos:
             oos_by_hash.setdefault(evaluation.parameter_hash, []).append(evaluation)
         persistence.insert_fold_results(conn, run_id, fold_oos, parameter_ids)
@@ -350,7 +350,7 @@ def run_stage(
         persistence.update_parameter_set_results(conn, run_id, aggregates)
 
     aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
-    mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, base_cfg, opt_cfg)
+    mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, base_cfg, opt_cfg, stage, folds, ticks, bars)
     apply_final_scores(aggregates, mc_by_hash, opt_cfg)
     aggregates.sort(key=lambda row: row["score"], reverse=True)
     for rank, row in enumerate(aggregates, start=1):
@@ -452,10 +452,39 @@ def evaluate_many(
         initargs=(ticks, bars, base_cfg, fold, role, opt_cfg.profile_cache_size),
     ) as pool:
         completed = 0
-        for evaluations in pool.imap_unordered(_evaluate_group_task, tasks, chunksize=chunk_size):
+        iterator = pool.imap_unordered(_evaluate_group_task, tasks, chunksize=chunk_size)
+        while completed < total:
+            try:
+                evaluations = iterator.next(timeout=opt_cfg.progress_log_seconds)
+            except mp.TimeoutError:
+                elapsed = time.monotonic() - started
+                log.info(
+                    "Stage %s fold %d %s waiting progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
+                    stage,
+                    fold.fold_index,
+                    role,
+                    completed,
+                    total,
+                    elapsed,
+                    total_groups,
+                    opt_cfg.progress_log_seconds,
+                )
+                continue
+            except StopIteration:
+                break
             results.extend(evaluations)
             completed += len(evaluations)
             _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
+        if completed < total:
+            log.warning(
+                "Stage %s fold %d %s evaluate ended with incomplete results %d/%d groups %d",
+                stage,
+                fold.fold_index,
+                role,
+                completed,
+                total,
+                total_groups,
+            )
     _log_evaluation_complete(stage, fold.fold_index, role, total, started)
     return results
 
@@ -815,6 +844,10 @@ def score_monte_carlo(
     oos_by_hash: dict[str, list[Evaluation]],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
+    stage: str | None = None,
+    folds: list[FoldSpec] | None = None,
+    ticks: pd.DataFrame | None = None,
+    bars: pd.DataFrame | None = None,
 ) -> dict[str, dict]:
     if opt_cfg.mc_score_top_n <= 0 or not base_cfg.monte_carlo_enabled:
         return {}
@@ -822,9 +855,31 @@ def score_monte_carlo(
         row for row in sorted(aggregates, key=lambda item: item["pre_mc_score"], reverse=True)
         if row["oos_folds"] > 0 and row["oos_total_trades"] > 1
     ][: opt_cfg.mc_score_top_n]
+    trade_evals_by_hash = oos_by_hash
+    missing_trade_evals = [
+        evaluation
+        for row in ranked
+        for evaluation in oos_by_hash.get(row["parameter_hash"], [])
+        if int(evaluation.summary.get("total_trades") or 0) > 0 and not evaluation.trades
+    ]
+    if missing_trade_evals:
+        if stage is None or folds is None or ticks is None or bars is None:
+            log.warning("Monte-Carlo trade recompute skipped missing window data evaluations %d", len(missing_trade_evals))
+        else:
+            recomputed = _recompute_oos_evaluations_with_trades(stage, missing_trade_evals, folds, base_cfg, opt_cfg, ticks, bars)
+            trade_evals_by_hash = dict(oos_by_hash)
+            for evaluation in recomputed:
+                existing = [
+                    item
+                    for item in trade_evals_by_hash.get(evaluation.parameter_hash, [])
+                    if item.fold_index != evaluation.fold_index or item.window_role != evaluation.window_role
+                ]
+                existing.append(evaluation)
+                trade_evals_by_hash[evaluation.parameter_hash] = existing
+
     out: dict[str, dict] = {}
     for rank, row in enumerate(ranked, start=1):
-        trades = _oos_trades_for_hash(oos_by_hash, row["parameter_hash"])
+        trades = _oos_trades_for_hash(trade_evals_by_hash, row["parameter_hash"])
         if len(trades) < 2:
             continue
         cfg = apply_parameter_values(base_cfg, row["values"])
@@ -848,7 +903,16 @@ def apply_final_scores(aggregates: list[dict], mc_by_hash: dict[str, dict], opt_
         row["passed_filters"] = row["passed_pre_mc_filters"] and bool(mc) and (row["mc_prob_of_ruin_pct"] is not None) and row["mc_prob_of_ruin_pct"] <= opt_cfg.max_mc_ruin_pct
 
 
-def persist_top_trades(conn, run_id: int, stage: StageResult, opt_cfg: OptimizerConfig) -> None:
+def persist_top_trades(
+    conn,
+    run_id: int,
+    stage: StageResult,
+    opt_cfg: OptimizerConfig,
+    base_cfg: RunConfig,
+    folds: list[FoldSpec],
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+) -> None:
     if opt_cfg.persist_top_trades_n <= 0:
         return
     top = [
@@ -858,10 +922,25 @@ def persist_top_trades(conn, run_id: int, stage: StageResult, opt_cfg: Optimizer
     hashes = {row["parameter_hash"] for row in top}
     if not hashes:
         return
+    top_evals = [evaluation for evaluation in stage.oos_evals if evaluation.parameter_hash in hashes]
+    missing_trade_evals = [
+        evaluation
+        for evaluation in top_evals
+        if int(evaluation.summary.get("total_trades") or 0) > 0 and not evaluation.trades
+    ]
+    if missing_trade_evals:
+        recomputed = _recompute_oos_evaluations_with_trades(stage.stage, missing_trade_evals, folds, base_cfg, opt_cfg, ticks, bars)
+        replacements = {
+            (evaluation.parameter_hash, evaluation.fold_index, evaluation.window_role): evaluation
+            for evaluation in recomputed
+        }
+        top_evals = [
+            replacements.get((evaluation.parameter_hash, evaluation.fold_index, evaluation.window_role), evaluation)
+            for evaluation in top_evals
+        ]
+
     rows = []
-    for evaluation in stage.oos_evals:
-        if evaluation.parameter_hash not in hashes:
-            continue
+    for evaluation in top_evals:
         parameter_set_id = stage.parameter_ids[evaluation.parameter_hash]
         rows.extend(
             persistence.trade_rows(
@@ -874,6 +953,36 @@ def persist_top_trades(conn, run_id: int, stage: StageResult, opt_cfg: Optimizer
         )
     persistence.insert_trade_rows(conn, rows)
     persistence.mark_top_trade_sets(conn, run_id, [stage.parameter_ids[row["parameter_hash"]] for row in top])
+
+
+def _recompute_oos_evaluations_with_trades(
+    stage: str,
+    evaluations: list[Evaluation],
+    folds: list[FoldSpec],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+    ticks: pd.DataFrame,
+    bars: pd.DataFrame,
+) -> list[Evaluation]:
+    if not evaluations:
+        return []
+
+    fold_by_index = {fold.fold_index: fold for fold in folds}
+    by_fold: OrderedDict[int, list[Evaluation]] = OrderedDict()
+    for evaluation in evaluations:
+        by_fold.setdefault(evaluation.fold_index, []).append(evaluation)
+
+    serial_opt_cfg = replace(opt_cfg, processes=1)
+    out: list[Evaluation] = []
+    for fold_index, fold_evals in by_fold.items():
+        fold = fold_by_index.get(fold_index)
+        if fold is None:
+            log.warning("Skipping trade recompute for missing fold %d evaluations %d", fold_index, len(fold_evals))
+            continue
+        candidates = [evaluation.values for evaluation in fold_evals]
+        log.info("Recomputing OOS trades stage %s fold %d candidates %d", stage, fold_index, len(candidates))
+        out.extend(evaluate_many(stage, candidates, fold, "oos", base_cfg, serial_opt_cfg, ticks, bars, keep_trades=True))
+    return out
 
 
 def passed_pre_mc_filters(metrics: dict, opt_cfg: OptimizerConfig) -> bool:
