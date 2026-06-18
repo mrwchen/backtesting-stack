@@ -136,7 +136,7 @@ services:
       - STAGE1_SCREENING_TOP_N=2000 # Candidates kept after Stage 1 screening.
 
       # Stage 2 local refinement.
-      - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
+      - STAGE2_ENABLED=true # Enable local midpoint refinement around best Stage 1 candidates.
       - STAGE2_SEED_TOP_N=8 # Number of Stage 1 seeds for Stage 2 refinement.
       - STAGE2_MAX_PARAMETER_SETS=512 # Max Stage 2 candidates; 0 means unlimited.
 
