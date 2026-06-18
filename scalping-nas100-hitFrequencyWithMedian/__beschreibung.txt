@@ -36,7 +36,8 @@ Hits erreichen. Das ist nicht die Mitte der Preisrange.
 Zusaetzlich werden q0, q45, q55, q100, die konfigurierten Long-/Short-Cross-
 Quantile und die konfigurierten Stop-Quantile aus derselben Hit-Verteilung
 berechnet. q0 bis q100 dient fuer den Entry-Filter. Die Stop-Position wird
-ueber STOP_PROFILE_LOWER_QUANTILE und STOP_PROFILE_UPPER_QUANTILE gesteuert.
+ueber BAND_STOP_PROFILE_LOWER_QUANTILE und BAND_STOP_PROFILE_UPPER_QUANTILE
+gesteuert.
 
 Entry / Exit
 ------------
@@ -56,27 +57,28 @@ einer offenen Position ignoriert.
 
 Default:
   STOP_MODE=band
-  MIN_PROFILE_RANGE_POINTS=60.0
-  STOP_PROFILE_LOWER_QUANTILE=0.0
-  STOP_PROFILE_UPPER_QUANTILE=1.0
-  STOP_PROFILE_BUFFER_POINTS=1.0
-  MIN_STOP_DISTANCE_POINTS=12.0
-  MAX_STOP_DISTANCE_POINTS=30.0
-  TAKE_PROFIT_POINTS=10.0
+  BAND_STOP_MIN_PROFILE_RANGE_POINTS=60.0
+  BAND_STOP_PROFILE_LOWER_QUANTILE=0.0
+  BAND_STOP_PROFILE_UPPER_QUANTILE=1.0
+  BAND_STOP_PROFILE_BUFFER_POINTS=1.0
+  BAND_STOP_MIN_DISTANCE_POINTS=12.0
+  BAND_STOP_MAX_DISTANCE_POINTS=30.0
+  ALL_STOP_MODES_TAKE_PROFIT_POINTS=10.0
 
 Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens
-MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren Stop-Quantil
-minus STOP_PROFILE_BUFFER_POINTS. Short-Stop liegt am oberen Stop-Quantil plus
-STOP_PROFILE_BUFFER_POINTS. Der TP bleibt fix:
-Long entry + TAKE_PROFIT_POINTS, Short entry - TAKE_PROFIT_POINTS.
+BAND_STOP_MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren
+Stop-Quantil minus BAND_STOP_PROFILE_BUFFER_POINTS. Short-Stop liegt am oberen
+Stop-Quantil plus BAND_STOP_PROFILE_BUFFER_POINTS. Der TP bleibt fix:
+Long entry + ALL_STOP_MODES_TAKE_PROFIT_POINTS, Short entry -
+ALL_STOP_MODES_TAKE_PROFIT_POINTS.
 Wenn die dadurch entstehende Entry-zu-Stop-Distanz ausserhalb
-MIN_STOP_DISTANCE_POINTS und MAX_STOP_DISTANCE_POINTS liegt, wird der Trade
-uebersprungen. Mit STOP_PROFILE_LOWER_QUANTILE=0.0 und
-STOP_PROFILE_UPPER_QUANTILE=1.0 bleibt q0/q100 der strukturelle Stop. Fuer
-q10/q90 werden 0.10 und 0.90 gesetzt.
+BAND_STOP_MIN_DISTANCE_POINTS und BAND_STOP_MAX_DISTANCE_POINTS liegt, wird
+der Trade uebersprungen. Mit BAND_STOP_PROFILE_LOWER_QUANTILE=0.0 und
+BAND_STOP_PROFILE_UPPER_QUANTILE=1.0 bleibt q0/q100 der strukturelle Stop.
+Fuer q10/q90 werden 0.10 und 0.90 gesetzt.
 
 Bei STOP_MODE=fixed wird der alte feste Stop genutzt:
-  STOP_POINTS=10.0
+  FIXED_STOP_POINTS=10.0
 
 Entry-Session-Filter
 --------------------

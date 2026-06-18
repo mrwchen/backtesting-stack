@@ -30,13 +30,6 @@ def env_float(name: str, default: float) -> float:
     return float(raw)
 
 
-def env_float_alias(name: str, legacy_name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is not None and raw.strip():
-        return float(raw)
-    return env_float(legacy_name, default)
-
-
 def env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -111,24 +104,24 @@ if not 0.0 <= SHORT_CROSS_QUANTILE <= 1.0:
 
 # Trade rules.
 STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
-STOP_POINTS = env_float("STOP_POINTS", 10.0)
-TAKE_PROFIT_POINTS = env_float("TAKE_PROFIT_POINTS", 10.0)
-if STOP_POINTS <= 0 or TAKE_PROFIT_POINTS <= 0:
-    raise ValueError("STOP_POINTS and TAKE_PROFIT_POINTS must be positive")
-MIN_PROFILE_RANGE_POINTS = env_float("MIN_PROFILE_RANGE_POINTS", env_float("MIN_BAND_POINTS", 40.0))
-STOP_PROFILE_LOWER_QUANTILE = env_float("STOP_PROFILE_LOWER_QUANTILE", 0.0)
-STOP_PROFILE_UPPER_QUANTILE = env_float("STOP_PROFILE_UPPER_QUANTILE", 1.0)
-STOP_PROFILE_BUFFER_POINTS = env_float_alias("STOP_PROFILE_BUFFER_POINTS", "BAND_STOP_BUFFER_POINTS", 0.5)
-MIN_STOP_DISTANCE_POINTS = env_float_alias("MIN_STOP_DISTANCE_POINTS", "MIN_STOP_POINTS", 12.0)
-MAX_STOP_DISTANCE_POINTS = env_float_alias("MAX_STOP_DISTANCE_POINTS", "MAX_STOP_POINTS", 20.0)
-if MIN_PROFILE_RANGE_POINTS < 0:
-    raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
-if not 0.0 <= STOP_PROFILE_LOWER_QUANTILE < STOP_PROFILE_UPPER_QUANTILE <= 1.0:
-    raise ValueError("STOP_PROFILE_LOWER_QUANTILE and STOP_PROFILE_UPPER_QUANTILE must satisfy 0 <= lower < upper <= 1")
-if STOP_PROFILE_BUFFER_POINTS < 0:
-    raise ValueError("STOP_PROFILE_BUFFER_POINTS must be >= 0")
-if MIN_STOP_DISTANCE_POINTS <= 0 or MAX_STOP_DISTANCE_POINTS <= MIN_STOP_DISTANCE_POINTS:
-    raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
+FIXED_STOP_POINTS = env_float("FIXED_STOP_POINTS", 10.0)
+ALL_STOP_MODES_TAKE_PROFIT_POINTS = env_float("ALL_STOP_MODES_TAKE_PROFIT_POINTS", 10.0)
+if FIXED_STOP_POINTS <= 0 or ALL_STOP_MODES_TAKE_PROFIT_POINTS <= 0:
+    raise ValueError("FIXED_STOP_POINTS and ALL_STOP_MODES_TAKE_PROFIT_POINTS must be positive")
+BAND_STOP_MIN_PROFILE_RANGE_POINTS = env_float("BAND_STOP_MIN_PROFILE_RANGE_POINTS", 40.0)
+BAND_STOP_PROFILE_LOWER_QUANTILE = env_float("BAND_STOP_PROFILE_LOWER_QUANTILE", 0.0)
+BAND_STOP_PROFILE_UPPER_QUANTILE = env_float("BAND_STOP_PROFILE_UPPER_QUANTILE", 1.0)
+BAND_STOP_PROFILE_BUFFER_POINTS = env_float("BAND_STOP_PROFILE_BUFFER_POINTS", 0.5)
+BAND_STOP_MIN_DISTANCE_POINTS = env_float("BAND_STOP_MIN_DISTANCE_POINTS", 12.0)
+BAND_STOP_MAX_DISTANCE_POINTS = env_float("BAND_STOP_MAX_DISTANCE_POINTS", 20.0)
+if BAND_STOP_MIN_PROFILE_RANGE_POINTS < 0:
+    raise ValueError("BAND_STOP_MIN_PROFILE_RANGE_POINTS must be >= 0")
+if not 0.0 <= BAND_STOP_PROFILE_LOWER_QUANTILE < BAND_STOP_PROFILE_UPPER_QUANTILE <= 1.0:
+    raise ValueError("BAND_STOP_PROFILE_LOWER_QUANTILE and BAND_STOP_PROFILE_UPPER_QUANTILE must satisfy 0 <= lower < upper <= 1")
+if BAND_STOP_PROFILE_BUFFER_POINTS < 0:
+    raise ValueError("BAND_STOP_PROFILE_BUFFER_POINTS must be >= 0")
+if BAND_STOP_MIN_DISTANCE_POINTS <= 0 or BAND_STOP_MAX_DISTANCE_POINTS <= BAND_STOP_MIN_DISTANCE_POINTS:
+    raise ValueError("BAND_STOP_MAX_DISTANCE_POINTS must be greater than BAND_STOP_MIN_DISTANCE_POINTS")
 
 # Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
 SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
@@ -318,14 +311,14 @@ def active_run_config() -> RunConfig:
         long_cross_quantile=LONG_CROSS_QUANTILE,
         short_cross_quantile=SHORT_CROSS_QUANTILE,
         stop_mode=STOP_MODE,
-        stop_points=STOP_POINTS,
-        take_profit_points=TAKE_PROFIT_POINTS,
-        min_profile_range_points=MIN_PROFILE_RANGE_POINTS,
-        stop_profile_lower_quantile=STOP_PROFILE_LOWER_QUANTILE,
-        stop_profile_upper_quantile=STOP_PROFILE_UPPER_QUANTILE,
-        stop_profile_buffer_points=STOP_PROFILE_BUFFER_POINTS,
-        min_stop_distance_points=MIN_STOP_DISTANCE_POINTS,
-        max_stop_distance_points=MAX_STOP_DISTANCE_POINTS,
+        stop_points=FIXED_STOP_POINTS,
+        take_profit_points=ALL_STOP_MODES_TAKE_PROFIT_POINTS,
+        min_profile_range_points=BAND_STOP_MIN_PROFILE_RANGE_POINTS,
+        stop_profile_lower_quantile=BAND_STOP_PROFILE_LOWER_QUANTILE,
+        stop_profile_upper_quantile=BAND_STOP_PROFILE_UPPER_QUANTILE,
+        stop_profile_buffer_points=BAND_STOP_PROFILE_BUFFER_POINTS,
+        min_stop_distance_points=BAND_STOP_MIN_DISTANCE_POINTS,
+        max_stop_distance_points=BAND_STOP_MAX_DISTANCE_POINTS,
         account_profile=ACCOUNT_PROFILE,
         initial_equity=INITIAL_EQUITY,
         account_currency=ACCOUNT_CURRENCY,
@@ -390,13 +383,13 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
         "lookback_bars": int(values["LOOKBACK_BARS"]),
         "long_cross_quantile": float(values["LONG_CROSS_QUANTILE"]),
         "short_cross_quantile": float(values["SHORT_CROSS_QUANTILE"]),
-        "take_profit_points": float(values["TAKE_PROFIT_POINTS"]),
-        "min_profile_range_points": float(values["MIN_PROFILE_RANGE_POINTS"]),
-        "stop_profile_lower_quantile": float(values["STOP_PROFILE_LOWER_QUANTILE"]),
-        "stop_profile_upper_quantile": float(values["STOP_PROFILE_UPPER_QUANTILE"]),
-        "stop_profile_buffer_points": float(values["STOP_PROFILE_BUFFER_POINTS"]),
-        "min_stop_distance_points": float(values["MIN_STOP_DISTANCE_POINTS"]),
-        "max_stop_distance_points": float(values["MAX_STOP_DISTANCE_POINTS"]),
+        "take_profit_points": float(values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"]),
+        "min_profile_range_points": float(values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"]),
+        "stop_profile_lower_quantile": float(values["BAND_STOP_PROFILE_LOWER_QUANTILE"]),
+        "stop_profile_upper_quantile": float(values["BAND_STOP_PROFILE_UPPER_QUANTILE"]),
+        "stop_profile_buffer_points": float(values["BAND_STOP_PROFILE_BUFFER_POINTS"]),
+        "min_stop_distance_points": float(values["BAND_STOP_MIN_DISTANCE_POINTS"]),
+        "max_stop_distance_points": float(values["BAND_STOP_MAX_DISTANCE_POINTS"]),
     }
     fields["min_lookback_bars"] = min(base.min_lookback_bars, fields["lookback_bars"])
     if fields["lookback_bars"] < 1:
@@ -406,17 +399,17 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
     if not 0.0 <= fields["short_cross_quantile"] <= 1.0:
         raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
     if fields["take_profit_points"] <= 0:
-        raise ValueError("TAKE_PROFIT_POINTS must be positive")
+        raise ValueError("ALL_STOP_MODES_TAKE_PROFIT_POINTS must be positive")
     if fields["min_profile_range_points"] < 0:
-        raise ValueError("MIN_PROFILE_RANGE_POINTS must be >= 0")
+        raise ValueError("BAND_STOP_MIN_PROFILE_RANGE_POINTS must be >= 0")
     if not 0.0 <= fields["stop_profile_lower_quantile"] < fields["stop_profile_upper_quantile"] <= 1.0:
-        raise ValueError("STOP_PROFILE quantiles must satisfy 0 <= lower < upper <= 1")
+        raise ValueError("BAND_STOP_PROFILE quantiles must satisfy 0 <= lower < upper <= 1")
     if fields["stop_profile_buffer_points"] < 0:
-        raise ValueError("STOP_PROFILE_BUFFER_POINTS must be >= 0")
+        raise ValueError("BAND_STOP_PROFILE_BUFFER_POINTS must be >= 0")
     if fields["min_stop_distance_points"] <= 0:
-        raise ValueError("MIN_STOP_DISTANCE_POINTS must be positive")
+        raise ValueError("BAND_STOP_MIN_DISTANCE_POINTS must be positive")
     if fields["max_stop_distance_points"] <= fields["min_stop_distance_points"]:
-        raise ValueError("MAX_STOP_DISTANCE_POINTS must be greater than MIN_STOP_DISTANCE_POINTS")
+        raise ValueError("BAND_STOP_MAX_DISTANCE_POINTS must be greater than BAND_STOP_MIN_DISTANCE_POINTS")
     return replace(base, **fields)
 
 

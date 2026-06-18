@@ -19,21 +19,21 @@ PARAMETER_NAMES = [
     "LOOKBACK_BARS",
     "LONG_CROSS_QUANTILE",
     "SHORT_CROSS_QUANTILE",
-    "TAKE_PROFIT_POINTS",
-    "MIN_PROFILE_RANGE_POINTS",
-    "STOP_PROFILE_LOWER_QUANTILE",
-    "STOP_PROFILE_UPPER_QUANTILE",
-    "STOP_PROFILE_BUFFER_POINTS",
-    "MIN_STOP_DISTANCE_POINTS",
-    "MAX_STOP_DISTANCE_POINTS",
+    "ALL_STOP_MODES_TAKE_PROFIT_POINTS",
+    "BAND_STOP_MIN_PROFILE_RANGE_POINTS",
+    "BAND_STOP_PROFILE_LOWER_QUANTILE",
+    "BAND_STOP_PROFILE_UPPER_QUANTILE",
+    "BAND_STOP_PROFILE_BUFFER_POINTS",
+    "BAND_STOP_MIN_DISTANCE_POINTS",
+    "BAND_STOP_MAX_DISTANCE_POINTS",
 ]
 
 INTEGER_PARAMETERS = {"LOOKBACK_BARS"}
 QUANTILE_PARAMETERS = {
     "LONG_CROSS_QUANTILE",
     "SHORT_CROSS_QUANTILE",
-    "STOP_PROFILE_LOWER_QUANTILE",
-    "STOP_PROFILE_UPPER_QUANTILE",
+    "BAND_STOP_PROFILE_LOWER_QUANTILE",
+    "BAND_STOP_PROFILE_UPPER_QUANTILE",
 }
 
 
@@ -156,17 +156,17 @@ def is_valid(values: dict[str, int | float]) -> bool:
             return False
         if not 0.0 <= float(values["SHORT_CROSS_QUANTILE"]) <= 1.0:
             return False
-        if float(values["TAKE_PROFIT_POINTS"]) <= 0:
+        if float(values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"]) <= 0:
             return False
-        if float(values["MIN_PROFILE_RANGE_POINTS"]) < 0:
+        if float(values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"]) < 0:
             return False
-        if not 0.0 <= float(values["STOP_PROFILE_LOWER_QUANTILE"]) < float(values["STOP_PROFILE_UPPER_QUANTILE"]) <= 1.0:
+        if not 0.0 <= float(values["BAND_STOP_PROFILE_LOWER_QUANTILE"]) < float(values["BAND_STOP_PROFILE_UPPER_QUANTILE"]) <= 1.0:
             return False
-        if float(values["STOP_PROFILE_BUFFER_POINTS"]) < 0:
+        if float(values["BAND_STOP_PROFILE_BUFFER_POINTS"]) < 0:
             return False
-        if float(values["MIN_STOP_DISTANCE_POINTS"]) <= 0:
+        if float(values["BAND_STOP_MIN_DISTANCE_POINTS"]) <= 0:
             return False
-        if float(values["MAX_STOP_DISTANCE_POINTS"]) <= float(values["MIN_STOP_DISTANCE_POINTS"]):
+        if float(values["BAND_STOP_MAX_DISTANCE_POINTS"]) <= float(values["BAND_STOP_MIN_DISTANCE_POINTS"]):
             return False
     except (KeyError, TypeError, ValueError):
         return False
@@ -190,11 +190,11 @@ def parameter_label(values: dict[str, int | float]) -> str:
         f"lb{int(values['LOOKBACK_BARS'])}_"
         f"lq{_format_value(values['LONG_CROSS_QUANTILE'])}_"
         f"sq{_format_value(values['SHORT_CROSS_QUANTILE'])}_"
-        f"tp{_format_value(values['TAKE_PROFIT_POINTS'])}_"
-        f"range{_format_value(values['MIN_PROFILE_RANGE_POINTS'])}_"
-        f"q{_format_value(values['STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['STOP_PROFILE_UPPER_QUANTILE'])}_"
-        f"buf{_format_value(values['STOP_PROFILE_BUFFER_POINTS'])}_"
-        f"stop{_format_value(values['MIN_STOP_DISTANCE_POINTS'])}-{_format_value(values['MAX_STOP_DISTANCE_POINTS'])}"
+        f"alltp{_format_value(values['ALL_STOP_MODES_TAKE_PROFIT_POINTS'])}_"
+        f"bandrange{_format_value(values['BAND_STOP_MIN_PROFILE_RANGE_POINTS'])}_"
+        f"bandq{_format_value(values['BAND_STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['BAND_STOP_PROFILE_UPPER_QUANTILE'])}_"
+        f"bandbuf{_format_value(values['BAND_STOP_PROFILE_BUFFER_POINTS'])}_"
+        f"bandstop{_format_value(values['BAND_STOP_MIN_DISTANCE_POINTS'])}-{_format_value(values['BAND_STOP_MAX_DISTANCE_POINTS'])}"
     )
 
 
@@ -203,13 +203,13 @@ def values_from_config(cfg: RunConfig) -> dict[str, int | float]:
         "LOOKBACK_BARS": cfg.lookback_bars,
         "LONG_CROSS_QUANTILE": cfg.long_cross_quantile,
         "SHORT_CROSS_QUANTILE": cfg.short_cross_quantile,
-        "TAKE_PROFIT_POINTS": cfg.take_profit_points,
-        "MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
-        "STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,
-        "STOP_PROFILE_UPPER_QUANTILE": cfg.stop_profile_upper_quantile,
-        "STOP_PROFILE_BUFFER_POINTS": cfg.stop_profile_buffer_points,
-        "MIN_STOP_DISTANCE_POINTS": cfg.min_stop_distance_points,
-        "MAX_STOP_DISTANCE_POINTS": cfg.max_stop_distance_points,
+        "ALL_STOP_MODES_TAKE_PROFIT_POINTS": cfg.take_profit_points,
+        "BAND_STOP_MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
+        "BAND_STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,
+        "BAND_STOP_PROFILE_UPPER_QUANTILE": cfg.stop_profile_upper_quantile,
+        "BAND_STOP_PROFILE_BUFFER_POINTS": cfg.stop_profile_buffer_points,
+        "BAND_STOP_MIN_DISTANCE_POINTS": cfg.min_stop_distance_points,
+        "BAND_STOP_MAX_DISTANCE_POINTS": cfg.max_stop_distance_points,
     }
 
 
