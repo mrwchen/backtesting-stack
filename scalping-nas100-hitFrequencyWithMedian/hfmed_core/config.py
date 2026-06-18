@@ -182,6 +182,7 @@ OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32
 OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
 OPTIMIZER_PROGRESS_LOG_EVERY = max(1, env_int("OPTIMIZER_PROGRESS_LOG_EVERY", 5000))
 OPTIMIZER_PROGRESS_LOG_SECONDS = max(1, env_int("OPTIMIZER_PROGRESS_LOG_SECONDS", 60))
+OPTIMIZER_SAMPLING_SEED = env_int("OPTIMIZER_SAMPLING_SEED", 12345)
 STAGE1_MAX_PARAMETER_SETS = max(0, env_int("STAGE1_MAX_PARAMETER_SETS", 0))
 STAGE1_SCREENING_ENABLED = env_bool("STAGE1_SCREENING_ENABLED", True)
 STAGE1_SCREENING_ROUNDS = max(1, env_int("STAGE1_SCREENING_ROUNDS", 2))
@@ -284,6 +285,7 @@ class OptimizerConfig:
     profile_cache_size: int
     progress_log_every: int
     progress_log_seconds: int
+    sampling_seed: int
     stage1_max_parameter_sets: int
     stage1_screening_enabled: bool
     stage1_screening_rounds: int
@@ -365,6 +367,7 @@ def active_optimizer_config() -> OptimizerConfig:
         profile_cache_size=OPTIMIZER_PROFILE_CACHE_SIZE,
         progress_log_every=OPTIMIZER_PROGRESS_LOG_EVERY,
         progress_log_seconds=OPTIMIZER_PROGRESS_LOG_SECONDS,
+        sampling_seed=OPTIMIZER_SAMPLING_SEED,
         stage1_max_parameter_sets=STAGE1_MAX_PARAMETER_SETS,
         stage1_screening_enabled=STAGE1_SCREENING_ENABLED,
         stage1_screening_rounds=STAGE1_SCREENING_ROUNDS,

@@ -8,8 +8,12 @@ import itertools
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
+
 from .config import RunConfig
 
+
+DEFAULT_SAMPLING_SEED = 12345
 
 PARAMETER_NAMES = [
     "LOOKBACK_BARS",
@@ -50,13 +54,23 @@ def load_grid(path: str) -> dict[str, list[int | float]]:
     return grid
 
 
-def build_stage1_candidates(grid: dict[str, list[int | float]], max_sets: int = 0) -> list[dict[str, int | float]]:
-    candidates = [
-        dict(zip(PARAMETER_NAMES, values))
-        for values in itertools.product(*(grid[name] for name in PARAMETER_NAMES))
-    ]
-    candidates = [candidate for candidate in candidates if is_valid(candidate)]
-    return _limit_candidates(_dedupe_candidates(candidates), max_sets)
+def build_stage1_candidates(
+    grid: dict[str, list[int | float]],
+    max_sets: int = 0,
+    seed: int = DEFAULT_SAMPLING_SEED,
+) -> list[dict[str, int | float]]:
+    axis_values = [grid[name] for name in PARAMETER_NAMES]
+    full_size = 1
+    for values in axis_values:
+        full_size *= len(values)
+    if max_sets <= 0 or full_size <= max_sets:
+        candidates = [
+            dict(zip(PARAMETER_NAMES, values))
+            for values in itertools.product(*axis_values)
+        ]
+        candidates = [candidate for candidate in candidates if is_valid(candidate)]
+        return _dedupe_candidates(candidates)
+    return _sample_candidates(axis_values, max_sets, seed)
 
 
 def build_stage2_candidates(
@@ -64,11 +78,12 @@ def build_stage2_candidates(
     coarse_grid: dict[str, list[int | float]],
     previous_hashes: set[str],
     max_sets: int = 0,
+    seed: int = DEFAULT_SAMPLING_SEED,
 ) -> list[dict[str, int | float]]:
     out: list[dict[str, int | float]] = []
     seen = set(previous_hashes)
-    for seed in seed_candidates:
-        local_values = [_local_values(name, seed[name], coarse_grid[name]) for name in PARAMETER_NAMES]
+    for candidate_seed in seed_candidates:
+        local_values = [_local_values(name, candidate_seed[name], coarse_grid[name]) for name in PARAMETER_NAMES]
         for values in itertools.product(*local_values):
             candidate = dict(zip(PARAMETER_NAMES, values))
             if not is_valid(candidate):
@@ -78,7 +93,59 @@ def build_stage2_candidates(
                 continue
             seen.add(digest)
             out.append(candidate)
-    return _limit_candidates(out, max_sets)
+    return _limit_candidates(out, max_sets, seed)
+
+
+def _sample_candidates(
+    axis_values: list[list[int | float]],
+    max_sets: int,
+    seed: int,
+) -> list[dict[str, int | float]]:
+    """Seeded Latin-Hypercube sample over the grid axes (no full-product blow-up).
+
+    Each parameter value is drawn with near-equal frequency (good marginal
+    coverage), combined randomly across dimensions, then filtered and de-duped.
+    Far better space-filling than the previous even-stride subsample, and the
+    seed makes the candidate set fully reproducible.
+    """
+    rng = np.random.default_rng(seed)
+    seen: set[str] = set()
+    out: list[dict[str, int | float]] = []
+    max_attempts = max(max_sets * 8, max_sets + 1000)
+    attempts = 0
+    while len(out) < max_sets and attempts < max_attempts:
+        for values in _lhs_draw(axis_values, max_sets, rng):
+            attempts += 1
+            candidate = dict(zip(PARAMETER_NAMES, values))
+            if not is_valid(candidate):
+                continue
+            digest = parameter_hash(candidate)
+            if digest in seen:
+                continue
+            seen.add(digest)
+            out.append(candidate)
+            if len(out) >= max_sets:
+                break
+    out.sort(key=parameter_signature)
+    return out
+
+
+def _lhs_draw(
+    axis_values: list[list[int | float]],
+    n: int,
+    rng: np.random.Generator,
+) -> list[tuple[int | float, ...]]:
+    columns: list[np.ndarray] = []
+    for values in axis_values:
+        k = len(values)
+        reps = -(-n // k)  # ceil division
+        pool = np.tile(np.arange(k), reps)[:n]
+        rng.shuffle(pool)
+        columns.append(pool)
+    return [
+        tuple(axis_values[d][int(columns[d][row])] for d in range(len(axis_values)))
+        for row in range(n)
+    ]
 
 
 def is_valid(values: dict[str, int | float]) -> bool:
@@ -200,13 +267,15 @@ def _dedupe_candidates(candidates: Iterable[dict[str, int | float]]) -> list[dic
     return out
 
 
-def _limit_candidates(candidates: list[dict[str, int | float]], max_sets: int) -> list[dict[str, int | float]]:
+def _limit_candidates(
+    candidates: list[dict[str, int | float]],
+    max_sets: int,
+    seed: int = DEFAULT_SAMPLING_SEED,
+) -> list[dict[str, int | float]]:
     if max_sets <= 0 or len(candidates) <= max_sets:
         return candidates
-    if max_sets == 1:
-        return [candidates[0]]
-    step = (len(candidates) - 1) / (max_sets - 1)
-    indexes = sorted({round(i * step) for i in range(max_sets)})
+    rng = np.random.default_rng(seed)
+    indexes = sorted(rng.choice(len(candidates), size=max_sets, replace=False).tolist())
     return [candidates[index] for index in indexes]
 
 

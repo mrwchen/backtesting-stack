@@ -106,7 +106,7 @@ def run_walk_forward_optimizer(
     )
 
     grid = parameters.load_grid(opt_cfg.parameter_grid_path)
-    stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets)
+    stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets, opt_cfg.sampling_seed)
     stage1_candidates = screen_stage1_candidates(stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     log.info("Stage 1 candidates %d folds %d", len(stage1_candidates), len(folds))
     stage1 = run_stage(conn, run_id, "stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
@@ -126,6 +126,7 @@ def run_walk_forward_optimizer(
             grid,
             previous_hashes,
             opt_cfg.stage2_max_parameter_sets,
+            opt_cfg.sampling_seed,
         )
         stage2_count = len(stage2_candidates)
         if stage2_candidates:

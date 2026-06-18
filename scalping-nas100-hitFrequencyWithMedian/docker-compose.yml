@@ -100,11 +100,12 @@ services:
       - OPTIMIZER_PROFILE_CACHE_SIZE=4 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
       - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
-      - STAGE1_MAX_PARAMETER_SETS=4096 # Max coarse-grid Stage 1 candidates; 0 means unlimited.
+      - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
+      - STAGE1_MAX_PARAMETER_SETS=16384  # Max coarse-grid Stage 1 candidates; 0 means unlimited. #ggfs. 32768 nehmen
       - STAGE1_SCREENING_ENABLED=true # Enable short-window Stage 1 pre-screening.
       - STAGE1_SCREENING_ROUNDS=2 # Number of Stage 1 screening rounds.
       - STAGE1_SCREENING_TRAIN_DAYS=10 # Base train days used in screening windows.
-      - STAGE1_SCREENING_TOP_N=512 # Candidates kept after Stage 1 screening.
+      - STAGE1_SCREENING_TOP_N=768 # Candidates kept after Stage 1 screening.
       - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
       - STAGE2_SEED_TOP_N=8 # Number of Stage 1 seeds for Stage 2 refinement.
       - STAGE2_MAX_PARAMETER_SETS=512 # Max Stage 2 candidates; 0 means unlimited.
