@@ -27,6 +27,8 @@ SESSION_TYPES = (
 
 SESSION_LABELS = {key: label for key, label, _sort_order in SESSION_TYPES}
 SESSION_SORT_ORDERS = {key: sort_order for key, _label, sort_order in SESSION_TYPES}
+SESSION_CODE_BY_KEY = {key: idx for idx, (key, _label, _sort_order) in enumerate(SESSION_TYPES)}
+SESSION_KEY_BY_CODE = {code: key for key, code in SESSION_CODE_BY_KEY.items()}
 
 
 def classify_minutes(minute_of_day: np.ndarray) -> np.ndarray:
@@ -40,10 +42,31 @@ def classify_minutes(minute_of_day: np.ndarray) -> np.ndarray:
     return sessions
 
 
+def classify_minutes_codes(minute_of_day: np.ndarray) -> np.ndarray:
+    sessions = np.full(len(minute_of_day), SESSION_CODE_BY_KEY["overnight"], dtype=np.uint8)
+    sessions[(PRE_MARKET_START_MINUTE <= minute_of_day) & (minute_of_day < NY_OPEN_POWER_START_MINUTE)] = SESSION_CODE_BY_KEY["pre_market"]
+    sessions[(NY_OPEN_POWER_START_MINUTE <= minute_of_day) & (minute_of_day < NY_MIDDAY_START_MINUTE)] = SESSION_CODE_BY_KEY["ny_open_power"]
+    sessions[(NY_MIDDAY_START_MINUTE <= minute_of_day) & (minute_of_day < NY_LATE_START_MINUTE)] = SESSION_CODE_BY_KEY["ny_midday"]
+    sessions[(NY_LATE_START_MINUTE <= minute_of_day) & (minute_of_day < NY_POWER_HOUR_START_MINUTE)] = SESSION_CODE_BY_KEY["ny_late"]
+    sessions[(NY_POWER_HOUR_START_MINUTE <= minute_of_day) & (minute_of_day < AFTER_HOURS_START_MINUTE)] = SESSION_CODE_BY_KEY["ny_power_hour"]
+    sessions[(AFTER_HOURS_START_MINUTE <= minute_of_day) & (minute_of_day < OVERNIGHT_START_MINUTE)] = SESSION_CODE_BY_KEY["after_hours"]
+    return sessions
+
+
 def classify_timestamps(timestamps: pd.Series, timezone: str) -> np.ndarray:
     local = pd.to_datetime(timestamps, utc=True).dt.tz_convert(timezone)
     minute_of_day = local.dt.hour.to_numpy(dtype=np.int16) * 60 + local.dt.minute.to_numpy(dtype=np.int16)
     return classify_minutes(minute_of_day)
+
+
+def classify_timestamp_codes(timestamps, timezone: str) -> np.ndarray:
+    local = pd.to_datetime(timestamps, utc=True).tz_convert(timezone)
+    minute_of_day = local.hour.to_numpy(dtype=np.int16) * 60 + local.minute.to_numpy(dtype=np.int16)
+    return classify_minutes_codes(minute_of_day)
+
+
+def session_key_for_code(code: int) -> str:
+    return SESSION_KEY_BY_CODE.get(int(code), "overnight")
 
 
 def add_entry_session_column(ticks: pd.DataFrame, timezone: str) -> pd.DataFrame:

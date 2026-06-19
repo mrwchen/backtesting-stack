@@ -1,6 +1,7 @@
 """Orchestration: load ticks, build bars and run single or walk-forward mode."""
 
 import logging
+import gc
 import time
 
 from . import config, persistence
@@ -32,8 +33,10 @@ def main() -> None:
     conn = connect_with_retry()
     try:
         persistence.validate_schema(conn)
-        ticks = load_ticks(conn, cfg)
-        bars = build_mid_bars(ticks, cfg)
+        raw_ticks = load_ticks(conn, cfg)
+        ticks, bars = build_mid_bars(raw_ticks, cfg)
+        del raw_ticks
+        gc.collect()
         if config.RUN_MODE == "walk_forward":
             run_walk_forward_optimizer(conn, cfg, opt_cfg, ticks, bars, started)
         else:

@@ -1,36 +1,19 @@
-"""Tick-level simulation for the hit-frequency median crossing rule.
+"""Tick-level simulation for the hit-frequency median crossing rule."""
 
-The O(ticks) hot loop lives in :mod:`hfmed_core.sim_core` (Numba-compiled). This
-module prepares the numpy arrays, runs the core and turns the returned per-trade
-arrays into ``ClosedTrade`` objects.
-"""
+from __future__ import annotations
 
 import logging
 
 import numpy as np
-import pandas as pd
 
 from .config import RunConfig
+from .data import BarData, TickData, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
-from .profile import rolling_profile_levels
-from .sessions import ENTRY_SESSION_COLUMN, add_entry_session_column
+from .profile import ProfileArrays, rolling_profile_arrays
+from .sessions import SESSION_CODE_BY_KEY, session_key_for_code
 from .sim_core import simulate_core
 
 log = logging.getLogger(__name__)
-
-PROFILE_COLUMNS = [
-    "profile_low",
-    "band_lower",
-    "median_level",
-    "band_upper",
-    "long_cross_level",
-    "short_cross_level",
-    "profile_high",
-    "stop_profile_lower",
-    "stop_profile_upper",
-    "band_width_points",
-    "profile_range_points",
-]
 
 
 def _all_sessions_enabled(cfg: RunConfig) -> bool:
@@ -45,120 +28,92 @@ def _all_sessions_enabled(cfg: RunConfig) -> bool:
     )
 
 
-def _entry_session_allowed_mask(ticks: pd.DataFrame, cfg: RunConfig) -> np.ndarray | None:
+def _entry_session_allowed_mask(entry_session_code: np.ndarray, cfg: RunConfig) -> np.ndarray | None:
     if _all_sessions_enabled(cfg):
         return None
-    if ENTRY_SESSION_COLUMN in ticks.columns:
-        enabled = []
-        if cfg.session_pre_market_enabled:
-            enabled.append("pre_market")
-        if cfg.session_ny_open_power_enabled:
-            enabled.append("ny_open_power")
-        if cfg.session_ny_midday_enabled:
-            enabled.append("ny_midday")
-        if cfg.session_ny_late_enabled:
-            enabled.append("ny_late")
-        if cfg.session_ny_power_hour_enabled:
-            enabled.append("ny_power_hour")
-        if cfg.session_after_hours_enabled:
-            enabled.append("after_hours")
-        if cfg.session_overnight_enabled:
-            enabled.append("overnight")
-        return np.isin(ticks[ENTRY_SESSION_COLUMN].to_numpy(dtype=object), enabled)
-
-    local = pd.to_datetime(ticks["tick_time"], utc=True).dt.tz_convert(cfg.session_timezone)
-    minute_of_day = local.dt.hour.to_numpy(dtype=np.int16) * 60 + local.dt.minute.to_numpy(dtype=np.int16)
-    allowed = np.zeros(len(ticks), dtype=bool)
+    enabled = []
     if cfg.session_pre_market_enabled:
-        allowed |= (4 * 60 <= minute_of_day) & (minute_of_day < 9 * 60 + 30)
+        enabled.append(SESSION_CODE_BY_KEY["pre_market"])
     if cfg.session_ny_open_power_enabled:
-        allowed |= (9 * 60 + 30 <= minute_of_day) & (minute_of_day < 11 * 60 + 30)
+        enabled.append(SESSION_CODE_BY_KEY["ny_open_power"])
     if cfg.session_ny_midday_enabled:
-        allowed |= (11 * 60 + 30 <= minute_of_day) & (minute_of_day < 14 * 60)
+        enabled.append(SESSION_CODE_BY_KEY["ny_midday"])
     if cfg.session_ny_late_enabled:
-        allowed |= (14 * 60 <= minute_of_day) & (minute_of_day < 15 * 60)
+        enabled.append(SESSION_CODE_BY_KEY["ny_late"])
     if cfg.session_ny_power_hour_enabled:
-        allowed |= (15 * 60 <= minute_of_day) & (minute_of_day < 16 * 60)
+        enabled.append(SESSION_CODE_BY_KEY["ny_power_hour"])
     if cfg.session_after_hours_enabled:
-        allowed |= (16 * 60 <= minute_of_day) & (minute_of_day < 20 * 60)
+        enabled.append(SESSION_CODE_BY_KEY["after_hours"])
     if cfg.session_overnight_enabled:
-        allowed |= (minute_of_day < 4 * 60) | (20 * 60 <= minute_of_day)
-    return allowed
-
-
-def attach_profile_to_ticks(ticks: pd.DataFrame, bars: pd.DataFrame, profile: pd.DataFrame) -> pd.DataFrame:
-    profile_by_bar = pd.concat([bars[["bar_start"]], profile[PROFILE_COLUMNS]], axis=1).set_index("bar_start")
-    return ticks.join(profile_by_bar, on="bar_start")
+        enabled.append(SESSION_CODE_BY_KEY["overnight"])
+    return np.isin(entry_session_code, np.array(enabled, dtype=np.uint8))
 
 
 def _build_entry_allowed(
-    sim_ticks: pd.DataFrame,
+    ticks: TickData,
     cfg: RunConfig,
-    trade_start_ts,
-    trade_end_ts,
+    trade_start_ns: int | None,
+    trade_end_ns: int | None,
 ) -> np.ndarray:
-    n = len(sim_ticks)
+    n = len(ticks)
     allow = np.ones(n, dtype=bool)
-    session_mask = _entry_session_allowed_mask(sim_ticks, cfg)
+    session_mask = _entry_session_allowed_mask(ticks.entry_session_code, cfg)
     if session_mask is not None:
         allow &= session_mask
-    if trade_start_ts is not None or trade_end_ts is not None:
-        ts = pd.to_datetime(sim_ticks["tick_time"], utc=True)
-        if trade_start_ts is not None:
-            allow &= (ts >= trade_start_ts).to_numpy()
-        if trade_end_ts is not None:
-            allow &= (ts < trade_end_ts).to_numpy()
+    if trade_start_ns is not None:
+        allow &= ticks.tick_time_ns >= int(trade_start_ns)
+    if trade_end_ns is not None:
+        allow &= ticks.tick_time_ns < int(trade_end_ns)
     return allow.astype(np.uint8)
 
 
-def _column(sim_ticks: pd.DataFrame, name: str) -> np.ndarray:
-    return np.ascontiguousarray(sim_ticks[name].to_numpy(dtype=np.float64))
+def _as_float(values: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=np.float64)
+
+
+def _as_int32(values: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(values, dtype=np.int32)
 
 
 def run_simulation(
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
+    tick_bar_index: np.ndarray,
     cfg: RunConfig,
-    trade_start_ts=None,
-    trade_end_ts=None,
+    trade_start_ns: int | None = None,
+    trade_end_ns: int | None = None,
     log_result: bool = True,
-    profile: pd.DataFrame | None = None,
-    profiled_ticks: pd.DataFrame | None = None,
+    profile: ProfileArrays | None = None,
 ) -> SimulationResult:
-    if profiled_ticks is None:
-        if profile is None:
-            profile = rolling_profile_levels(bars, cfg)
-        sim_ticks = attach_profile_to_ticks(ticks, bars, profile)
-    else:
-        sim_ticks = profiled_ticks
-    if ENTRY_SESSION_COLUMN not in sim_ticks.columns:
-        sim_ticks = add_entry_session_column(sim_ticks, cfg.session_timezone)
+    if profile is None:
+        profile = rolling_profile_arrays(bars, cfg)
 
     result = SimulationResult(
         initial_equity=cfg.initial_equity,
         final_equity=cfg.initial_equity,
-        ticks_total=len(sim_ticks),
+        ticks_total=len(ticks),
         bars_total=len(bars),
     )
 
-    n = len(sim_ticks)
+    n = len(ticks)
     if n == 0:
         if log_result:
             _log_result(result)
         return result
 
-    mid = _column(sim_ticks, "mid")
-    bid = _column(sim_ticks, "bid")
-    ask = _column(sim_ticks, "ask")
-    median_level = _column(sim_ticks, "median_level")
-    long_cross = _column(sim_ticks, "long_cross_level")
-    short_cross = _column(sim_ticks, "short_cross_level")
-    profile_low = _column(sim_ticks, "profile_low")
-    profile_high = _column(sim_ticks, "profile_high")
-    stop_lower = _column(sim_ticks, "stop_profile_lower")
-    stop_upper = _column(sim_ticks, "stop_profile_upper")
-    profile_range = _column(sim_ticks, "profile_range_points")
-    entry_allowed = _build_entry_allowed(sim_ticks, cfg, trade_start_ts, trade_end_ts)
+    mid = _as_float(ticks.mid)
+    bid = _as_float(ticks.bid)
+    ask = _as_float(ticks.ask)
+    local_bar_index = _as_int32(tick_bar_index)
+    median_level = _as_float(profile.median_level)
+    long_cross = _as_float(profile.long_cross_level)
+    short_cross = _as_float(profile.short_cross_level)
+    profile_low = _as_float(profile.profile_low)
+    profile_high = _as_float(profile.profile_high)
+    stop_lower = _as_float(profile.stop_profile_lower)
+    stop_upper = _as_float(profile.stop_profile_upper)
+    profile_range = _as_float(profile.profile_range_points)
+    entry_allowed = _build_entry_allowed(ticks, cfg, trade_start_ns, trade_end_ns)
 
     stop_mode_fixed = 1 if cfg.stop_mode == "fixed" else 0
     scalar_args = (
@@ -181,7 +136,7 @@ def run_simulation(
         float(cfg.commission_per_unit),
     )
     price_args = (
-        mid, bid, ask, median_level, long_cross, short_cross,
+        mid, bid, ask, local_bar_index, median_level, long_cross, short_cross,
         profile_low, profile_high, stop_lower, stop_upper, profile_range,
         entry_allowed,
     )
@@ -211,7 +166,6 @@ def run_simulation(
             np.empty(cap, dtype=np.int64),    # ticks_held
         )
 
-    # First pass counts trades (cap=0, no writes), second pass fills exact-size arrays.
     count_out = _empty_outputs(0)
     counted = simulate_core(*price_args, *scalar_args, *count_out, 0)
     n_trades = counted[0]
@@ -228,23 +182,14 @@ def run_simulation(
         out_pnl, out_equity_before, out_equity_after, out_status, out_ticks_held,
     ) = out
 
-    tick_time = sim_ticks["tick_time"]
-    if not isinstance(tick_time, pd.Series):
-        tick_time = pd.Series(tick_time)
-    tick_time = tick_time.reset_index(drop=True)
-    entry_session = sim_ticks[ENTRY_SESSION_COLUMN]
-    if not isinstance(entry_session, pd.Series):
-        entry_session = pd.Series(entry_session)
-    entry_session = entry_session.reset_index(drop=True)
-
     status_labels = ("HIT_SL", "HIT_TP", "END_OF_DATA")
     trades: list[ClosedTrade] = []
     for k in range(n_trades):
         d = int(out_direction[k])
         e = int(out_entry_idx[k])
         x = int(out_exit_idx[k])
-        entry_ts = tick_time.iloc[e]
-        exit_ts = tick_time.iloc[x]
+        entry_ts = ns_to_datetime(int(ticks.tick_time_ns[e]))
+        exit_ts = ns_to_datetime(int(ticks.tick_time_ns[x]))
         entry_price = float(out_entry_price[k])
         exit_price = float(out_exit_price[k])
         equity_before = float(out_equity_before[k])
@@ -255,7 +200,7 @@ def run_simulation(
             entry_ts=entry_ts,
             exit_ts=exit_ts,
             direction="LONG" if d == 1 else "SHORT",
-            entry_session=str(entry_session.iloc[e]),
+            entry_session=session_key_for_code(int(ticks.entry_session_code[e])),
             cross_quantile=cfg.long_cross_quantile if d == 1 else cfg.short_cross_quantile,
             cross_level=float(out_cross_level[k]),
             median_level=float(out_median[k]),

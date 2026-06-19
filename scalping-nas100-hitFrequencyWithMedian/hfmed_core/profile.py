@@ -1,12 +1,30 @@
-"""Hit-frequency profile, exact 50% median level and stop profile levels."""
+"""Hit-frequency profile arrays from prior completed bars only."""
+
+from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import math
 
 import numpy as np
-import pandas as pd
 
 from .config import RunConfig
+from .data import BarData
+
+
+@dataclass(frozen=True)
+class ProfileArrays:
+    profile_low: np.ndarray
+    band_lower: np.ndarray
+    median_level: np.ndarray
+    band_upper: np.ndarray
+    long_cross_level: np.ndarray
+    short_cross_level: np.ndarray
+    profile_high: np.ndarray
+    stop_profile_lower: np.ndarray
+    stop_profile_upper: np.ndarray
+    band_width_points: np.ndarray
+    profile_range_points: np.ndarray
 
 
 def level_indices_between(low: float, high: float, step: float) -> list[int]:
@@ -21,23 +39,23 @@ def level_indices_between(low: float, high: float, step: float) -> list[int]:
     return list(range(first_idx, last_idx + 1))
 
 
-def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
-    """Compute profile levels from prior completed bars only."""
+def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
     step = cfg.price_step
     lookback = cfg.lookback_bars
     min_lookback = cfg.min_lookback_bars
     counts: dict[int, int] = {}
     window: deque[list[int]] = deque()
     total_hits = 0
-    q0 = np.full(len(bars), np.nan, dtype=np.float64)
-    q45 = np.full(len(bars), np.nan, dtype=np.float64)
-    q50 = np.full(len(bars), np.nan, dtype=np.float64)
-    q55 = np.full(len(bars), np.nan, dtype=np.float64)
-    long_cross = np.full(len(bars), np.nan, dtype=np.float64)
-    short_cross = np.full(len(bars), np.nan, dtype=np.float64)
-    q100 = np.full(len(bars), np.nan, dtype=np.float64)
-    stop_lower = np.full(len(bars), np.nan, dtype=np.float64)
-    stop_upper = np.full(len(bars), np.nan, dtype=np.float64)
+    n = len(bars)
+    q0 = np.full(n, np.nan, dtype=np.float64)
+    q45 = np.full(n, np.nan, dtype=np.float64)
+    q50 = np.full(n, np.nan, dtype=np.float64)
+    q55 = np.full(n, np.nan, dtype=np.float64)
+    long_cross = np.full(n, np.nan, dtype=np.float64)
+    short_cross = np.full(n, np.nan, dtype=np.float64)
+    q100 = np.full(n, np.nan, dtype=np.float64)
+    stop_lower = np.full(n, np.nan, dtype=np.float64)
+    stop_upper = np.full(n, np.nan, dtype=np.float64)
 
     def add_levels(levels: list[int]) -> None:
         nonlocal total_hits
@@ -70,7 +88,7 @@ def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
     def current_max_level() -> float:
         return float(max(counts)) * step if counts else float("nan")
 
-    for pos, row in enumerate(bars.itertuples(index=False)):
+    for pos in range(n):
         if len(window) >= min_lookback and total_hits > 0:
             q0[pos] = current_min_level()
             q45[pos] = current_quantile(cfg.band_lower_quantile)
@@ -82,30 +100,22 @@ def rolling_profile_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.DataFrame:
             stop_lower[pos] = current_quantile(cfg.stop_profile_lower_quantile)
             stop_upper[pos] = current_quantile(cfg.stop_profile_upper_quantile)
 
-        levels = level_indices_between(float(row.low), float(row.high), step)
+        levels = level_indices_between(float(bars.low[pos]), float(bars.high[pos]), step)
         window.append(levels)
         add_levels(levels)
         while len(window) > lookback:
             remove_levels(window.popleft())
 
-    return pd.DataFrame(
-        {
-            "profile_low": q0,
-            "band_lower": q45,
-            "median_level": q50,
-            "band_upper": q55,
-            "long_cross_level": long_cross,
-            "short_cross_level": short_cross,
-            "profile_high": q100,
-            "stop_profile_lower": stop_lower,
-            "stop_profile_upper": stop_upper,
-            "band_width_points": q55 - q45,
-            "profile_range_points": q100 - q0,
-        },
-        index=bars.index,
+    return ProfileArrays(
+        profile_low=q0,
+        band_lower=q45,
+        median_level=q50,
+        band_upper=q55,
+        long_cross_level=long_cross,
+        short_cross_level=short_cross,
+        profile_high=q100,
+        stop_profile_lower=stop_lower,
+        stop_profile_upper=stop_upper,
+        band_width_points=q55 - q45,
+        profile_range_points=q100 - q0,
     )
-
-
-def rolling_median_levels(bars: pd.DataFrame, cfg: RunConfig) -> pd.Series:
-    """Compute median profile levels for each bar from prior completed bars only."""
-    return rolling_profile_levels(bars, cfg)["median_level"]

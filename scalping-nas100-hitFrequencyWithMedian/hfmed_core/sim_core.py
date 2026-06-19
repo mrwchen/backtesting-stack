@@ -36,6 +36,7 @@ def simulate_core(
     mid,
     bid,
     ask,
+    tick_bar_index,
     median_level,
     long_cross,
     short_cross,
@@ -176,8 +177,12 @@ def simulate_core(
 
         prev_mid = mid[i - 1]
         m = mid[i]
-        lc = long_cross[i]
-        sc = short_cross[i]
+        bar_i = tick_bar_index[i]
+        lc = np.nan
+        sc = np.nan
+        if 0 <= bar_i < long_cross.shape[0]:
+            lc = long_cross[bar_i]
+            sc = short_cross[bar_i]
         direction = 0
         cross_level = np.nan
         if (lc == lc) and (prev_mid < lc) and (lc <= m):
@@ -211,11 +216,17 @@ def simulate_core(
                 stop_price = entry_price + stop_points
                 tp_price = entry_price - take_profit_points
         else:
-            pl = profile_low[i]
-            ph = profile_high[i]
-            sl = stop_lower[i]
-            su = stop_upper[i]
-            pr = profile_range[i]
+            pl = np.nan
+            ph = np.nan
+            sl = np.nan
+            su = np.nan
+            pr = np.nan
+            if 0 <= bar_i < profile_low.shape[0]:
+                pl = profile_low[bar_i]
+                ph = profile_high[bar_i]
+                sl = stop_lower[bar_i]
+                su = stop_upper[bar_i]
+                pr = profile_range[bar_i]
             if not ((pl == pl) and (ph == ph) and (sl == sl) and (su == su) and (pr == pr)):
                 valid = False
                 reject = 1
@@ -284,7 +295,7 @@ def simulate_core(
         p_margin = margin
         p_equity_before = equity
         p_cross_level = cross_level
-        p_median = median_level[i]
+        p_median = median_level[bar_i] if 0 <= bar_i < median_level.shape[0] else np.nan
         p_prev_mid = prev_mid
         p_signal_mid = m
         p_ticks_held = 0
@@ -343,12 +354,13 @@ def warmup() -> None:
     """Force JIT compilation once (cheap) so worker processes inherit the cache."""
     n = 3
     zeros = np.zeros(n, dtype=np.float64)
+    bar_index = np.arange(n, dtype=np.int32)
     allowed = np.zeros(n, dtype=np.uint8)
     out_i = np.zeros(1, dtype=np.int64)
     out_d = np.zeros(1, dtype=np.int8)
     out_f = np.zeros(1, dtype=np.float64)
     simulate_core(
-        zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
+        zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
         allowed,
         0, 10.0, 10.0, 0.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,

@@ -10,16 +10,16 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 
 import numpy as np
-import pandas as pd
 
 from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values
+from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
-from .profile import rolling_profile_levels
+from .profile import ProfileArrays, rolling_profile_arrays
 from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
 from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 from .sim_core import warmup as warmup_sim_core
-from .simulation import attach_profile_to_ticks, run_simulation
+from .simulation import run_simulation
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +30,21 @@ _WORKER_WINDOW: WindowData | None = None
 @dataclass(frozen=True)
 class FoldSpec:
     fold_index: int
-    train_start: object
-    train_end: object
-    test_start: object
-    test_end: object
+    train_start_ns: int
+    train_end_ns: int
+    test_start_ns: int
+    test_end_ns: int
 
 
 @dataclass
 class WindowData:
-    ticks: pd.DataFrame
-    bars: pd.DataFrame
-    trade_start: object
-    trade_end: object
+    ticks: TickData
+    bars: BarData
+    tick_bar_index: np.ndarray
+    trade_start_ns: int
+    trade_end_ns: int
     profile_cache_size: int
-    profile_cache: OrderedDict[tuple, pd.DataFrame] = field(default_factory=OrderedDict)
+    profile_cache: OrderedDict[tuple, ProfileArrays] = field(default_factory=OrderedDict)
 
 
 @dataclass
@@ -87,14 +88,14 @@ def run_walk_forward_optimizer(
     conn,
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
     started: float,
 ) -> None:
     warmup_sim_core()
     folds = build_folds(ticks, opt_cfg)
-    data_start_ts = ticks["tick_time"].iloc[0].to_pydatetime()
-    data_end_ts = ticks["tick_time"].iloc[-1].to_pydatetime()
+    data_start_ts = ns_to_datetime(int(ticks.tick_time_ns[0]))
+    data_end_ts = ns_to_datetime(int(ticks.tick_time_ns[-1]))
     run_id = persistence.create_run(
         conn,
         base_cfg,
@@ -167,13 +168,13 @@ def run_single_backtest(
     conn,
     cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
     started: float,
 ) -> None:
     warmup_sim_core()
-    data_start_ts = ticks["tick_time"].iloc[0].to_pydatetime()
-    data_end_ts = ticks["tick_time"].iloc[-1].to_pydatetime()
+    data_start_ts = ns_to_datetime(int(ticks.tick_time_ns[0]))
+    data_end_ts = ns_to_datetime(int(ticks.tick_time_ns[-1]))
     run_id = persistence.create_run(
         conn,
         cfg,
@@ -185,7 +186,8 @@ def run_single_backtest(
         bars_built=len(bars),
         folds_built=1,
     )
-    result = run_simulation(ticks, bars, cfg, log_result=True)
+    window = _prepare_full_window_data(ticks, bars, opt_cfg.profile_cache_size)
+    result = run_simulation(window.ticks, window.bars, window.tick_bar_index, cfg, log_result=True)
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
     session_stats = summarize_trades_by_session(result.trades)
     values = parameters.values_from_config(cfg)
@@ -268,8 +270,8 @@ def screen_stage1_candidates(
     folds: list[FoldSpec],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
 ) -> list[dict[str, int | float]]:
     if not opt_cfg.stage1_screening_enabled:
         return candidates
@@ -320,14 +322,13 @@ def _screening_keep_count(active_count: int, final_top_n: int, remaining_rounds:
 
 
 def _shortened_train_fold(fold: FoldSpec, train_days: int) -> FoldSpec:
-    train_start = pd.Timestamp(fold.train_start)
-    train_end = min(pd.Timestamp(fold.train_end), train_start + pd.Timedelta(days=train_days))
+    train_end_ns = min(fold.train_end_ns, fold.train_start_ns + train_days * NANOSECONDS_PER_DAY)
     return FoldSpec(
         fold_index=fold.fold_index,
-        train_start=fold.train_start,
-        train_end=train_end.to_pydatetime(),
-        test_start=fold.test_start,
-        test_end=fold.test_end,
+        train_start_ns=fold.train_start_ns,
+        train_end_ns=train_end_ns,
+        test_start_ns=fold.test_start_ns,
+        test_end_ns=fold.test_end_ns,
     )
 
 
@@ -339,8 +340,8 @@ def run_stage(
     folds: list[FoldSpec],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
 ) -> StageResult:
     parameter_ids = persistence.insert_parameter_stubs(conn, run_id, stage, candidates)
     train_by_hash: dict[str, list[Evaluation]] = {parameters.parameter_hash(candidate): [] for candidate in candidates}
@@ -383,12 +384,12 @@ def run_stage(
     return StageResult(stage, candidates, aggregates, oos_evals, mc_by_hash, parameter_ids)
 
 
-def build_folds(ticks: pd.DataFrame, opt_cfg: OptimizerConfig) -> list[FoldSpec]:
-    data_start = ticks["tick_time"].iloc[0]
-    data_end = ticks["tick_time"].iloc[-1]
-    train_delta = pd.Timedelta(days=opt_cfg.train_days)
-    test_delta = pd.Timedelta(days=opt_cfg.test_days)
-    step_delta = pd.Timedelta(days=opt_cfg.step_days)
+def build_folds(ticks: TickData, opt_cfg: OptimizerConfig) -> list[FoldSpec]:
+    data_start = int(ticks.tick_time_ns[0])
+    data_end = int(ticks.tick_time_ns[-1])
+    train_delta = opt_cfg.train_days * NANOSECONDS_PER_DAY
+    test_delta = opt_cfg.test_days * NANOSECONDS_PER_DAY
+    step_delta = opt_cfg.step_days * NANOSECONDS_PER_DAY
 
     folds: list[FoldSpec] = []
     train_start = data_start
@@ -402,10 +403,10 @@ def build_folds(ticks: pd.DataFrame, opt_cfg: OptimizerConfig) -> list[FoldSpec]
         folds.append(
             FoldSpec(
                 fold_index=fold_index,
-                train_start=train_start.to_pydatetime(),
-                train_end=train_end.to_pydatetime(),
-                test_start=test_start.to_pydatetime(),
-                test_end=test_end.to_pydatetime(),
+                train_start_ns=train_start,
+                train_end_ns=train_end,
+                test_start_ns=test_start,
+                test_end_ns=test_end,
             )
         )
         fold_index += 1
@@ -413,7 +414,7 @@ def build_folds(ticks: pd.DataFrame, opt_cfg: OptimizerConfig) -> list[FoldSpec]
 
     if not folds:
         needed_days = opt_cfg.train_days + opt_cfg.test_days
-        available_days = (data_end - data_start) / pd.Timedelta(days=1)
+        available_days = (data_end - data_start) / NANOSECONDS_PER_DAY
         raise RuntimeError(
             f"Not enough data for walk-forward: available_days={available_days:.2f} needed_days={needed_days}"
         )
@@ -428,8 +429,8 @@ def evaluate_many(
     role: str,
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
     keep_trades: bool,
 ) -> list[Evaluation]:
     tasks = _group_evaluation_tasks(stage, candidates, fold, role, keep_trades, base_cfg)
@@ -590,8 +591,8 @@ def _candidate_profile_key(values: dict[str, int | float], base_cfg: RunConfig) 
 
 
 def _init_worker(
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
     base_cfg: RunConfig,
     fold: FoldSpec,
     role: str,
@@ -609,28 +610,43 @@ def _evaluate_group_task(task) -> list[Evaluation]:
 
 
 def _prepare_window_data(
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
     fold: FoldSpec,
     role: str,
     profile_cache_size: int,
 ) -> WindowData:
     slice_start, slice_end, trade_start, trade_end = _window_bounds(fold, role)
-    tick_slice = ticks[(ticks["tick_time"] >= slice_start) & (ticks["tick_time"] < slice_end)].copy()
-    bar_slice = bars[(bars["bar_start"] >= slice_start) & (bars["bar_start"] < slice_end)].copy()
+    tick_slice = ticks.slice_time(slice_start, slice_end)
+    bar_slice, bar_start_idx, _bar_end_idx = bars.slice_time(slice_start, slice_end)
+    local_bar_index = tick_slice.bar_index.astype(np.int64, copy=False) - int(bar_start_idx)
+    valid = (local_bar_index >= 0) & (local_bar_index < len(bar_slice))
+    tick_bar_index = np.where(valid, local_bar_index, -1).astype(np.int32, copy=False)
     return WindowData(
         ticks=tick_slice,
         bars=bar_slice,
-        trade_start=trade_start,
-        trade_end=trade_end,
+        tick_bar_index=tick_bar_index,
+        trade_start_ns=trade_start,
+        trade_end_ns=trade_end,
         profile_cache_size=profile_cache_size,
     )
 
 
-def _window_bounds(fold: FoldSpec, role: str) -> tuple[object, object, object, object]:
+def _prepare_full_window_data(ticks: TickData, bars: BarData, profile_cache_size: int) -> WindowData:
+    return WindowData(
+        ticks=ticks,
+        bars=bars,
+        tick_bar_index=ticks.bar_index,
+        trade_start_ns=int(ticks.tick_time_ns[0]),
+        trade_end_ns=int(ticks.tick_time_ns[-1]) + 1,
+        profile_cache_size=profile_cache_size,
+    )
+
+
+def _window_bounds(fold: FoldSpec, role: str) -> tuple[int, int, int, int]:
     if role == "train":
-        return fold.train_start, fold.train_end, fold.train_start, fold.train_end
-    return fold.train_start, fold.test_end, fold.test_start, fold.test_end
+        return fold.train_start_ns, fold.train_end_ns, fold.train_start_ns, fold.train_end_ns
+    return fold.train_start_ns, fold.test_end_ns, fold.test_start_ns, fold.test_end_ns
 
 
 def _evaluate_group_with_window(task, window: WindowData, base_cfg: RunConfig) -> list[Evaluation]:
@@ -638,15 +654,14 @@ def _evaluate_group_with_window(task, window: WindowData, base_cfg: RunConfig) -
     if not group:
         return []
     profile_cfg = apply_parameter_values(base_cfg, group[0])
-    profile = rolling_profile_levels(window.bars, profile_cfg)
-    profiled_ticks = attach_profile_to_ticks(window.ticks, window.bars, profile)
+    profile = _profile_for_config(window, profile_cfg)
     return [
-        _evaluate_candidate_with_profiled_ticks(stage, values, fold, role, keep_trades, window, base_cfg, profiled_ticks)
+        _evaluate_candidate_with_profile(stage, values, fold, role, keep_trades, window, base_cfg, profile)
         for values in group
     ]
 
 
-def _evaluate_candidate_with_profiled_ticks(
+def _evaluate_candidate_with_profile(
     stage: str,
     values: dict[str, int | float],
     fold: FoldSpec,
@@ -654,17 +669,18 @@ def _evaluate_candidate_with_profiled_ticks(
     keep_trades: bool,
     window: WindowData,
     base_cfg: RunConfig,
-    profiled_ticks: pd.DataFrame,
+    profile: ProfileArrays,
 ) -> Evaluation:
     cfg = apply_parameter_values(base_cfg, values)
     result = run_simulation(
         window.ticks,
         window.bars,
+        window.tick_bar_index,
         cfg,
-        trade_start_ts=window.trade_start,
-        trade_end_ts=window.trade_end,
+        trade_start_ns=window.trade_start_ns,
+        trade_end_ns=window.trade_end_ns,
         log_result=False,
-        profiled_ticks=profiled_ticks,
+        profile=profile,
     )
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
     session_stats = summarize_trades_by_session(result.trades)
@@ -678,8 +694,8 @@ def _evaluate_candidate_with_profiled_ticks(
         values=dict(values),
         parameter_hash=parameters.parameter_hash(values),
         parameter_label=parameters.parameter_label(values),
-        window_start=window.trade_start,
-        window_end=window.trade_end,
+        window_start=ns_to_datetime(window.trade_start_ns),
+        window_end=ns_to_datetime(window.trade_end_ns),
         ticks_simulated=result.ticks_simulated,
         bars_total=result.bars_total,
         signals_total=result.signals_total,
@@ -698,9 +714,9 @@ def _evaluate_candidate_with_profiled_ticks(
     )
 
 
-def _profile_for_config(window: WindowData, cfg: RunConfig) -> pd.DataFrame:
+def _profile_for_config(window: WindowData, cfg: RunConfig) -> ProfileArrays:
     if window.profile_cache_size <= 0:
-        return rolling_profile_levels(window.bars, cfg)
+        return rolling_profile_arrays(window.bars, cfg)
 
     key = _profile_cache_key(cfg)
     cached = window.profile_cache.get(key)
@@ -708,7 +724,7 @@ def _profile_for_config(window: WindowData, cfg: RunConfig) -> pd.DataFrame:
         window.profile_cache.move_to_end(key)
         return cached
 
-    profile = rolling_profile_levels(window.bars, cfg)
+    profile = rolling_profile_arrays(window.bars, cfg)
     window.profile_cache[key] = profile
     while len(window.profile_cache) > window.profile_cache_size:
         window.profile_cache.popitem(last=False)
@@ -943,8 +959,8 @@ def score_monte_carlo(
     opt_cfg: OptimizerConfig,
     stage: str | None = None,
     folds: list[FoldSpec] | None = None,
-    ticks: pd.DataFrame | None = None,
-    bars: pd.DataFrame | None = None,
+    ticks: TickData | None = None,
+    bars: BarData | None = None,
 ) -> dict[str, dict]:
     if opt_cfg.mc_score_top_n <= 0 or not base_cfg.monte_carlo_enabled:
         return {}
@@ -1007,8 +1023,8 @@ def persist_top_trades(
     opt_cfg: OptimizerConfig,
     base_cfg: RunConfig,
     folds: list[FoldSpec],
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
 ) -> None:
     if opt_cfg.persist_top_trades_n <= 0:
         return
@@ -1058,8 +1074,8 @@ def _recompute_oos_evaluations_with_trades(
     folds: list[FoldSpec],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
-    ticks: pd.DataFrame,
-    bars: pd.DataFrame,
+    ticks: TickData,
+    bars: BarData,
 ) -> list[Evaluation]:
     if not evaluations:
         return []
