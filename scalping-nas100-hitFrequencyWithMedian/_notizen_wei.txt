@@ -1,0 +1,96 @@
+chau dir die besten 10  Parametersets an. 
+Haben alle parametersets was gemeinsam?
+
+
+
+
+Ja. Exakt gemeinsam haben alle Top 10 nur einen Parameter:
+LOOKBACK_BARS = 120
+Aber fachlich sieht man klare Cluster:
+Alle Top 10:
+- LOOKBACK_BARS immer 120
+- Stop-Band nutzt immer sehr breite Quantil-Spanne:
+  lower 0.00 bis 0.05
+  upper 0.95 bis 1.00
+- MAX_STOP_DISTANCE ist immer hoch:
+  35 oder 40 Punkte
+- Take Profit liegt eher im mittleren Bereich:
+  17.5 bis 25 Punkte
+Der stärkste Cluster sind die Top 3:
+LONG_CROSS_QUANTILE = 0.575
+SHORT_CROSS_QUANTILE = 0.425
+TAKE_PROFIT_POINTS = 22.5
+STOP_LOWER_Q = 0.025
+STOP_BUFFER = 0.75
+MAX_STOP_DISTANCE = 40
+Sie unterscheiden sich nur leicht bei:
+MIN_PROFILE_RANGE: 55 oder 60
+STOP_UPPER_Q: 0.95 oder 0.975
+MIN_STOP_DISTANCE: 8 oder 9
+Mein Eindruck: Die besten Sets mögen einen relativ langen Median-/Profil-Lookback (120), asymmetrische Cross-Schwellen um 0.575 / 0.425, einen TP um 22.5 Punkte und recht großzügige Band-Stops bis 40 Punkte.
+Wichtiger Vorbehalt: Die Top 10 haben nicht alle volle OOS-Coverage. Viele haben nur 2-4 / 5 OOS-Folds. Also als Hinweis gut, aber noch nicht als robuste finale Parameterauswahl.
+
+---------------
+Analysiere die Trades. Gibt es nach Trading Session. Gibt es Auffälligkeiten, in welchen Session es besser funktioniert und in welchen schlechter?
+
+
+Ja, deutliche Auffälligkeiten. Ich habe parameter_set_id = 65577 nach Entry-Session in America/New_York ausgewertet, passend zur Backtest-Konfiguration sessions all America/New_York.
+Wichtig: Für 65577 fehlen Trades aus Fold 2, also ca. 2026-01-30 bis 2026-03-01. Die Analyse basiert auf den persistierten Trades aus Fold 1, 3, 4 und 5.
+Session-Ergebnis
+Session                  Trades   Win %    PF      Net P&L EUR   Avg P&L
+after_hours 16-20          138   63.77   1.7359     +2150.02      +15.58
+ny_open_power 09:30-11:30  418   61.72   1.1357     +1461.68       +3.50
+ny_power_hour 15-16         83   67.47   1.4990      +906.15      +10.92
+ny_midday 11:30-14         313   60.70   1.0601      +504.73       +1.61
+overnight 20-04            238   55.46   1.0233      +140.61       +0.59
+pre_market 04-09:30        287   56.79   0.9855      -119.01       -0.41
+ny_late 14-15               93   55.91   0.9019      -256.45       -2.76
+Beste Sessions
+after_hours ist klar am stärksten: höchste Net P&L, bester PF, und in allen 4 vorhandenen Folds positiv. Aber: Ein großer Teil kommt aus Fold 3, also nicht blind überbewerten.
+ny_power_hour sieht am saubersten aus: nur 83 Trades, aber alle 4 Folds positiv, PF 1.499, höchste Winrate. Das ist die interessanteste Session.
+ny_open_power ist solide und hat die meisten Trades. 3 von 4 Folds positiv, aber Fold 1 war deutlich negativ.
+Schwache Sessions
+ny_late 14:00-15:00 ist am schlechtesten: negativ, PF unter 1, nur 1 von 4 Folds positiv.
+pre_market ist trotz vieler Trades leicht negativ. Problem: Trefferquote ist okay, aber Verluste sind größer als Gewinner.
+overnight ist praktisch breakeven und sehr instabil: ein Fold stark positiv, ein anderer stark negativ.
+Auffälligkeit
+Das Set gewinnt meist mit ca. 23 Punkten, verliert aber oft 30-34 Punkte. Deshalb braucht es hohe Trefferquote. Sessions mit hoher Trefferquote funktionieren, Sessions mit nur 55-57 % kippen schnell negativ.
+Mein sinnvoller nächster Test wäre: neues Backtest-Run-Profil mit nur
+ny_open_power
+ny_power_hour
+after_hours
+Optional ny_midday separat testen. pre_market, ny_late und eventuell overnight würde ich erstmal ausschließen. Aber bitte nicht als finale Optimierung nehmen, ohne erneuten OOS-/Monte-Carlo-Check, sonst ist das schnell Session-Overfitting.
+-----------
+
+Ja. Die vorige Analyse war nur parameter_set_id = 65577.
+Für die Top 10 gilt aber: Nur 8 von 10 haben persistierte Trades. Diese beiden haben keine Trade-Kurve in der DB:
+rank 4  parameter_set_id 14290  persisted_trades 0
+rank 7  parameter_set_id 14190  persisted_trades 0
+Die Session-Analyse basiert also auf den 8 Top-10-Sets mit Trades, nach Entry-Zeit in America/New_York.
+Session-Vergleich Top 10
+Session                  Sets+   Trades   Win %    PF      Net P&L EUR   Avg P&L
+ny_open_power 09:30-11:30   8    2157   63.79   1.2210    +11136.67      +5.16
+after_hours 16:00-20:00     8     741   59.92   1.2652     +4852.97      +6.55
+ny_midday 11:30-14:00       8    1619   61.77   1.0984     +3992.12      +2.47
+ny_power_hour 15:00-16:00   8     420   64.29   1.3864     +3537.64      +8.42
+overnight 20:00-04:00       8    1293   57.62   1.0894     +2756.93      +2.13
+pre_market 04:00-09:30      8    1587   57.15   0.9875      -544.50      -0.34
+ny_late 14:00-15:00         8     529   55.20   0.8974     -1472.38      -2.78
+Robustheit über Parameter-Sets
+ny_open_power: 8 von 8 positiv
+ny_midday:     8 von 8 positiv
+overnight:     7 von 8 positiv, aber nur schwach
+after_hours:   6 von 8 positiv
+ny_power_hour: 6 von 8 positiv
+pre_market:    3 von 8 positiv
+ny_late:       2 von 8 positiv
+Fazit
+Am robustesten sieht NY Open Power 09:30-11:30 aus. Das ist bei allen 8 ausgewerteten Top-Sets positiv und hat gleichzeitig die höchste absolute P&L.
+NY Midday 11:30-14:00 ist ebenfalls auffällig robust, aber schwächer: alle 8 positiv, PF nur 1.0984.
+NY Power Hour 15:00-16:00 hat gute Qualität, aber weniger robust als bei nur 65577: 6 von 8 positiv.
+After Hours war bei 65577 extrem stark, ist über die Top 10 aber nicht universell. Zwei Sets verlieren dort deutlich.
+Schwach wirken klar:
+pre_market
+ny_late 14:00-15:00
+Strukturell bleibt das Problem gleich: Gewinner liegen meist nur bei ca. 23 Punkten, Verlierer eher bei 30-33 Punkten. Die Strategie braucht also Sessions mit hoher Trefferquote. ny_late und pre_market liefern diese Trefferquote nicht ausreichend.
+Mein konstruktiver Vorschlag für den nächsten Test: Session-Filter separat backtesten mit ny_open_power allein, dann ny_open_power + ny_midday, dann optional plus ny_power_hour. after_hours würde ich separat testen, weil es nicht bei allen Top-Sets stabil ist.
