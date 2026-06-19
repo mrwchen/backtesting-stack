@@ -106,7 +106,7 @@ services:
       - COMMISSION_PER_UNIT=0.0 # Commission per unit per entry and exit.
 
       # Monte-Carlo risk analysis.
-      - MONTE_CARLO_ENABLED=false # Enable Monte-Carlo risk scoring.
+      - MONTE_CARLO_ENABLED=true # Enable Monte-Carlo risk scoring.
       - MONTE_CARLO_SIMULATIONS=2000 # Number of Monte-Carlo simulations.
       - MC_EXTRA_SLIPPAGE_POINTS=0.5 # Extra slippage applied in the MC slippage scenario.
       - MC_BLOCK_SIZE=5 # Block size for sequence-risk bootstrap.
@@ -142,7 +142,7 @@ services:
 
       # Final scoring, filtering and persistence.
       - MC_SCORE_TOP_N=30 # Number of top parameter sets scored with Monte-Carlo.
-      - PERSIST_TOP_TRADES_N=100 # Persist individual trades only for top N parameter sets.
+      - PERSIST_TOP_TRADES_N=200 # Persist individual trades only for top N parameter sets.
       - MIN_OOS_TRADES=10 # Minimum out-of-sample trades for filters and scoring.
       - MIN_OOS_PROFIT_FACTOR=1.1 # Minimum OOS profit factor filter.
       - MAX_OOS_DRAWDOWN_PCT=25.0 # Maximum allowed OOS drawdown percentage.
