@@ -289,12 +289,13 @@ def screen_stage1_candidates(
         train_days = min(opt_cfg.train_days, opt_cfg.stage1_screening_train_days * round_no)
         fold = _shortened_train_fold(folds[(round_no - 1) % len(folds)], train_days)
         log.info(
-            "Stage 1 screening round %d candidates %d keep %d train_days %d fold %d",
+            "Stage 1 screening round %d candidates %d keep %d train_days %d fold %d %s",
             round_no,
             len(active),
             keep_n,
             train_days,
             fold.fold_index,
+            _fold_role_period(fold, "train"),
         )
         evaluations = evaluate_many(
             f"screen{round_no}",
@@ -349,7 +350,13 @@ def run_stage(
     oos_evals: list[Evaluation] = []
 
     for fold in folds:
-        log.info("Stage %s fold %d train candidates %d", stage, fold.fold_index, len(candidates))
+        log.info(
+            "Stage %s fold %d train %s candidates %d",
+            stage,
+            fold.fold_index,
+            _fold_role_period(fold, "train"),
+            len(candidates),
+        )
         train_evals = evaluate_many(stage, candidates, fold, "train", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
         for evaluation in train_evals:
             train_by_hash[evaluation.parameter_hash].append(evaluation)
@@ -359,7 +366,13 @@ def run_stage(
         aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
         persistence.update_parameter_set_results(conn, run_id, aggregates)
         selected_candidates = [evaluation.values for evaluation in selected]
-        log.info("Stage %s fold %d oos candidates %d", stage, fold.fold_index, len(selected_candidates))
+        log.info(
+            "Stage %s fold %d oos %s candidates %d",
+            stage,
+            fold.fold_index,
+            _fold_role_period(fold, "oos"),
+            len(selected_candidates),
+        )
         fold_oos = evaluate_many(stage, selected_candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
         for evaluation in fold_oos:
             oos_by_hash.setdefault(evaluation.parameter_hash, []).append(evaluation)
@@ -441,10 +454,11 @@ def evaluate_many(
 
     started = time.monotonic()
     log.info(
-        "Stage %s fold %d %s evaluate start candidates %d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
+        "Stage %s fold %d %s %s evaluate start candidates %d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
         stage,
         fold.fold_index,
         role,
+        _fold_role_period(fold, role),
         total,
         total_groups,
         opt_cfg.processes if total > 1 else 1,
@@ -462,8 +476,8 @@ def evaluate_many(
             evaluations = _evaluate_group_with_window(task, window, base_cfg)
             results.extend(evaluations)
             completed += len(evaluations)
-            _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
-        _log_evaluation_complete(stage, fold.fold_index, role, total, started)
+            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg)
+        _log_evaluation_complete(stage, fold, role, total, started)
         return results
 
     ctx_name = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
@@ -484,10 +498,11 @@ def evaluate_many(
             except mp.TimeoutError:
                 elapsed = time.monotonic() - started
                 log.info(
-                    "Stage %s fold %d %s waiting progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
+                    "Stage %s fold %d %s %s waiting progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
                     stage,
                     fold.fold_index,
                     role,
+                    _fold_role_period(fold, role),
                     completed,
                     total,
                     elapsed,
@@ -499,18 +514,19 @@ def evaluate_many(
                 break
             results.extend(evaluations)
             completed += len(evaluations)
-            _log_evaluation_progress(stage, fold.fold_index, role, completed, total, progress, opt_cfg)
+            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg)
         if completed < total:
             log.warning(
-                "Stage %s fold %d %s evaluate ended with incomplete results %d/%d groups %d",
+                "Stage %s fold %d %s %s evaluate ended with incomplete results %d/%d groups %d",
                 stage,
                 fold.fold_index,
                 role,
+                _fold_role_period(fold, role),
                 completed,
                 total,
                 total_groups,
             )
-    _log_evaluation_complete(stage, fold.fold_index, role, total, started)
+    _log_evaluation_complete(stage, fold, role, total, started)
     return results
 
 
@@ -521,9 +537,25 @@ class _ProgressLogState:
     last_logged_completed: int = 0
 
 
+def _format_ns_utc(value: int) -> str:
+    return ns_to_datetime(value).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _period_text(start_ns: int, end_ns: int) -> str:
+    return f"{_format_ns_utc(start_ns)}..{_format_ns_utc(end_ns)}"
+
+
+def _fold_role_period(fold: FoldSpec, role: str) -> str:
+    slice_start_ns, slice_end_ns, trade_start_ns, trade_end_ns = _window_bounds(fold, role)
+    trade_period = _period_text(trade_start_ns, trade_end_ns)
+    if slice_start_ns == trade_start_ns and slice_end_ns == trade_end_ns:
+        return f"period {trade_period}"
+    return f"trade_period {trade_period} data_period {_period_text(slice_start_ns, slice_end_ns)}"
+
+
 def _log_evaluation_progress(
     stage: str,
-    fold_index: int,
+    fold: FoldSpec,
     role: str,
     completed: int,
     total: int,
@@ -544,10 +576,11 @@ def _log_evaluation_progress(
     remaining = total - completed
     eta = remaining / rate if rate > 0 else 0.0
     log.info(
-        "Stage %s fold %d %s progress %d/%d elapsed %.1fs rate %.2f/s eta %.1fs",
+        "Stage %s fold %d %s %s progress %d/%d elapsed %.1fs rate %.2f/s eta %.1fs",
         stage,
-        fold_index,
+        fold.fold_index,
         role,
+        _fold_role_period(fold, role),
         completed,
         total,
         elapsed,
@@ -558,14 +591,15 @@ def _log_evaluation_progress(
     progress.last_logged_completed = completed
 
 
-def _log_evaluation_complete(stage: str, fold_index: int, role: str, total: int, started: float) -> None:
+def _log_evaluation_complete(stage: str, fold: FoldSpec, role: str, total: int, started: float) -> None:
     elapsed = time.monotonic() - started
     rate = total / elapsed if elapsed > 0 else 0.0
     log.info(
-        "Stage %s fold %d %s complete candidates %d elapsed %.1fs rate %.2f/s",
+        "Stage %s fold %d %s %s complete candidates %d elapsed %.1fs rate %.2f/s",
         stage,
-        fold_index,
+        fold.fold_index,
         role,
+        _fold_role_period(fold, role),
         total,
         elapsed,
         rate,
