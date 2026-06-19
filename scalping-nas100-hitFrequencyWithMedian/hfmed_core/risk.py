@@ -7,6 +7,7 @@ import numpy as np
 from . import broker
 from .config import RunConfig
 from .entities import ClosedTrade
+from .sessions import SESSION_TYPES
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,47 @@ def summarize_trades(trades: list[ClosedTrade], initial_equity: float, final_equ
         "avg_trade_pnl_eur": round(float(pnls.mean()), 4),
         "final_equity": round(float(final_equity), 2),
     }
+
+
+def summarize_trades_by_session(trades: list[ClosedTrade]) -> dict[str, dict]:
+    stats = {
+        session_type: {
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "breakeven_trades": 0,
+            "win_rate_pct": 0.0,
+            "gross_profit_eur": 0.0,
+            "gross_loss_eur": 0.0,
+            "net_profit_eur": 0.0,
+            "avg_trade_pnl_eur": 0.0,
+        }
+        for session_type, _label, _sort_order in SESSION_TYPES
+    }
+    for trade in trades:
+        row = stats.get(trade.entry_session)
+        if row is None:
+            continue
+        pnl = float(trade.pnl_eur)
+        row["total_trades"] += 1
+        row["net_profit_eur"] += pnl
+        if pnl > 0.0:
+            row["winning_trades"] += 1
+            row["gross_profit_eur"] += pnl
+        elif pnl < 0.0:
+            row["losing_trades"] += 1
+            row["gross_loss_eur"] += -pnl
+        else:
+            row["breakeven_trades"] += 1
+
+    for row in stats.values():
+        total = int(row["total_trades"])
+        row["win_rate_pct"] = round(float(row["winning_trades"]) / total * 100.0, 2) if total > 0 else 0.0
+        row["gross_profit_eur"] = round(float(row["gross_profit_eur"]), 2)
+        row["gross_loss_eur"] = round(float(row["gross_loss_eur"]), 2)
+        row["net_profit_eur"] = round(float(row["net_profit_eur"]), 2)
+        row["avg_trade_pnl_eur"] = round(float(row["net_profit_eur"]) / total, 4) if total > 0 else 0.0
+    return stats
 
 
 def _permute(fractions: np.ndarray, n_sims: int, rng: np.random.Generator) -> np.ndarray:

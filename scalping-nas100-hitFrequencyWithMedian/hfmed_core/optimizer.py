@@ -16,7 +16,8 @@ from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
-from .risk import run_monte_carlo, summarize_trades
+from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
+from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 from .sim_core import warmup as warmup_sim_core
 from .simulation import attach_profile_to_ticks, run_simulation
 
@@ -68,6 +69,7 @@ class Evaluation:
     ruined: bool
     summary: dict
     score: float
+    session_stats: dict[str, dict] = field(default_factory=dict)
     trades: list[ClosedTrade] = field(default_factory=list)
 
 
@@ -185,6 +187,7 @@ def run_single_backtest(
     )
     result = run_simulation(ticks, bars, cfg, log_result=True)
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
+    session_stats = summarize_trades_by_session(result.trades)
     values = parameters.values_from_config(cfg)
     evaluation = Evaluation(
         stage="single",
@@ -208,15 +211,30 @@ def run_single_backtest(
         ruined=result.ruined,
         summary=summary,
         score=score_evaluation(summary, result),
+        session_stats=session_stats,
         trades=result.trades,
     )
     train_by_hash = {evaluation.parameter_hash: []}
     oos_by_hash = {evaluation.parameter_hash: [evaluation]}
+    full_by_hash = {evaluation.parameter_hash: [evaluation]}
     aggregates = build_aggregates("single", [values], train_by_hash, oos_by_hash, 1, opt_cfg)
     mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, cfg, opt_cfg)
     apply_final_scores(aggregates, mc_by_hash, opt_cfg)
     aggregates[0]["stage_rank"] = 1
     parameter_ids = persistence.insert_parameter_sets(conn, run_id, aggregates)
+    persistence.upsert_parameter_session_stats(
+        conn,
+        run_id,
+        build_session_aggregates(
+            "single",
+            [values],
+            train_by_hash,
+            oos_by_hash,
+            1,
+            (("full", full_by_hash),),
+        ),
+        parameter_ids,
+    )
     persistence.insert_fold_results(conn, run_id, [evaluation], parameter_ids)
     persistence.insert_monte_carlo(conn, mc_by_hash, parameter_ids)
     parameter_set_id = parameter_ids[evaluation.parameter_hash]
@@ -356,6 +374,12 @@ def run_stage(
     for rank, row in enumerate(aggregates, start=1):
         row["stage_rank"] = rank
     persistence.update_parameter_set_results(conn, run_id, aggregates)
+    persistence.upsert_parameter_session_stats(
+        conn,
+        run_id,
+        build_session_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds)),
+        parameter_ids,
+    )
     return StageResult(stage, candidates, aggregates, oos_evals, mc_by_hash, parameter_ids)
 
 
@@ -643,6 +667,7 @@ def _evaluate_candidate_with_profiled_ticks(
         profiled_ticks=profiled_ticks,
     )
     summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
+    session_stats = summarize_trades_by_session(result.trades)
     score = score_evaluation(summary, result)
     if not keep_trades:
         result.trades = []
@@ -668,6 +693,7 @@ def _evaluate_candidate_with_profiled_ticks(
         ruined=result.ruined,
         summary=summary,
         score=score,
+        session_stats=session_stats,
         trades=result.trades,
     )
 
@@ -756,6 +782,37 @@ def build_aggregates(
     return aggregates
 
 
+def build_session_aggregates(
+    stage: str,
+    candidates: list[dict[str, int | float]],
+    train_by_hash: dict[str, list[Evaluation]],
+    oos_by_hash: dict[str, list[Evaluation]],
+    expected_folds: int,
+    role_sources: tuple[tuple[str, dict[str, list[Evaluation]]], ...] | None = None,
+) -> list[dict]:
+    if role_sources is None:
+        role_sources = (("train", train_by_hash), ("oos", oos_by_hash))
+    rows = []
+    for values in candidates:
+        digest = parameters.parameter_hash(values)
+        for window_role, by_hash in role_sources:
+            evaluations = by_hash.get(digest, [])
+            session_metrics = aggregate_session_evaluations(evaluations, expected_folds)
+            for session_type, _label, _sort_order in SESSION_TYPES:
+                rows.append(
+                    {
+                        "stage": stage,
+                        "parameter_hash": digest,
+                        "window_role": window_role,
+                        "session_type": session_type,
+                        "session_label": SESSION_LABELS[session_type],
+                        "session_sort_order": SESSION_SORT_ORDERS[session_type],
+                        **session_metrics[session_type],
+                    }
+                )
+    return rows
+
+
 def aggregate_evaluations(evaluations: list[Evaluation], expected_folds: int) -> dict:
     if not evaluations:
         return {
@@ -814,6 +871,46 @@ def aggregate_evaluations(evaluations: list[Evaluation], expected_folds: int) ->
         "signals_total": int(sum(item.signals_total for item in evaluations)),
         "ruined_folds": int(sum(1 for item in evaluations if item.ruined)),
     }
+
+
+def aggregate_session_evaluations(evaluations: list[Evaluation], expected_folds: int) -> dict[str, dict]:
+    out = {
+        session_type: {
+            "folds": len(evaluations),
+            "expected_folds": expected_folds,
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "breakeven_trades": 0,
+            "win_rate_pct": 0.0,
+            "gross_profit_eur": 0.0,
+            "gross_loss_eur": 0.0,
+            "net_profit_eur": 0.0,
+            "avg_trade_pnl_eur": 0.0,
+        }
+        for session_type, _label, _sort_order in SESSION_TYPES
+    }
+    for evaluation in evaluations:
+        for session_type, stats in evaluation.session_stats.items():
+            row = out.get(session_type)
+            if row is None:
+                continue
+            row["total_trades"] += int(stats.get("total_trades") or 0)
+            row["winning_trades"] += int(stats.get("winning_trades") or 0)
+            row["losing_trades"] += int(stats.get("losing_trades") or 0)
+            row["breakeven_trades"] += int(stats.get("breakeven_trades") or 0)
+            row["gross_profit_eur"] += float(stats.get("gross_profit_eur") or 0.0)
+            row["gross_loss_eur"] += float(stats.get("gross_loss_eur") or 0.0)
+            row["net_profit_eur"] += float(stats.get("net_profit_eur") or 0.0)
+
+    for row in out.values():
+        total = int(row["total_trades"])
+        row["win_rate_pct"] = round(float(row["winning_trades"]) / total * 100.0, 4) if total > 0 else 0.0
+        row["gross_profit_eur"] = round(float(row["gross_profit_eur"]), 2)
+        row["gross_loss_eur"] = round(float(row["gross_loss_eur"]), 2)
+        row["net_profit_eur"] = round(float(row["net_profit_eur"]), 2)
+        row["avg_trade_pnl_eur"] = round(float(row["net_profit_eur"]) / total, 4) if total > 0 else 0.0
+    return out
 
 
 def score_aggregate(oos: dict, train: dict, opt_cfg: OptimizerConfig) -> float:

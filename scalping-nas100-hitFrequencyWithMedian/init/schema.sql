@@ -16,6 +16,7 @@ GRANT SELECT ON public.pepperstone_ticks_data TO "market-data-account";
 \if :drop_hfmed_tables_on_start
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_trades CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_monte_carlo CASCADE;
+DROP TABLE IF EXISTS backtest2_nas100_hfmed_parameter_session_stats CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_fold_results CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_parameter_sets CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_runs CASCADE;
@@ -177,6 +178,37 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_run_score_idx
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_filters_idx
     ON backtest2_nas100_hfmed_parameter_sets(run_id, passed_filters, score DESC);
 
+CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats (
+    session_stat_id                    BIGSERIAL     PRIMARY KEY,
+    run_id                             BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
+    parameter_set_id                   BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_parameter_sets(parameter_set_id) ON DELETE CASCADE,
+    created_at                         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    stage                              TEXT          NOT NULL,
+    window_role                        TEXT          NOT NULL,
+    session_type                       TEXT          NOT NULL,
+    session_label                      TEXT          NOT NULL,
+    session_sort_order                 INTEGER       NOT NULL,
+
+    folds                              INTEGER       NOT NULL,
+    expected_folds                     INTEGER       NOT NULL,
+    total_trades                       INTEGER       NOT NULL,
+    winning_trades                     INTEGER       NOT NULL,
+    losing_trades                      INTEGER       NOT NULL,
+    breakeven_trades                   INTEGER       NOT NULL,
+    win_rate_pct                       NUMERIC(8,4)  NOT NULL,
+    gross_profit_eur                   NUMERIC(18,2) NOT NULL,
+    gross_loss_eur                     NUMERIC(18,2) NOT NULL,
+    net_profit_eur                     NUMERIC(18,2) NOT NULL,
+    avg_trade_pnl_eur                  NUMERIC(14,4) NOT NULL,
+
+    UNIQUE (parameter_set_id, window_role, session_type)
+);
+
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats_run_idx
+    ON backtest2_nas100_hfmed_parameter_session_stats(run_id, stage, window_role, session_sort_order);
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats_param_idx
+    ON backtest2_nas100_hfmed_parameter_session_stats(parameter_set_id, window_role, session_sort_order);
+
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_fold_results (
     fold_result_id                      BIGSERIAL     PRIMARY KEY,
     run_id                              BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
@@ -300,6 +332,7 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_trades (
     stage                               TEXT          NOT NULL,
     fold_index                          INTEGER       NOT NULL,
     window_role                         TEXT          NOT NULL,
+    entry_session                       TEXT          NOT NULL,
 
     signal_ts                           TIMESTAMPTZ   NOT NULL,
     entry_ts                            TIMESTAMPTZ   NOT NULL,
@@ -347,6 +380,7 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_outcome_idx
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     backtest2_nas100_hfmed_runs,
     backtest2_nas100_hfmed_parameter_sets,
+    backtest2_nas100_hfmed_parameter_session_stats,
     backtest2_nas100_hfmed_fold_results,
     backtest2_nas100_hfmed_monte_carlo,
     backtest2_nas100_hfmed_trades

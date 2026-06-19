@@ -13,17 +13,10 @@ import pandas as pd
 from .config import RunConfig
 from .entities import ClosedTrade, SimulationResult
 from .profile import rolling_profile_levels
+from .sessions import ENTRY_SESSION_COLUMN, add_entry_session_column
 from .sim_core import simulate_core
 
 log = logging.getLogger(__name__)
-
-PRE_MARKET_START_MINUTE = 4 * 60
-NY_OPEN_POWER_START_MINUTE = 9 * 60 + 30
-NY_MIDDAY_START_MINUTE = 11 * 60 + 30
-NY_LATE_START_MINUTE = 14 * 60
-NY_POWER_HOUR_START_MINUTE = 15 * 60
-AFTER_HOURS_START_MINUTE = 16 * 60
-OVERNIGHT_START_MINUTE = 20 * 60
 
 PROFILE_COLUMNS = [
     "profile_low",
@@ -55,23 +48,41 @@ def _all_sessions_enabled(cfg: RunConfig) -> bool:
 def _entry_session_allowed_mask(ticks: pd.DataFrame, cfg: RunConfig) -> np.ndarray | None:
     if _all_sessions_enabled(cfg):
         return None
+    if ENTRY_SESSION_COLUMN in ticks.columns:
+        enabled = []
+        if cfg.session_pre_market_enabled:
+            enabled.append("pre_market")
+        if cfg.session_ny_open_power_enabled:
+            enabled.append("ny_open_power")
+        if cfg.session_ny_midday_enabled:
+            enabled.append("ny_midday")
+        if cfg.session_ny_late_enabled:
+            enabled.append("ny_late")
+        if cfg.session_ny_power_hour_enabled:
+            enabled.append("ny_power_hour")
+        if cfg.session_after_hours_enabled:
+            enabled.append("after_hours")
+        if cfg.session_overnight_enabled:
+            enabled.append("overnight")
+        return np.isin(ticks[ENTRY_SESSION_COLUMN].to_numpy(dtype=object), enabled)
+
     local = pd.to_datetime(ticks["tick_time"], utc=True).dt.tz_convert(cfg.session_timezone)
     minute_of_day = local.dt.hour.to_numpy(dtype=np.int16) * 60 + local.dt.minute.to_numpy(dtype=np.int16)
     allowed = np.zeros(len(ticks), dtype=bool)
     if cfg.session_pre_market_enabled:
-        allowed |= (PRE_MARKET_START_MINUTE <= minute_of_day) & (minute_of_day < NY_OPEN_POWER_START_MINUTE)
+        allowed |= (4 * 60 <= minute_of_day) & (minute_of_day < 9 * 60 + 30)
     if cfg.session_ny_open_power_enabled:
-        allowed |= (NY_OPEN_POWER_START_MINUTE <= minute_of_day) & (minute_of_day < NY_MIDDAY_START_MINUTE)
+        allowed |= (9 * 60 + 30 <= minute_of_day) & (minute_of_day < 11 * 60 + 30)
     if cfg.session_ny_midday_enabled:
-        allowed |= (NY_MIDDAY_START_MINUTE <= minute_of_day) & (minute_of_day < NY_LATE_START_MINUTE)
+        allowed |= (11 * 60 + 30 <= minute_of_day) & (minute_of_day < 14 * 60)
     if cfg.session_ny_late_enabled:
-        allowed |= (NY_LATE_START_MINUTE <= minute_of_day) & (minute_of_day < NY_POWER_HOUR_START_MINUTE)
+        allowed |= (14 * 60 <= minute_of_day) & (minute_of_day < 15 * 60)
     if cfg.session_ny_power_hour_enabled:
-        allowed |= (NY_POWER_HOUR_START_MINUTE <= minute_of_day) & (minute_of_day < AFTER_HOURS_START_MINUTE)
+        allowed |= (15 * 60 <= minute_of_day) & (minute_of_day < 16 * 60)
     if cfg.session_after_hours_enabled:
-        allowed |= (AFTER_HOURS_START_MINUTE <= minute_of_day) & (minute_of_day < OVERNIGHT_START_MINUTE)
+        allowed |= (16 * 60 <= minute_of_day) & (minute_of_day < 20 * 60)
     if cfg.session_overnight_enabled:
-        allowed |= (minute_of_day < PRE_MARKET_START_MINUTE) | (OVERNIGHT_START_MINUTE <= minute_of_day)
+        allowed |= (minute_of_day < 4 * 60) | (20 * 60 <= minute_of_day)
     return allowed
 
 
@@ -120,6 +131,8 @@ def run_simulation(
         sim_ticks = attach_profile_to_ticks(ticks, bars, profile)
     else:
         sim_ticks = profiled_ticks
+    if ENTRY_SESSION_COLUMN not in sim_ticks.columns:
+        sim_ticks = add_entry_session_column(sim_ticks, cfg.session_timezone)
 
     result = SimulationResult(
         initial_equity=cfg.initial_equity,
@@ -219,6 +232,10 @@ def run_simulation(
     if not isinstance(tick_time, pd.Series):
         tick_time = pd.Series(tick_time)
     tick_time = tick_time.reset_index(drop=True)
+    entry_session = sim_ticks[ENTRY_SESSION_COLUMN]
+    if not isinstance(entry_session, pd.Series):
+        entry_session = pd.Series(entry_session)
+    entry_session = entry_session.reset_index(drop=True)
 
     status_labels = ("HIT_SL", "HIT_TP", "END_OF_DATA")
     trades: list[ClosedTrade] = []
@@ -238,6 +255,7 @@ def run_simulation(
             entry_ts=entry_ts,
             exit_ts=exit_ts,
             direction="LONG" if d == 1 else "SHORT",
+            entry_session=str(entry_session.iloc[e]),
             cross_quantile=cfg.long_cross_quantile if d == 1 else cfg.short_cross_quantile,
             cross_level=float(out_cross_level[k]),
             median_level=float(out_median[k]),

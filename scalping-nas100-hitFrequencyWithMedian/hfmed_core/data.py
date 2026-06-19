@@ -8,6 +8,7 @@ import psycopg2
 from psycopg2 import sql
 
 from .config import RunConfig
+from .sessions import add_entry_session_column
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def load_ticks(conn: psycopg2.extensions.connection, cfg: RunConfig) -> pd.DataF
     df["mid"] = (df["bid"] + df["ask"]) / 2.0
     df["bar_start"] = df["tick_time"].dt.floor(f"{cfg.bar_seconds}s")
     df = df.sort_values("tick_time").reset_index(drop=True)
+    df = add_entry_session_column(df, cfg.session_timezone)
     log.info(
         "Loaded ticks %d for %s from %s to %s",
         len(df), cfg.symbol, _fmt_ts(df["tick_time"].iloc[0]), _fmt_ts(df["tick_time"].iloc[-1]),

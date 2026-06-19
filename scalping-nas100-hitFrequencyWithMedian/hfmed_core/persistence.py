@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 RUN_TABLE = "backtest2_nas100_hfmed_runs"
 PARAMETER_TABLE = "backtest2_nas100_hfmed_parameter_sets"
+SESSION_TABLE = "backtest2_nas100_hfmed_parameter_session_stats"
 FOLD_TABLE = "backtest2_nas100_hfmed_fold_results"
 MC_TABLE = "backtest2_nas100_hfmed_monte_carlo"
 TRADES_TABLE = "backtest2_nas100_hfmed_trades"
@@ -215,7 +216,7 @@ def _db_round(value, digits: int):
 
 
 def validate_schema(conn: psycopg2.extensions.connection) -> None:
-    required = [RUN_TABLE, PARAMETER_TABLE, FOLD_TABLE, MC_TABLE, TRADES_TABLE]
+    required = [RUN_TABLE, PARAMETER_TABLE, SESSION_TABLE, FOLD_TABLE, MC_TABLE, TRADES_TABLE]
     missing = []
     missing_columns = []
     with conn.cursor() as cur:
@@ -226,7 +227,8 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
         required_columns = {
             RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile"),
             PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile"),
-            TRADES_TABLE: ("cross_quantile", "cross_level"),
+            SESSION_TABLE: ("session_type", "win_rate_pct"),
+            TRADES_TABLE: ("entry_session", "cross_quantile", "cross_level"),
         }
         for table, columns in required_columns.items():
             for column in columns:
@@ -575,6 +577,81 @@ def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> N
     log.info("Updated parameter set results %d", len(rows))
 
 
+def upsert_parameter_session_stats(conn, run_id: int, session_aggregates: list[dict], parameter_ids: dict[str, int]) -> None:
+    if not session_aggregates:
+        return
+    columns = [
+        "run_id",
+        "parameter_set_id",
+        "stage",
+        "window_role",
+        "session_type",
+        "session_label",
+        "session_sort_order",
+        "folds",
+        "expected_folds",
+        "total_trades",
+        "winning_trades",
+        "losing_trades",
+        "breakeven_trades",
+        "win_rate_pct",
+        "gross_profit_eur",
+        "gross_loss_eur",
+        "net_profit_eur",
+        "avg_trade_pnl_eur",
+    ]
+    rows = []
+    for item in session_aggregates:
+        parameter_set_id = parameter_ids.get(item["parameter_hash"])
+        if parameter_set_id is None:
+            continue
+        row = [
+            run_id,
+            parameter_set_id,
+            item["stage"],
+            item["window_role"],
+            item["session_type"],
+            item["session_label"],
+            item["session_sort_order"],
+            item["folds"],
+            item["expected_folds"],
+            item["total_trades"],
+            item["winning_trades"],
+            item["losing_trades"],
+            item["breakeven_trades"],
+            item["win_rate_pct"],
+            item["gross_profit_eur"],
+            item["gross_loss_eur"],
+            item["net_profit_eur"],
+            item["avg_trade_pnl_eur"],
+        ]
+        rows.append(tuple(_db_value(value) for value in row))
+    if not rows:
+        return
+    update_columns = [
+        column
+        for column in columns
+        if column not in {"parameter_set_id", "window_role", "session_type"}
+    ]
+    assignments = sql.SQL(", ").join(
+        sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(column))
+        for column in update_columns
+    )
+    query = sql.SQL("""
+        INSERT INTO {tbl} ({cols}) VALUES %s
+        ON CONFLICT (parameter_set_id, window_role, session_type)
+        DO UPDATE SET {assignments}
+    """).format(
+        tbl=_table(SESSION_TABLE),
+        cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+        assignments=assignments,
+    )
+    with conn.cursor() as cur:
+        execute_values(cur, query.as_string(conn), rows, page_size=2000)
+    conn.commit()
+    log.info("Upserted parameter session stats %d", len(rows))
+
+
 def insert_fold_results(conn, run_id: int, evaluations: list, parameter_ids: dict[str, int]) -> None:
     if not evaluations:
         return
@@ -671,6 +748,7 @@ def trade_rows(parameter_set_id: int, stage: str, fold_index: int, window_role: 
                 stage,
                 fold_index,
                 window_role,
+                t.entry_session,
                 _db_scalar(t.signal_ts),
                 _db_scalar(t.entry_ts),
                 _db_scalar(t.exit_ts),
@@ -714,6 +792,7 @@ def insert_trade_rows(conn, rows: list[tuple]) -> None:
         "stage",
         "fold_index",
         "window_role",
+        "entry_session",
         "signal_ts",
         "entry_ts",
         "exit_ts",

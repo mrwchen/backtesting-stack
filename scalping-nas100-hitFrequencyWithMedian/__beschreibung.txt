@@ -101,6 +101,7 @@ Ergebnis-Tabellen
 Die Tabellen werden ausschliesslich durch init/schema.sql angelegt:
   backtest2_nas100_hfmed_runs
   backtest2_nas100_hfmed_parameter_sets
+  backtest2_nas100_hfmed_parameter_session_stats
   backtest2_nas100_hfmed_fold_results
   backtest2_nas100_hfmed_trades
   backtest2_nas100_hfmed_monte_carlo
@@ -120,6 +121,8 @@ Default Walk-Forward:
 Stage 1 nutzt das grobe Grid. Stage 2 erzeugt lokale Midpoint-Varianten um die
 besten Stage-1-Kandidaten. Bewertet wird der Out-of-Sample-Teil. Einzeltrades
 werden nur fuer die Top-N Parametersets gespeichert.
+Trades und Winrate je Entry-Session werden fuer alle Parametersets als
+aggregierte Train-/OOS-Session-Stats gespeichert.
 
 Default Optimizer-Budget:
   STAGE1_MAX_PARAMETER_SETS=4096
