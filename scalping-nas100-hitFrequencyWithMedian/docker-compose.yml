@@ -121,7 +121,7 @@ services:
       - WF_TRAIN_TOP_N_PER_FOLD=100 # Top train candidates per fold evaluated OOS.
 
       # Optimizer execution.
-      - OPTIMIZER_PROCESSES=6 # Number of worker processes for candidate evaluation.
+      - OPTIMIZER_PROCESSES=4 # Number of worker processes for candidate evaluation.
       - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Configured chunk size; current code does not use it as Pool chunksize.
       - OPTIMIZER_PROFILE_CACHE_SIZE=4 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
