@@ -769,6 +769,7 @@ def _profile_cache_key(cfg: RunConfig) -> tuple:
     return (
         cfg.lookback_bars,
         cfg.min_lookback_bars,
+        cfg.profile_max_lookback_seconds,
         round(float(cfg.price_step), 8),
         round(float(cfg.median_quantile), 8),
         round(float(cfg.band_lower_quantile), 8),

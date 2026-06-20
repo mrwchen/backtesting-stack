@@ -179,6 +179,7 @@ def _notes(cfg: RunConfig, mode: str) -> str:
         f"mode {mode}",
         f"source {cfg.source_table}",
         f"bar_seconds {cfg.bar_seconds}",
+        f"profile_max_lookback_seconds {cfg.profile_max_lookback_seconds or cfg.lookback_bars * cfg.bar_seconds}",
         f"cross long {cfg.long_cross_quantile:g}",
         f"cross short {cfg.short_cross_quantile:g}",
         f"stop_mode {cfg.stop_mode}",

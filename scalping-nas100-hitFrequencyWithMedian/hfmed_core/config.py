@@ -37,6 +37,13 @@ def env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def env_optional_int(name: str) -> Optional[int]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return int(raw)
+
+
 def _one_of(name: str, default: str, choices: set[str]) -> str:
     value = env_str(name, default).lower()
     if value not in choices:
@@ -89,6 +96,9 @@ LOOKBACK_BARS = max(1, env_int("LOOKBACK_BARS", 10))
 MIN_LOOKBACK_BARS = max(1, env_int("MIN_LOOKBACK_BARS", LOOKBACK_BARS))
 if MIN_LOOKBACK_BARS > LOOKBACK_BARS:
     raise ValueError("MIN_LOOKBACK_BARS must be <= LOOKBACK_BARS")
+PROFILE_MAX_LOOKBACK_SECONDS = env_optional_int("PROFILE_MAX_LOOKBACK_SECONDS")
+if PROFILE_MAX_LOOKBACK_SECONDS is not None and PROFILE_MAX_LOOKBACK_SECONDS <= 0:
+    raise ValueError("PROFILE_MAX_LOOKBACK_SECONDS must be positive when set")
 PRICE_STEP = env_float("PRICE_STEP", 1.0)
 if PRICE_STEP <= 0:
     raise ValueError("PRICE_STEP must be positive")
@@ -223,6 +233,7 @@ class RunConfig:
     bar_seconds: int
     lookback_bars: int
     min_lookback_bars: int
+    profile_max_lookback_seconds: Optional[int]
     price_step: float
     median_quantile: float
     band_lower_quantile: float
@@ -304,6 +315,7 @@ def active_run_config() -> RunConfig:
         bar_seconds=BAR_SECONDS,
         lookback_bars=LOOKBACK_BARS,
         min_lookback_bars=MIN_LOOKBACK_BARS,
+        profile_max_lookback_seconds=PROFILE_MAX_LOOKBACK_SECONDS,
         price_step=PRICE_STEP,
         median_quantile=MEDIAN_QUANTILE,
         band_lower_quantile=BAND_LOWER_QUANTILE,

@@ -43,8 +43,10 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
     step = cfg.price_step
     lookback = cfg.lookback_bars
     min_lookback = cfg.min_lookback_bars
+    max_age_seconds = cfg.profile_max_lookback_seconds or (cfg.lookback_bars * cfg.bar_seconds)
+    max_age_ns = int(max_age_seconds) * 1_000_000_000
     counts: dict[int, int] = {}
-    window: deque[list[int]] = deque()
+    window: deque[tuple[int, list[int]]] = deque()
     total_hits = 0
     n = len(bars)
     q0 = np.full(n, np.nan, dtype=np.float64)
@@ -88,7 +90,14 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
     def current_max_level() -> float:
         return float(max(counts)) * step if counts else float("nan")
 
+    def remove_expired(current_bar_start_ns: int) -> None:
+        while window and current_bar_start_ns - window[0][0] > max_age_ns:
+            _bar_start_ns, levels = window.popleft()
+            remove_levels(levels)
+
     for pos in range(n):
+        remove_expired(int(bars.bar_start_ns[pos]))
+
         if len(window) >= min_lookback and total_hits > 0:
             q0[pos] = current_min_level()
             q45[pos] = current_quantile(cfg.band_lower_quantile)
@@ -101,10 +110,11 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
             stop_upper[pos] = current_quantile(cfg.stop_profile_upper_quantile)
 
         levels = level_indices_between(float(bars.low[pos]), float(bars.high[pos]), step)
-        window.append(levels)
+        window.append((int(bars.bar_start_ns[pos]), levels))
         add_levels(levels)
         while len(window) > lookback:
-            remove_levels(window.popleft())
+            _bar_start_ns, old_levels = window.popleft()
+            remove_levels(old_levels)
 
     return ProfileArrays(
         profile_low=q0,

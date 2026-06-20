@@ -24,9 +24,17 @@ Default:
   BAR_SECONDS=10
   LOOKBACK_BARS=90
   MIN_LOOKBACK_BARS=90
+  PROFILE_MAX_LOOKBACK_SECONDS=
   PRICE_STEP=1.0
   LONG_CROSS_QUANTILE=0.50
   SHORT_CROSS_QUANTILE=0.50
+
+Das Profil ist zusaetzlich wall-clock-bounded. Wenn
+PROFILE_MAX_LOOKBACK_SECONDS leer bleibt, gilt LOOKBACK_BARS * BAR_SECONDS.
+Bei 90 Bars und 10 Sekunden sind das 900 Sekunden. Dadurch werden nach
+Overnight-/Wochenend- oder anderen grossen Tick-Luecken alte Bars vor der
+Profilberechnung entfernt; Entries sind erst wieder moeglich, wenn
+MIN_LOOKBACK_BARS frische Bars im Zeitfenster liegen.
 
 Je Lookback-Bar werden alle ganzzahligen Preislevel zwischen Low und High
 gezaehlt. Der Median-Level ist exakt das 50%-Quantil dieser Hit-Counts:
