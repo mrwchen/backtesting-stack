@@ -135,7 +135,8 @@ def simulate_core(
             if hit_stop or hit_tp:
                 status = 0 if hit_stop else 1
                 sign = 1.0 if p_dir == 1 else -1.0
-                gross = (p_units * mult * (exit_quote - p_entry_price) * sign) / eff_rate
+                fill_price = p_tp if status == 1 else exit_quote
+                gross = (p_units * mult * (fill_price - p_entry_price) * sign) / eff_rate
                 extra = (p_units * (spread_points + slippage_points) * mult) / eff_rate
                 extra += commission_per_unit * p_units * 2.0
                 pnl = gross - extra
@@ -149,7 +150,7 @@ def simulate_core(
                     out_prev_mid[n_trades] = p_prev_mid
                     out_signal_mid[n_trades] = p_signal_mid
                     out_entry_price[n_trades] = p_entry_price
-                    out_exit_price[n_trades] = exit_quote
+                    out_exit_price[n_trades] = fill_price
                     out_stop_price[n_trades] = p_stop
                     out_tp_price[n_trades] = p_tp
                     out_units[n_trades] = p_units

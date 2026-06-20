@@ -55,7 +55,8 @@ services:
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
       - SYMBOL=NAS100 # Symbol filter for source ticks.
-      - START_TS_UTC=#2025-12-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
+      - START_TS_UTC= 
+      #2025-12-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.

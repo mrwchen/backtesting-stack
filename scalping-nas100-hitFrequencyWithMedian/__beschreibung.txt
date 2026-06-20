@@ -51,6 +51,9 @@ dem bisherigen Median-Cross. Fuer 45%/55% werden 0.45 bzw. 0.55 gesetzt.
 Fills nutzen echte Quotes:
   LONG entry  = ask, exit = bid
   SHORT entry = bid, exit = ask
+Take-profit Exits werden beim konfigurierten Take-Profit-Preis abgerechnet,
+nicht bei einem besseren Quote jenseits des Take-Profits. Stop-Loss und
+End-of-data Exits nutzen den tatsaechlichen Exit-Quote.
 
 Es ist immer nur eine Position gleichzeitig offen. Neue Signale werden waehrend
 einer offenen Position ignoriert.
