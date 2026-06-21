@@ -60,6 +60,10 @@ SUMMARY_KEYS = [
     "net_profit_eur",
     "avg_trade_pnl_eur",
     "final_equity",
+    "avg_realized_risk_pct",
+    "median_realized_risk_pct",
+    "max_realized_risk_pct",
+    "margin_capped_share_pct",
 ]
 
 MC_KEYS = [
@@ -229,7 +233,7 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
             RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile"),
             PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile"),
             SESSION_TABLE: ("session_type", "win_rate_pct"),
-            TRADES_TABLE: ("entry_session", "cross_quantile", "cross_level"),
+            TRADES_TABLE: ("entry_session", "cross_quantile", "cross_level", "realized_risk_pct"),
         }
         for table, columns in required_columns.items():
             for column in columns:
@@ -780,6 +784,9 @@ def trade_rows(parameter_set_id: int, stage: str, fold_index: int, window_role: 
                 t.outcome_status,
                 int(t.ticks_held),
                 _db_round(t.seconds_held, 3),
+                _db_round(t.realized_risk_eur, 2),
+                _db_round(t.realized_risk_pct, 4),
+                bool(t.margin_capped),
             )
         )
     return rows
@@ -824,6 +831,9 @@ def insert_trade_rows(conn, rows: list[tuple]) -> None:
         "outcome_status",
         "ticks_held",
         "seconds_held",
+        "realized_risk_eur",
+        "realized_risk_pct",
+        "margin_capped",
     ]
     query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s").format(
         tbl=_table(TRADES_TABLE),

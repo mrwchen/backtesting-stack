@@ -164,6 +164,7 @@ def run_simulation(
             np.empty(cap, dtype=np.float64),  # equity_after
             np.empty(cap, dtype=np.int8),     # status
             np.empty(cap, dtype=np.int64),    # ticks_held
+            np.empty(cap, dtype=np.int8),     # margin_capped
         )
 
     count_out = _empty_outputs(0)
@@ -180,9 +181,11 @@ def run_simulation(
         out_prev_mid, out_signal_mid, out_entry_price, out_exit_price, out_stop_price,
         out_tp_price, out_units, out_notional, out_margin, out_gross, out_extra,
         out_pnl, out_equity_before, out_equity_after, out_status, out_ticks_held,
+        out_margin_capped,
     ) = out
 
     status_labels = ("HIT_SL", "HIT_TP", "END_OF_DATA")
+    eff_rate = cfg.eurusd_rate if cfg.eurusd_rate > 0 else 1.0
     trades: list[ClosedTrade] = []
     for k in range(n_trades):
         d = int(out_direction[k])
@@ -195,6 +198,9 @@ def run_simulation(
         equity_before = float(out_equity_before[k])
         pnl = float(out_pnl[k])
         sign = 1.0 if d == 1 else -1.0
+        stop_price = float(out_stop_price[k])
+        realized_risk_eur = float(out_units[k]) * abs(entry_price - stop_price) * cfg.contract_multiplier / eff_rate
+        realized_risk_pct = (realized_risk_eur / equity_before * 100.0) if equity_before > 0 else 0.0
         trades.append(ClosedTrade(
             signal_ts=entry_ts,
             entry_ts=entry_ts,
@@ -212,7 +218,7 @@ def run_simulation(
             exit_bid=float(bid[x]),
             exit_ask=float(ask[x]),
             exit_price=exit_price,
-            stop_price=float(out_stop_price[k]),
+            stop_price=stop_price,
             take_profit_price=float(out_tp_price[k]),
             units=float(out_units[k]),
             notional_eur=float(out_notional[k]),
@@ -227,6 +233,9 @@ def run_simulation(
             outcome_status=status_labels[int(out_status[k])],
             ticks_held=int(out_ticks_held[k]),
             seconds_held=float((exit_ts - entry_ts).total_seconds()),
+            realized_risk_eur=realized_risk_eur,
+            realized_risk_pct=realized_risk_pct,
+            margin_capped=bool(out_margin_capped[k]),
         ))
 
     result.trades = trades

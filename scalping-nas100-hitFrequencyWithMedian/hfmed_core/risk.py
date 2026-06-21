@@ -30,11 +30,17 @@ def summarize_trades(trades: list[ClosedTrade], initial_equity: float, final_equ
             "gross_loss_eur": 0.0,
             "net_profit_eur": 0.0,
             "avg_trade_pnl_eur": 0.0,
+            "avg_realized_risk_pct": 0.0,
+            "median_realized_risk_pct": 0.0,
+            "max_realized_risk_pct": 0.0,
+            "margin_capped_share_pct": 0.0,
             "final_equity": round(float(final_equity), 2),
         }
 
     pnls = np.array([t.pnl_eur for t in trades], dtype=np.float64)
     rets = np.array([t.return_pct for t in trades], dtype=np.float64)
+    risk_pcts = np.array([t.realized_risk_pct for t in trades], dtype=np.float64)
+    capped = np.array([1.0 if t.margin_capped else 0.0 for t in trades], dtype=np.float64)
     wins = pnls > 0
     losses = pnls < 0
     gross_win = float(pnls[wins].sum())
@@ -65,6 +71,10 @@ def summarize_trades(trades: list[ClosedTrade], initial_equity: float, final_equ
         "gross_loss_eur": round(float(gross_loss), 2),
         "net_profit_eur": round(float(pnls.sum()), 2),
         "avg_trade_pnl_eur": round(float(pnls.mean()), 4),
+        "avg_realized_risk_pct": round(float(risk_pcts.mean()), 4),
+        "median_realized_risk_pct": round(float(np.median(risk_pcts)), 4),
+        "max_realized_risk_pct": round(float(risk_pcts.max()), 4),
+        "margin_capped_share_pct": round(float(capped.mean() * 100.0), 2),
         "final_equity": round(float(final_equity), 2),
     }
 

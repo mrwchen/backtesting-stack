@@ -84,6 +84,7 @@ def simulate_core(
     out_equity_after,
     out_status,
     out_ticks_held,
+    out_margin_capped,
     cap,
 ):
     n = mid.shape[0]
@@ -105,6 +106,7 @@ def simulate_core(
     p_prev_mid = 0.0
     p_signal_mid = 0.0
     p_ticks_held = 0
+    p_margin_capped = 0
 
     signals_total = 0
     long_signals = 0
@@ -163,6 +165,7 @@ def simulate_core(
                     out_equity_after[n_trades] = equity_after
                     out_status[n_trades] = status
                     out_ticks_held[n_trades] = p_ticks_held
+                    out_margin_capped[n_trades] = p_margin_capped
                 n_trades += 1
                 equity = equity_after
                 has_pos = False
@@ -264,6 +267,7 @@ def simulate_core(
         units = 0.0
         notional = 0.0
         margin = 0.0
+        margin_capped = 0
         if stop_distance > 0.0 and entry_price > 0.0 and equity > 0.0:
             risk_budget = equity * (risk_pct / 100.0)
             risk_per_unit = (stop_distance * mult) / eff_rate
@@ -274,6 +278,7 @@ def simulate_core(
                 max_margin = equity * (max_margin_pct / 100.0)
                 if margin > max_margin and margin > 0.0:
                     units *= max_margin / margin
+                    margin_capped = 1
                 if units < lot_size:
                     units = 0.0
                 else:
@@ -300,6 +305,7 @@ def simulate_core(
         p_prev_mid = prev_mid
         p_signal_mid = m
         p_ticks_held = 0
+        p_margin_capped = margin_capped
 
     if has_pos and n > 0:
         i = n - 1
@@ -332,6 +338,7 @@ def simulate_core(
             out_equity_after[n_trades] = equity_after
             out_status[n_trades] = 2
             out_ticks_held[n_trades] = p_ticks_held
+            out_margin_capped[n_trades] = p_margin_capped
         n_trades += 1
         equity = equity_after
 
@@ -369,6 +376,6 @@ def warmup() -> None:
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_d.copy(),
-        out_i.copy(),
+        out_i.copy(), out_d.copy(),
         0,
     )

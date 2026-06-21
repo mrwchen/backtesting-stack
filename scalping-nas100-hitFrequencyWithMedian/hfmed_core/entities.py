@@ -45,6 +45,9 @@ class ClosedTrade:
     outcome_status: str
     ticks_held: int
     seconds_held: float
+    realized_risk_eur: float
+    realized_risk_pct: float
+    margin_capped: bool
 
 
 @dataclass

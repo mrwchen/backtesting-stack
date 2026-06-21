@@ -97,7 +97,7 @@ services:
       - ACCOUNT_CURRENCY=EUR # Account currency used for persisted metrics.
       - MARGIN_REQUIREMENT_PCT=5 # Margin requirement percentage.
       - RISK_PER_TRADE_PCT=1.5 # Equity risk budget per trade.
-      - MAX_MARGIN_PCT=45 # Maximum equity share allowed as position margin.
+      - MAX_MARGIN_PCT=100 # Maximum equity share allowed as position margin.
       - CONTRACT_MULTIPLIER=1.0 # PnL multiplier per unit and point.
       - LOT_SIZE=0.1 # Position units are rounded down to this lot size.
       - EURUSD_RATE=1.0 # USD-to-EUR conversion rate; USD values are divided by this rate.

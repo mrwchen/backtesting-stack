@@ -247,7 +247,11 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_fold_results (
     gross_loss_eur                      NUMERIC(18,2),
     net_profit_eur                      NUMERIC(18,2),
     avg_trade_pnl_eur                   NUMERIC(14,4),
-    final_equity                        NUMERIC(18,2)
+    final_equity                        NUMERIC(18,2),
+    avg_realized_risk_pct               NUMERIC(8,4),
+    median_realized_risk_pct            NUMERIC(8,4),
+    max_realized_risk_pct               NUMERIC(8,4),
+    margin_capped_share_pct             NUMERIC(8,4)
 );
 
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_fold_results_param_idx
@@ -367,7 +371,10 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_trades (
 
     outcome_status                      TEXT          NOT NULL,
     ticks_held                          INTEGER       NOT NULL,
-    seconds_held                        NUMERIC(12,3) NOT NULL
+    seconds_held                        NUMERIC(12,3) NOT NULL,
+    realized_risk_eur                   NUMERIC(15,2),
+    realized_risk_pct                   NUMERIC(8,4),
+    margin_capped                       BOOLEAN
 );
 
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_entry_idx
@@ -376,6 +383,18 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_direction_idx
     ON backtest2_nas100_hfmed_trades(parameter_set_id, direction);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_outcome_idx
     ON backtest2_nas100_hfmed_trades(parameter_set_id, outcome_status);
+
+-- Backfill realized-risk columns on already-existing deployments (no-op on fresh installs).
+ALTER TABLE backtest2_nas100_hfmed_fold_results
+    ADD COLUMN IF NOT EXISTS avg_realized_risk_pct    NUMERIC(8,4),
+    ADD COLUMN IF NOT EXISTS median_realized_risk_pct NUMERIC(8,4),
+    ADD COLUMN IF NOT EXISTS max_realized_risk_pct    NUMERIC(8,4),
+    ADD COLUMN IF NOT EXISTS margin_capped_share_pct  NUMERIC(8,4);
+
+ALTER TABLE backtest2_nas100_hfmed_trades
+    ADD COLUMN IF NOT EXISTS realized_risk_eur        NUMERIC(15,2),
+    ADD COLUMN IF NOT EXISTS realized_risk_pct        NUMERIC(8,4),
+    ADD COLUMN IF NOT EXISTS margin_capped            BOOLEAN;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     backtest2_nas100_hfmed_runs,
