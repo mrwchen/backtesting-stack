@@ -311,6 +311,19 @@ def run_stage(
         oos_evals.extend(fold_oos)
         aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
         persistence.update_parameter_set_results(conn, run_id, aggregates)
+        persistence.upsert_parameter_session_stats(
+            conn,
+            run_id,
+            build_session_aggregates(
+                stage,
+                selected_candidates,
+                train_by_hash,
+                oos_by_hash,
+                len(folds),
+                (("oos", oos_by_hash),),
+            ),
+            parameter_ids,
+        )
 
     aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
     mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, base_cfg, opt_cfg, stage, folds, ticks, bars)
