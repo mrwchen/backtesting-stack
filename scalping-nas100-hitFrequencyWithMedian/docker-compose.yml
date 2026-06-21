@@ -8,7 +8,7 @@ services:
       # Init database connection.
       PGPASSWORD: postgres-ts-root-pw # Password for the postgres-ts init connection.
       # Schema lifecycle.
-      DROP_ALL_HFMED_TABLES_ON_START: "false" # Drop existing hfmed result tables before recreating them.
+      DROP_ALL_HFMED_TABLES_ON_START: "true" # Drop existing hfmed result tables before recreating them.
     command: # Run schema.sql against the TimescaleDB/PostgreSQL service.
       - sh
       - -c
@@ -134,7 +134,7 @@ services:
       - STAGE1_MAX_PARAMETER_SETS=65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
 
       # Stage 2 local refinement.
-      - STAGE2_ENABLED=true # Enable local midpoint refinement around best Stage 1 candidates.
+      - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
       - STAGE2_SEED_TOP_N=20 # Number of Stage 1 seeds for Stage 2 refinement.
       - STAGE2_MAX_PARAMETER_SETS=500 # Max Stage 2 candidates; 0 means unlimited.
 
