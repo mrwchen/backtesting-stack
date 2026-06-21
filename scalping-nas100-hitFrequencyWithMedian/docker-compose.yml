@@ -145,7 +145,7 @@ services:
       # Final scoring, filtering and persistence.
       - MC_SCORE_TOP_N=30 # Number of top parameter sets scored with Monte-Carlo.
       - PERSIST_TOP_TRADES_N=1000 # Persist individual trades only for top N parameter sets.
-      - MIN_OOS_TRADES=50 # Minimum out-of-sample trades for filters and scoring.
+      - MIN_OOS_TRADES=40 # Minimum out-of-sample trades for filters and scoring.
       - MIN_OOS_PROFIT_FACTOR=1.1 # Minimum OOS profit factor filter.
       - MAX_OOS_DRAWDOWN_PCT=25.0 # Maximum allowed OOS drawdown percentage.
       - MAX_MC_RUIN_PCT=5.0 # Maximum allowed Monte-Carlo ruin probability.
