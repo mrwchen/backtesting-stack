@@ -7,7 +7,7 @@ import math
 import multiprocessing as mp
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -1051,7 +1051,6 @@ def _recompute_oos_evaluations_with_trades(
     for evaluation in evaluations:
         by_fold.setdefault(evaluation.fold_index, []).append(evaluation)
 
-    serial_opt_cfg = replace(opt_cfg, processes=1)
     out: list[Evaluation] = []
     for fold_index, fold_evals in by_fold.items():
         fold = fold_by_index.get(fold_index)
@@ -1060,7 +1059,7 @@ def _recompute_oos_evaluations_with_trades(
             continue
         candidates = [evaluation.values for evaluation in fold_evals]
         log.info("Recomputing OOS trades stage %s fold %d candidates %d", stage, fold_index, len(candidates))
-        out.extend(evaluate_many(stage, candidates, fold, "oos", base_cfg, serial_opt_cfg, ticks, bars, keep_trades=True))
+        out.extend(evaluate_many(stage, candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=True))
     return out
 
 
