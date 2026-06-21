@@ -8,7 +8,7 @@ services:
       # Init database connection.
       PGPASSWORD: postgres-ts-root-pw # Password for the postgres-ts init connection.
       # Schema lifecycle.
-      DROP_ALL_HFMED_TABLES_ON_START: "true" # Drop existing hfmed result tables before recreating them.
+      DROP_ALL_HFMED_TABLES_ON_START: "false" # Drop existing hfmed result tables before recreating them.
     command: # Run schema.sql against the TimescaleDB/PostgreSQL service.
       - sh
       - -c
