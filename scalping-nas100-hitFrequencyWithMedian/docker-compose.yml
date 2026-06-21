@@ -120,7 +120,7 @@ services:
       - WF_TRAIN_DAYS=30 # Walk-forward train window length in days.
       - WF_TEST_DAYS=30 # Walk-forward out-of-sample test window length in days.
       - WF_STEP_DAYS=30 # Days to move forward between folds.
-      - WF_TRAIN_TOP_N_PER_FOLD=1000 # Top train candidates per fold evaluated OOS.
+      - WF_TRAIN_TOP_N_PER_FOLD=7000 # Top train candidates per fold evaluated OOS.
 
       # Optimizer execution.
       - OPTIMIZER_PROCESSES=4 # Number of worker processes for candidate evaluation.
@@ -130,12 +130,8 @@ services:
       - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
 
-      # Stage 1 coarse search and screening.
+      # Stage 1 coarse search.
       - STAGE1_MAX_PARAMETER_SETS=65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
-      - STAGE1_SCREENING_ENABLED=false # Enable short-window Stage 1 pre-screening.
-      - STAGE1_SCREENING_ROUNDS=2 # Number of Stage 1 screening rounds.
-      - STAGE1_SCREENING_TRAIN_DAYS=20 # Base train days used in screening windows.
-      - STAGE1_SCREENING_TOP_N=7000 # Candidates kept after Stage 1 screening.
 
       # Stage 2 local refinement.
       - STAGE2_ENABLED=true # Enable local midpoint refinement around best Stage 1 candidates.

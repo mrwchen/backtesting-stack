@@ -137,17 +137,11 @@ aggregierte Train-/OOS-Session-Stats gespeichert.
 
 Default Optimizer-Budget:
   STAGE1_MAX_PARAMETER_SETS=4096
-  STAGE1_SCREENING_ENABLED=true
-  STAGE1_SCREENING_ROUNDS=2
-  STAGE1_SCREENING_TRAIN_DAYS=10
-  STAGE1_SCREENING_TOP_N=512
   STAGE2_SEED_TOP_N=8
   STAGE2_MAX_PARAMETER_SETS=512
 
-Das Screening bewertet Stage-1-Kandidaten zuerst auf kurzen Train-Fenstern
-und gibt nur die besten Kandidaten in die volle Walk-Forward-Bewertung. Der
-Optimizer bereitet Tick-/Bar-Fenster pro Worker einmal vor und cached Rolling
-Profile pro Fenster und Profil-Parameterkombination.
+Der Optimizer bereitet Tick-/Bar-Fenster pro Worker einmal vor und cached
+Rolling Profile pro Fenster und Profil-Parameterkombination.
 
 Ausfuehrung auf dem Server
 --------------------------

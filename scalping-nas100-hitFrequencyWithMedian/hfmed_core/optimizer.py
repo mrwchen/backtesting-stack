@@ -110,7 +110,6 @@ def run_walk_forward_optimizer(
 
     grid = parameters.load_grid(opt_cfg.parameter_grid_path)
     stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets, opt_cfg.sampling_seed)
-    stage1_candidates = screen_stage1_candidates(stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     log.info("Stage 1 candidates %d folds %d", len(stage1_candidates), len(folds))
     stage1 = run_stage(conn, run_id, "stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
     persistence.insert_monte_carlo(conn, stage1.mc_by_hash, stage1.parameter_ids)
@@ -262,74 +261,6 @@ def run_single_backtest(
         aggregates[0]["oos_total_return_pct"],
         aggregates[0]["oos_profit_factor"] if aggregates[0]["oos_profit_factor"] is not None else 0.0,
         aggregates[0]["oos_max_drawdown_pct"],
-    )
-
-
-def screen_stage1_candidates(
-    candidates: list[dict[str, int | float]],
-    folds: list[FoldSpec],
-    base_cfg: RunConfig,
-    opt_cfg: OptimizerConfig,
-    ticks: TickData,
-    bars: BarData,
-) -> list[dict[str, int | float]]:
-    if not opt_cfg.stage1_screening_enabled:
-        return candidates
-    if len(candidates) <= opt_cfg.stage1_screening_top_n:
-        log.info("Stage 1 screening skipped candidates %d top_n %d", len(candidates), opt_cfg.stage1_screening_top_n)
-        return candidates
-
-    active = candidates
-    initial_count = len(active)
-    rounds = max(1, opt_cfg.stage1_screening_rounds)
-    for round_no in range(1, rounds + 1):
-        if len(active) <= opt_cfg.stage1_screening_top_n:
-            break
-        keep_n = _screening_keep_count(len(active), opt_cfg.stage1_screening_top_n, rounds - round_no + 1)
-        train_days = min(opt_cfg.train_days, opt_cfg.stage1_screening_train_days * round_no)
-        fold = _shortened_train_fold(folds[(round_no - 1) % len(folds)], train_days)
-        log.info(
-            "Stage 1 screening round %d candidates %d keep %d train_days %d fold %d %s",
-            round_no,
-            len(active),
-            keep_n,
-            train_days,
-            fold.fold_index,
-            _fold_role_period(fold, "train"),
-        )
-        evaluations = evaluate_many(
-            f"screen{round_no}",
-            active,
-            fold,
-            "train",
-            base_cfg,
-            opt_cfg,
-            ticks,
-            bars,
-            keep_trades=False,
-        )
-        active = [item.values for item in sorted(evaluations, key=lambda evaluation: evaluation.score, reverse=True)[:keep_n]]
-
-    log.info("Stage 1 screening complete initial %d selected %d", initial_count, len(active))
-    return active
-
-
-def _screening_keep_count(active_count: int, final_top_n: int, remaining_rounds: int) -> int:
-    if remaining_rounds <= 1:
-        return min(active_count, final_top_n)
-    ratio = final_top_n / max(1, active_count)
-    keep = int(math.ceil(active_count * (ratio ** (1.0 / remaining_rounds))))
-    return min(active_count, max(final_top_n, keep))
-
-
-def _shortened_train_fold(fold: FoldSpec, train_days: int) -> FoldSpec:
-    train_end_ns = min(fold.train_end_ns, fold.train_start_ns + train_days * NANOSECONDS_PER_DAY)
-    return FoldSpec(
-        fold_index=fold.fold_index,
-        train_start_ns=fold.train_start_ns,
-        train_end_ns=train_end_ns,
-        test_start_ns=fold.test_start_ns,
-        test_end_ns=fold.test_end_ns,
     )
 
 

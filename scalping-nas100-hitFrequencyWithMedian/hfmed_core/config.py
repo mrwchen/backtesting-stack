@@ -187,10 +187,6 @@ OPTIMIZER_PROGRESS_LOG_EVERY = max(1, env_int("OPTIMIZER_PROGRESS_LOG_EVERY", 50
 OPTIMIZER_PROGRESS_LOG_SECONDS = max(1, env_int("OPTIMIZER_PROGRESS_LOG_SECONDS", 60))
 OPTIMIZER_SAMPLING_SEED = env_int("OPTIMIZER_SAMPLING_SEED", 12345)
 STAGE1_MAX_PARAMETER_SETS = max(0, env_int("STAGE1_MAX_PARAMETER_SETS", 0))
-STAGE1_SCREENING_ENABLED = env_bool("STAGE1_SCREENING_ENABLED", True)
-STAGE1_SCREENING_ROUNDS = max(1, env_int("STAGE1_SCREENING_ROUNDS", 2))
-STAGE1_SCREENING_TRAIN_DAYS = max(1, env_int("STAGE1_SCREENING_TRAIN_DAYS", 10))
-STAGE1_SCREENING_TOP_N = max(1, env_int("STAGE1_SCREENING_TOP_N", 512))
 STAGE2_ENABLED = env_bool("STAGE2_ENABLED", True)
 STAGE2_SEED_TOP_N = max(1, env_int("STAGE2_SEED_TOP_N", 20))
 STAGE2_MAX_PARAMETER_SETS = max(0, env_int("STAGE2_MAX_PARAMETER_SETS", 0))
@@ -291,10 +287,6 @@ class OptimizerConfig:
     progress_log_seconds: int
     sampling_seed: int
     stage1_max_parameter_sets: int
-    stage1_screening_enabled: bool
-    stage1_screening_rounds: int
-    stage1_screening_train_days: int
-    stage1_screening_top_n: int
     stage2_enabled: bool
     stage2_seed_top_n: int
     stage2_max_parameter_sets: int
@@ -374,10 +366,6 @@ def active_optimizer_config() -> OptimizerConfig:
         progress_log_seconds=OPTIMIZER_PROGRESS_LOG_SECONDS,
         sampling_seed=OPTIMIZER_SAMPLING_SEED,
         stage1_max_parameter_sets=STAGE1_MAX_PARAMETER_SETS,
-        stage1_screening_enabled=STAGE1_SCREENING_ENABLED,
-        stage1_screening_rounds=STAGE1_SCREENING_ROUNDS,
-        stage1_screening_train_days=STAGE1_SCREENING_TRAIN_DAYS,
-        stage1_screening_top_n=STAGE1_SCREENING_TOP_N,
         stage2_enabled=STAGE2_ENABLED,
         stage2_seed_top_n=STAGE2_SEED_TOP_N,
         stage2_max_parameter_sets=STAGE2_MAX_PARAMETER_SETS,
