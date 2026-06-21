@@ -135,10 +135,10 @@ services:
       - STAGE1_SCREENING_ENABLED=false # Enable short-window Stage 1 pre-screening.
       - STAGE1_SCREENING_ROUNDS=2 # Number of Stage 1 screening rounds.
       - STAGE1_SCREENING_TRAIN_DAYS=20 # Base train days used in screening windows.
-      - STAGE1_SCREENING_TOP_N=2000 # Candidates kept after Stage 1 screening.
+      - STAGE1_SCREENING_TOP_N=7000 # Candidates kept after Stage 1 screening.
 
       # Stage 2 local refinement.
-      - STAGE2_ENABLED=true # Enable local midpoint refinement around best Stage 1 candidates.
+      - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
       - STAGE2_SEED_TOP_N=20 # Number of Stage 1 seeds for Stage 2 refinement.
       - STAGE2_MAX_PARAMETER_SETS=512 # Max Stage 2 candidates; 0 means unlimited.
 
