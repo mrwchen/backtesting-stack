@@ -72,13 +72,17 @@ services:
 
       # Entry sessions.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
-      - SESSION_PRE_MARKET_ENABLED=true # Enable new entries from 04:00-09:30.
-      - SESSION_NY_OPEN_POWER_ENABLED=true # Enable new entries from 09:30-11:30.
+      - SESSION_OVERNIGHT_ENABLED=true # Enable new entries from 20:00-04:00.
+      - SESSION_PRE_MARKET_EARLY_ENABLED=true # Enable new entries from 04:00-07:00.
+      - SESSION_PRE_MARKET_ACTIVE_ENABLED=true # Enable new entries from 07:00-08:30.
+      - SESSION_PRE_MARKET_MACRO_ENABLED=true # Enable new entries from 08:30-09:30.
+      - SESSION_NY_OPEN_IMPULSE_ENABLED=true # Enable new entries from 09:30-10:00.
+      - SESSION_NY_MORNING_ENABLED=true # Enable new entries from 10:00-11:30.
       - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
       - SESSION_NY_LATE_ENABLED=true # Enable new entries from 14:00-15:00.
       - SESSION_NY_POWER_HOUR_ENABLED=true # Enable new entries from 15:00-16:00.
-      - SESSION_AFTER_HOURS_ENABLED=true # Enable new entries from 16:00-20:00.
-      - SESSION_OVERNIGHT_ENABLED=true # Enable new entries from 20:00-04:00.
+      - SESSION_AFTER_CLOSE_SHOCK_ENABLED=true # Enable new entries from 16:00-17:00.
+      - SESSION_AFTER_HOURS_LATE_ENABLED=true # Enable new entries from 17:00-20:00.
 
       # Exit and stop logic.
       - STOP_MODE=band # Stop mode; band uses BAND_STOP_* parameters, fixed uses FIXED_STOP_POINTS.

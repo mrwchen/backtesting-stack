@@ -19,7 +19,7 @@ from .profile import ProfileArrays, rolling_profile_arrays
 from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
 from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 from .sim_core import warmup as warmup_sim_core
-from .simulation import run_simulation
+from .simulation import run_session_portfolio_simulation, run_simulation
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,9 @@ class StageResult:
     oos_evals: list[Evaluation]
     mc_by_hash: dict[str, dict]
     parameter_ids: dict[str, int] = field(default_factory=dict)
+    portfolio_id: int | None = None
+    portfolio_aggregate: dict | None = None
+    selected_values: list[dict[str, int | float]] = field(default_factory=list)
 
 
 def run_walk_forward_optimizer(
@@ -112,16 +115,11 @@ def run_walk_forward_optimizer(
     stage1_candidates = parameters.build_stage1_candidates(grid, opt_cfg.stage1_max_parameter_sets, opt_cfg.sampling_seed)
     log.info("Stage 1 candidates %d folds %d", len(stage1_candidates), len(folds))
     stage1 = run_stage(conn, run_id, "stage1", stage1_candidates, folds, base_cfg, opt_cfg, ticks, bars)
-    persistence.insert_monte_carlo(conn, stage1.mc_by_hash, stage1.parameter_ids)
 
     final_stage = stage1
     stage2_count = 0
     if opt_cfg.stage2_enabled:
-        seed_values = [
-            item["values"]
-            for item in sorted(stage1.aggregates, key=lambda row: row["score"], reverse=True)
-            if item["oos_folds"] > 0
-        ][: opt_cfg.stage2_seed_top_n]
+        seed_values = _dedupe_values(stage1.selected_values)[: opt_cfg.stage2_seed_top_n]
         previous_hashes = {parameters.parameter_hash(candidate) for candidate in stage1_candidates}
         stage2_candidates = parameters.build_stage2_candidates(
             seed_values,
@@ -134,13 +132,11 @@ def run_walk_forward_optimizer(
         if stage2_candidates:
             log.info("Stage 2 candidates %d seeds %d folds %d", len(stage2_candidates), len(seed_values), len(folds))
             stage2 = run_stage(conn, run_id, "stage2", stage2_candidates, folds, base_cfg, opt_cfg, ticks, bars)
-            persistence.insert_monte_carlo(conn, stage2.mc_by_hash, stage2.parameter_ids)
             final_stage = stage2
         else:
             log.info("Stage 2 skipped no new candidates")
 
-    persist_top_trades(conn, run_id, final_stage, opt_cfg, base_cfg, folds, ticks, bars)
-    best = max((row for row in final_stage.aggregates if row["oos_folds"] > 0), key=lambda row: row["score"], default=None)
+    best = final_stage.portfolio_aggregate
     persistence.update_run_complete(
         conn,
         run_id,
@@ -148,13 +144,14 @@ def run_walk_forward_optimizer(
         run_duration_seconds=time.time() - started,
         stage1_parameter_sets=len(stage1_candidates),
         stage2_parameter_sets=stage2_count,
-        best_parameter_set_id=final_stage.parameter_ids.get(best["parameter_hash"]) if best else None,
+        best_parameter_set_id=None,
+        best_portfolio_id=final_stage.portfolio_id,
         best_score=best["score"] if best else None,
     )
     if best:
         log.info(
-            "Walk-forward complete best rank %d score %.4f oos_trades %d oos_return %.4f profit_factor %.4f max_drawdown %.4f",
-            best["stage_rank"],
+            "Walk-forward complete session_portfolio_id %s score %.4f oos_trades %d oos_return %.4f profit_factor %.4f max_drawdown %.4f",
+            final_stage.portfolio_id,
             best["score"],
             best["oos_total_trades"],
             best["oos_total_return_pct"],
@@ -252,6 +249,7 @@ def run_single_backtest(
         stage1_parameter_sets=1,
         stage2_parameter_sets=0,
         best_parameter_set_id=parameter_set_id,
+        best_portfolio_id=None,
         best_score=aggregates[0]["score"],
     )
     log.info(
@@ -276,9 +274,11 @@ def run_stage(
     bars: BarData,
 ) -> StageResult:
     parameter_ids = persistence.insert_parameter_stubs(conn, run_id, stage, candidates)
+    portfolio_id = persistence.insert_portfolio_stub(conn, run_id, stage)
     train_by_hash: dict[str, list[Evaluation]] = {parameters.parameter_hash(candidate): [] for candidate in candidates}
-    oos_by_hash: dict[str, list[Evaluation]] = {}
-    oos_evals: list[Evaluation] = []
+    empty_oos_by_hash: dict[str, list[Evaluation]] = {}
+    portfolio_oos_evals: list[Evaluation] = []
+    selected_values: list[dict[str, int | float]] = []
 
     for fold in folds:
         log.info(
@@ -292,42 +292,68 @@ def run_stage(
         for evaluation in train_evals:
             train_by_hash[evaluation.parameter_hash].append(evaluation)
 
-        selected = sorted(train_evals, key=lambda item: item.score, reverse=True)[: opt_cfg.train_top_n_per_fold]
+        selected_by_session = select_session_parameters(train_evals, base_cfg, opt_cfg)
+        selected = _unique_evaluations(selected_by_session.values())
+        selected_values.extend(evaluation.values for evaluation in selected)
         persistence.insert_fold_results(conn, run_id, selected, parameter_ids)
-        aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
+        selection_ids = persistence.insert_session_selections(
+            conn,
+            run_id,
+            portfolio_id,
+            stage,
+            fold,
+            selected_by_session,
+            parameter_ids,
+            base_cfg,
+            opt_cfg,
+        )
+        aggregates = build_aggregates(stage, candidates, train_by_hash, empty_oos_by_hash, len(folds), opt_cfg)
         persistence.update_parameter_set_results(conn, run_id, aggregates)
-        selected_candidates = [evaluation.values for evaluation in selected]
         log.info(
-            "Stage %s fold %d oos %s candidates %d",
+            "Stage %s fold %d session_portfolio oos %s sessions %d",
             stage,
             fold.fold_index,
             _fold_role_period(fold, "oos"),
-            len(selected_candidates),
+            len(selected_by_session),
         )
-        fold_oos = evaluate_many(stage, selected_candidates, fold, "oos", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
-        for evaluation in fold_oos:
-            oos_by_hash.setdefault(evaluation.parameter_hash, []).append(evaluation)
-        persistence.insert_fold_results(conn, run_id, fold_oos, parameter_ids)
-        oos_evals.extend(fold_oos)
-        aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
-        persistence.update_parameter_set_results(conn, run_id, aggregates)
+        portfolio_eval = evaluate_session_portfolio(
+            stage,
+            fold,
+            selected_by_session,
+            base_cfg,
+            opt_cfg,
+            ticks,
+            bars,
+            keep_trades=True,
+        )
+        portfolio_oos_evals.append(portfolio_eval)
+        persistence.insert_portfolio_fold_result(conn, portfolio_id, portfolio_eval)
+        persistence.update_session_selection_oos_stats(conn, selection_ids, portfolio_eval.session_stats)
+        if opt_cfg.persist_top_trades_n > 0:
+            persistence.insert_portfolio_trade_rows(
+                conn,
+                run_id,
+                portfolio_id,
+                portfolio_eval,
+                selection_ids,
+                {session: evaluation.parameter_hash for session, evaluation in selected_by_session.items()},
+                parameter_ids,
+            )
         persistence.upsert_parameter_session_stats(
             conn,
             run_id,
             build_session_aggregates(
                 stage,
-                selected_candidates,
+                [evaluation.values for evaluation in selected],
                 train_by_hash,
-                oos_by_hash,
+                empty_oos_by_hash,
                 len(folds),
-                (("oos", oos_by_hash),),
+                (("train", train_by_hash),),
             ),
             parameter_ids,
         )
 
-    aggregates = build_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds), opt_cfg)
-    mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, base_cfg, opt_cfg, stage, folds, ticks, bars)
-    apply_final_scores(aggregates, mc_by_hash, opt_cfg)
+    aggregates = build_aggregates(stage, candidates, train_by_hash, empty_oos_by_hash, len(folds), opt_cfg)
     aggregates.sort(key=lambda row: row["score"], reverse=True)
     for rank, row in enumerate(aggregates, start=1):
         row["stage_rank"] = rank
@@ -335,10 +361,216 @@ def run_stage(
     persistence.upsert_parameter_session_stats(
         conn,
         run_id,
-        build_session_aggregates(stage, candidates, train_by_hash, oos_by_hash, len(folds)),
+        build_session_aggregates(stage, _dedupe_values(selected_values), train_by_hash, empty_oos_by_hash, len(folds), (("train", train_by_hash),)),
         parameter_ids,
     )
-    return StageResult(stage, candidates, aggregates, oos_evals, mc_by_hash, parameter_ids)
+    portfolio_aggregate, portfolio_mc = build_portfolio_aggregate(stage, portfolio_oos_evals, len(folds), base_cfg, opt_cfg)
+    persistence.update_portfolio_results(conn, portfolio_id, portfolio_aggregate, portfolio_mc)
+    return StageResult(
+        stage=stage,
+        candidates=candidates,
+        aggregates=aggregates,
+        oos_evals=portfolio_oos_evals,
+        mc_by_hash={},
+        parameter_ids=parameter_ids,
+        portfolio_id=portfolio_id,
+        portfolio_aggregate=portfolio_aggregate,
+        selected_values=_dedupe_values(selected_values),
+    )
+
+
+def select_session_parameters(
+    train_evals: list[Evaluation],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+) -> dict[str, Evaluation]:
+    selected: dict[str, Evaluation] = {}
+    for session_type, _label, _sort_order in SESSION_TYPES:
+        best_eval = None
+        best_score = -1.0e18
+        for evaluation in train_evals:
+            stats = evaluation.session_stats.get(session_type)
+            score = score_session_stats(stats, base_cfg, opt_cfg)
+            if score > best_score:
+                best_score = score
+                best_eval = evaluation
+        if best_eval is not None:
+            selected[session_type] = best_eval
+            stats = best_eval.session_stats.get(session_type, {})
+            log.info(
+                "Selected session parameter session %s hash %s score %.4f trades %d net_profit %.2f",
+                session_type,
+                best_eval.parameter_hash[:10],
+                best_score,
+                int(stats.get("total_trades") or 0),
+                float(stats.get("net_profit_eur") or 0.0),
+            )
+    return selected
+
+
+def score_session_stats(stats: dict | None, base_cfg: RunConfig, opt_cfg: OptimizerConfig) -> float:
+    if not stats:
+        return -10000.0
+    trades = int(stats.get("total_trades") or 0)
+    if trades <= 0:
+        return -10000.0
+    gross_profit = float(stats.get("gross_profit_eur") or 0.0)
+    gross_loss = float(stats.get("gross_loss_eur") or 0.0)
+    profit_factor = _finite_profit_factor(
+        (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit > 0 else 0.0),
+        gross_profit,
+        gross_loss,
+    )
+    win_rate = float(stats.get("win_rate_pct") or 0.0)
+    net_profit = float(stats.get("net_profit_eur") or 0.0)
+    total_return = net_profit / max(1.0, float(base_cfg.initial_equity)) * 100.0
+    min_session_trades = max(3, int(opt_cfg.min_oos_trades) // max(1, len(SESSION_TYPES)))
+    score = total_return
+    score += min(profit_factor, 3.0) * 12.0
+    score += min(trades / max(1.0, float(min_session_trades)), 2.0) * 8.0
+    score += (win_rate - 50.0) * 0.05
+    if trades < min_session_trades:
+        score -= (min_session_trades - trades) / max(1, min_session_trades) * 20.0
+    if profit_factor < opt_cfg.min_oos_profit_factor:
+        score -= (opt_cfg.min_oos_profit_factor - profit_factor) * 30.0
+    return round(score, 4)
+
+
+def evaluate_session_portfolio(
+    stage: str,
+    fold: FoldSpec,
+    selected_by_session: dict[str, Evaluation],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+    ticks: TickData,
+    bars: BarData,
+    keep_trades: bool,
+) -> Evaluation:
+    window = _prepare_window_data(ticks, bars, fold, "oos", opt_cfg.profile_cache_size)
+    session_cfgs = {
+        session_type: apply_parameter_values(base_cfg, evaluation.values)
+        for session_type, evaluation in selected_by_session.items()
+    }
+    profiles = {
+        session_type: _profile_for_config(window, session_cfg)
+        for session_type, session_cfg in session_cfgs.items()
+    }
+    result = run_session_portfolio_simulation(
+        window.ticks,
+        window.bars,
+        window.tick_bar_index,
+        base_cfg,
+        session_cfgs,
+        trade_start_ns=window.trade_start_ns,
+        trade_end_ns=window.trade_end_ns,
+        log_result=False,
+        profiles=profiles,
+    )
+    summary = summarize_trades(result.trades, base_cfg.initial_equity, result.final_equity)
+    session_stats = summarize_trades_by_session(result.trades)
+    score = score_evaluation(summary, result)
+    trades = result.trades
+    if not keep_trades:
+        trades = []
+    return Evaluation(
+        stage=stage,
+        fold_index=fold.fold_index,
+        window_role="oos",
+        values={},
+        parameter_hash=_portfolio_hash(selected_by_session),
+        parameter_label="session_portfolio",
+        window_start=ns_to_datetime(window.trade_start_ns),
+        window_end=ns_to_datetime(window.trade_end_ns),
+        ticks_simulated=result.ticks_simulated,
+        bars_total=result.bars_total,
+        signals_total=result.signals_total,
+        long_signals=result.long_signals,
+        short_signals=result.short_signals,
+        rejected_missing_band=result.rejected_signals_missing_band,
+        rejected_band_too_narrow=result.rejected_signals_band_too_narrow,
+        rejected_stop_too_small=result.rejected_signals_stop_too_small,
+        rejected_stop_too_large=result.rejected_signals_stop_too_large,
+        skipped_no_size=result.skipped_signals_no_size,
+        ruined=result.ruined,
+        summary=summary,
+        score=score,
+        session_stats=session_stats,
+        trades=trades,
+    )
+
+
+def build_portfolio_aggregate(
+    stage: str,
+    evaluations: list[Evaluation],
+    expected_folds: int,
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+) -> tuple[dict, dict | None]:
+    oos_metrics = aggregate_evaluations(evaluations, expected_folds)
+    pre_mc_score = score_aggregate(oos_metrics, oos_metrics, opt_cfg)
+    trades = _trades_for_evaluations(evaluations)
+    mc = run_monte_carlo(trades, base_cfg.initial_equity, base_cfg, seed_offset=0) if len(trades) > 1 else None
+    if mc:
+        mc["mc_score_rank"] = 1
+    ruin = _mc_ruin(mc)
+    score = pre_mc_score
+    if mc:
+        score = round(score - ruin * 2.0 - max(0.0, ruin - opt_cfg.max_mc_ruin_pct) * 20.0, 4)
+    aggregate = {
+        "stage": stage,
+        "stage_rank": 1,
+        "pre_mc_score": pre_mc_score,
+        "score": score,
+        "mc_scored": bool(mc),
+        "mc_prob_of_ruin_pct": ruin if mc else None,
+        "passed_pre_mc_filters": passed_pre_mc_filters(oos_metrics, opt_cfg),
+        "passed_filters": passed_pre_mc_filters(oos_metrics, opt_cfg)
+        and bool(mc)
+        and ruin <= opt_cfg.max_mc_ruin_pct,
+        **_prefix_metrics("oos", oos_metrics),
+    }
+    return aggregate, mc
+
+
+def _unique_evaluations(evaluations) -> list[Evaluation]:
+    out: list[Evaluation] = []
+    seen: set[str] = set()
+    for evaluation in evaluations:
+        if evaluation.parameter_hash in seen:
+            continue
+        seen.add(evaluation.parameter_hash)
+        out.append(evaluation)
+    return out
+
+
+def _dedupe_values(values: list[dict[str, int | float]]) -> list[dict[str, int | float]]:
+    out: list[dict[str, int | float]] = []
+    seen: set[str] = set()
+    for item in values:
+        if not item:
+            continue
+        digest = parameters.parameter_hash(item)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        out.append(item)
+    return out
+
+
+def _portfolio_hash(selected_by_session: dict[str, Evaluation]) -> str:
+    parts = [
+        f"{session_type}:{selected_by_session[session_type].parameter_hash}"
+        for session_type, _label, _sort_order in SESSION_TYPES
+        if session_type in selected_by_session
+    ]
+    return "portfolio|" + "|".join(parts)
+
+
+def _trades_for_evaluations(evaluations: list[Evaluation]) -> list[ClosedTrade]:
+    trades: list[ClosedTrade] = []
+    for evaluation in sorted(evaluations, key=lambda item: item.fold_index):
+        trades.extend(evaluation.trades)
+    return trades
 
 
 def build_folds(ticks: TickData, opt_cfg: OptimizerConfig) -> list[FoldSpec]:

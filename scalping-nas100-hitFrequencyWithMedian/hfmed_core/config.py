@@ -136,13 +136,17 @@ if BAND_STOP_MIN_DISTANCE_POINTS <= 0 or BAND_STOP_MAX_DISTANCE_POINTS <= BAND_S
 # Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
 SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
 _validate_timezone(SESSION_TIMEZONE, "SESSION_TIMEZONE")
-SESSION_PRE_MARKET_ENABLED = env_bool("SESSION_PRE_MARKET_ENABLED", True)
-SESSION_NY_OPEN_POWER_ENABLED = env_bool("SESSION_NY_OPEN_POWER_ENABLED", True)
+SESSION_OVERNIGHT_ENABLED = env_bool("SESSION_OVERNIGHT_ENABLED", True)
+SESSION_PRE_MARKET_EARLY_ENABLED = env_bool("SESSION_PRE_MARKET_EARLY_ENABLED", True)
+SESSION_PRE_MARKET_ACTIVE_ENABLED = env_bool("SESSION_PRE_MARKET_ACTIVE_ENABLED", True)
+SESSION_PRE_MARKET_MACRO_ENABLED = env_bool("SESSION_PRE_MARKET_MACRO_ENABLED", True)
+SESSION_NY_OPEN_IMPULSE_ENABLED = env_bool("SESSION_NY_OPEN_IMPULSE_ENABLED", True)
+SESSION_NY_MORNING_ENABLED = env_bool("SESSION_NY_MORNING_ENABLED", True)
 SESSION_NY_MIDDAY_ENABLED = env_bool("SESSION_NY_MIDDAY_ENABLED", True)
 SESSION_NY_LATE_ENABLED = env_bool("SESSION_NY_LATE_ENABLED", True)
 SESSION_NY_POWER_HOUR_ENABLED = env_bool("SESSION_NY_POWER_HOUR_ENABLED", True)
-SESSION_AFTER_HOURS_ENABLED = env_bool("SESSION_AFTER_HOURS_ENABLED", True)
-SESSION_OVERNIGHT_ENABLED = env_bool("SESSION_OVERNIGHT_ENABLED", True)
+SESSION_AFTER_CLOSE_SHOCK_ENABLED = env_bool("SESSION_AFTER_CLOSE_SHOCK_ENABLED", True)
+SESSION_AFTER_HOURS_LATE_ENABLED = env_bool("SESSION_AFTER_HOURS_LATE_ENABLED", True)
 
 # Account profile: PS_ACC.
 ACCOUNT_PROFILE = env_str("ACCOUNT_PROFILE", "PS_ACC").upper()
@@ -258,13 +262,17 @@ class RunConfig:
     slippage_points: float
     commission_per_unit: float
     session_timezone: str
-    session_pre_market_enabled: bool
-    session_ny_open_power_enabled: bool
+    session_overnight_enabled: bool
+    session_pre_market_early_enabled: bool
+    session_pre_market_active_enabled: bool
+    session_pre_market_macro_enabled: bool
+    session_ny_open_impulse_enabled: bool
+    session_ny_morning_enabled: bool
     session_ny_midday_enabled: bool
     session_ny_late_enabled: bool
     session_ny_power_hour_enabled: bool
-    session_after_hours_enabled: bool
-    session_overnight_enabled: bool
+    session_after_close_shock_enabled: bool
+    session_after_hours_late_enabled: bool
     monte_carlo_enabled: bool
     monte_carlo_simulations: int
     mc_extra_slippage_points: float
@@ -336,13 +344,17 @@ def active_run_config() -> RunConfig:
         slippage_points=SLIPPAGE_POINTS,
         commission_per_unit=COMMISSION_PER_UNIT,
         session_timezone=SESSION_TIMEZONE,
-        session_pre_market_enabled=SESSION_PRE_MARKET_ENABLED,
-        session_ny_open_power_enabled=SESSION_NY_OPEN_POWER_ENABLED,
+        session_overnight_enabled=SESSION_OVERNIGHT_ENABLED,
+        session_pre_market_early_enabled=SESSION_PRE_MARKET_EARLY_ENABLED,
+        session_pre_market_active_enabled=SESSION_PRE_MARKET_ACTIVE_ENABLED,
+        session_pre_market_macro_enabled=SESSION_PRE_MARKET_MACRO_ENABLED,
+        session_ny_open_impulse_enabled=SESSION_NY_OPEN_IMPULSE_ENABLED,
+        session_ny_morning_enabled=SESSION_NY_MORNING_ENABLED,
         session_ny_midday_enabled=SESSION_NY_MIDDAY_ENABLED,
         session_ny_late_enabled=SESSION_NY_LATE_ENABLED,
         session_ny_power_hour_enabled=SESSION_NY_POWER_HOUR_ENABLED,
-        session_after_hours_enabled=SESSION_AFTER_HOURS_ENABLED,
-        session_overnight_enabled=SESSION_OVERNIGHT_ENABLED,
+        session_after_close_shock_enabled=SESSION_AFTER_CLOSE_SHOCK_ENABLED,
+        session_after_hours_late_enabled=SESSION_AFTER_HOURS_LATE_ENABLED,
         monte_carlo_enabled=MONTE_CARLO_ENABLED,
         monte_carlo_simulations=MONTE_CARLO_SIMULATIONS,
         mc_extra_slippage_points=MC_EXTRA_SLIPPAGE_POINTS,
@@ -414,13 +426,17 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
 
 
 SESSION_CONFIG_FIELDS = (
-    ("session_pre_market_enabled", "pre_market_0400_0930"),
-    ("session_ny_open_power_enabled", "ny_open_power_0930_1130"),
+    ("session_overnight_enabled", "overnight_2000_0400"),
+    ("session_pre_market_early_enabled", "pre_market_early_0400_0700"),
+    ("session_pre_market_active_enabled", "pre_market_active_0700_0830"),
+    ("session_pre_market_macro_enabled", "pre_market_macro_0830_0930"),
+    ("session_ny_open_impulse_enabled", "ny_open_impulse_0930_1000"),
+    ("session_ny_morning_enabled", "ny_morning_1000_1130"),
     ("session_ny_midday_enabled", "ny_midday_1130_1400"),
     ("session_ny_late_enabled", "ny_late_1400_1500"),
     ("session_ny_power_hour_enabled", "ny_power_hour_1500_1600"),
-    ("session_after_hours_enabled", "after_hours_1600_2000"),
-    ("session_overnight_enabled", "overnight_2000_0400"),
+    ("session_after_close_shock_enabled", "after_close_shock_1600_1700"),
+    ("session_after_hours_late_enabled", "after_hours_late_1700_2000"),
 )
 
 

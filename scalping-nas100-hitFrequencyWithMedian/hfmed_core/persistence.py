@@ -14,12 +14,16 @@ from zoneinfo import ZoneInfo
 from . import config, parameters
 from .config import OptimizerConfig, RunConfig
 from .entities import ClosedTrade
+from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 
 log = logging.getLogger(__name__)
 
 RUN_TABLE = "backtest2_nas100_hfmed_runs"
 PARAMETER_TABLE = "backtest2_nas100_hfmed_parameter_sets"
 SESSION_TABLE = "backtest2_nas100_hfmed_parameter_session_stats"
+PORTFOLIO_TABLE = "backtest2_nas100_hfmed_portfolios"
+PORTFOLIO_FOLD_TABLE = "backtest2_nas100_hfmed_portfolio_fold_results"
+SELECTION_TABLE = "backtest2_nas100_hfmed_session_selections"
 FOLD_TABLE = "backtest2_nas100_hfmed_fold_results"
 MC_TABLE = "backtest2_nas100_hfmed_monte_carlo"
 TRADES_TABLE = "backtest2_nas100_hfmed_trades"
@@ -221,7 +225,17 @@ def _db_round(value, digits: int):
 
 
 def validate_schema(conn: psycopg2.extensions.connection) -> None:
-    required = [RUN_TABLE, PARAMETER_TABLE, SESSION_TABLE, FOLD_TABLE, MC_TABLE, TRADES_TABLE]
+    required = [
+        RUN_TABLE,
+        PARAMETER_TABLE,
+        SESSION_TABLE,
+        PORTFOLIO_TABLE,
+        PORTFOLIO_FOLD_TABLE,
+        SELECTION_TABLE,
+        FOLD_TABLE,
+        MC_TABLE,
+        TRADES_TABLE,
+    ]
     missing = []
     missing_columns = []
     with conn.cursor() as cur:
@@ -230,10 +244,13 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
             if cur.fetchone()[0] is None:
                 missing.append(f"{config.RESULT_SCHEMA}.{table}")
         required_columns = {
-            RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile"),
+            RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile", "best_portfolio_id"),
             PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile"),
             SESSION_TABLE: ("session_type", "win_rate_pct"),
-            TRADES_TABLE: ("entry_session", "cross_quantile", "cross_level", "realized_risk_pct"),
+            PORTFOLIO_TABLE: ("portfolio_id", "oos_total_trades"),
+            PORTFOLIO_FOLD_TABLE: ("portfolio_id", "total_trades"),
+            SELECTION_TABLE: ("session_type", "selected_parameter_set_id", "oos_total_trades"),
+            TRADES_TABLE: ("entry_session", "cross_quantile", "cross_level", "realized_risk_pct", "portfolio_id", "selection_id"),
         }
         for table, columns in required_columns.items():
             for column in columns:
@@ -362,6 +379,7 @@ def update_run_complete(
     stage1_parameter_sets: int,
     stage2_parameter_sets: int,
     best_parameter_set_id: int | None,
+    best_portfolio_id: int | None,
     best_score: float | None,
 ) -> None:
     fields = {
@@ -370,6 +388,7 @@ def update_run_complete(
         "stage1_parameter_sets": stage1_parameter_sets,
         "stage2_parameter_sets": stage2_parameter_sets,
         "best_parameter_set_id": best_parameter_set_id,
+        "best_portfolio_id": best_portfolio_id,
         "best_score": best_score,
     }
     assignments = sql.SQL(", ").join(
@@ -383,6 +402,279 @@ def update_run_complete(
     with conn.cursor() as cur:
         cur.execute(query, [*(_db_value(value) for value in fields.values()), run_id])
     conn.commit()
+
+
+def insert_portfolio_stub(conn, run_id: int, stage: str) -> int:
+    query = sql.SQL("INSERT INTO {tbl} (run_id, stage, stage_rank) VALUES (%s, %s, %s) RETURNING portfolio_id").format(
+        tbl=_table(PORTFOLIO_TABLE),
+    )
+    with conn.cursor() as cur:
+        cur.execute(query, (run_id, stage, 1))
+        portfolio_id = cur.fetchone()[0]
+    conn.commit()
+    log.info("Inserted session portfolio stub %d stage %s", portfolio_id, stage)
+    return int(portfolio_id)
+
+
+def update_portfolio_results(conn, portfolio_id: int, aggregate: dict, mc: dict | None) -> None:
+    fields = {
+        "stage_rank": aggregate["stage_rank"],
+        "pre_mc_score": aggregate["pre_mc_score"],
+        "score": aggregate["score"],
+        "mc_scored": aggregate["mc_scored"],
+        "mc_prob_of_ruin_pct": aggregate["mc_prob_of_ruin_pct"],
+        "passed_pre_mc_filters": aggregate["passed_pre_mc_filters"],
+        "passed_filters": aggregate["passed_filters"],
+    }
+    for key in METRIC_KEYS:
+        fields[f"oos_{key}"] = aggregate.get(f"oos_{key}")
+    if mc:
+        for key in MC_KEYS:
+            fields[key] = mc.get(key)
+
+    assignments = sql.SQL(", ").join(
+        sql.SQL("{} = {}").format(sql.Identifier(key), sql.Placeholder()) for key in fields
+    )
+    query = sql.SQL("UPDATE {tbl} SET {assignments} WHERE portfolio_id = {portfolio_id}").format(
+        tbl=_table(PORTFOLIO_TABLE),
+        assignments=assignments,
+        portfolio_id=sql.Placeholder(),
+    )
+    with conn.cursor() as cur:
+        cur.execute(query, [*(_db_value(value) for value in fields.values()), portfolio_id])
+    conn.commit()
+    log.info("Updated session portfolio %d score %.4f", portfolio_id, float(aggregate["score"]))
+
+
+def insert_portfolio_fold_result(conn, portfolio_id: int, evaluation) -> None:
+    columns = [
+        "portfolio_id",
+        "stage",
+        "fold_index",
+        "window_role",
+        "window_start",
+        "window_end",
+        "ticks_simulated",
+        "bars_total",
+        "signals_total",
+        "long_signals",
+        "short_signals",
+        "rejected_missing_band",
+        "rejected_band_too_narrow",
+        "rejected_stop_too_small",
+        "rejected_stop_too_large",
+        "skipped_no_size",
+        "ruined",
+        "score",
+    ]
+    columns.extend(SUMMARY_KEYS)
+    row = [
+        portfolio_id,
+        evaluation.stage,
+        evaluation.fold_index,
+        evaluation.window_role,
+        evaluation.window_start,
+        evaluation.window_end,
+        evaluation.ticks_simulated,
+        evaluation.bars_total,
+        evaluation.signals_total,
+        evaluation.long_signals,
+        evaluation.short_signals,
+        evaluation.rejected_missing_band,
+        evaluation.rejected_band_too_narrow,
+        evaluation.rejected_stop_too_small,
+        evaluation.rejected_stop_too_large,
+        evaluation.skipped_no_size,
+        evaluation.ruined,
+        evaluation.score,
+    ]
+    row.extend(evaluation.summary.get(key) for key in SUMMARY_KEYS)
+    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES ({ph})").format(
+        tbl=_table(PORTFOLIO_FOLD_TABLE),
+        cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+        ph=sql.SQL(", ").join(sql.Placeholder() * len(columns)),
+    )
+    with conn.cursor() as cur:
+        cur.execute(query, tuple(_db_value(value) for value in row))
+    conn.commit()
+
+
+def insert_session_selections(
+    conn,
+    run_id: int,
+    portfolio_id: int,
+    stage: str,
+    fold,
+    selected_by_session: dict,
+    parameter_ids: dict[str, int],
+    cfg: RunConfig,
+    opt: OptimizerConfig,
+) -> dict[str, int]:
+    if not selected_by_session:
+        return {}
+    columns = [
+        "run_id",
+        "portfolio_id",
+        "stage",
+        "fold_index",
+        "session_type",
+        "session_label",
+        "session_sort_order",
+        "selected_parameter_set_id",
+        "selected_parameter_hash",
+        "selected_parameter_label",
+        "train_selection_score",
+        "train_total_trades",
+        "train_winning_trades",
+        "train_losing_trades",
+        "train_breakeven_trades",
+        "train_win_rate_pct",
+        "train_profit_factor",
+        "train_gross_profit_eur",
+        "train_gross_loss_eur",
+        "train_net_profit_eur",
+        "train_avg_trade_pnl_eur",
+    ]
+    rows = []
+    for session_type, evaluation in selected_by_session.items():
+        parameter_set_id = parameter_ids.get(evaluation.parameter_hash)
+        if parameter_set_id is None:
+            continue
+        stats = evaluation.session_stats.get(session_type, {})
+        gross_profit = float(stats.get("gross_profit_eur") or 0.0)
+        gross_loss = float(stats.get("gross_loss_eur") or 0.0)
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit > 0 else 0.0)
+        row = [
+            run_id,
+            portfolio_id,
+            stage,
+            fold.fold_index,
+            session_type,
+            SESSION_LABELS[session_type],
+            SESSION_SORT_ORDERS[session_type],
+            parameter_set_id,
+            evaluation.parameter_hash,
+            evaluation.parameter_label,
+            _session_selection_score(stats, cfg, opt),
+            int(stats.get("total_trades") or 0),
+            int(stats.get("winning_trades") or 0),
+            int(stats.get("losing_trades") or 0),
+            int(stats.get("breakeven_trades") or 0),
+            float(stats.get("win_rate_pct") or 0.0),
+            profit_factor,
+            gross_profit,
+            gross_loss,
+            float(stats.get("net_profit_eur") or 0.0),
+            float(stats.get("avg_trade_pnl_eur") or 0.0),
+        ]
+        rows.append(tuple(_db_value(value) for value in row))
+    if not rows:
+        return {}
+    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s RETURNING session_type, selection_id").format(
+        tbl=_table(SELECTION_TABLE),
+        cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+    )
+    with conn.cursor() as cur:
+        returned = execute_values(cur, query.as_string(conn), rows, page_size=200, fetch=True)
+    conn.commit()
+    return {session_type: int(selection_id) for session_type, selection_id in returned}
+
+
+def update_session_selection_oos_stats(conn, selection_ids: dict[str, int], session_stats: dict[str, dict]) -> None:
+    if not selection_ids:
+        return
+    columns = [
+        "selection_id",
+        "oos_total_trades",
+        "oos_winning_trades",
+        "oos_losing_trades",
+        "oos_breakeven_trades",
+        "oos_win_rate_pct",
+        "oos_profit_factor",
+        "oos_gross_profit_eur",
+        "oos_gross_loss_eur",
+        "oos_net_profit_eur",
+        "oos_avg_trade_pnl_eur",
+    ]
+    rows = []
+    for session_type, selection_id in selection_ids.items():
+        stats = session_stats.get(session_type, {})
+        gross_profit = float(stats.get("gross_profit_eur") or 0.0)
+        gross_loss = float(stats.get("gross_loss_eur") or 0.0)
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit > 0 else 0.0)
+        rows.append((
+            selection_id,
+            int(stats.get("total_trades") or 0),
+            int(stats.get("winning_trades") or 0),
+            int(stats.get("losing_trades") or 0),
+            int(stats.get("breakeven_trades") or 0),
+            float(stats.get("win_rate_pct") or 0.0),
+            _db_value(profit_factor),
+            gross_profit,
+            gross_loss,
+            float(stats.get("net_profit_eur") or 0.0),
+            float(stats.get("avg_trade_pnl_eur") or 0.0),
+        ))
+    column_types = {
+        "oos_total_trades": "INTEGER",
+        "oos_winning_trades": "INTEGER",
+        "oos_losing_trades": "INTEGER",
+        "oos_breakeven_trades": "INTEGER",
+        "oos_win_rate_pct": "NUMERIC",
+        "oos_profit_factor": "NUMERIC",
+        "oos_gross_profit_eur": "NUMERIC",
+        "oos_gross_loss_eur": "NUMERIC",
+        "oos_net_profit_eur": "NUMERIC",
+        "oos_avg_trade_pnl_eur": "NUMERIC",
+    }
+    assignments = sql.SQL(", ").join(
+        sql.SQL("{col} = v.{col}::{type_name}").format(
+            col=sql.Identifier(column),
+            type_name=sql.SQL(column_types[column]),
+        )
+        for column in columns
+        if column != "selection_id"
+    )
+    query = sql.SQL("""
+        UPDATE {tbl} AS s
+        SET {assignments}
+        FROM (VALUES %s) AS v ({value_cols})
+        WHERE s.selection_id = v.selection_id
+    """).format(
+        tbl=_table(SELECTION_TABLE),
+        assignments=assignments,
+        value_cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+    )
+    with conn.cursor() as cur:
+        execute_values(cur, query.as_string(conn), rows, page_size=200)
+    conn.commit()
+
+
+def _session_selection_score(stats: dict, cfg: RunConfig, opt: OptimizerConfig) -> float:
+    trades = int(stats.get("total_trades") or 0)
+    if trades <= 0:
+        return -10000.0
+    gross_profit = float(stats.get("gross_profit_eur") or 0.0)
+    gross_loss = float(stats.get("gross_loss_eur") or 0.0)
+    if gross_loss > 0:
+        profit_factor = gross_profit / gross_loss
+    elif gross_profit > 0:
+        profit_factor = 4.0
+    else:
+        profit_factor = 0.0
+    win_rate = float(stats.get("win_rate_pct") or 0.0)
+    net_profit = float(stats.get("net_profit_eur") or 0.0)
+    total_return = net_profit / max(1.0, float(cfg.initial_equity)) * 100.0
+    min_session_trades = max(3, int(opt.min_oos_trades) // max(1, len(SESSION_TYPES)))
+    score = total_return
+    score += min(profit_factor, 3.0) * 12.0
+    score += min(trades / max(1.0, float(min_session_trades)), 2.0) * 8.0
+    score += (win_rate - 50.0) * 0.05
+    if trades < min_session_trades:
+        score -= (min_session_trades - trades) / max(1, min_session_trades) * 20.0
+    if profit_factor < opt.min_oos_profit_factor:
+        score -= (opt.min_oos_profit_factor - profit_factor) * 30.0
+    return round(score, 4)
 
 
 def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str, int]:
@@ -790,6 +1082,118 @@ def trade_rows(parameter_set_id: int, stage: str, fold_index: int, window_role: 
             )
         )
     return rows
+
+
+def insert_portfolio_trade_rows(
+    conn,
+    run_id: int,
+    portfolio_id: int,
+    evaluation,
+    selection_ids: dict[str, int],
+    selected_hash_by_session: dict[str, str],
+    parameter_ids: dict[str, int],
+) -> None:
+    if not evaluation.trades:
+        return
+    columns = [
+        "run_id",
+        "portfolio_id",
+        "selection_id",
+        "parameter_set_id",
+        "stage",
+        "fold_index",
+        "window_role",
+        "entry_session",
+        "signal_ts",
+        "entry_ts",
+        "exit_ts",
+        "direction",
+        "cross_quantile",
+        "cross_level",
+        "median_level",
+        "signal_mid",
+        "previous_mid",
+        "entry_bid",
+        "entry_ask",
+        "entry_price",
+        "exit_bid",
+        "exit_ask",
+        "exit_price",
+        "stop_price",
+        "take_profit_price",
+        "units",
+        "notional_eur",
+        "margin_used_eur",
+        "gross_pnl_eur",
+        "extra_costs_eur",
+        "pnl_eur",
+        "equity_before",
+        "equity_after",
+        "return_pct",
+        "price_pnl_points",
+        "outcome_status",
+        "ticks_held",
+        "seconds_held",
+        "realized_risk_eur",
+        "realized_risk_pct",
+        "margin_capped",
+    ]
+    rows = []
+    for t in evaluation.trades:
+        selection_id = selection_ids.get(t.entry_session)
+        parameter_hash = selected_hash_by_session.get(t.entry_session)
+        parameter_set_id = parameter_ids.get(parameter_hash) if parameter_hash else None
+        rows.append(tuple(_db_value(value) for value in (
+            run_id,
+            portfolio_id,
+            selection_id,
+            parameter_set_id,
+            evaluation.stage,
+            evaluation.fold_index,
+            evaluation.window_role,
+            t.entry_session,
+            _db_scalar(t.signal_ts),
+            _db_scalar(t.entry_ts),
+            _db_scalar(t.exit_ts),
+            t.direction,
+            _db_round(t.cross_quantile, 6),
+            _db_round(t.cross_level, 4),
+            _db_round(t.median_level, 4),
+            _db_round(t.signal_mid, 4),
+            _db_round(t.previous_mid, 4),
+            _db_round(t.entry_bid, 4),
+            _db_round(t.entry_ask, 4),
+            _db_round(t.entry_price, 4),
+            _db_round(t.exit_bid, 4),
+            _db_round(t.exit_ask, 4),
+            _db_round(t.exit_price, 4),
+            _db_round(t.stop_price, 4),
+            _db_round(t.take_profit_price, 4),
+            _db_round(t.units, 8),
+            _db_round(t.notional_eur, 2),
+            _db_round(t.margin_used_eur, 2),
+            _db_round(t.gross_pnl_eur, 2),
+            _db_round(t.extra_costs_eur, 2),
+            _db_round(t.pnl_eur, 2),
+            _db_round(t.equity_before, 2),
+            _db_round(t.equity_after, 2),
+            _db_round(t.return_pct, 4),
+            _db_round(t.price_pnl_points, 4),
+            t.outcome_status,
+            int(t.ticks_held),
+            _db_round(t.seconds_held, 3),
+            _db_round(t.realized_risk_eur, 2),
+            _db_round(t.realized_risk_pct, 4),
+            bool(t.margin_capped),
+        )))
+    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s").format(
+        tbl=_table(TRADES_TABLE),
+        cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
+    )
+    with conn.cursor() as cur:
+        execute_values(cur, query.as_string(conn), rows, page_size=1000)
+    conn.commit()
+    log.info("Inserted portfolio trades %d", len(rows))
 
 
 def insert_trade_rows(conn, rows: list[tuple]) -> None:

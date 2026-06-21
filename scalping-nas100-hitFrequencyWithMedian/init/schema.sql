@@ -17,6 +17,9 @@ GRANT SELECT ON public.pepperstone_ticks_data TO "market-data-account";
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_trades CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_monte_carlo CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_parameter_session_stats CASCADE;
+DROP TABLE IF EXISTS backtest2_nas100_hfmed_session_selections CASCADE;
+DROP TABLE IF EXISTS backtest2_nas100_hfmed_portfolio_fold_results CASCADE;
+DROP TABLE IF EXISTS backtest2_nas100_hfmed_portfolios CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_fold_results CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_parameter_sets CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_runs CASCADE;
@@ -99,6 +102,7 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_runs (
     stage1_parameter_sets               INTEGER,
     stage2_parameter_sets               INTEGER,
     best_parameter_set_id               BIGINT,
+    best_portfolio_id                   BIGINT,
     best_score                          NUMERIC(18,6),
     run_duration_seconds                NUMERIC(14,3)
 );
@@ -178,6 +182,107 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_run_score_idx
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_filters_idx
     ON backtest2_nas100_hfmed_parameter_sets(run_id, passed_filters, score DESC);
 
+CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_portfolios (
+    portfolio_id                        BIGSERIAL     PRIMARY KEY,
+    run_id                              BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
+    created_at                          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    stage                               TEXT          NOT NULL,
+    stage_rank                          INTEGER,
+
+    pre_mc_score                        NUMERIC(18,6),
+    score                               NUMERIC(18,6),
+    mc_scored                           BOOLEAN       NOT NULL DEFAULT FALSE,
+    mc_prob_of_ruin_pct                 NUMERIC(12,4),
+    passed_pre_mc_filters               BOOLEAN       NOT NULL DEFAULT FALSE,
+    passed_filters                      BOOLEAN       NOT NULL DEFAULT FALSE,
+
+    oos_folds                           INTEGER,
+    oos_expected_folds                  INTEGER,
+    oos_total_trades                    INTEGER,
+    oos_total_return_pct                NUMERIC(14,4),
+    oos_mean_return_pct                 NUMERIC(14,4),
+    oos_median_return_pct               NUMERIC(14,4),
+    oos_std_return_pct                  NUMERIC(14,4),
+    oos_max_drawdown_pct                NUMERIC(10,4),
+    oos_profit_factor                   NUMERIC(14,4),
+    oos_win_rate_pct                    NUMERIC(8,4),
+    oos_profitable_folds_pct            NUMERIC(8,4),
+    oos_gross_profit_eur                NUMERIC(18,2),
+    oos_gross_loss_eur                  NUMERIC(18,2),
+    oos_net_profit_eur                  NUMERIC(18,2),
+    oos_avg_trade_pnl_eur               NUMERIC(14,4),
+    oos_signals_total                   BIGINT,
+    oos_ruined_folds                    INTEGER,
+
+    mc_score_rank                       INTEGER,
+    n_simulations                       INTEGER,
+    base_final_equity_p05               NUMERIC(15,2),
+    base_final_equity_p25               NUMERIC(15,2),
+    base_final_equity_p50               NUMERIC(15,2),
+    base_final_equity_p75               NUMERIC(15,2),
+    base_final_equity_p95               NUMERIC(15,2),
+    base_max_drawdown_p05               NUMERIC(10,4),
+    base_max_drawdown_p25               NUMERIC(10,4),
+    base_max_drawdown_p50               NUMERIC(10,4),
+    base_max_drawdown_p75               NUMERIC(10,4),
+    base_max_drawdown_p95               NUMERIC(10,4),
+    base_total_return_p05               NUMERIC(14,4),
+    base_total_return_p25               NUMERIC(14,4),
+    base_total_return_p50               NUMERIC(14,4),
+    base_total_return_p75               NUMERIC(14,4),
+    base_total_return_p95               NUMERIC(14,4),
+    base_prob_of_ruin_pct               NUMERIC(8,4),
+    base_prob_profitable_pct            NUMERIC(8,4),
+    base_worst_final_equity             NUMERIC(15,2),
+    base_best_final_equity              NUMERIC(15,2),
+    base_worst_max_drawdown_pct         NUMERIC(10,4),
+    slip_final_equity_p05               NUMERIC(15,2),
+    slip_final_equity_p25               NUMERIC(15,2),
+    slip_final_equity_p50               NUMERIC(15,2),
+    slip_final_equity_p75               NUMERIC(15,2),
+    slip_final_equity_p95               NUMERIC(15,2),
+    slip_max_drawdown_p05               NUMERIC(10,4),
+    slip_max_drawdown_p25               NUMERIC(10,4),
+    slip_max_drawdown_p50               NUMERIC(10,4),
+    slip_max_drawdown_p75               NUMERIC(10,4),
+    slip_max_drawdown_p95               NUMERIC(10,4),
+    slip_total_return_p05               NUMERIC(14,4),
+    slip_total_return_p25               NUMERIC(14,4),
+    slip_total_return_p50               NUMERIC(14,4),
+    slip_total_return_p75               NUMERIC(14,4),
+    slip_total_return_p95               NUMERIC(14,4),
+    slip_prob_of_ruin_pct               NUMERIC(8,4),
+    slip_prob_profitable_pct            NUMERIC(8,4),
+    slip_worst_final_equity             NUMERIC(15,2),
+    slip_best_final_equity              NUMERIC(15,2),
+    slip_worst_max_drawdown_pct         NUMERIC(10,4),
+    seq_final_equity_p05                NUMERIC(15,2),
+    seq_final_equity_p25                NUMERIC(15,2),
+    seq_final_equity_p50                NUMERIC(15,2),
+    seq_final_equity_p75                NUMERIC(15,2),
+    seq_final_equity_p95                NUMERIC(15,2),
+    seq_max_drawdown_p05                NUMERIC(10,4),
+    seq_max_drawdown_p25                NUMERIC(10,4),
+    seq_max_drawdown_p50                NUMERIC(10,4),
+    seq_max_drawdown_p75                NUMERIC(10,4),
+    seq_max_drawdown_p95                NUMERIC(10,4),
+    seq_total_return_p05                NUMERIC(14,4),
+    seq_total_return_p25                NUMERIC(14,4),
+    seq_total_return_p50                NUMERIC(14,4),
+    seq_total_return_p75                NUMERIC(14,4),
+    seq_total_return_p95                NUMERIC(14,4),
+    seq_prob_of_ruin_pct                NUMERIC(8,4),
+    seq_prob_profitable_pct             NUMERIC(8,4),
+    seq_worst_final_equity              NUMERIC(15,2),
+    seq_best_final_equity               NUMERIC(15,2),
+    seq_worst_max_drawdown_pct          NUMERIC(10,4),
+
+    UNIQUE (run_id, stage)
+);
+
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_portfolios_run_score_idx
+    ON backtest2_nas100_hfmed_portfolios(run_id, score DESC);
+
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats (
     session_stat_id                    BIGSERIAL     PRIMARY KEY,
     run_id                             BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
@@ -208,6 +313,51 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats_run_id
     ON backtest2_nas100_hfmed_parameter_session_stats(run_id, stage, window_role, session_sort_order);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_session_stats_param_idx
     ON backtest2_nas100_hfmed_parameter_session_stats(parameter_set_id, window_role, session_sort_order);
+
+CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_session_selections (
+    selection_id                       BIGSERIAL     PRIMARY KEY,
+    run_id                             BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
+    portfolio_id                       BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_portfolios(portfolio_id) ON DELETE CASCADE,
+    created_at                         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    stage                              TEXT          NOT NULL,
+    fold_index                         INTEGER       NOT NULL,
+    session_type                       TEXT          NOT NULL,
+    session_label                      TEXT          NOT NULL,
+    session_sort_order                 INTEGER       NOT NULL,
+    selected_parameter_set_id          BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_parameter_sets(parameter_set_id) ON DELETE CASCADE,
+    selected_parameter_hash            TEXT          NOT NULL,
+    selected_parameter_label           TEXT          NOT NULL,
+
+    train_selection_score              NUMERIC(18,6),
+    train_total_trades                 INTEGER       NOT NULL,
+    train_winning_trades               INTEGER       NOT NULL,
+    train_losing_trades                INTEGER       NOT NULL,
+    train_breakeven_trades             INTEGER       NOT NULL,
+    train_win_rate_pct                 NUMERIC(8,4)  NOT NULL,
+    train_profit_factor                NUMERIC(14,4),
+    train_gross_profit_eur             NUMERIC(18,2) NOT NULL,
+    train_gross_loss_eur               NUMERIC(18,2) NOT NULL,
+    train_net_profit_eur               NUMERIC(18,2) NOT NULL,
+    train_avg_trade_pnl_eur            NUMERIC(14,4) NOT NULL,
+
+    oos_total_trades                   INTEGER,
+    oos_winning_trades                 INTEGER,
+    oos_losing_trades                  INTEGER,
+    oos_breakeven_trades               INTEGER,
+    oos_win_rate_pct                   NUMERIC(8,4),
+    oos_profit_factor                  NUMERIC(14,4),
+    oos_gross_profit_eur               NUMERIC(18,2),
+    oos_gross_loss_eur                 NUMERIC(18,2),
+    oos_net_profit_eur                 NUMERIC(18,2),
+    oos_avg_trade_pnl_eur              NUMERIC(14,4),
+
+    UNIQUE (portfolio_id, fold_index, session_type)
+);
+
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_session_selections_run_idx
+    ON backtest2_nas100_hfmed_session_selections(run_id, stage, fold_index, session_sort_order);
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_session_selections_param_idx
+    ON backtest2_nas100_hfmed_session_selections(selected_parameter_set_id);
 
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_fold_results (
     fold_result_id                      BIGSERIAL     PRIMARY KEY,
@@ -258,6 +408,55 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_fold_results_param_idx
     ON backtest2_nas100_hfmed_fold_results(parameter_set_id, fold_index, window_role);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_fold_results_run_idx
     ON backtest2_nas100_hfmed_fold_results(run_id, stage, fold_index, window_role);
+
+CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_portfolio_fold_results (
+    portfolio_fold_result_id            BIGSERIAL     PRIMARY KEY,
+    portfolio_id                        BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_portfolios(portfolio_id) ON DELETE CASCADE,
+    created_at                          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    stage                               TEXT          NOT NULL,
+    fold_index                          INTEGER       NOT NULL,
+    window_role                         TEXT          NOT NULL,
+    window_start                        TIMESTAMPTZ   NOT NULL,
+    window_end                          TIMESTAMPTZ   NOT NULL,
+
+    ticks_simulated                     BIGINT,
+    bars_total                          INTEGER,
+    signals_total                       BIGINT,
+    long_signals                        BIGINT,
+    short_signals                       BIGINT,
+    rejected_missing_band               BIGINT,
+    rejected_band_too_narrow            BIGINT,
+    rejected_stop_too_small             BIGINT,
+    rejected_stop_too_large             BIGINT,
+    skipped_no_size                     BIGINT,
+    ruined                              BOOLEAN,
+    score                               NUMERIC(18,6),
+
+    total_trades                        INTEGER,
+    winning_trades                      INTEGER,
+    losing_trades                       INTEGER,
+    breakeven_trades                    INTEGER,
+    win_rate_pct                        NUMERIC(8,4),
+    profit_factor                       NUMERIC(14,4),
+    total_return_pct                    NUMERIC(14,4),
+    max_drawdown_pct                    NUMERIC(10,4),
+    avg_win_pct                         NUMERIC(12,4),
+    avg_loss_pct                        NUMERIC(12,4),
+    gross_profit_eur                    NUMERIC(18,2),
+    gross_loss_eur                      NUMERIC(18,2),
+    net_profit_eur                      NUMERIC(18,2),
+    avg_trade_pnl_eur                   NUMERIC(14,4),
+    final_equity                        NUMERIC(18,2),
+    avg_realized_risk_pct               NUMERIC(8,4),
+    median_realized_risk_pct            NUMERIC(8,4),
+    max_realized_risk_pct               NUMERIC(8,4),
+    margin_capped_share_pct             NUMERIC(8,4),
+
+    UNIQUE (portfolio_id, fold_index, window_role)
+);
+
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_portfolio_fold_results_portfolio_idx
+    ON backtest2_nas100_hfmed_portfolio_fold_results(portfolio_id, fold_index, window_role);
 
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_monte_carlo (
     parameter_set_id                    BIGINT        PRIMARY KEY REFERENCES backtest2_nas100_hfmed_parameter_sets(parameter_set_id) ON DELETE CASCADE,
@@ -331,6 +530,9 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_monte_carlo (
 
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_trades (
     trade_id                            BIGSERIAL     PRIMARY KEY,
+    run_id                              BIGINT        REFERENCES backtest2_nas100_hfmed_runs(run_id) ON DELETE CASCADE,
+    portfolio_id                        BIGINT        REFERENCES backtest2_nas100_hfmed_portfolios(portfolio_id) ON DELETE CASCADE,
+    selection_id                        BIGINT        REFERENCES backtest2_nas100_hfmed_session_selections(selection_id) ON DELETE SET NULL,
     parameter_set_id                    BIGINT        NOT NULL REFERENCES backtest2_nas100_hfmed_parameter_sets(parameter_set_id) ON DELETE CASCADE,
     created_at                          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     stage                               TEXT          NOT NULL,
@@ -379,27 +581,22 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_trades (
 
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_entry_idx
     ON backtest2_nas100_hfmed_trades(parameter_set_id, entry_ts);
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_portfolio_entry_idx
+    ON backtest2_nas100_hfmed_trades(portfolio_id, entry_ts);
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_selection_idx
+    ON backtest2_nas100_hfmed_trades(selection_id);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_direction_idx
     ON backtest2_nas100_hfmed_trades(parameter_set_id, direction);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_trades_param_outcome_idx
     ON backtest2_nas100_hfmed_trades(parameter_set_id, outcome_status);
 
--- Backfill realized-risk columns on already-existing deployments (no-op on fresh installs).
-ALTER TABLE backtest2_nas100_hfmed_fold_results
-    ADD COLUMN IF NOT EXISTS avg_realized_risk_pct    NUMERIC(8,4),
-    ADD COLUMN IF NOT EXISTS median_realized_risk_pct NUMERIC(8,4),
-    ADD COLUMN IF NOT EXISTS max_realized_risk_pct    NUMERIC(8,4),
-    ADD COLUMN IF NOT EXISTS margin_capped_share_pct  NUMERIC(8,4);
-
-ALTER TABLE backtest2_nas100_hfmed_trades
-    ADD COLUMN IF NOT EXISTS realized_risk_eur        NUMERIC(15,2),
-    ADD COLUMN IF NOT EXISTS realized_risk_pct        NUMERIC(8,4),
-    ADD COLUMN IF NOT EXISTS margin_capped            BOOLEAN;
-
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     backtest2_nas100_hfmed_runs,
     backtest2_nas100_hfmed_parameter_sets,
     backtest2_nas100_hfmed_parameter_session_stats,
+    backtest2_nas100_hfmed_portfolios,
+    backtest2_nas100_hfmed_portfolio_fold_results,
+    backtest2_nas100_hfmed_session_selections,
     backtest2_nas100_hfmed_fold_results,
     backtest2_nas100_hfmed_monte_carlo,
     backtest2_nas100_hfmed_trades

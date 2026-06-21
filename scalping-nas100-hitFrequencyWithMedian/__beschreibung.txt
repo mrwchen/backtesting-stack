@@ -99,13 +99,17 @@ America/New_York. Offene Positionen werden auch ausserhalb aktivierter
 Entry-Sessions weiter tickgenau ueber SL/TP geschlossen.
 
 Default: alle Sessions true.
-  SESSION_PRE_MARKET_ENABLED=true       # 04:00-09:30
-  SESSION_NY_OPEN_POWER_ENABLED=true    # 09:30-11:30
-  SESSION_NY_MIDDAY_ENABLED=true        # 11:30-14:00
-  SESSION_NY_LATE_ENABLED=true          # 14:00-15:00
-  SESSION_NY_POWER_HOUR_ENABLED=true    # 15:00-16:00
-  SESSION_AFTER_HOURS_ENABLED=true      # 16:00-20:00
-  SESSION_OVERNIGHT_ENABLED=true        # 20:00-04:00
+  SESSION_OVERNIGHT_ENABLED=true             # 20:00-04:00
+  SESSION_PRE_MARKET_EARLY_ENABLED=true      # 04:00-07:00
+  SESSION_PRE_MARKET_ACTIVE_ENABLED=true     # 07:00-08:30
+  SESSION_PRE_MARKET_MACRO_ENABLED=true      # 08:30-09:30
+  SESSION_NY_OPEN_IMPULSE_ENABLED=true       # 09:30-10:00
+  SESSION_NY_MORNING_ENABLED=true            # 10:00-11:30
+  SESSION_NY_MIDDAY_ENABLED=true             # 11:30-14:00
+  SESSION_NY_LATE_ENABLED=true               # 14:00-15:00
+  SESSION_NY_POWER_HOUR_ENABLED=true         # 15:00-16:00
+  SESSION_AFTER_CLOSE_SHOCK_ENABLED=true     # 16:00-17:00
+  SESSION_AFTER_HOURS_LATE_ENABLED=true      # 17:00-20:00
 
 Ergebnis-Tabellen
 -----------------
@@ -113,6 +117,9 @@ Die Tabellen werden ausschliesslich durch init/schema.sql angelegt:
   backtest2_nas100_hfmed_runs
   backtest2_nas100_hfmed_parameter_sets
   backtest2_nas100_hfmed_parameter_session_stats
+  backtest2_nas100_hfmed_portfolios
+  backtest2_nas100_hfmed_portfolio_fold_results
+  backtest2_nas100_hfmed_session_selections
   backtest2_nas100_hfmed_fold_results
   backtest2_nas100_hfmed_trades
   backtest2_nas100_hfmed_monte_carlo
@@ -123,6 +130,11 @@ Parameter-Optimizer
 -------------------
 RUN_MODE=walk_forward startet den zweistufigen Parameter-Optimizer.
 Die getesteten Werte liegen in parameter_grid.ini, nicht in docker-compose.yml.
+Je Fold werden Kandidaten auf dem Train-Fenster bewertet. Danach wird fuer
+jede Entry-Session separat das beste Parameterset aus den Train-Session-Stats
+gewaehlt. Im OOS-Fenster laeuft ein gemeinsamer Portfolio-Backtest: Pro Tick
+wird anhand der aktuellen Entry-Session das dort gewaehlte Parameterset
+verwendet, aber global bleibt immer nur eine Position gleichzeitig offen.
 
 Default Walk-Forward:
   WF_TRAIN_DAYS=60
