@@ -16,11 +16,16 @@ from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values
 from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
-from .profile import ProfileArrays, rolling_profile_arrays
+from .profile import ProfileArrays, rolling_profile_arrays, warmup as warmup_profile
 from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
 from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 from .sim_core import warmup as warmup_sim_core
-from .simulation import run_session_portfolio_simulation, run_simulation, run_simulation_summary
+from .simulation import (
+    precompute_events,
+    run_session_portfolio_simulation,
+    run_simulation,
+    run_simulation_summary,
+)
 
 log = logging.getLogger(__name__)
 
@@ -204,6 +209,7 @@ def run_walk_forward_optimizer(
     started: float,
 ) -> None:
     warmup_sim_core()
+    warmup_profile()
     folds = build_folds(ticks, opt_cfg)
     data_start_ts = ns_to_datetime(int(ticks.tick_time_ns[0]))
     data_end_ts = ns_to_datetime(int(ticks.tick_time_ns[-1]))
@@ -277,6 +283,7 @@ def run_single_backtest(
     started: float,
 ) -> None:
     warmup_sim_core()
+    warmup_profile()
     data_start_ts = ns_to_datetime(int(ticks.tick_time_ns[0]))
     data_end_ts = ns_to_datetime(int(ticks.tick_time_ns[-1]))
     run_id = persistence.create_run(
@@ -1411,8 +1418,19 @@ def _evaluate_group_with_window(task, window: WindowData, base_cfg: RunConfig) -
         return []
     profile_cfg = apply_parameter_values(base_cfg, group[0])
     profile = _profile_for_config(window, profile_cfg)
+    # Crossing events depend only on the (shared) profile cross levels, the (shared)
+    # session/trade-window mask and mid — never on the per-candidate grid params, so
+    # detect them once per group instead of once per candidate.
+    events = precompute_events(
+        window.ticks,
+        window.tick_bar_index,
+        base_cfg,
+        profile,
+        window.trade_start_ns,
+        window.trade_end_ns,
+    )
     return [
-        _evaluate_candidate_with_profile(stage, values, fold, role, keep_trades, window, base_cfg, profile)
+        _evaluate_candidate_with_profile(stage, values, fold, role, keep_trades, window, base_cfg, profile, events)
         for values in group
     ]
 
@@ -1426,6 +1444,7 @@ def _evaluate_candidate_with_profile(
     window: WindowData,
     base_cfg: RunConfig,
     profile: ProfileArrays,
+    events: tuple,
 ) -> Evaluation:
     cfg = apply_parameter_values(base_cfg, values)
     if keep_trades:
@@ -1438,6 +1457,7 @@ def _evaluate_candidate_with_profile(
             trade_end_ns=window.trade_end_ns,
             log_result=False,
             profile=profile,
+            events=events,
         )
         summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
         session_stats = summarize_trades_by_session(result.trades)
@@ -1450,6 +1470,7 @@ def _evaluate_candidate_with_profile(
             trade_start_ns=window.trade_start_ns,
             trade_end_ns=window.trade_end_ns,
             profile=profile,
+            events=events,
         )
     score = score_evaluation(summary, result)
     if not keep_trades:

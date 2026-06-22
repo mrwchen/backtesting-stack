@@ -11,7 +11,11 @@ from .data import BarData, TickData, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
 from .profile import ProfileArrays, rolling_profile_arrays
 from .sessions import SESSION_CODE_BY_KEY, SESSION_TYPES, session_key_for_code
-from .sim_core import simulate_core, simulate_session_portfolio_core
+from .sim_core import (
+    precompute_crossing_events,
+    simulate_core_from_events,
+    simulate_session_portfolio_core,
+)
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +103,133 @@ def _as_float(values: np.ndarray) -> np.ndarray:
 
 def _as_int32(values: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(values, dtype=np.int32)
+
+
+def _empty_trade_outputs(cap: int) -> tuple:
+    return (
+        np.empty(cap, dtype=np.int64),    # entry_idx
+        np.empty(cap, dtype=np.int64),    # exit_idx
+        np.empty(cap, dtype=np.int8),     # direction
+        np.empty(cap, dtype=np.float64),  # cross_level
+        np.empty(cap, dtype=np.float64),  # median
+        np.empty(cap, dtype=np.float64),  # prev_mid
+        np.empty(cap, dtype=np.float64),  # signal_mid
+        np.empty(cap, dtype=np.float64),  # entry_price
+        np.empty(cap, dtype=np.float64),  # exit_price
+        np.empty(cap, dtype=np.float64),  # stop_price
+        np.empty(cap, dtype=np.float64),  # tp_price
+        np.empty(cap, dtype=np.float64),  # units
+        np.empty(cap, dtype=np.float64),  # notional
+        np.empty(cap, dtype=np.float64),  # margin
+        np.empty(cap, dtype=np.float64),  # gross
+        np.empty(cap, dtype=np.float64),  # extra
+        np.empty(cap, dtype=np.float64),  # pnl
+        np.empty(cap, dtype=np.float64),  # equity_before
+        np.empty(cap, dtype=np.float64),  # equity_after
+        np.empty(cap, dtype=np.int8),     # status
+        np.empty(cap, dtype=np.int64),    # ticks_held
+        np.empty(cap, dtype=np.int8),     # margin_capped
+    )
+
+
+CrossingEvents = tuple  # (ev_tick int64[k], ev_dir int8[k], ev_cross float64[k])
+
+
+def precompute_events(
+    ticks: TickData,
+    tick_bar_index: np.ndarray,
+    cfg: RunConfig,
+    profile: ProfileArrays,
+    trade_start_ns: int | None,
+    trade_end_ns: int | None,
+) -> CrossingEvents:
+    """Detect all profile crossings once for a (profile, session, trade-window) combo.
+
+    The result is candidate-independent within an optimizer profile group, so it is
+    computed once per group and reused across every candidate in that group instead
+    of being re-derived by a full per-tick scan in every candidate simulation.
+    """
+    n = len(ticks)
+    if n == 0:
+        return (np.empty(0, np.int64), np.empty(0, np.int8), np.empty(0, np.float64))
+    mid = _as_float(ticks.mid)
+    local_bar_index = _as_int32(tick_bar_index)
+    long_cross = _as_float(profile.long_cross_level)
+    short_cross = _as_float(profile.short_cross_level)
+    entry_allowed = _build_entry_allowed(ticks, cfg, trade_start_ns, trade_end_ns)
+    empty_i = np.empty(0, np.int64)
+    empty_d = np.empty(0, np.int8)
+    empty_f = np.empty(0, np.float64)
+    k = int(precompute_crossing_events(
+        mid, local_bar_index, long_cross, short_cross, entry_allowed,
+        empty_i, empty_d, empty_f, 0,
+    ))
+    ev_tick = np.empty(k, np.int64)
+    ev_dir = np.empty(k, np.int8)
+    ev_cross = np.empty(k, np.float64)
+    if k > 0:
+        precompute_crossing_events(
+            mid, local_bar_index, long_cross, short_cross, entry_allowed,
+            ev_tick, ev_dir, ev_cross, k,
+        )
+    return (ev_tick, ev_dir, ev_cross)
+
+
+def _simulate_events(
+    ticks: TickData,
+    tick_bar_index: np.ndarray,
+    cfg: RunConfig,
+    profile: ProfileArrays,
+    trade_start_ns: int | None,
+    trade_end_ns: int | None,
+    events: CrossingEvents | None,
+) -> tuple:
+    """Run the event-driven core; returns (out_tuple, stats, n_trades, bid, ask)."""
+    n = len(ticks)
+    mid = _as_float(ticks.mid)
+    bid = _as_float(ticks.bid)
+    ask = _as_float(ticks.ask)
+    local_bar_index = _as_int32(tick_bar_index)
+    median_level = _as_float(profile.median_level)
+    profile_low = _as_float(profile.profile_low)
+    profile_high = _as_float(profile.profile_high)
+    stop_lower = _as_float(profile.stop_profile_lower)
+    stop_upper = _as_float(profile.stop_profile_upper)
+    profile_range = _as_float(profile.profile_range_points)
+
+    if events is None:
+        events = precompute_events(ticks, tick_bar_index, cfg, profile, trade_start_ns, trade_end_ns)
+    ev_tick, ev_dir, ev_cross = events
+    n_events = int(ev_tick.shape[0])
+
+    scalar_args = (
+        1 if cfg.stop_mode == "fixed" else 0,
+        float(cfg.stop_points),
+        float(cfg.take_profit_points),
+        float(cfg.min_profile_range_points),
+        float(cfg.stop_profile_buffer_points),
+        float(cfg.min_stop_distance_points),
+        float(cfg.max_stop_distance_points),
+        float(cfg.initial_equity),
+        float(cfg.contract_multiplier),
+        float(cfg.eurusd_rate),
+        float(cfg.risk_per_trade_pct),
+        float(cfg.margin_requirement_pct),
+        float(cfg.max_margin_pct),
+        float(cfg.lot_size),
+        float(cfg.spread_points),
+        float(cfg.slippage_points),
+        float(cfg.commission_per_unit),
+    )
+    cap = max(n_events, 1)
+    out = _empty_trade_outputs(cap)
+    stats = simulate_core_from_events(
+        ev_tick, ev_dir, ev_cross, n_events,
+        mid, bid, ask, local_bar_index, median_level,
+        profile_low, profile_high, stop_lower, stop_upper, profile_range,
+        n, *scalar_args, *out, cap,
+    )
+    return out, stats, int(stats[0]), bid, ask
 
 
 def _empty_summary(final_equity: float) -> dict:
@@ -256,6 +387,7 @@ def run_simulation_summary(
     trade_start_ns: int | None = None,
     trade_end_ns: int | None = None,
     profile: ProfileArrays | None = None,
+    events: CrossingEvents | None = None,
 ) -> tuple[SimulationResult, dict, dict[str, dict]]:
     if profile is None:
         profile = rolling_profile_arrays(bars, cfg)
@@ -271,76 +403,9 @@ def run_simulation_summary(
     if n == 0:
         return result, _empty_summary(result.final_equity), _empty_session_stats()
 
-    mid = _as_float(ticks.mid)
-    bid = _as_float(ticks.bid)
-    ask = _as_float(ticks.ask)
-    local_bar_index = _as_int32(tick_bar_index)
-    median_level = _as_float(profile.median_level)
-    long_cross = _as_float(profile.long_cross_level)
-    short_cross = _as_float(profile.short_cross_level)
-    profile_low = _as_float(profile.profile_low)
-    profile_high = _as_float(profile.profile_high)
-    stop_lower = _as_float(profile.stop_profile_lower)
-    stop_upper = _as_float(profile.stop_profile_upper)
-    profile_range = _as_float(profile.profile_range_points)
-    entry_allowed = _build_entry_allowed(ticks, cfg, trade_start_ns, trade_end_ns)
-
-    scalar_args = (
-        1 if cfg.stop_mode == "fixed" else 0,
-        float(cfg.stop_points),
-        float(cfg.take_profit_points),
-        float(cfg.min_profile_range_points),
-        float(cfg.stop_profile_buffer_points),
-        float(cfg.min_stop_distance_points),
-        float(cfg.max_stop_distance_points),
-        float(cfg.initial_equity),
-        float(cfg.contract_multiplier),
-        float(cfg.eurusd_rate),
-        float(cfg.risk_per_trade_pct),
-        float(cfg.margin_requirement_pct),
-        float(cfg.max_margin_pct),
-        float(cfg.lot_size),
-        float(cfg.spread_points),
-        float(cfg.slippage_points),
-        float(cfg.commission_per_unit),
+    out, stats, n_trades, bid, ask = _simulate_events(
+        ticks, tick_bar_index, cfg, profile, trade_start_ns, trade_end_ns, events
     )
-    price_args = (
-        mid, bid, ask, local_bar_index, median_level, long_cross, short_cross,
-        profile_low, profile_high, stop_lower, stop_upper, profile_range,
-        entry_allowed,
-    )
-
-    def _empty_outputs(cap: int) -> tuple:
-        return (
-            np.empty(cap, dtype=np.int64),
-            np.empty(cap, dtype=np.int64),
-            np.empty(cap, dtype=np.int8),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.float64),
-            np.empty(cap, dtype=np.int8),
-            np.empty(cap, dtype=np.int64),
-            np.empty(cap, dtype=np.int8),
-        )
-
-    counted = simulate_core(*price_args, *scalar_args, *_empty_outputs(0), 0)
-    cap = max(int(counted[0]), 1)
-    out = _empty_outputs(cap)
-    stats = simulate_core(*price_args, *scalar_args, *out, cap)
-    n_trades = int(stats[0])
     _apply_core_stats(result, stats)
 
     (
@@ -382,6 +447,7 @@ def run_simulation(
     trade_end_ns: int | None = None,
     log_result: bool = True,
     profile: ProfileArrays | None = None,
+    events: CrossingEvents | None = None,
 ) -> SimulationResult:
     if profile is None:
         profile = rolling_profile_arrays(bars, cfg)
@@ -399,80 +465,9 @@ def run_simulation(
             _log_result(result)
         return result
 
-    mid = _as_float(ticks.mid)
-    bid = _as_float(ticks.bid)
-    ask = _as_float(ticks.ask)
-    local_bar_index = _as_int32(tick_bar_index)
-    median_level = _as_float(profile.median_level)
-    long_cross = _as_float(profile.long_cross_level)
-    short_cross = _as_float(profile.short_cross_level)
-    profile_low = _as_float(profile.profile_low)
-    profile_high = _as_float(profile.profile_high)
-    stop_lower = _as_float(profile.stop_profile_lower)
-    stop_upper = _as_float(profile.stop_profile_upper)
-    profile_range = _as_float(profile.profile_range_points)
-    entry_allowed = _build_entry_allowed(ticks, cfg, trade_start_ns, trade_end_ns)
-
-    stop_mode_fixed = 1 if cfg.stop_mode == "fixed" else 0
-    scalar_args = (
-        stop_mode_fixed,
-        float(cfg.stop_points),
-        float(cfg.take_profit_points),
-        float(cfg.min_profile_range_points),
-        float(cfg.stop_profile_buffer_points),
-        float(cfg.min_stop_distance_points),
-        float(cfg.max_stop_distance_points),
-        float(cfg.initial_equity),
-        float(cfg.contract_multiplier),
-        float(cfg.eurusd_rate),
-        float(cfg.risk_per_trade_pct),
-        float(cfg.margin_requirement_pct),
-        float(cfg.max_margin_pct),
-        float(cfg.lot_size),
-        float(cfg.spread_points),
-        float(cfg.slippage_points),
-        float(cfg.commission_per_unit),
+    out, stats, n_trades, bid, ask = _simulate_events(
+        ticks, tick_bar_index, cfg, profile, trade_start_ns, trade_end_ns, events
     )
-    price_args = (
-        mid, bid, ask, local_bar_index, median_level, long_cross, short_cross,
-        profile_low, profile_high, stop_lower, stop_upper, profile_range,
-        entry_allowed,
-    )
-
-    def _empty_outputs(cap: int) -> tuple:
-        return (
-            np.empty(cap, dtype=np.int64),    # entry_idx
-            np.empty(cap, dtype=np.int64),    # exit_idx
-            np.empty(cap, dtype=np.int8),     # direction
-            np.empty(cap, dtype=np.float64),  # cross_level
-            np.empty(cap, dtype=np.float64),  # median
-            np.empty(cap, dtype=np.float64),  # prev_mid
-            np.empty(cap, dtype=np.float64),  # signal_mid
-            np.empty(cap, dtype=np.float64),  # entry_price
-            np.empty(cap, dtype=np.float64),  # exit_price
-            np.empty(cap, dtype=np.float64),  # stop_price
-            np.empty(cap, dtype=np.float64),  # tp_price
-            np.empty(cap, dtype=np.float64),  # units
-            np.empty(cap, dtype=np.float64),  # notional
-            np.empty(cap, dtype=np.float64),  # margin
-            np.empty(cap, dtype=np.float64),  # gross
-            np.empty(cap, dtype=np.float64),  # extra
-            np.empty(cap, dtype=np.float64),  # pnl
-            np.empty(cap, dtype=np.float64),  # equity_before
-            np.empty(cap, dtype=np.float64),  # equity_after
-            np.empty(cap, dtype=np.int8),     # status
-            np.empty(cap, dtype=np.int64),    # ticks_held
-            np.empty(cap, dtype=np.int8),     # margin_capped
-        )
-
-    count_out = _empty_outputs(0)
-    counted = simulate_core(*price_args, *scalar_args, *count_out, 0)
-    n_trades = counted[0]
-
-    cap = max(int(n_trades), 1)
-    out = _empty_outputs(cap)
-    stats = simulate_core(*price_args, *scalar_args, *out, cap)
-    n_trades = stats[0]
 
     (
         out_entry_idx, out_exit_idx, out_direction, out_cross_level, out_median,

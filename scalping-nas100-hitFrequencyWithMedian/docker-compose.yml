@@ -8,7 +8,7 @@ services:
       # Init database connection.
       PGPASSWORD: postgres-ts-root-pw # Password for the postgres-ts init connection.
       # Schema lifecycle.
-      DROP_ALL_HFMED_TABLES_ON_START: "false" # Drop existing hfmed result tables before recreating them.
+      DROP_ALL_HFMED_TABLES_ON_START: "true" # Drop existing hfmed result tables before recreating them.
     command: # Run schema.sql against the TimescaleDB/PostgreSQL service.
       - sh
       - -c
@@ -26,7 +26,7 @@ services:
     restart: "no" # Do not restart after the backtest job exits.
     mem_limit: 10g # Keep the optimizer from exhausting the trading VM memory.
     memswap_limit: 10g # Do not let the container exceed its RAM budget via swap.
-    cpus: "4.0" # Keep host CPU scheduling predictable while multiprocessing is active.
+    cpus: "6.0" # Keep host CPU scheduling predictable while multiprocessing is active.
     depends_on:
       init-hfmed-schema:
         condition: service_completed_successfully # Start runner only after schema init succeeded.
@@ -58,7 +58,7 @@ services:
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
       - SYMBOL=NAS100 # Symbol filter for source ticks.
-      - START_TS_UTC=2025-01-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
+      - START_TS_UTC=2026-01-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
@@ -124,8 +124,8 @@ services:
       # Walk-forward windows and candidate promotion.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
-      - WF_MATRIX_TRAIN_DAYS=10,15,20,30,45,60 # Train window lengths tested by the matrix.
-      - WF_MATRIX_TEST_DAYS=5,10,20 # OOS window lengths tested by the matrix; step_days equals test_days.
+      - WF_MATRIX_TRAIN_DAYS=15,30,60 # Train window lengths tested by the matrix.
+      - WF_MATRIX_TEST_DAYS=10,20 # OOS window lengths tested by the matrix; step_days equals test_days.
       - WF_OOS_PROBE_ENABLED=true # Evaluate additional train-ranked candidates in each OOS fold.
       - WF_OOS_PROBE_TOP_N_PER_SESSION=100 # Top train candidates per session evaluated OOS.
       - WF_OOS_PROBE_GLOBAL_TOP_N=0 # Additional global train top-N candidates evaluated OOS; 0 disables.
@@ -139,7 +139,7 @@ services:
       - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=3.0 # Keep prior fold's session parameter if still this close to the best score.
 
       # Optimizer execution.
-      - OPTIMIZER_PROCESSES=2 # Number of worker processes for candidate evaluation.
+      - OPTIMIZER_PROCESSES=3 # Number of worker processes for candidate evaluation.
       - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Number of profile-groups handed to each worker per pool chunk.
       - OPTIMIZER_PROFILE_CACHE_SIZE=1 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
