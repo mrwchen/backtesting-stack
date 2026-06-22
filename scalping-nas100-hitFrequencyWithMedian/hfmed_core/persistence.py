@@ -664,12 +664,17 @@ def _session_selection_score(stats: dict, cfg: RunConfig, opt: OptimizerConfig) 
         profit_factor = 0.0
     win_rate = float(stats.get("win_rate_pct") or 0.0)
     net_profit = float(stats.get("net_profit_eur") or 0.0)
-    total_return = net_profit / max(1.0, float(cfg.initial_equity)) * 100.0
-    min_session_trades = max(3, int(opt.min_oos_trades) // max(1, len(SESSION_TYPES)))
+    std_trade_pnl = float(stats.get("std_trade_pnl_eur") or 0.0)
+    uncertainty_eur = float(opt.session_selector_lcb_z) * std_trade_pnl * math.sqrt(float(trades))
+    conservative_net_profit = net_profit - uncertainty_eur
+    total_return = conservative_net_profit / max(1.0, float(cfg.initial_equity)) * 100.0
+    min_session_trades = max(1, int(opt.session_selector_min_trades))
     score = total_return
     score += min(profit_factor, 3.0) * 12.0
     score += min(trades / max(1.0, float(min_session_trades)), 2.0) * 8.0
     score += (win_rate - 50.0) * 0.05
+    if net_profit <= 0.0:
+        score -= 20.0
     if trades < min_session_trades:
         score -= (min_session_trades - trades) / max(1, min_session_trades) * 20.0
     if profit_factor < opt.min_oos_profit_factor:

@@ -75,6 +75,15 @@ class Evaluation:
 
 
 @dataclass
+class SessionSelectionCandidate:
+    evaluation: Evaluation
+    stats: dict
+    base_score: float
+    robust_score: float
+    neighbor_count: int
+
+
+@dataclass
 class StageResult:
     stage: str
     candidates: list[dict[str, int | float]]
@@ -279,6 +288,7 @@ def run_stage(
     empty_oos_by_hash: dict[str, list[Evaluation]] = {}
     portfolio_oos_evals: list[Evaluation] = []
     selected_values: list[dict[str, int | float]] = []
+    previous_selected_by_session: dict[str, Evaluation] = {}
 
     for fold in folds:
         log.info(
@@ -292,7 +302,13 @@ def run_stage(
         for evaluation in train_evals:
             train_by_hash[evaluation.parameter_hash].append(evaluation)
 
-        selected_by_session = select_session_parameters(train_evals, base_cfg, opt_cfg)
+        selected_by_session = select_session_parameters(
+            train_evals,
+            base_cfg,
+            opt_cfg,
+            previous_selected_by_session=previous_selected_by_session,
+        )
+        previous_selected_by_session = selected_by_session
         selected = _unique_evaluations(selected_by_session.values())
         selected_values.extend(evaluation.values for evaluation in selected)
         persistence.insert_fold_results(conn, run_id, selected, parameter_ids)
@@ -383,28 +399,35 @@ def select_session_parameters(
     train_evals: list[Evaluation],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
+    previous_selected_by_session: dict[str, Evaluation] | None = None,
 ) -> dict[str, Evaluation]:
     selected: dict[str, Evaluation] = {}
     for session_type, _label, _sort_order in SESSION_TYPES:
-        best_eval = None
-        best_score = -1.0e18
-        for evaluation in train_evals:
-            stats = evaluation.session_stats.get(session_type)
-            score = score_session_stats(stats, base_cfg, opt_cfg)
-            if score > best_score:
-                best_score = score
-                best_eval = evaluation
-        if best_eval is not None:
-            selected[session_type] = best_eval
-            stats = best_eval.session_stats.get(session_type, {})
-            log.info(
-                "Selected session parameter session %s hash %s score %.4f trades %d net_profit %.2f",
-                session_type,
-                best_eval.parameter_hash[:10],
-                best_score,
-                int(stats.get("total_trades") or 0),
-                float(stats.get("net_profit_eur") or 0.0),
-            )
+        ranked = _rank_session_candidates(session_type, train_evals, base_cfg, opt_cfg)
+        if not ranked:
+            continue
+        chosen = ranked[0]
+        previous_hash = None
+        if previous_selected_by_session and session_type in previous_selected_by_session:
+            previous_hash = previous_selected_by_session[session_type].parameter_hash
+            previous_current = next((item for item in ranked if item.evaluation.parameter_hash == previous_hash), None)
+            tolerance = float(opt_cfg.session_selector_previous_keep_score_tolerance)
+            if previous_current and previous_current.robust_score >= chosen.robust_score - tolerance:
+                chosen = previous_current
+        best_eval = chosen.evaluation
+        selected[session_type] = best_eval
+        stats = chosen.stats
+        log.info(
+            "Selected session parameter session %s hash %s robust_score %.4f base_score %.4f neighbor_count %d trades %d net_profit %.2f previous_hash %s",
+            session_type,
+            best_eval.parameter_hash[:10],
+            chosen.robust_score,
+            chosen.base_score,
+            chosen.neighbor_count,
+            int(stats.get("total_trades") or 0),
+            float(stats.get("net_profit_eur") or 0.0),
+            previous_hash[:10] if previous_hash else "-",
+        )
     return selected
 
 
@@ -423,17 +446,121 @@ def score_session_stats(stats: dict | None, base_cfg: RunConfig, opt_cfg: Optimi
     )
     win_rate = float(stats.get("win_rate_pct") or 0.0)
     net_profit = float(stats.get("net_profit_eur") or 0.0)
-    total_return = net_profit / max(1.0, float(base_cfg.initial_equity)) * 100.0
-    min_session_trades = max(3, int(opt_cfg.min_oos_trades) // max(1, len(SESSION_TYPES)))
+    std_trade_pnl = float(stats.get("std_trade_pnl_eur") or 0.0)
+    uncertainty_eur = float(opt_cfg.session_selector_lcb_z) * std_trade_pnl * math.sqrt(float(trades))
+    conservative_net_profit = net_profit - uncertainty_eur
+    total_return = conservative_net_profit / max(1.0, float(base_cfg.initial_equity)) * 100.0
+    min_session_trades = _session_selector_min_trades(opt_cfg)
     score = total_return
     score += min(profit_factor, 3.0) * 12.0
     score += min(trades / max(1.0, float(min_session_trades)), 2.0) * 8.0
     score += (win_rate - 50.0) * 0.05
+    if net_profit <= 0.0:
+        score -= 20.0
     if trades < min_session_trades:
         score -= (min_session_trades - trades) / max(1, min_session_trades) * 20.0
     if profit_factor < opt_cfg.min_oos_profit_factor:
         score -= (opt_cfg.min_oos_profit_factor - profit_factor) * 30.0
     return round(score, 4)
+
+
+def _rank_session_candidates(
+    session_type: str,
+    train_evals: list[Evaluation],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+) -> list[SessionSelectionCandidate]:
+    scored: list[SessionSelectionCandidate] = []
+    for evaluation in train_evals:
+        stats = evaluation.session_stats.get(session_type)
+        score = score_session_stats(stats, base_cfg, opt_cfg)
+        if score <= -9999.0:
+            continue
+        scored.append(
+            SessionSelectionCandidate(
+                evaluation=evaluation,
+                stats=stats or {},
+                base_score=score,
+                robust_score=score,
+                neighbor_count=1,
+            )
+        )
+    if not scored:
+        return []
+
+    scored.sort(key=_session_candidate_sort_key, reverse=True)
+    pool = scored[: max(1, int(opt_cfg.session_selector_top_n))]
+    weight = float(opt_cfg.session_selector_plateau_weight)
+    if weight > 0.0 and len(pool) > 1:
+        for candidate in pool:
+            neighbor_scores = [
+                item.base_score
+                for item in pool
+                if _parameter_distance(candidate.evaluation.values, item.evaluation.values)
+                <= float(opt_cfg.session_selector_neighbor_distance)
+            ]
+            if not neighbor_scores:
+                neighbor_scores = [candidate.base_score]
+            plateau_score = float(np.median(np.array(neighbor_scores, dtype=np.float64)))
+            isolation_penalty = max(0, 2 - len(neighbor_scores)) * weight * 5.0
+            candidate.neighbor_count = len(neighbor_scores)
+            candidate.robust_score = round(
+                candidate.base_score * (1.0 - weight) + plateau_score * weight - isolation_penalty,
+                4,
+            )
+    pool.sort(key=_session_candidate_sort_key, reverse=True)
+    return pool
+
+
+def _session_candidate_sort_key(candidate: SessionSelectionCandidate) -> tuple:
+    stats = candidate.stats
+    return (
+        candidate.robust_score,
+        candidate.base_score,
+        int(stats.get("total_trades") or 0),
+        float(stats.get("net_profit_eur") or 0.0),
+        -_parameter_complexity(candidate.evaluation.values),
+    )
+
+
+def _session_selector_min_trades(opt_cfg: OptimizerConfig) -> int:
+    return max(1, int(opt_cfg.session_selector_min_trades))
+
+
+def _parameter_distance(left: dict[str, int | float], right: dict[str, int | float]) -> float:
+    scales = {
+        "LOOKBACK_BARS": 30.0,
+        "LONG_CROSS_QUANTILE": 0.05,
+        "SHORT_CROSS_QUANTILE": 0.05,
+        "ALL_STOP_MODES_TAKE_PROFIT_POINTS": 3.0,
+        "BAND_STOP_MIN_PROFILE_RANGE_POINTS": 10.0,
+        "BAND_STOP_PROFILE_LOWER_QUANTILE": 0.05,
+        "BAND_STOP_PROFILE_UPPER_QUANTILE": 0.05,
+        "BAND_STOP_PROFILE_BUFFER_POINTS": 1.0,
+        "BAND_STOP_MIN_DISTANCE_POINTS": 3.0,
+        "BAND_STOP_MAX_DISTANCE_POINTS": 5.0,
+    }
+    total = 0.0
+    count = 0
+    for name, scale in scales.items():
+        if name not in left or name not in right:
+            continue
+        delta = abs(float(left[name]) - float(right[name])) / scale
+        total += min(delta, 3.0) ** 2
+        count += 1
+    return math.sqrt(total / max(1, count))
+
+
+def _parameter_complexity(values: dict[str, int | float]) -> float:
+    if not values:
+        return 0.0
+    return (
+        abs(float(values.get("LONG_CROSS_QUANTILE", 0.5)) - 0.5)
+        + abs(float(values.get("SHORT_CROSS_QUANTILE", 0.5)) - 0.5)
+        + abs(float(values.get("BAND_STOP_PROFILE_LOWER_QUANTILE", 0.0)) - 0.0)
+        + abs(float(values.get("BAND_STOP_PROFILE_UPPER_QUANTILE", 1.0)) - 1.0)
+        + abs(float(values.get("BAND_STOP_PROFILE_BUFFER_POINTS", 0.0))) * 0.05
+    )
 
 
 def evaluate_session_portfolio(

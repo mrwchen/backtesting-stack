@@ -200,6 +200,12 @@ MIN_OOS_TRADES = max(0, env_int("MIN_OOS_TRADES", 100))
 MIN_OOS_PROFIT_FACTOR = env_float("MIN_OOS_PROFIT_FACTOR", 1.1)
 MAX_OOS_DRAWDOWN_PCT = env_float("MAX_OOS_DRAWDOWN_PCT", 25.0)
 MAX_MC_RUIN_PCT = env_float("MAX_MC_RUIN_PCT", 5.0)
+SESSION_SELECTOR_MIN_TRADES = max(1, env_int("SESSION_SELECTOR_MIN_TRADES", 20))
+SESSION_SELECTOR_LCB_Z = max(0.0, env_float("SESSION_SELECTOR_LCB_Z", 1.0))
+SESSION_SELECTOR_TOP_N = max(1, env_int("SESSION_SELECTOR_TOP_N", 25))
+SESSION_SELECTOR_PLATEAU_WEIGHT = min(1.0, max(0.0, env_float("SESSION_SELECTOR_PLATEAU_WEIGHT", 0.35)))
+SESSION_SELECTOR_NEIGHBOR_DISTANCE = max(0.0, env_float("SESSION_SELECTOR_NEIGHBOR_DISTANCE", 1.25))
+SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE = max(0.0, env_float("SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE", 2.0))
 
 # Result schema and DB.
 RESULT_SCHEMA = env_str("RESULT_SCHEMA", "public")
@@ -304,6 +310,12 @@ class OptimizerConfig:
     min_oos_profit_factor: float
     max_oos_drawdown_pct: float
     max_mc_ruin_pct: float
+    session_selector_min_trades: int
+    session_selector_lcb_z: float
+    session_selector_top_n: int
+    session_selector_plateau_weight: float
+    session_selector_neighbor_distance: float
+    session_selector_previous_keep_score_tolerance: float
 
 
 def active_run_config() -> RunConfig:
@@ -387,6 +399,12 @@ def active_optimizer_config() -> OptimizerConfig:
         min_oos_profit_factor=MIN_OOS_PROFIT_FACTOR,
         max_oos_drawdown_pct=MAX_OOS_DRAWDOWN_PCT,
         max_mc_ruin_pct=MAX_MC_RUIN_PCT,
+        session_selector_min_trades=SESSION_SELECTOR_MIN_TRADES,
+        session_selector_lcb_z=SESSION_SELECTOR_LCB_Z,
+        session_selector_top_n=SESSION_SELECTOR_TOP_N,
+        session_selector_plateau_weight=SESSION_SELECTOR_PLATEAU_WEIGHT,
+        session_selector_neighbor_distance=SESSION_SELECTOR_NEIGHBOR_DISTANCE,
+        session_selector_previous_keep_score_tolerance=SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE,
     )
 
 

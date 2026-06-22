@@ -125,6 +125,12 @@ services:
       - WF_TEST_DAYS=30 # Walk-forward out-of-sample test window length in days.
       - WF_STEP_DAYS=30 # Days to move forward between folds.
       - WF_TRAIN_TOP_N_PER_FOLD=7000 # Top train candidates per fold evaluated OOS.
+      - SESSION_SELECTOR_MIN_TRADES=20 # Minimum train trades expected for a session-specific parameter winner.
+      - SESSION_SELECTOR_LCB_Z=1.0 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
+      - SESSION_SELECTOR_TOP_N=25 # Candidate pool per session used for robust plateau selection.
+      - SESSION_SELECTOR_PLATEAU_WEIGHT=0.35 # Blend candidate score with nearby-parameter median score.
+      - SESSION_SELECTOR_NEIGHBOR_DISTANCE=1.25 # Normalized parameter distance used to identify nearby candidates.
+      - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=2.0 # Keep prior fold's session parameter if still this close to the best score.
 
       # Optimizer execution.
       - OPTIMIZER_PROCESSES=4 # Number of worker processes for candidate evaluation.

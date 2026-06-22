@@ -91,14 +91,19 @@ def summarize_trades_by_session(trades: list[ClosedTrade]) -> dict[str, dict]:
             "gross_loss_eur": 0.0,
             "net_profit_eur": 0.0,
             "avg_trade_pnl_eur": 0.0,
+            "std_trade_pnl_eur": 0.0,
+            "median_trade_pnl_eur": 0.0,
+            "p25_trade_pnl_eur": 0.0,
         }
         for session_type, _label, _sort_order in SESSION_TYPES
     }
+    pnls_by_session = {session_type: [] for session_type, _label, _sort_order in SESSION_TYPES}
     for trade in trades:
         row = stats.get(trade.entry_session)
         if row is None:
             continue
         pnl = float(trade.pnl_eur)
+        pnls_by_session[trade.entry_session].append(pnl)
         row["total_trades"] += 1
         row["net_profit_eur"] += pnl
         if pnl > 0.0:
@@ -110,13 +115,18 @@ def summarize_trades_by_session(trades: list[ClosedTrade]) -> dict[str, dict]:
         else:
             row["breakeven_trades"] += 1
 
-    for row in stats.values():
+    for session_type, row in stats.items():
         total = int(row["total_trades"])
         row["win_rate_pct"] = round(float(row["winning_trades"]) / total * 100.0, 2) if total > 0 else 0.0
         row["gross_profit_eur"] = round(float(row["gross_profit_eur"]), 2)
         row["gross_loss_eur"] = round(float(row["gross_loss_eur"]), 2)
         row["net_profit_eur"] = round(float(row["net_profit_eur"]), 2)
         row["avg_trade_pnl_eur"] = round(float(row["net_profit_eur"]) / total, 4) if total > 0 else 0.0
+        pnls = np.array(pnls_by_session.get(session_type, []), dtype=np.float64)
+        if pnls.size:
+            row["std_trade_pnl_eur"] = round(float(pnls.std(ddof=0)), 4)
+            row["median_trade_pnl_eur"] = round(float(np.median(pnls)), 4)
+            row["p25_trade_pnl_eur"] = round(float(np.percentile(pnls, 25)), 4)
     return stats
 
 
