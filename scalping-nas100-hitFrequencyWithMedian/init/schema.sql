@@ -86,7 +86,6 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_runs (
     wf_train_days                       INTEGER,
     wf_test_days                        INTEGER,
     wf_step_days                        INTEGER,
-    wf_train_top_n_per_fold             INTEGER,
     optimizer_processes                 INTEGER,
     stage1_max_parameter_sets           INTEGER,
     stage2_enabled                      BOOLEAN,

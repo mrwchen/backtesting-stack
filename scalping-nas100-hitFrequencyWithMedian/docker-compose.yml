@@ -126,7 +126,11 @@ services:
       - WF_TRAIN_DAYS=60 # Walk-forward train window length in days.
       - WF_TEST_DAYS=20 # Walk-forward out-of-sample test window length in days.
       - WF_STEP_DAYS=20 # Days to move forward between folds.
-      - WF_TRAIN_TOP_N_PER_FOLD=7000 # Top train candidates per fold evaluated OOS.
+      - WF_OOS_PROBE_ENABLED=true # Evaluate additional train-ranked candidates in each OOS fold.
+      - WF_OOS_PROBE_TOP_N_PER_SESSION=100 # Top train candidates per session evaluated OOS.
+      - WF_OOS_PROBE_GLOBAL_TOP_N=0 # Additional global train top-N candidates evaluated OOS; 0 disables.
+      - WF_OOS_PROBE_KEEP_TRADES=false # Persist only summary metrics for probe candidates.
+      - WF_OOS_PROBE_PERSIST_FOLD_RESULTS=true # Write OOS probe fold results and aggregate metrics to DB.
       - SESSION_SELECTOR_MIN_TRADES=30 # Minimum train trades expected for a session-specific parameter winner.
       - SESSION_SELECTOR_LCB_Z=1.25 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
       - SESSION_SELECTOR_TOP_N=100 # Candidate pool per session used for robust plateau selection.

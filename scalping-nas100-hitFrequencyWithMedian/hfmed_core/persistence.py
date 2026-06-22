@@ -344,7 +344,6 @@ def create_run(
         "wf_train_days": opt.train_days if opt else None,
         "wf_test_days": opt.test_days if opt else None,
         "wf_step_days": opt.step_days if opt else None,
-        "wf_train_top_n_per_fold": opt.train_top_n_per_fold if opt else None,
         "optimizer_processes": opt.processes if opt else None,
         "stage1_max_parameter_sets": opt.stage1_max_parameter_sets if opt else None,
         "stage2_enabled": opt.stage2_enabled if opt else None,
@@ -1201,7 +1200,7 @@ def insert_portfolio_trade_rows(
     log.info("Inserted portfolio trades %d", len(rows))
 
 
-def insert_trade_rows(conn, rows: list[tuple]) -> None:
+def insert_trade_rows(conn, rows: list[tuple], run_id: int | None = None) -> None:
     if not rows:
         return
     columns = [
@@ -1244,6 +1243,9 @@ def insert_trade_rows(conn, rows: list[tuple]) -> None:
         "realized_risk_pct",
         "margin_capped",
     ]
+    if run_id is not None:
+        columns = ["run_id", *columns]
+        rows = [(run_id, *row) for row in rows]
     query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s").format(
         tbl=_table(TRADES_TABLE),
         cols=sql.SQL(", ").join(map(sql.Identifier, columns)),

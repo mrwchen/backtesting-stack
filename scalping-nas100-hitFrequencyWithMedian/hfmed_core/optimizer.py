@@ -419,15 +419,25 @@ def build_aggregates_from_accumulators(
     stage: str,
     candidates: list[dict[str, int | float]],
     train_metrics_by_hash: dict[str, MetricsAccumulator],
+    oos_metrics_by_hash: dict[str, MetricsAccumulator],
     expected_folds: int,
     opt_cfg: OptimizerConfig,
 ) -> list[dict]:
-    oos_metrics = _empty_aggregate_metrics(expected_folds)
     aggregates = []
     for values in candidates:
         digest = parameters.parameter_hash(values)
-        accumulator = train_metrics_by_hash.get(digest)
-        train_metrics = accumulator.metrics(expected_folds) if accumulator else _empty_aggregate_metrics(expected_folds)
+        train_accumulator = train_metrics_by_hash.get(digest)
+        oos_accumulator = oos_metrics_by_hash.get(digest)
+        train_metrics = (
+            train_accumulator.metrics(expected_folds)
+            if train_accumulator
+            else _empty_aggregate_metrics(expected_folds)
+        )
+        oos_metrics = (
+            oos_accumulator.metrics(expected_folds)
+            if oos_accumulator
+            else _empty_aggregate_metrics(expected_folds)
+        )
         pre_mc_score = score_aggregate(oos_metrics, train_metrics, opt_cfg)
         aggregates.append(
             {
@@ -441,7 +451,7 @@ def build_aggregates_from_accumulators(
                 "score": pre_mc_score,
                 "mc_scored": False,
                 "mc_prob_of_ruin_pct": None,
-                "passed_pre_mc_filters": False,
+                "passed_pre_mc_filters": passed_pre_mc_filters(oos_metrics, opt_cfg),
                 "passed_filters": False,
                 **_prefix_metrics("train", train_metrics),
                 **_prefix_metrics("oos", oos_metrics),
@@ -505,8 +515,11 @@ def run_stage(
     portfolio_id = persistence.insert_portfolio_stub(conn, run_id, stage)
     train_metrics_by_hash: dict[str, MetricsAccumulator] = {}
     train_sessions_by_hash: dict[str, dict[str, SessionStatsAccumulator]] = {}
+    oos_probe_metrics_by_hash: dict[str, MetricsAccumulator] = {}
+    oos_probe_sessions_by_hash: dict[str, dict[str, SessionStatsAccumulator]] = {}
     portfolio_oos_evals: list[Evaluation] = []
     selected_values: list[dict[str, int | float]] = []
+    oos_probe_values: list[dict[str, int | float]] = []
     previous_selected_by_session: dict[str, Evaluation] = {}
 
     for fold in folds:
@@ -546,11 +559,66 @@ def run_stage(
             stage,
             candidates,
             train_metrics_by_hash,
+            oos_probe_metrics_for_persistence(opt_cfg, oos_probe_metrics_by_hash),
             len(folds),
             opt_cfg,
         )
         persistence.update_parameter_set_results(conn, run_id, aggregates)
         del aggregates
+        oos_probe_candidates = select_oos_probe_candidates(train_evals, base_cfg, opt_cfg)
+        if oos_probe_candidates:
+            log.info(
+                "Stage %s fold %d oos_probe %s candidates %d top_per_session %d global_top %d keep_trades %s persist %s",
+                stage,
+                fold.fold_index,
+                _fold_role_period(fold, "oos"),
+                len(oos_probe_candidates),
+                opt_cfg.oos_probe_top_n_per_session,
+                opt_cfg.oos_probe_global_top_n,
+                opt_cfg.oos_probe_keep_trades,
+                opt_cfg.oos_probe_persist_fold_results,
+            )
+            oos_probe_evals = evaluate_many(
+                stage,
+                oos_probe_candidates,
+                fold,
+                "oos",
+                base_cfg,
+                opt_cfg,
+                ticks,
+                bars,
+                keep_trades=opt_cfg.oos_probe_keep_trades,
+            )
+            for evaluation in oos_probe_evals:
+                _accumulate_evaluation(oos_probe_metrics_by_hash, oos_probe_sessions_by_hash, evaluation)
+            oos_probe_values.extend(oos_probe_candidates)
+            if opt_cfg.oos_probe_persist_fold_results:
+                persistence.insert_fold_results(conn, run_id, oos_probe_evals, parameter_ids)
+                probe_aggregates = build_aggregates_from_accumulators(
+                    stage,
+                    oos_probe_candidates,
+                    train_metrics_by_hash,
+                    oos_probe_metrics_by_hash,
+                    len(folds),
+                    opt_cfg,
+                )
+                persistence.update_parameter_set_results(conn, run_id, probe_aggregates)
+                persistence.upsert_parameter_session_stats(
+                    conn,
+                    run_id,
+                    build_session_aggregates_from_accumulators(
+                        stage,
+                        oos_probe_candidates,
+                        oos_probe_sessions_by_hash,
+                        len(folds),
+                        "oos",
+                    ),
+                    parameter_ids,
+                )
+                if opt_cfg.oos_probe_keep_trades:
+                    persist_oos_probe_trades(conn, run_id, oos_probe_evals, parameter_ids)
+                del probe_aggregates
+            del oos_probe_evals
         log.info(
             "Stage %s fold %d session_portfolio oos %s sessions %d",
             stage,
@@ -600,13 +668,27 @@ def run_stage(
         stage,
         candidates,
         train_metrics_by_hash,
+        oos_probe_metrics_by_hash,
         len(folds),
         opt_cfg,
     )
     aggregates.sort(key=lambda row: row["score"], reverse=True)
     for rank, row in enumerate(aggregates, start=1):
         row["stage_rank"] = rank
-    persistence.update_parameter_set_results(conn, run_id, aggregates)
+    persisted_aggregates = aggregates
+    if not opt_cfg.oos_probe_persist_fold_results:
+        persisted_aggregates = build_aggregates_from_accumulators(
+            stage,
+            candidates,
+            train_metrics_by_hash,
+            {},
+            len(folds),
+            opt_cfg,
+        )
+        persisted_aggregates.sort(key=lambda row: row["score"], reverse=True)
+        for rank, row in enumerate(persisted_aggregates, start=1):
+            row["stage_rank"] = rank
+    persistence.update_parameter_set_results(conn, run_id, persisted_aggregates)
     persistence.upsert_parameter_session_stats(
         conn,
         run_id,
@@ -619,11 +701,27 @@ def run_stage(
         ),
         parameter_ids,
     )
+    if opt_cfg.oos_probe_persist_fold_results:
+        persistence.upsert_parameter_session_stats(
+            conn,
+            run_id,
+            build_session_aggregates_from_accumulators(
+                stage,
+                _dedupe_values(oos_probe_values),
+                oos_probe_sessions_by_hash,
+                len(folds),
+                "oos",
+            ),
+            parameter_ids,
+        )
     portfolio_aggregate, portfolio_mc = build_portfolio_aggregate(stage, portfolio_oos_evals, len(folds), base_cfg, opt_cfg)
     persistence.update_portfolio_results(conn, portfolio_id, portfolio_aggregate, portfolio_mc)
-    selected_values = _dedupe_values(selected_values)
+    ranked_oos_values = [row["values"] for row in aggregates if int(row.get("oos_folds") or 0) > 0]
+    selected_values = _dedupe_values([*ranked_oos_values, *selected_values])
     del train_metrics_by_hash
     del train_sessions_by_hash
+    del oos_probe_metrics_by_hash
+    del oos_probe_sessions_by_hash
     return StageResult(
         stage=stage,
         candidates=candidates,
@@ -635,6 +733,73 @@ def run_stage(
         portfolio_aggregate=portfolio_aggregate,
         selected_values=selected_values,
     )
+
+
+def select_oos_probe_candidates(
+    train_evals: list[Evaluation],
+    base_cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+) -> list[dict[str, int | float]]:
+    if not opt_cfg.oos_probe_enabled:
+        return []
+    per_session_top_n = int(opt_cfg.oos_probe_top_n_per_session)
+    global_top_n = int(opt_cfg.oos_probe_global_top_n)
+    if per_session_top_n <= 0 and global_top_n <= 0:
+        return []
+
+    selected: OrderedDict[str, Evaluation] = OrderedDict()
+    if per_session_top_n > 0:
+        for session_type, _label, _sort_order in SESSION_TYPES:
+            ranked = _rank_session_candidates(
+                session_type,
+                train_evals,
+                base_cfg,
+                opt_cfg,
+                limit=per_session_top_n,
+            )
+            for candidate in ranked[:per_session_top_n]:
+                selected.setdefault(candidate.evaluation.parameter_hash, candidate.evaluation)
+
+    if global_top_n > 0:
+        ranked_global = [
+            evaluation
+            for evaluation in sorted(train_evals, key=_global_oos_probe_sort_key, reverse=True)
+            if int(evaluation.summary.get("total_trades") or 0) > 0
+        ][:global_top_n]
+        for evaluation in ranked_global:
+            selected.setdefault(evaluation.parameter_hash, evaluation)
+
+    return [evaluation.values for evaluation in selected.values()]
+
+
+def persist_oos_probe_trades(
+    conn,
+    run_id: int,
+    evaluations: list[Evaluation],
+    parameter_ids: dict[str, int],
+) -> None:
+    rows = []
+    for evaluation in evaluations:
+        parameter_set_id = parameter_ids.get(evaluation.parameter_hash)
+        if parameter_set_id is None:
+            continue
+        rows.extend(
+            persistence.trade_rows(
+                parameter_set_id=parameter_set_id,
+                stage=evaluation.stage,
+                fold_index=evaluation.fold_index,
+                window_role=evaluation.window_role,
+                trades=evaluation.trades,
+            )
+        )
+    persistence.insert_trade_rows(conn, rows, run_id=run_id)
+
+
+def oos_probe_metrics_for_persistence(
+    opt_cfg: OptimizerConfig,
+    metrics_by_hash: dict[str, MetricsAccumulator],
+) -> dict[str, MetricsAccumulator]:
+    return metrics_by_hash if opt_cfg.oos_probe_persist_fold_results else {}
 
 
 def select_session_parameters(
@@ -711,6 +876,7 @@ def _rank_session_candidates(
     train_evals: list[Evaluation],
     base_cfg: RunConfig,
     opt_cfg: OptimizerConfig,
+    limit: int | None = None,
 ) -> list[SessionSelectionCandidate]:
     scored: list[SessionSelectionCandidate] = []
     for evaluation in train_evals:
@@ -731,7 +897,8 @@ def _rank_session_candidates(
         return []
 
     scored.sort(key=_session_candidate_sort_key, reverse=True)
-    pool = scored[: max(1, int(opt_cfg.session_selector_top_n))]
+    pool_size = max(1, int(limit if limit is not None else opt_cfg.session_selector_top_n))
+    pool = scored[:pool_size]
     weight = float(opt_cfg.session_selector_plateau_weight)
     if weight > 0.0 and len(pool) > 1:
         for candidate in pool:
@@ -762,6 +929,16 @@ def _session_candidate_sort_key(candidate: SessionSelectionCandidate) -> tuple:
         int(stats.get("total_trades") or 0),
         float(stats.get("net_profit_eur") or 0.0),
         -_parameter_complexity(candidate.evaluation.values),
+    )
+
+
+def _global_oos_probe_sort_key(evaluation: Evaluation) -> tuple:
+    summary = evaluation.summary
+    return (
+        float(evaluation.score),
+        int(summary.get("total_trades") or 0),
+        float(summary.get("net_profit_eur") or 0.0),
+        -_parameter_complexity(evaluation.values),
     )
 
 

@@ -183,7 +183,11 @@ PARAMETER_GRID_PATH = env_str("PARAMETER_GRID_PATH", "parameter_grid.ini")
 WF_TRAIN_DAYS = max(1, env_int("WF_TRAIN_DAYS", 60))
 WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
 WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
-WF_TRAIN_TOP_N_PER_FOLD = max(1, env_int("WF_TRAIN_TOP_N_PER_FOLD", 50))
+WF_OOS_PROBE_ENABLED = env_bool("WF_OOS_PROBE_ENABLED", False)
+WF_OOS_PROBE_TOP_N_PER_SESSION = max(0, env_int("WF_OOS_PROBE_TOP_N_PER_SESSION", 0))
+WF_OOS_PROBE_GLOBAL_TOP_N = max(0, env_int("WF_OOS_PROBE_GLOBAL_TOP_N", 0))
+WF_OOS_PROBE_KEEP_TRADES = env_bool("WF_OOS_PROBE_KEEP_TRADES", False)
+WF_OOS_PROBE_PERSIST_FOLD_RESULTS = env_bool("WF_OOS_PROBE_PERSIST_FOLD_RESULTS", True)
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
 OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
 OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
@@ -293,7 +297,11 @@ class OptimizerConfig:
     train_days: int
     test_days: int
     step_days: int
-    train_top_n_per_fold: int
+    oos_probe_enabled: bool
+    oos_probe_top_n_per_session: int
+    oos_probe_global_top_n: int
+    oos_probe_keep_trades: bool
+    oos_probe_persist_fold_results: bool
     processes: int
     process_chunk_size: int
     profile_cache_size: int
@@ -382,7 +390,11 @@ def active_optimizer_config() -> OptimizerConfig:
         train_days=WF_TRAIN_DAYS,
         test_days=WF_TEST_DAYS,
         step_days=WF_STEP_DAYS,
-        train_top_n_per_fold=WF_TRAIN_TOP_N_PER_FOLD,
+        oos_probe_enabled=WF_OOS_PROBE_ENABLED,
+        oos_probe_top_n_per_session=WF_OOS_PROBE_TOP_N_PER_SESSION,
+        oos_probe_global_top_n=WF_OOS_PROBE_GLOBAL_TOP_N,
+        oos_probe_keep_trades=WF_OOS_PROBE_KEEP_TRADES,
+        oos_probe_persist_fold_results=WF_OOS_PROBE_PERSIST_FOLD_RESULTS,
         processes=OPTIMIZER_PROCESSES,
         process_chunk_size=OPTIMIZER_PROCESS_CHUNK_SIZE,
         profile_cache_size=OPTIMIZER_PROFILE_CACHE_SIZE,

@@ -2,7 +2,12 @@ import unittest
 from dataclasses import replace
 
 from hfmed_core import config, parameters
-from hfmed_core.optimizer import Evaluation, score_session_stats, select_session_parameters
+from hfmed_core.optimizer import (
+    Evaluation,
+    score_session_stats,
+    select_oos_probe_candidates,
+    select_session_parameters,
+)
 
 
 def _values(**overrides):
@@ -39,7 +44,7 @@ def _stats(trades, wins, gross_profit, gross_loss, std_trade_pnl):
     }
 
 
-def _evaluation(values, session_type, stats):
+def _evaluation(values, session_type, stats, summary=None, score=0.0):
     digest = parameters.parameter_hash(values)
     return Evaluation(
         stage="stage1",
@@ -61,8 +66,8 @@ def _evaluation(values, session_type, stats):
         rejected_stop_too_large=0,
         skipped_no_size=0,
         ruined=False,
-        summary={},
-        score=0.0,
+        summary=summary or {},
+        score=score,
         session_stats={session_type: stats},
         trades=[],
     )
@@ -126,6 +131,47 @@ class SessionSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(selected[session].parameter_hash, previous.parameter_hash)
+
+    def test_oos_probe_candidates_union_session_and_global_top(self):
+        session = "ny_morning"
+        session_winner = _evaluation(
+            _values(LOOKBACK_BARS=60),
+            session,
+            _stats(trades=40, wins=26, gross_profit=1400.0, gross_loss=350.0, std_trade_pnl=25.0),
+            summary={"total_trades": 40, "net_profit_eur": 1050.0},
+            score=10.0,
+        )
+        global_winner = _evaluation(
+            _values(LOOKBACK_BARS=90),
+            session,
+            _stats(trades=35, wins=20, gross_profit=900.0, gross_loss=350.0, std_trade_pnl=25.0),
+            summary={"total_trades": 35, "net_profit_eur": 550.0},
+            score=100.0,
+        )
+        weak = _evaluation(
+            _values(LOOKBACK_BARS=120),
+            session,
+            _stats(trades=32, wins=17, gross_profit=520.0, gross_loss=480.0, std_trade_pnl=25.0),
+            summary={"total_trades": 32, "net_profit_eur": 40.0},
+            score=1.0,
+        )
+        opt_cfg = replace(
+            self.opt_cfg,
+            oos_probe_enabled=True,
+            oos_probe_top_n_per_session=1,
+            oos_probe_global_top_n=2,
+        )
+
+        selected_values = select_oos_probe_candidates(
+            [session_winner, global_winner, weak],
+            self.base_cfg,
+            opt_cfg,
+        )
+        selected_hashes = [parameters.parameter_hash(values) for values in selected_values]
+
+        self.assertEqual(len(selected_hashes), 2)
+        self.assertEqual(selected_hashes[0], session_winner.parameter_hash)
+        self.assertIn(global_winner.parameter_hash, selected_hashes)
 
 
 if __name__ == "__main__":
