@@ -24,6 +24,9 @@ services:
       context: . # Build from this stack directory.
       dockerfile: Dockerfile # Python runner image definition.
     restart: "no" # Do not restart after the backtest job exits.
+    mem_limit: 10g # Keep the optimizer from exhausting the trading VM memory.
+    memswap_limit: 10g # Do not let the container exceed its RAM budget via swap.
+    cpus: "4.0" # Keep host CPU scheduling predictable while multiprocessing is active.
     depends_on:
       init-hfmed-schema:
         condition: service_completed_successfully # Start runner only after schema init succeeded.
@@ -132,9 +135,9 @@ services:
       - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=3.0 # Keep prior fold's session parameter if still this close to the best score.
 
       # Optimizer execution.
-      - OPTIMIZER_PROCESSES=4 # Number of worker processes for candidate evaluation.
+      - OPTIMIZER_PROCESSES=2 # Number of worker processes for candidate evaluation.
       - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Configured chunk size; current code does not use it as Pool chunksize.
-      - OPTIMIZER_PROFILE_CACHE_SIZE=4 # Rolling profile cache size per worker window.
+      - OPTIMIZER_PROFILE_CACHE_SIZE=1 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
       - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.

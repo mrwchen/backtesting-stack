@@ -101,6 +101,278 @@ def _as_int32(values: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(values, dtype=np.int32)
 
 
+def _empty_summary(final_equity: float) -> dict:
+    return {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "breakeven_trades": 0,
+        "win_rate_pct": 0.0,
+        "profit_factor": 0.0,
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "avg_win_pct": 0.0,
+        "avg_loss_pct": 0.0,
+        "gross_profit_eur": 0.0,
+        "gross_loss_eur": 0.0,
+        "net_profit_eur": 0.0,
+        "avg_trade_pnl_eur": 0.0,
+        "avg_realized_risk_pct": 0.0,
+        "median_realized_risk_pct": 0.0,
+        "max_realized_risk_pct": 0.0,
+        "margin_capped_share_pct": 0.0,
+        "final_equity": round(float(final_equity), 2),
+    }
+
+
+def _empty_session_stats() -> dict[str, dict]:
+    return {
+        session_type: {
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "breakeven_trades": 0,
+            "win_rate_pct": 0.0,
+            "gross_profit_eur": 0.0,
+            "gross_loss_eur": 0.0,
+            "net_profit_eur": 0.0,
+            "avg_trade_pnl_eur": 0.0,
+            "std_trade_pnl_eur": 0.0,
+            "median_trade_pnl_eur": 0.0,
+            "p25_trade_pnl_eur": 0.0,
+        }
+        for session_type, _label, _sort_order in SESSION_TYPES
+    }
+
+
+def _apply_core_stats(result: SimulationResult, stats: tuple) -> None:
+    result.signals_total = int(stats[1])
+    result.long_signals = int(stats[2])
+    result.short_signals = int(stats[3])
+    result.rejected_signals_missing_band = int(stats[4])
+    result.rejected_signals_band_too_narrow = int(stats[5])
+    result.rejected_signals_stop_too_small = int(stats[6])
+    result.rejected_signals_stop_too_large = int(stats[7])
+    result.skipped_signals_no_size = int(stats[8])
+    result.ruined = bool(stats[9])
+    result.ticks_simulated = int(stats[10])
+    result.final_equity = float(stats[11])
+
+
+def _summary_from_arrays(
+    initial_equity: float,
+    final_equity: float,
+    pnl: np.ndarray,
+    equity_before: np.ndarray,
+    equity_after: np.ndarray,
+    realized_risk_pct: np.ndarray,
+    margin_capped: np.ndarray,
+) -> dict:
+    n = int(pnl.shape[0])
+    if n <= 0:
+        return _empty_summary(final_equity)
+
+    returns = np.divide(
+        pnl,
+        equity_before,
+        out=np.zeros(n, dtype=np.float64),
+        where=equity_before > 0.0,
+    ) * 100.0
+    wins = pnl > 0.0
+    losses = pnl < 0.0
+    gross_win = float(pnl[wins].sum())
+    gross_loss = float(-pnl[losses].sum())
+    if gross_loss > 0.0:
+        profit_factor = gross_win / gross_loss
+    elif gross_win > 0.0:
+        profit_factor = None
+    else:
+        profit_factor = 0.0
+
+    equity = np.concatenate([[initial_equity], equity_after])
+    running_max = np.maximum.accumulate(equity)
+    drawdown = (equity - running_max) / running_max * 100.0
+
+    return {
+        "total_trades": n,
+        "winning_trades": int(wins.sum()),
+        "losing_trades": int(losses.sum()),
+        "breakeven_trades": int(n - wins.sum() - losses.sum()),
+        "win_rate_pct": round(float(wins.mean() * 100.0), 2),
+        "profit_factor": round(float(profit_factor), 4) if profit_factor is not None else None,
+        "total_return_pct": round((final_equity - initial_equity) / initial_equity * 100.0, 4),
+        "max_drawdown_pct": round(float(drawdown.min()), 4),
+        "avg_win_pct": round(float(returns[wins].mean()), 4) if wins.any() else 0.0,
+        "avg_loss_pct": round(float(returns[losses].mean()), 4) if losses.any() else 0.0,
+        "gross_profit_eur": round(gross_win, 2),
+        "gross_loss_eur": round(gross_loss, 2),
+        "net_profit_eur": round(float(pnl.sum()), 2),
+        "avg_trade_pnl_eur": round(float(pnl.mean()), 4),
+        "avg_realized_risk_pct": round(float(realized_risk_pct.mean()), 4),
+        "median_realized_risk_pct": round(float(np.median(realized_risk_pct)), 4),
+        "max_realized_risk_pct": round(float(realized_risk_pct.max()), 4),
+        "margin_capped_share_pct": round(float(margin_capped.mean() * 100.0), 2),
+        "final_equity": round(float(final_equity), 2),
+    }
+
+
+def _session_stats_from_arrays(entry_session_codes: np.ndarray, pnl: np.ndarray) -> dict[str, dict]:
+    stats = _empty_session_stats()
+    if pnl.shape[0] <= 0:
+        return stats
+
+    for session_type, _label, _sort_order in SESSION_TYPES:
+        code = SESSION_CODE_BY_KEY[session_type]
+        session_pnl = pnl[entry_session_codes == code]
+        total = int(session_pnl.shape[0])
+        if total <= 0:
+            continue
+        wins = session_pnl > 0.0
+        losses = session_pnl < 0.0
+        gross_profit = float(session_pnl[wins].sum())
+        gross_loss = float(-session_pnl[losses].sum())
+        net_profit = float(session_pnl.sum())
+        row = stats[session_type]
+        row["total_trades"] = total
+        row["winning_trades"] = int(wins.sum())
+        row["losing_trades"] = int(losses.sum())
+        row["breakeven_trades"] = int(total - wins.sum() - losses.sum())
+        row["win_rate_pct"] = round(float(wins.sum()) / total * 100.0, 2)
+        row["gross_profit_eur"] = round(gross_profit, 2)
+        row["gross_loss_eur"] = round(gross_loss, 2)
+        row["net_profit_eur"] = round(net_profit, 2)
+        row["avg_trade_pnl_eur"] = round(net_profit / total, 4)
+        row["std_trade_pnl_eur"] = round(float(session_pnl.std(ddof=0)), 4)
+        row["median_trade_pnl_eur"] = round(float(np.median(session_pnl)), 4)
+        row["p25_trade_pnl_eur"] = round(float(np.percentile(session_pnl, 25)), 4)
+    return stats
+
+
+def run_simulation_summary(
+    ticks: TickData,
+    bars: BarData,
+    tick_bar_index: np.ndarray,
+    cfg: RunConfig,
+    trade_start_ns: int | None = None,
+    trade_end_ns: int | None = None,
+    profile: ProfileArrays | None = None,
+) -> tuple[SimulationResult, dict, dict[str, dict]]:
+    if profile is None:
+        profile = rolling_profile_arrays(bars, cfg)
+
+    result = SimulationResult(
+        initial_equity=cfg.initial_equity,
+        final_equity=cfg.initial_equity,
+        ticks_total=len(ticks),
+        bars_total=len(bars),
+    )
+
+    n = len(ticks)
+    if n == 0:
+        return result, _empty_summary(result.final_equity), _empty_session_stats()
+
+    mid = _as_float(ticks.mid)
+    bid = _as_float(ticks.bid)
+    ask = _as_float(ticks.ask)
+    local_bar_index = _as_int32(tick_bar_index)
+    median_level = _as_float(profile.median_level)
+    long_cross = _as_float(profile.long_cross_level)
+    short_cross = _as_float(profile.short_cross_level)
+    profile_low = _as_float(profile.profile_low)
+    profile_high = _as_float(profile.profile_high)
+    stop_lower = _as_float(profile.stop_profile_lower)
+    stop_upper = _as_float(profile.stop_profile_upper)
+    profile_range = _as_float(profile.profile_range_points)
+    entry_allowed = _build_entry_allowed(ticks, cfg, trade_start_ns, trade_end_ns)
+
+    scalar_args = (
+        1 if cfg.stop_mode == "fixed" else 0,
+        float(cfg.stop_points),
+        float(cfg.take_profit_points),
+        float(cfg.min_profile_range_points),
+        float(cfg.stop_profile_buffer_points),
+        float(cfg.min_stop_distance_points),
+        float(cfg.max_stop_distance_points),
+        float(cfg.initial_equity),
+        float(cfg.contract_multiplier),
+        float(cfg.eurusd_rate),
+        float(cfg.risk_per_trade_pct),
+        float(cfg.margin_requirement_pct),
+        float(cfg.max_margin_pct),
+        float(cfg.lot_size),
+        float(cfg.spread_points),
+        float(cfg.slippage_points),
+        float(cfg.commission_per_unit),
+    )
+    price_args = (
+        mid, bid, ask, local_bar_index, median_level, long_cross, short_cross,
+        profile_low, profile_high, stop_lower, stop_upper, profile_range,
+        entry_allowed,
+    )
+
+    def _empty_outputs(cap: int) -> tuple:
+        return (
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int8),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.float64),
+            np.empty(cap, dtype=np.int8),
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int8),
+        )
+
+    counted = simulate_core(*price_args, *scalar_args, *_empty_outputs(0), 0)
+    cap = max(int(counted[0]), 1)
+    out = _empty_outputs(cap)
+    stats = simulate_core(*price_args, *scalar_args, *out, cap)
+    n_trades = int(stats[0])
+    _apply_core_stats(result, stats)
+
+    (
+        out_entry_idx, _out_exit_idx, _out_direction, _out_cross_level, _out_median,
+        _out_prev_mid, _out_signal_mid, out_entry_price, _out_exit_price, out_stop_price,
+        _out_tp_price, out_units, _out_notional, _out_margin, _out_gross, _out_extra,
+        out_pnl, out_equity_before, out_equity_after, _out_status, _out_ticks_held,
+        out_margin_capped,
+    ) = out
+    sl = slice(0, n_trades)
+    eff_rate = cfg.eurusd_rate if cfg.eurusd_rate > 0 else 1.0
+    realized_risk_eur = out_units[sl] * np.abs(out_entry_price[sl] - out_stop_price[sl]) * cfg.contract_multiplier / eff_rate
+    realized_risk_pct = np.divide(
+        realized_risk_eur,
+        out_equity_before[sl],
+        out=np.zeros(n_trades, dtype=np.float64),
+        where=out_equity_before[sl] > 0.0,
+    ) * 100.0
+    summary = _summary_from_arrays(
+        cfg.initial_equity,
+        result.final_equity,
+        out_pnl[sl],
+        out_equity_before[sl],
+        out_equity_after[sl],
+        realized_risk_pct,
+        out_margin_capped[sl].astype(np.float64, copy=False),
+    )
+    entry_session_codes = ticks.entry_session_code[out_entry_idx[sl]] if n_trades > 0 else np.empty(0, dtype=np.uint8)
+    session_stats = _session_stats_from_arrays(entry_session_codes, out_pnl[sl])
+    return result, summary, session_stats
+
+
 def run_simulation(
     ticks: TickData,
     bars: BarData,

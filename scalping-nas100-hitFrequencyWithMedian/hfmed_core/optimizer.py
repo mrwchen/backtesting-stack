@@ -6,6 +6,7 @@ import logging
 import math
 import multiprocessing as mp
 import time
+import gc
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -19,7 +20,7 @@ from .profile import ProfileArrays, rolling_profile_arrays
 from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
 from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
 from .sim_core import warmup as warmup_sim_core
-from .simulation import run_session_portfolio_simulation, run_simulation
+from .simulation import run_session_portfolio_simulation, run_simulation, run_simulation_summary
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _WORKER_BASE_CFG: RunConfig | None = None
 _WORKER_WINDOW: WindowData | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FoldSpec:
     fold_index: int
     train_start_ns: int
@@ -36,7 +37,7 @@ class FoldSpec:
     test_end_ns: int
 
 
-@dataclass
+@dataclass(slots=True)
 class WindowData:
     ticks: TickData
     bars: BarData
@@ -47,7 +48,7 @@ class WindowData:
     profile_cache: OrderedDict[tuple, ProfileArrays] = field(default_factory=OrderedDict)
 
 
-@dataclass
+@dataclass(slots=True)
 class Evaluation:
     stage: str
     fold_index: int
@@ -74,7 +75,7 @@ class Evaluation:
     trades: list[ClosedTrade] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True)
 class SessionSelectionCandidate:
     evaluation: Evaluation
     stats: dict
@@ -83,7 +84,7 @@ class SessionSelectionCandidate:
     neighbor_count: int
 
 
-@dataclass
+@dataclass(slots=True)
 class StageResult:
     stage: str
     candidates: list[dict[str, int | float]]
@@ -94,6 +95,104 @@ class StageResult:
     portfolio_id: int | None = None
     portfolio_aggregate: dict | None = None
     selected_values: list[dict[str, int | float]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MetricsAccumulator:
+    folds: int = 0
+    return_pcts: list[float] = field(default_factory=list)
+    total_trades: int = 0
+    winning_trades: int = 0
+    gross_profit_eur: float = 0.0
+    gross_loss_eur: float = 0.0
+    net_profit_eur: float = 0.0
+    max_drawdown_pct: float = 0.0
+    signals_total: int = 0
+    ruined_folds: int = 0
+
+    def add(self, evaluation: Evaluation) -> None:
+        summary = evaluation.summary
+        self.folds += 1
+        self.return_pcts.append(float(summary.get("total_return_pct") or 0.0))
+        self.total_trades += int(summary.get("total_trades") or 0)
+        self.winning_trades += int(summary.get("winning_trades") or 0)
+        self.gross_profit_eur += float(summary.get("gross_profit_eur") or 0.0)
+        self.gross_loss_eur += float(summary.get("gross_loss_eur") or 0.0)
+        self.net_profit_eur += float(summary.get("net_profit_eur") or 0.0)
+        self.max_drawdown_pct = min(self.max_drawdown_pct, float(summary.get("max_drawdown_pct") or 0.0))
+        self.signals_total += int(evaluation.signals_total)
+        self.ruined_folds += 1 if evaluation.ruined else 0
+
+    def metrics(self, expected_folds: int) -> dict:
+        if self.folds <= 0:
+            return _empty_aggregate_metrics(expected_folds)
+        returns = np.array(self.return_pcts, dtype=np.float64)
+        if self.gross_loss_eur > 0.0:
+            profit_factor = self.gross_profit_eur / self.gross_loss_eur
+        elif self.gross_profit_eur > 0.0:
+            profit_factor = None
+        else:
+            profit_factor = 0.0
+        factors = np.maximum(0.0, 1.0 + returns / 100.0)
+        total_return = (float(np.prod(factors)) - 1.0) * 100.0
+        win_rate = (float(self.winning_trades) / self.total_trades * 100.0) if self.total_trades > 0 else 0.0
+        return {
+            "folds": self.folds,
+            "expected_folds": expected_folds,
+            "total_trades": self.total_trades,
+            "total_return_pct": round(total_return, 4),
+            "mean_return_pct": round(float(returns.mean()), 4),
+            "median_return_pct": round(float(np.median(returns)), 4),
+            "std_return_pct": round(float(returns.std(ddof=0)), 4),
+            "max_drawdown_pct": round(float(self.max_drawdown_pct), 4),
+            "profit_factor": round(float(profit_factor), 4) if profit_factor is not None else None,
+            "win_rate_pct": round(win_rate, 4),
+            "profitable_folds_pct": round(float(np.mean(returns > 0.0) * 100.0), 4),
+            "gross_profit_eur": round(self.gross_profit_eur, 2),
+            "gross_loss_eur": round(self.gross_loss_eur, 2),
+            "net_profit_eur": round(self.net_profit_eur, 2),
+            "avg_trade_pnl_eur": round(self.net_profit_eur / self.total_trades, 4) if self.total_trades > 0 else 0.0,
+            "signals_total": self.signals_total,
+            "ruined_folds": self.ruined_folds,
+        }
+
+
+@dataclass(slots=True)
+class SessionStatsAccumulator:
+    folds: int = 0
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    breakeven_trades: int = 0
+    gross_profit_eur: float = 0.0
+    gross_loss_eur: float = 0.0
+    net_profit_eur: float = 0.0
+
+    def add(self, stats: dict) -> None:
+        self.folds += 1
+        self.total_trades += int(stats.get("total_trades") or 0)
+        self.winning_trades += int(stats.get("winning_trades") or 0)
+        self.losing_trades += int(stats.get("losing_trades") or 0)
+        self.breakeven_trades += int(stats.get("breakeven_trades") or 0)
+        self.gross_profit_eur += float(stats.get("gross_profit_eur") or 0.0)
+        self.gross_loss_eur += float(stats.get("gross_loss_eur") or 0.0)
+        self.net_profit_eur += float(stats.get("net_profit_eur") or 0.0)
+
+    def metrics(self, expected_folds: int) -> dict:
+        total = int(self.total_trades)
+        return {
+            "folds": self.folds,
+            "expected_folds": expected_folds,
+            "total_trades": total,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "breakeven_trades": self.breakeven_trades,
+            "win_rate_pct": round(float(self.winning_trades) / total * 100.0, 4) if total > 0 else 0.0,
+            "gross_profit_eur": round(self.gross_profit_eur, 2),
+            "gross_loss_eur": round(self.gross_loss_eur, 2),
+            "net_profit_eur": round(self.net_profit_eur, 2),
+            "avg_trade_pnl_eur": round(self.net_profit_eur / total, 4) if total > 0 else 0.0,
+        }
 
 
 def run_walk_forward_optimizer(
@@ -271,6 +370,126 @@ def run_single_backtest(
     )
 
 
+def _empty_aggregate_metrics(expected_folds: int) -> dict:
+    return {
+        "folds": 0,
+        "expected_folds": expected_folds,
+        "total_trades": 0,
+        "total_return_pct": 0.0,
+        "mean_return_pct": 0.0,
+        "median_return_pct": 0.0,
+        "std_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "profit_factor": 0.0,
+        "win_rate_pct": 0.0,
+        "profitable_folds_pct": 0.0,
+        "gross_profit_eur": 0.0,
+        "gross_loss_eur": 0.0,
+        "net_profit_eur": 0.0,
+        "avg_trade_pnl_eur": 0.0,
+        "signals_total": 0,
+        "ruined_folds": 0,
+    }
+
+
+def _accumulate_evaluation(
+    metrics_by_hash: dict[str, MetricsAccumulator],
+    sessions_by_hash: dict[str, dict[str, SessionStatsAccumulator]],
+    evaluation: Evaluation,
+) -> None:
+    digest = evaluation.parameter_hash
+    metrics = metrics_by_hash.get(digest)
+    if metrics is None:
+        metrics = MetricsAccumulator()
+        metrics_by_hash[digest] = metrics
+    metrics.add(evaluation)
+
+    session_accs = sessions_by_hash.get(digest)
+    if session_accs is None:
+        session_accs = {
+            session_type: SessionStatsAccumulator()
+            for session_type, _label, _sort_order in SESSION_TYPES
+        }
+        sessions_by_hash[digest] = session_accs
+    for session_type, _label, _sort_order in SESSION_TYPES:
+        session_accs[session_type].add(evaluation.session_stats.get(session_type, {}))
+
+
+def build_aggregates_from_accumulators(
+    stage: str,
+    candidates: list[dict[str, int | float]],
+    train_metrics_by_hash: dict[str, MetricsAccumulator],
+    expected_folds: int,
+    opt_cfg: OptimizerConfig,
+) -> list[dict]:
+    oos_metrics = _empty_aggregate_metrics(expected_folds)
+    aggregates = []
+    for values in candidates:
+        digest = parameters.parameter_hash(values)
+        accumulator = train_metrics_by_hash.get(digest)
+        train_metrics = accumulator.metrics(expected_folds) if accumulator else _empty_aggregate_metrics(expected_folds)
+        pre_mc_score = score_aggregate(oos_metrics, train_metrics, opt_cfg)
+        aggregates.append(
+            {
+                "stage": stage,
+                "stage_rank": None,
+                "values": values,
+                "parameter_hash": digest,
+                "parameter_label": parameters.parameter_label(values),
+                "parameter_signature": parameters.parameter_signature(values),
+                "pre_mc_score": pre_mc_score,
+                "score": pre_mc_score,
+                "mc_scored": False,
+                "mc_prob_of_ruin_pct": None,
+                "passed_pre_mc_filters": False,
+                "passed_filters": False,
+                **_prefix_metrics("train", train_metrics),
+                **_prefix_metrics("oos", oos_metrics),
+            }
+        )
+    return aggregates
+
+
+def build_session_aggregates_from_accumulators(
+    stage: str,
+    candidates: list[dict[str, int | float]],
+    sessions_by_hash: dict[str, dict[str, SessionStatsAccumulator]],
+    expected_folds: int,
+    window_role: str,
+) -> list[dict]:
+    rows = []
+    for values in candidates:
+        digest = parameters.parameter_hash(values)
+        session_accs = sessions_by_hash.get(digest, {})
+        for session_type, _label, _sort_order in SESSION_TYPES:
+            accumulator = session_accs.get(session_type)
+            metrics = accumulator.metrics(expected_folds) if accumulator else {
+                "folds": 0,
+                "expected_folds": expected_folds,
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "breakeven_trades": 0,
+                "win_rate_pct": 0.0,
+                "gross_profit_eur": 0.0,
+                "gross_loss_eur": 0.0,
+                "net_profit_eur": 0.0,
+                "avg_trade_pnl_eur": 0.0,
+            }
+            rows.append(
+                {
+                    "stage": stage,
+                    "parameter_hash": digest,
+                    "window_role": window_role,
+                    "session_type": session_type,
+                    "session_label": SESSION_LABELS[session_type],
+                    "session_sort_order": SESSION_SORT_ORDERS[session_type],
+                    **metrics,
+                }
+            )
+    return rows
+
+
 def run_stage(
     conn,
     run_id: int,
@@ -284,8 +503,8 @@ def run_stage(
 ) -> StageResult:
     parameter_ids = persistence.insert_parameter_stubs(conn, run_id, stage, candidates)
     portfolio_id = persistence.insert_portfolio_stub(conn, run_id, stage)
-    train_by_hash: dict[str, list[Evaluation]] = {parameters.parameter_hash(candidate): [] for candidate in candidates}
-    empty_oos_by_hash: dict[str, list[Evaluation]] = {}
+    train_metrics_by_hash: dict[str, MetricsAccumulator] = {}
+    train_sessions_by_hash: dict[str, dict[str, SessionStatsAccumulator]] = {}
     portfolio_oos_evals: list[Evaluation] = []
     selected_values: list[dict[str, int | float]] = []
     previous_selected_by_session: dict[str, Evaluation] = {}
@@ -300,7 +519,7 @@ def run_stage(
         )
         train_evals = evaluate_many(stage, candidates, fold, "train", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
         for evaluation in train_evals:
-            train_by_hash[evaluation.parameter_hash].append(evaluation)
+            _accumulate_evaluation(train_metrics_by_hash, train_sessions_by_hash, evaluation)
 
         selected_by_session = select_session_parameters(
             train_evals,
@@ -323,8 +542,15 @@ def run_stage(
             base_cfg,
             opt_cfg,
         )
-        aggregates = build_aggregates(stage, candidates, train_by_hash, empty_oos_by_hash, len(folds), opt_cfg)
+        aggregates = build_aggregates_from_accumulators(
+            stage,
+            candidates,
+            train_metrics_by_hash,
+            len(folds),
+            opt_cfg,
+        )
         persistence.update_parameter_set_results(conn, run_id, aggregates)
+        del aggregates
         log.info(
             "Stage %s fold %d session_portfolio oos %s sessions %d",
             stage,
@@ -358,18 +584,25 @@ def run_stage(
         persistence.upsert_parameter_session_stats(
             conn,
             run_id,
-            build_session_aggregates(
+            build_session_aggregates_from_accumulators(
                 stage,
                 [evaluation.values for evaluation in selected],
-                train_by_hash,
-                empty_oos_by_hash,
+                train_sessions_by_hash,
                 len(folds),
-                (("train", train_by_hash),),
+                "train",
             ),
             parameter_ids,
         )
+        del train_evals
+        gc.collect()
 
-    aggregates = build_aggregates(stage, candidates, train_by_hash, empty_oos_by_hash, len(folds), opt_cfg)
+    aggregates = build_aggregates_from_accumulators(
+        stage,
+        candidates,
+        train_metrics_by_hash,
+        len(folds),
+        opt_cfg,
+    )
     aggregates.sort(key=lambda row: row["score"], reverse=True)
     for rank, row in enumerate(aggregates, start=1):
         row["stage_rank"] = rank
@@ -377,21 +610,30 @@ def run_stage(
     persistence.upsert_parameter_session_stats(
         conn,
         run_id,
-        build_session_aggregates(stage, _dedupe_values(selected_values), train_by_hash, empty_oos_by_hash, len(folds), (("train", train_by_hash),)),
+        build_session_aggregates_from_accumulators(
+            stage,
+            _dedupe_values(selected_values),
+            train_sessions_by_hash,
+            len(folds),
+            "train",
+        ),
         parameter_ids,
     )
     portfolio_aggregate, portfolio_mc = build_portfolio_aggregate(stage, portfolio_oos_evals, len(folds), base_cfg, opt_cfg)
     persistence.update_portfolio_results(conn, portfolio_id, portfolio_aggregate, portfolio_mc)
+    selected_values = _dedupe_values(selected_values)
+    del train_metrics_by_hash
+    del train_sessions_by_hash
     return StageResult(
         stage=stage,
         candidates=candidates,
-        aggregates=aggregates,
+        aggregates=[],
         oos_evals=portfolio_oos_evals,
         mc_by_hash={},
         parameter_ids=parameter_ids,
         portfolio_id=portfolio_id,
         portfolio_aggregate=portfolio_aggregate,
-        selected_values=_dedupe_values(selected_values),
+        selected_values=selected_values,
     )
 
 
@@ -1009,18 +1251,29 @@ def _evaluate_candidate_with_profile(
     profile: ProfileArrays,
 ) -> Evaluation:
     cfg = apply_parameter_values(base_cfg, values)
-    result = run_simulation(
-        window.ticks,
-        window.bars,
-        window.tick_bar_index,
-        cfg,
-        trade_start_ns=window.trade_start_ns,
-        trade_end_ns=window.trade_end_ns,
-        log_result=False,
-        profile=profile,
-    )
-    summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
-    session_stats = summarize_trades_by_session(result.trades)
+    if keep_trades:
+        result = run_simulation(
+            window.ticks,
+            window.bars,
+            window.tick_bar_index,
+            cfg,
+            trade_start_ns=window.trade_start_ns,
+            trade_end_ns=window.trade_end_ns,
+            log_result=False,
+            profile=profile,
+        )
+        summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
+        session_stats = summarize_trades_by_session(result.trades)
+    else:
+        result, summary, session_stats = run_simulation_summary(
+            window.ticks,
+            window.bars,
+            window.tick_bar_index,
+            cfg,
+            trade_start_ns=window.trade_start_ns,
+            trade_end_ns=window.trade_end_ns,
+            profile=profile,
+        )
     score = score_evaluation(summary, result)
     if not keep_trades:
         result.trades = []

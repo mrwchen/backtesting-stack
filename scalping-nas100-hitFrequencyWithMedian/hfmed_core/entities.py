@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Sizing:
     units: float
     notional_eur: float
@@ -12,7 +12,7 @@ class Sizing:
     risk_eur: float
 
 
-@dataclass
+@dataclass(slots=True)
 class ClosedTrade:
     signal_ts: datetime
     entry_ts: datetime
@@ -50,7 +50,7 @@ class ClosedTrade:
     margin_capped: bool
 
 
-@dataclass
+@dataclass(slots=True)
 class SimulationResult:
     trades: list[ClosedTrade] = field(default_factory=list)
     initial_equity: float = 0.0
