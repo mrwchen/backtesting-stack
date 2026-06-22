@@ -62,7 +62,7 @@ services:
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
-      - BAR_SECONDS=10 # Mid-price bar duration built from ticks.
+      - BAR_SECONDS=5 # Mid-price bar duration built from ticks.
       - LOOKBACK_BARS=90 # Rolling profile lookback window in bars.
       - MIN_LOOKBACK_BARS=90 # Minimum completed bars before profile signals are valid.
       - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means LOOKBACK_BARS * BAR_SECONDS.
