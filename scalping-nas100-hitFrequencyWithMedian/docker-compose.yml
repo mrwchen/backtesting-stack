@@ -64,7 +64,7 @@ services:
       # Bar and profile construction.
       - BAR_SECONDS=5 # Mid-price bar duration built from ticks.
       - LOOKBACK_BARS=90 # Rolling profile lookback window in bars.
-      - MIN_LOOKBACK_BARS=90 # Minimum completed bars before profile signals are valid.
+      - MIN_LOOKBACK_BARS=30 # Minimum completed bars before profile signals are valid.
       - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means LOOKBACK_BARS * BAR_SECONDS.
       - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
 
@@ -126,11 +126,12 @@ services:
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
       - WF_MATRIX_TRAIN_DAYS=15,20,30 # Train window lengths tested by the matrix.
       - WF_MATRIX_TEST_DAYS=10,15,20 # OOS window lengths tested by the matrix; step_days equals test_days.
-      - WF_OOS_PROBE_ENABLED=true # Evaluate additional train-ranked candidates in each OOS fold.
-      - WF_OOS_PROBE_TOP_N_PER_SESSION=1000 # Top train candidates per session evaluated OOS.
-      - WF_OOS_PROBE_GLOBAL_TOP_N=4000 # Additional global train top-N candidates evaluated OOS; 0 disables.
-      - WF_OOS_PROBE_KEEP_TRADES=false # Persist only summary metrics for probe candidates.
-      - WF_OOS_PROBE_PERSIST_FOLD_RESULTS=true # Write OOS probe fold results and aggregate metrics to DB.
+      - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
+      - WF_FINALIST_TOP_N_PER_SESSION=1000 # Per-session train top-N collected into the finalist union.
+      - WF_FINALIST_GLOBAL_TOP_N=4000 # Additional global train top-N collected into the finalist union; 0 disables.
+      - WF_FINALIST_MAX_SETS=2000 # Hard cap on the finalist set (kept by best cumulative train score); 0 means unlimited.
+      - WF_FINALIST_KEEP_TRADES=false # Persist only summary metrics for finalist OOS evaluations.
+      - WF_FINALIST_PERSIST_FOLD_RESULTS=true # Write finalist OOS per-fold results to DB.
       - SESSION_SELECTOR_MIN_TRADES=10 # Minimum train trades expected for a session-specific parameter winner.
       - SESSION_SELECTOR_LCB_Z=1 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
       - SESSION_SELECTOR_TOP_N=1000 # Candidate pool per session used for robust plateau selection.

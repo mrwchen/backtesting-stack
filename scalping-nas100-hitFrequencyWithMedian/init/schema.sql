@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets (
     mc_prob_of_ruin_pct                 NUMERIC(12,4),
     passed_pre_mc_filters               BOOLEAN       NOT NULL DEFAULT FALSE,
     passed_filters                      BOOLEAN       NOT NULL DEFAULT FALSE,
+    oos_full_coverage                   BOOLEAN       NOT NULL DEFAULT FALSE,
     top_trades_persisted                BOOLEAN       NOT NULL DEFAULT FALSE,
 
     train_folds                         INTEGER,
@@ -180,6 +181,8 @@ CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_run_score_idx
     ON backtest2_nas100_hfmed_parameter_sets(run_id, score DESC);
 CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_filters_idx
     ON backtest2_nas100_hfmed_parameter_sets(run_id, passed_filters, score DESC);
+CREATE INDEX IF NOT EXISTS backtest2_nas100_hfmed_parameter_sets_coverage_idx
+    ON backtest2_nas100_hfmed_parameter_sets(run_id, oos_full_coverage, score DESC);
 
 CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_portfolios (
     portfolio_id                        BIGSERIAL     PRIMARY KEY,

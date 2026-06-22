@@ -5,7 +5,7 @@ from hfmed_core import config, parameters
 from hfmed_core.optimizer import (
     Evaluation,
     score_session_stats,
-    select_oos_probe_candidates,
+    select_finalist_candidates,
     select_session_parameters,
 )
 
@@ -132,7 +132,7 @@ class SessionSelectionTests(unittest.TestCase):
 
         self.assertEqual(selected[session].parameter_hash, previous.parameter_hash)
 
-    def test_oos_probe_candidates_union_session_and_global_top(self):
+    def test_finalist_candidates_union_session_and_global_top(self):
         session = "ny_morning"
         session_winner = _evaluation(
             _values(LOOKBACK_BARS=60),
@@ -157,12 +157,12 @@ class SessionSelectionTests(unittest.TestCase):
         )
         opt_cfg = replace(
             self.opt_cfg,
-            oos_probe_enabled=True,
-            oos_probe_top_n_per_session=1,
-            oos_probe_global_top_n=2,
+            finalist_enabled=True,
+            finalist_top_n_per_session=1,
+            finalist_global_top_n=2,
         )
 
-        selected_values = select_oos_probe_candidates(
+        selected_values = select_finalist_candidates(
             [session_winner, global_winner, weak],
             self.base_cfg,
             opt_cfg,

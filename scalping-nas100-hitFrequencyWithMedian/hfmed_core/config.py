@@ -208,11 +208,15 @@ WF_MATRIX_TRAIN_DAYS = env_int_list("WF_MATRIX_TRAIN_DAYS")
 WF_MATRIX_TEST_DAYS = env_int_list("WF_MATRIX_TEST_DAYS")
 if WF_MATRIX_ENABLED and (not WF_MATRIX_TRAIN_DAYS or not WF_MATRIX_TEST_DAYS):
     raise ValueError("WF_MATRIX_TRAIN_DAYS and WF_MATRIX_TEST_DAYS must be set when WF_MATRIX_ENABLED=true")
-WF_OOS_PROBE_ENABLED = env_bool("WF_OOS_PROBE_ENABLED", False)
-WF_OOS_PROBE_TOP_N_PER_SESSION = max(0, env_int("WF_OOS_PROBE_TOP_N_PER_SESSION", 0))
-WF_OOS_PROBE_GLOBAL_TOP_N = max(0, env_int("WF_OOS_PROBE_GLOBAL_TOP_N", 0))
-WF_OOS_PROBE_KEEP_TRADES = env_bool("WF_OOS_PROBE_KEEP_TRADES", False)
-WF_OOS_PROBE_PERSIST_FOLD_RESULTS = env_bool("WF_OOS_PROBE_PERSIST_FOLD_RESULTS", True)
+# Finalist OOS validation. A fixed candidate set (per-session train top-N union
+# global train top-N, capped at MAX_SETS) is evaluated OOS in *every* fold, so the
+# per-candidate oos_* columns have consistent, comparable full-fold coverage.
+WF_FINALIST_ENABLED = env_bool("WF_FINALIST_ENABLED", True)
+WF_FINALIST_TOP_N_PER_SESSION = max(0, env_int("WF_FINALIST_TOP_N_PER_SESSION", 0))
+WF_FINALIST_GLOBAL_TOP_N = max(0, env_int("WF_FINALIST_GLOBAL_TOP_N", 0))
+WF_FINALIST_MAX_SETS = max(0, env_int("WF_FINALIST_MAX_SETS", 2000))
+WF_FINALIST_KEEP_TRADES = env_bool("WF_FINALIST_KEEP_TRADES", False)
+WF_FINALIST_PERSIST_FOLD_RESULTS = env_bool("WF_FINALIST_PERSIST_FOLD_RESULTS", True)
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
 OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
 OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
@@ -322,11 +326,12 @@ class OptimizerConfig:
     train_days: int
     test_days: int
     step_days: int
-    oos_probe_enabled: bool
-    oos_probe_top_n_per_session: int
-    oos_probe_global_top_n: int
-    oos_probe_keep_trades: bool
-    oos_probe_persist_fold_results: bool
+    finalist_enabled: bool
+    finalist_top_n_per_session: int
+    finalist_global_top_n: int
+    finalist_max_sets: int
+    finalist_keep_trades: bool
+    finalist_persist_fold_results: bool
     processes: int
     process_chunk_size: int
     profile_cache_size: int
@@ -415,11 +420,12 @@ def active_optimizer_config() -> OptimizerConfig:
         train_days=WF_TRAIN_DAYS,
         test_days=WF_TEST_DAYS,
         step_days=WF_STEP_DAYS,
-        oos_probe_enabled=WF_OOS_PROBE_ENABLED,
-        oos_probe_top_n_per_session=WF_OOS_PROBE_TOP_N_PER_SESSION,
-        oos_probe_global_top_n=WF_OOS_PROBE_GLOBAL_TOP_N,
-        oos_probe_keep_trades=WF_OOS_PROBE_KEEP_TRADES,
-        oos_probe_persist_fold_results=WF_OOS_PROBE_PERSIST_FOLD_RESULTS,
+        finalist_enabled=WF_FINALIST_ENABLED,
+        finalist_top_n_per_session=WF_FINALIST_TOP_N_PER_SESSION,
+        finalist_global_top_n=WF_FINALIST_GLOBAL_TOP_N,
+        finalist_max_sets=WF_FINALIST_MAX_SETS,
+        finalist_keep_trades=WF_FINALIST_KEEP_TRADES,
+        finalist_persist_fold_results=WF_FINALIST_PERSIST_FOLD_RESULTS,
         processes=OPTIMIZER_PROCESSES,
         process_chunk_size=OPTIMIZER_PROCESS_CHUNK_SIZE,
         profile_cache_size=OPTIMIZER_PROFILE_CACHE_SIZE,

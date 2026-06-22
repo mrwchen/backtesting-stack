@@ -163,6 +163,7 @@ PARAMETER_SET_UPDATE_COLUMN_TYPES = {
     "mc_prob_of_ruin_pct": "NUMERIC",
     "passed_pre_mc_filters": "BOOLEAN",
     "passed_filters": "BOOLEAN",
+    "oos_full_coverage": "BOOLEAN",
 }
 for _prefix in ("train", "oos"):
     for _metric, _type_name in METRIC_COLUMN_TYPES.items():
@@ -245,7 +246,7 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
                 missing.append(f"{config.RESULT_SCHEMA}.{table}")
         required_columns = {
             RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile", "best_portfolio_id"),
-            PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile"),
+            PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile", "oos_full_coverage"),
             SESSION_TABLE: ("session_type", "win_rate_pct"),
             PORTFOLIO_TABLE: ("portfolio_id", "oos_total_trades"),
             PORTFOLIO_FOLD_TABLE: ("portfolio_id", "total_trades"),
@@ -707,6 +708,7 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
         "mc_prob_of_ruin_pct",
         "passed_pre_mc_filters",
         "passed_filters",
+        "oos_full_coverage",
     ]
     columns.extend(f"train_{key}" for key in METRIC_KEYS)
     columns.extend(f"oos_{key}" for key in METRIC_KEYS)
@@ -737,6 +739,7 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
             item["mc_prob_of_ruin_pct"],
             item["passed_pre_mc_filters"],
             item["passed_filters"],
+            item.get("oos_full_coverage", False),
         ]
         row.extend(item.get(f"train_{key}") for key in METRIC_KEYS)
         row.extend(item.get(f"oos_{key}") for key in METRIC_KEYS)
@@ -818,6 +821,7 @@ def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> N
         "mc_prob_of_ruin_pct",
         "passed_pre_mc_filters",
         "passed_filters",
+        "oos_full_coverage",
     ]
     columns.extend(f"train_{key}" for key in METRIC_KEYS)
     columns.extend(f"oos_{key}" for key in METRIC_KEYS)
@@ -835,6 +839,7 @@ def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> N
             item["mc_prob_of_ruin_pct"],
             item["passed_pre_mc_filters"],
             item["passed_filters"],
+            item.get("oos_full_coverage", False),
         ]
         row.extend(item.get(f"train_{key}") for key in METRIC_KEYS)
         row.extend(item.get(f"oos_{key}") for key in METRIC_KEYS)
@@ -848,6 +853,7 @@ def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> N
         "mc_prob_of_ruin_pct",
         "passed_pre_mc_filters",
         "passed_filters",
+        "oos_full_coverage",
     ]
     assignments.extend(f"train_{key}" for key in METRIC_KEYS)
     assignments.extend(f"oos_{key}" for key in METRIC_KEYS)
