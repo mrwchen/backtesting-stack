@@ -173,6 +173,18 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertEqual(selected_hashes[0], session_winner.parameter_hash)
         self.assertIn(global_winner.parameter_hash, selected_hashes)
 
+    def test_optimizer_config_matrix_uses_test_days_as_step_days(self):
+        matrix = config.build_optimizer_config_matrix(
+            self.opt_cfg,
+            train_days_values=(10, 15),
+            test_days_values=(5, 10),
+        )
+
+        self.assertEqual(
+            [(item.train_days, item.test_days, item.step_days) for item in matrix],
+            [(10, 5, 5), (10, 10, 10), (15, 5, 5), (15, 10, 10)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

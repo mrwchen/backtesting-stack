@@ -44,6 +44,26 @@ def env_optional_int(name: str) -> Optional[int]:
     return int(raw)
 
 
+def env_int_list(name: str, default: str = "") -> tuple[int, ...]:
+    raw = os.getenv(name)
+    text = default if raw is None else raw.strip()
+    if not text:
+        return ()
+    values: list[int] = []
+    seen: set[int] = set()
+    for part in text.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        value = int(item)
+        if value <= 0:
+            raise ValueError(f"{name} values must be positive integers")
+        if value not in seen:
+            values.append(value)
+            seen.add(value)
+    return tuple(values)
+
+
 def _one_of(name: str, default: str, choices: set[str]) -> str:
     value = env_str(name, default).lower()
     if value not in choices:
@@ -183,6 +203,11 @@ PARAMETER_GRID_PATH = env_str("PARAMETER_GRID_PATH", "parameter_grid.ini")
 WF_TRAIN_DAYS = max(1, env_int("WF_TRAIN_DAYS", 60))
 WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
 WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
+WF_MATRIX_ENABLED = env_bool("WF_MATRIX_ENABLED", False)
+WF_MATRIX_TRAIN_DAYS = env_int_list("WF_MATRIX_TRAIN_DAYS")
+WF_MATRIX_TEST_DAYS = env_int_list("WF_MATRIX_TEST_DAYS")
+if WF_MATRIX_ENABLED and (not WF_MATRIX_TRAIN_DAYS or not WF_MATRIX_TEST_DAYS):
+    raise ValueError("WF_MATRIX_TRAIN_DAYS and WF_MATRIX_TEST_DAYS must be set when WF_MATRIX_ENABLED=true")
 WF_OOS_PROBE_ENABLED = env_bool("WF_OOS_PROBE_ENABLED", False)
 WF_OOS_PROBE_TOP_N_PER_SESSION = max(0, env_int("WF_OOS_PROBE_TOP_N_PER_SESSION", 0))
 WF_OOS_PROBE_GLOBAL_TOP_N = max(0, env_int("WF_OOS_PROBE_GLOBAL_TOP_N", 0))
@@ -418,6 +443,25 @@ def active_optimizer_config() -> OptimizerConfig:
         session_selector_neighbor_distance=SESSION_SELECTOR_NEIGHBOR_DISTANCE,
         session_selector_previous_keep_score_tolerance=SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE,
     )
+
+
+def active_optimizer_configs() -> list[OptimizerConfig]:
+    base = active_optimizer_config()
+    if not WF_MATRIX_ENABLED:
+        return [base]
+    return build_optimizer_config_matrix(base, WF_MATRIX_TRAIN_DAYS, WF_MATRIX_TEST_DAYS)
+
+
+def build_optimizer_config_matrix(
+    base: OptimizerConfig,
+    train_days_values: tuple[int, ...],
+    test_days_values: tuple[int, ...],
+) -> list[OptimizerConfig]:
+    configs: list[OptimizerConfig] = []
+    for train_days in train_days_values:
+        for test_days in test_days_values:
+            configs.append(replace(base, train_days=train_days, test_days=test_days, step_days=test_days))
+    return configs
 
 
 def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> RunConfig:
