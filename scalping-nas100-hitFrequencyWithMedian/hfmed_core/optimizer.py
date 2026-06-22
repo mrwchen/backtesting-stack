@@ -1184,7 +1184,7 @@ def evaluate_many(
         total,
         total_groups,
         opt_cfg.processes if total > 1 else 1,
-        1 if opt_cfg.processes > 1 and total_groups > 1 else 1,
+        min(opt_cfg.process_chunk_size, total_groups) if opt_cfg.processes > 1 and total_groups > 1 else 1,
         opt_cfg.progress_log_every,
         opt_cfg.progress_log_seconds,
     )
@@ -1204,7 +1204,7 @@ def evaluate_many(
 
     ctx_name = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
     ctx = mp.get_context(ctx_name)
-    chunk_size = 1
+    chunk_size = min(opt_cfg.process_chunk_size, total_groups)
     results: list[Evaluation] = []
     progress = _ProgressLogState(started_at=started, last_logged_at=started)
     with ctx.Pool(

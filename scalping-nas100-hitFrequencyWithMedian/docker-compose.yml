@@ -140,7 +140,7 @@ services:
 
       # Optimizer execution.
       - OPTIMIZER_PROCESSES=2 # Number of worker processes for candidate evaluation.
-      - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Configured chunk size; current code does not use it as Pool chunksize.
+      - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Number of profile-groups handed to each worker per pool chunk.
       - OPTIMIZER_PROFILE_CACHE_SIZE=1 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
       - OPTIMIZER_PROGRESS_LOG_SECONDS=60 # Log optimizer progress after this many seconds.
