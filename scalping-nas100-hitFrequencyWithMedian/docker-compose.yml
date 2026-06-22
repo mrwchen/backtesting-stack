@@ -103,7 +103,7 @@ services:
       - ACCOUNT_CURRENCY=EUR # Account currency used for persisted metrics.
       - MARGIN_REQUIREMENT_PCT=5 # Margin requirement percentage.
       - RISK_PER_TRADE_PCT=1.5 # Equity risk budget per trade.
-      - MAX_MARGIN_PCT=45 # Maximum equity share allowed as position margin.
+      - MAX_MARGIN_PCT=80 # Maximum equity share allowed as position margin.
       - CONTRACT_MULTIPLIER=1.0 # PnL multiplier per unit and point.
       - LOT_SIZE=0.1 # Position units are rounded down to this lot size.
       - EURUSD_RATE=1.0 # USD-to-EUR conversion rate; USD values are divided by this rate.
@@ -124,19 +124,19 @@ services:
       # Walk-forward windows and candidate promotion.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
-      - WF_MATRIX_TRAIN_DAYS=15,30,60 # Train window lengths tested by the matrix.
-      - WF_MATRIX_TEST_DAYS=10,20 # OOS window lengths tested by the matrix; step_days equals test_days.
+      - WF_MATRIX_TRAIN_DAYS=15,20,30 # Train window lengths tested by the matrix.
+      - WF_MATRIX_TEST_DAYS=10,15,20 # OOS window lengths tested by the matrix; step_days equals test_days.
       - WF_OOS_PROBE_ENABLED=true # Evaluate additional train-ranked candidates in each OOS fold.
-      - WF_OOS_PROBE_TOP_N_PER_SESSION=100 # Top train candidates per session evaluated OOS.
-      - WF_OOS_PROBE_GLOBAL_TOP_N=0 # Additional global train top-N candidates evaluated OOS; 0 disables.
+      - WF_OOS_PROBE_TOP_N_PER_SESSION=1000 # Top train candidates per session evaluated OOS.
+      - WF_OOS_PROBE_GLOBAL_TOP_N=4000 # Additional global train top-N candidates evaluated OOS; 0 disables.
       - WF_OOS_PROBE_KEEP_TRADES=false # Persist only summary metrics for probe candidates.
       - WF_OOS_PROBE_PERSIST_FOLD_RESULTS=true # Write OOS probe fold results and aggregate metrics to DB.
-      - SESSION_SELECTOR_MIN_TRADES=30 # Minimum train trades expected for a session-specific parameter winner.
-      - SESSION_SELECTOR_LCB_Z=1.25 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
-      - SESSION_SELECTOR_TOP_N=100 # Candidate pool per session used for robust plateau selection.
-      - SESSION_SELECTOR_PLATEAU_WEIGHT=0.40 # Blend candidate score with nearby-parameter median score.
+      - SESSION_SELECTOR_MIN_TRADES=10 # Minimum train trades expected for a session-specific parameter winner.
+      - SESSION_SELECTOR_LCB_Z=1 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
+      - SESSION_SELECTOR_TOP_N=1000 # Candidate pool per session used for robust plateau selection.
+      - SESSION_SELECTOR_PLATEAU_WEIGHT=0.20 # Blend candidate score with nearby-parameter median score.
       - SESSION_SELECTOR_NEIGHBOR_DISTANCE=1.25 # Normalized parameter distance used to identify nearby candidates.
-      - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=3.0 # Keep prior fold's session parameter if still this close to the best score.
+      - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=2.0 # Keep prior fold's session parameter if still this close to the best score.
 
       # Optimizer execution.
       - OPTIMIZER_PROCESSES=3 # Number of worker processes for candidate evaluation.
