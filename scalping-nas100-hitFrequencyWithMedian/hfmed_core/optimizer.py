@@ -1220,7 +1220,8 @@ def evaluate_many(
         initargs=(ticks, bars, base_cfg, fold, role, opt_cfg.profile_cache_size),
     ) as pool:
         completed = 0
-        iterator = pool.imap_unordered(_evaluate_group_task, tasks, chunksize=chunk_size)
+        task_chunks = _chunk_evaluation_tasks(tasks, chunk_size)
+        iterator = pool.imap_unordered(_evaluate_group_chunk_task, task_chunks, chunksize=1)
         while completed < total:
             try:
                 evaluations = iterator.next(timeout=opt_cfg.progress_log_seconds)
@@ -1349,6 +1350,11 @@ def _group_evaluation_tasks(
     return [(stage, group, fold, role, keep_trades) for group in groups.values()]
 
 
+def _chunk_evaluation_tasks(tasks: list[tuple], chunk_size: int) -> list[list[tuple]]:
+    chunk_size = max(1, chunk_size)
+    return [tasks[index : index + chunk_size] for index in range(0, len(tasks), chunk_size)]
+
+
 def _candidate_profile_key(values: dict[str, int | float], base_cfg: RunConfig) -> tuple:
     return _profile_cache_key(apply_parameter_values(base_cfg, values))
 
@@ -1366,10 +1372,13 @@ def _init_worker(
     _WORKER_WINDOW = _prepare_window_data(ticks, bars, fold, role, profile_cache_size)
 
 
-def _evaluate_group_task(task) -> list[Evaluation]:
+def _evaluate_group_chunk_task(task_chunk: list[tuple]) -> list[Evaluation]:
     if _WORKER_BASE_CFG is None or _WORKER_WINDOW is None:
         raise RuntimeError("Worker data was not initialized")
-    return _evaluate_group_with_window(task, _WORKER_WINDOW, _WORKER_BASE_CFG)
+    evaluations: list[Evaluation] = []
+    for task in task_chunk:
+        evaluations.extend(_evaluate_group_with_window(task, _WORKER_WINDOW, _WORKER_BASE_CFG))
+    return evaluations
 
 
 def _prepare_window_data(
