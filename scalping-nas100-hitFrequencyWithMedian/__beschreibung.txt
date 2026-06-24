@@ -56,6 +56,13 @@ Die Signalpruefung passiert tickgenau auf dem Midpreis:
 Mit LONG_CROSS_QUANTILE=0.50 und SHORT_CROSS_QUANTILE=0.50 entspricht das
 dem bisherigen Median-Cross. Fuer 45%/55% werden 0.45 bzw. 0.55 gesetzt.
 
+Zusaetzlich kann die preisliche Lage des Cross-Levels innerhalb der q0-q100
+Profilrange begrenzt werden:
+  ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT=15.0
+Ein q0.40 Long-Cross ist damit nur erlaubt, wenn das Cross-Level preislich
+zwischen 25% und 55% der Profilrange liegt. Geprueft wird das Cross-Level,
+nicht der durch Bid/Ask-Spread leicht verschobene Fill-Preis.
+
 Fills nutzen echte Quotes:
   LONG entry  = ask, exit = bid
   SHORT entry = bid, exit = ask

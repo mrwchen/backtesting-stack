@@ -19,6 +19,7 @@ PARAMETER_NAMES = [
     "LOOKBACK_BARS",
     "LONG_CROSS_QUANTILE",
     "SHORT_CROSS_QUANTILE",
+    "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT",
     "ALL_STOP_MODES_TAKE_PROFIT_POINTS",
     "BAND_STOP_MIN_PROFILE_RANGE_POINTS",
     "BAND_STOP_PROFILE_LOWER_QUANTILE",
@@ -156,6 +157,8 @@ def is_valid(values: dict[str, int | float]) -> bool:
             return False
         if not 0.0 <= float(values["SHORT_CROSS_QUANTILE"]) <= 1.0:
             return False
+        if float(values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"]) < 0:
+            return False
         if float(values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"]) <= 0:
             return False
         if float(values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"]) < 0:
@@ -190,6 +193,7 @@ def parameter_label(values: dict[str, int | float]) -> str:
         f"lb{int(values['LOOKBACK_BARS'])}_"
         f"lq{_format_value(values['LONG_CROSS_QUANTILE'])}_"
         f"sq{_format_value(values['SHORT_CROSS_QUANTILE'])}_"
+        f"rangepos{_format_value(values['ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT'])}_"
         f"alltp{_format_value(values['ALL_STOP_MODES_TAKE_PROFIT_POINTS'])}_"
         f"bandrange{_format_value(values['BAND_STOP_MIN_PROFILE_RANGE_POINTS'])}_"
         f"bandq{_format_value(values['BAND_STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['BAND_STOP_PROFILE_UPPER_QUANTILE'])}_"
@@ -203,6 +207,7 @@ def values_from_config(cfg: RunConfig) -> dict[str, int | float]:
         "LOOKBACK_BARS": cfg.lookback_bars,
         "LONG_CROSS_QUANTILE": cfg.long_cross_quantile,
         "SHORT_CROSS_QUANTILE": cfg.short_cross_quantile,
+        "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT": cfg.entry_price_range_position_max_deviation_pct,
         "ALL_STOP_MODES_TAKE_PROFIT_POINTS": cfg.take_profit_points,
         "BAND_STOP_MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
         "BAND_STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,

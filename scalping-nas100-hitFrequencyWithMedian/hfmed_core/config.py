@@ -131,6 +131,9 @@ if not 0.0 <= LONG_CROSS_QUANTILE <= 1.0:
     raise ValueError("LONG_CROSS_QUANTILE must be between 0.0 and 1.0")
 if not 0.0 <= SHORT_CROSS_QUANTILE <= 1.0:
     raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
+ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT = env_float("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT", 15.0)
+if ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT < 0:
+    raise ValueError("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT must be >= 0")
 
 # Trade rules.
 STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
@@ -279,6 +282,7 @@ class RunConfig:
     band_upper_quantile: float
     long_cross_quantile: float
     short_cross_quantile: float
+    entry_price_range_position_max_deviation_pct: float
     stop_mode: str
     stop_points: float
     take_profit_points: float
@@ -372,6 +376,7 @@ def active_run_config() -> RunConfig:
         band_upper_quantile=BAND_UPPER_QUANTILE,
         long_cross_quantile=LONG_CROSS_QUANTILE,
         short_cross_quantile=SHORT_CROSS_QUANTILE,
+        entry_price_range_position_max_deviation_pct=ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT,
         stop_mode=STOP_MODE,
         stop_points=FIXED_STOP_POINTS,
         take_profit_points=ALL_STOP_MODES_TAKE_PROFIT_POINTS,
@@ -475,6 +480,7 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
         "lookback_bars": int(values["LOOKBACK_BARS"]),
         "long_cross_quantile": float(values["LONG_CROSS_QUANTILE"]),
         "short_cross_quantile": float(values["SHORT_CROSS_QUANTILE"]),
+        "entry_price_range_position_max_deviation_pct": float(values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"]),
         "take_profit_points": float(values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"]),
         "min_profile_range_points": float(values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"]),
         "stop_profile_lower_quantile": float(values["BAND_STOP_PROFILE_LOWER_QUANTILE"]),
@@ -490,6 +496,8 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
         raise ValueError("LONG_CROSS_QUANTILE must be between 0.0 and 1.0")
     if not 0.0 <= fields["short_cross_quantile"] <= 1.0:
         raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
+    if fields["entry_price_range_position_max_deviation_pct"] < 0:
+        raise ValueError("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT must be >= 0")
     if fields["take_profit_points"] <= 0:
         raise ValueError("ALL_STOP_MODES_TAKE_PROFIT_POINTS must be positive")
     if fields["min_profile_range_points"] < 0:

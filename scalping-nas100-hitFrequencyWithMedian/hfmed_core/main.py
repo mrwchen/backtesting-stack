@@ -18,7 +18,7 @@ def main() -> None:
     opt_cfgs = config.active_optimizer_configs()
     first_opt_cfg = opt_cfgs[0]
     log.info(
-        "NAS100 hit-frequency median start mode %s symbol %s source %s start %s end %s bar_seconds %d baseline_lookback %d profile_max_lookback_seconds %d long_cross_quantile %.4f short_cross_quantile %.4f sessions %s wf_runs %d",
+        "NAS100 hit-frequency median start mode %s symbol %s source %s start %s end %s bar_seconds %d baseline_lookback %d profile_max_lookback_seconds %d long_cross_quantile %.4f short_cross_quantile %.4f entry_range_position_max_deviation_pct %.2f sessions %s wf_runs %d",
         config.RUN_MODE,
         cfg.symbol,
         cfg.source_table,
@@ -29,6 +29,7 @@ def main() -> None:
         cfg.profile_max_lookback_seconds or cfg.lookback_bars * cfg.bar_seconds,
         cfg.long_cross_quantile,
         cfg.short_cross_quantile,
+        cfg.entry_price_range_position_max_deviation_pct,
         config.session_filter_summary(cfg),
         len(opt_cfgs) if config.RUN_MODE == "walk_forward" else 1,
     )

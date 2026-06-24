@@ -21,6 +21,12 @@ class ClosedTrade:
     entry_session: str
     cross_quantile: float
     cross_level: float
+    profile_low: float
+    profile_high: float
+    profile_range: float
+    cross_price_range_position_pct: float
+    entry_price_range_position_pct: float
+    range_position_deviation_pct: float
     median_level: float
     signal_mid: float
     previous_mid: float
@@ -63,6 +69,7 @@ class SimulationResult:
     short_signals: int = 0
     rejected_signals_missing_band: int = 0
     rejected_signals_band_too_narrow: int = 0
+    rejected_signals_price_range_position: int = 0
     rejected_signals_stop_too_small: int = 0
     rejected_signals_stop_too_large: int = 0
     skipped_signals_no_size: int = 0

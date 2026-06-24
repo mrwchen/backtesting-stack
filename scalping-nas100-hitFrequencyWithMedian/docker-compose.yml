@@ -71,6 +71,7 @@ services:
       # Entry signal thresholds.
       - LONG_CROSS_QUANTILE=0.40 # Long entry when mid crosses this profile quantile upward.
       - SHORT_CROSS_QUANTILE=0.60 # Short entry when mid crosses this profile quantile downward.
+      - ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT=15.0 # Reject entries when cross level is farther from its quantile's price-range percent.
 
       # Entry sessions.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.

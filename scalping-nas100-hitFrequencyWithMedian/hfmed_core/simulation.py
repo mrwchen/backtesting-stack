@@ -105,6 +105,28 @@ def _as_int32(values: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(values, dtype=np.int32)
 
 
+def _profile_position_values(
+    profile: ProfileArrays,
+    bar_i: int,
+    cross_level: float,
+    entry_price: float,
+    cross_quantile: float,
+) -> tuple[float, float, float, float, float, float]:
+    if not 0 <= bar_i < len(profile.profile_low):
+        return (float("nan"),) * 6
+
+    profile_low = float(profile.profile_low[bar_i])
+    profile_high = float(profile.profile_high[bar_i])
+    profile_range = float(profile.profile_range_points[bar_i])
+    if not (np.isfinite(profile_low) and np.isfinite(profile_high) and np.isfinite(profile_range) and profile_range > 0.0):
+        return profile_low, profile_high, profile_range, float("nan"), float("nan"), float("nan")
+
+    cross_position_pct = ((cross_level - profile_low) / profile_range) * 100.0
+    entry_position_pct = ((entry_price - profile_low) / profile_range) * 100.0
+    deviation_pct = abs(cross_position_pct - (cross_quantile * 100.0))
+    return profile_low, profile_high, profile_range, cross_position_pct, entry_position_pct, deviation_pct
+
+
 def _empty_trade_outputs(cap: int) -> tuple:
     return (
         np.empty(cap, dtype=np.int64),    # entry_idx
@@ -207,6 +229,9 @@ def _simulate_events(
         float(cfg.stop_points),
         float(cfg.take_profit_points),
         float(cfg.min_profile_range_points),
+        float(cfg.long_cross_quantile),
+        float(cfg.short_cross_quantile),
+        float(cfg.entry_price_range_position_max_deviation_pct),
         float(cfg.stop_profile_buffer_points),
         float(cfg.min_stop_distance_points),
         float(cfg.max_stop_distance_points),
@@ -282,12 +307,13 @@ def _apply_core_stats(result: SimulationResult, stats: tuple) -> None:
     result.short_signals = int(stats[3])
     result.rejected_signals_missing_band = int(stats[4])
     result.rejected_signals_band_too_narrow = int(stats[5])
-    result.rejected_signals_stop_too_small = int(stats[6])
-    result.rejected_signals_stop_too_large = int(stats[7])
-    result.skipped_signals_no_size = int(stats[8])
-    result.ruined = bool(stats[9])
-    result.ticks_simulated = int(stats[10])
-    result.final_equity = float(stats[11])
+    result.rejected_signals_price_range_position = int(stats[6])
+    result.rejected_signals_stop_too_small = int(stats[7])
+    result.rejected_signals_stop_too_large = int(stats[8])
+    result.skipped_signals_no_size = int(stats[9])
+    result.ruined = bool(stats[10])
+    result.ticks_simulated = int(stats[11])
+    result.final_equity = float(stats[12])
 
 
 def _summary_from_arrays(
@@ -494,14 +520,35 @@ def run_simulation(
         stop_price = float(out_stop_price[k])
         realized_risk_eur = float(out_units[k]) * abs(entry_price - stop_price) * cfg.contract_multiplier / eff_rate
         realized_risk_pct = (realized_risk_eur / equity_before * 100.0) if equity_before > 0 else 0.0
+        cross_quantile = cfg.long_cross_quantile if d == 1 else cfg.short_cross_quantile
+        (
+            profile_low,
+            profile_high,
+            profile_range,
+            cross_position_pct,
+            entry_position_pct,
+            range_position_deviation_pct,
+        ) = _profile_position_values(
+            profile,
+            int(tick_bar_index[e]),
+            float(out_cross_level[k]),
+            entry_price,
+            cross_quantile,
+        )
         trades.append(ClosedTrade(
             signal_ts=entry_ts,
             entry_ts=entry_ts,
             exit_ts=exit_ts,
             direction="LONG" if d == 1 else "SHORT",
             entry_session=session_key_for_code(int(ticks.entry_session_code[e])),
-            cross_quantile=cfg.long_cross_quantile if d == 1 else cfg.short_cross_quantile,
+            cross_quantile=cross_quantile,
             cross_level=float(out_cross_level[k]),
+            profile_low=profile_low,
+            profile_high=profile_high,
+            profile_range=profile_range,
+            cross_price_range_position_pct=cross_position_pct,
+            entry_price_range_position_pct=entry_position_pct,
+            range_position_deviation_pct=range_position_deviation_pct,
             median_level=float(out_median[k]),
             signal_mid=float(out_signal_mid[k]),
             previous_mid=float(out_prev_mid[k]),
@@ -537,12 +584,13 @@ def run_simulation(
     result.short_signals = int(stats[3])
     result.rejected_signals_missing_band = int(stats[4])
     result.rejected_signals_band_too_narrow = int(stats[5])
-    result.rejected_signals_stop_too_small = int(stats[6])
-    result.rejected_signals_stop_too_large = int(stats[7])
-    result.skipped_signals_no_size = int(stats[8])
-    result.ruined = bool(stats[9])
-    result.ticks_simulated = int(stats[10])
-    result.final_equity = float(stats[11])
+    result.rejected_signals_price_range_position = int(stats[6])
+    result.rejected_signals_stop_too_small = int(stats[7])
+    result.rejected_signals_stop_too_large = int(stats[8])
+    result.skipped_signals_no_size = int(stats[9])
+    result.ruined = bool(stats[10])
+    result.ticks_simulated = int(stats[11])
+    result.final_equity = float(stats[12])
 
     if log_result:
         _log_result(result)
@@ -591,6 +639,12 @@ def run_session_portfolio_simulation(
     stop_points = np.ascontiguousarray([float(cfg.stop_points) for cfg in slot_cfgs], dtype=np.float64)
     take_profit_points = np.ascontiguousarray([float(cfg.take_profit_points) for cfg in slot_cfgs], dtype=np.float64)
     min_profile_range_points = np.ascontiguousarray([float(cfg.min_profile_range_points) for cfg in slot_cfgs], dtype=np.float64)
+    long_cross_quantiles = np.ascontiguousarray([float(cfg.long_cross_quantile) for cfg in slot_cfgs], dtype=np.float64)
+    short_cross_quantiles = np.ascontiguousarray([float(cfg.short_cross_quantile) for cfg in slot_cfgs], dtype=np.float64)
+    entry_price_range_position_max_deviation = np.ascontiguousarray(
+        [float(cfg.entry_price_range_position_max_deviation_pct) for cfg in slot_cfgs],
+        dtype=np.float64,
+    )
     stop_buffer = np.ascontiguousarray([float(cfg.stop_profile_buffer_points) for cfg in slot_cfgs], dtype=np.float64)
     min_stop_distance = np.ascontiguousarray([float(cfg.min_stop_distance_points) for cfg in slot_cfgs], dtype=np.float64)
     max_stop_distance = np.ascontiguousarray([float(cfg.max_stop_distance_points) for cfg in slot_cfgs], dtype=np.float64)
@@ -624,6 +678,9 @@ def run_session_portfolio_simulation(
         stop_points,
         take_profit_points,
         min_profile_range_points,
+        long_cross_quantiles,
+        short_cross_quantiles,
+        entry_price_range_position_max_deviation,
         stop_buffer,
         min_stop_distance,
         max_stop_distance,
@@ -702,14 +759,35 @@ def run_session_portfolio_simulation(
         stop_price = float(out_stop_price[k])
         realized_risk_eur = float(out_units[k]) * abs(entry_price - stop_price) * base_cfg.contract_multiplier / eff_rate
         realized_risk_pct = (realized_risk_eur / equity_before * 100.0) if equity_before > 0 else 0.0
+        cross_quantile = trade_cfg.long_cross_quantile if d == 1 else trade_cfg.short_cross_quantile
+        (
+            profile_low,
+            profile_high,
+            profile_range,
+            cross_position_pct,
+            entry_position_pct,
+            range_position_deviation_pct,
+        ) = _profile_position_values(
+            slot_profiles[slot],
+            int(local_bar_index[e]),
+            float(out_cross_level[k]),
+            entry_price,
+            cross_quantile,
+        )
         trades.append(ClosedTrade(
             signal_ts=entry_ts,
             entry_ts=entry_ts,
             exit_ts=exit_ts,
             direction="LONG" if d == 1 else "SHORT",
             entry_session=session_key_for_code(int(ticks.entry_session_code[e])),
-            cross_quantile=trade_cfg.long_cross_quantile if d == 1 else trade_cfg.short_cross_quantile,
+            cross_quantile=cross_quantile,
             cross_level=float(out_cross_level[k]),
+            profile_low=profile_low,
+            profile_high=profile_high,
+            profile_range=profile_range,
+            cross_price_range_position_pct=cross_position_pct,
+            entry_price_range_position_pct=entry_position_pct,
+            range_position_deviation_pct=range_position_deviation_pct,
             median_level=float(out_median[k]),
             signal_mid=float(out_signal_mid[k]),
             previous_mid=float(out_prev_mid[k]),
@@ -745,12 +823,13 @@ def run_session_portfolio_simulation(
     result.short_signals = int(stats[3])
     result.rejected_signals_missing_band = int(stats[4])
     result.rejected_signals_band_too_narrow = int(stats[5])
-    result.rejected_signals_stop_too_small = int(stats[6])
-    result.rejected_signals_stop_too_large = int(stats[7])
-    result.skipped_signals_no_size = int(stats[8])
-    result.ruined = bool(stats[9])
-    result.ticks_simulated = int(stats[10])
-    result.final_equity = float(stats[11])
+    result.rejected_signals_price_range_position = int(stats[6])
+    result.rejected_signals_stop_too_small = int(stats[7])
+    result.rejected_signals_stop_too_large = int(stats[8])
+    result.skipped_signals_no_size = int(stats[9])
+    result.ruined = bool(stats[10])
+    result.ticks_simulated = int(stats[11])
+    result.final_equity = float(stats[12])
 
     if log_result:
         _log_result(result)
@@ -759,10 +838,10 @@ def run_session_portfolio_simulation(
 
 def _log_result(result: SimulationResult) -> None:
     log.info(
-        "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
+        "Simulation done ticks %d bars %d signals %d trades %d rejected_missing_band %d rejected_profile_range_too_narrow %d rejected_price_range_position %d rejected_stop_too_small %d rejected_stop_too_large %d skipped_no_size %d final_equity %.2f ruined %s",
         result.ticks_simulated, result.bars_total, result.signals_total,
         len(result.trades), result.rejected_signals_missing_band,
-        result.rejected_signals_band_too_narrow, result.rejected_signals_stop_too_small,
-        result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
+        result.rejected_signals_band_too_narrow, result.rejected_signals_price_range_position,
+        result.rejected_signals_stop_too_small, result.rejected_signals_stop_too_large, result.skipped_signals_no_size,
         result.final_equity, result.ruined,
     )

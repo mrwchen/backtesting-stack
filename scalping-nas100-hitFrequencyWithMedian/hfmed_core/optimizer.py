@@ -70,6 +70,7 @@ class Evaluation:
     short_signals: int
     rejected_missing_band: int
     rejected_band_too_narrow: int
+    rejected_price_range_position: int
     rejected_stop_too_small: int
     rejected_stop_too_large: int
     skipped_no_size: int
@@ -318,6 +319,7 @@ def run_single_backtest(
         short_signals=result.short_signals,
         rejected_missing_band=result.rejected_signals_missing_band,
         rejected_band_too_narrow=result.rejected_signals_band_too_narrow,
+        rejected_price_range_position=result.rejected_signals_price_range_position,
         rejected_stop_too_small=result.rejected_signals_stop_too_small,
         rejected_stop_too_large=result.rejected_signals_stop_too_large,
         skipped_no_size=result.skipped_signals_no_size,
@@ -944,6 +946,7 @@ def _parameter_distance(left: dict[str, int | float], right: dict[str, int | flo
         "LOOKBACK_BARS": 30.0,
         "LONG_CROSS_QUANTILE": 0.05,
         "SHORT_CROSS_QUANTILE": 0.05,
+        "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT": 5.0,
         "ALL_STOP_MODES_TAKE_PROFIT_POINTS": 3.0,
         "BAND_STOP_MIN_PROFILE_RANGE_POINTS": 10.0,
         "BAND_STOP_PROFILE_LOWER_QUANTILE": 0.05,
@@ -1027,6 +1030,7 @@ def evaluate_session_portfolio(
         short_signals=result.short_signals,
         rejected_missing_band=result.rejected_signals_missing_band,
         rejected_band_too_narrow=result.rejected_signals_band_too_narrow,
+        rejected_price_range_position=result.rejected_signals_price_range_position,
         rejected_stop_too_small=result.rejected_signals_stop_too_small,
         rejected_stop_too_large=result.rejected_signals_stop_too_large,
         skipped_no_size=result.skipped_signals_no_size,
@@ -1486,6 +1490,7 @@ def _evaluate_candidate_with_profile(
         short_signals=result.short_signals,
         rejected_missing_band=result.rejected_signals_missing_band,
         rejected_band_too_narrow=result.rejected_signals_band_too_narrow,
+        rejected_price_range_position=result.rejected_signals_price_range_position,
         rejected_stop_too_small=result.rejected_signals_stop_too_small,
         rejected_stop_too_large=result.rejected_signals_stop_too_large,
         skipped_no_size=result.skipped_signals_no_size,

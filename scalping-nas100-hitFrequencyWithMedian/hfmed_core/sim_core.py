@@ -50,6 +50,9 @@ def simulate_core(
     stop_points,
     take_profit_points,
     min_profile_range_points,
+    long_cross_quantile,
+    short_cross_quantile,
+    entry_price_range_position_max_deviation_pct,
     stop_buffer,
     min_stop_distance,
     max_stop_distance,
@@ -113,6 +116,7 @@ def simulate_core(
     short_signals = 0
     rej_missing = 0
     rej_narrow = 0
+    rej_price_range_position = 0
     rej_small = 0
     rej_large = 0
     skipped_no_size = 0
@@ -204,6 +208,25 @@ def simulate_core(
         else:
             short_signals += 1
 
+        pl = np.nan
+        ph = np.nan
+        pr = np.nan
+        if 0 <= bar_i < profile_low.shape[0]:
+            pl = profile_low[bar_i]
+            ph = profile_high[bar_i]
+            pr = profile_range[bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            rej_missing += 1
+            continue
+        if stop_mode_fixed != 1 and pr < min_profile_range_points:
+            rej_narrow += 1
+            continue
+        expected_position_pct = long_cross_quantile * 100.0 if direction == 1 else short_cross_quantile * 100.0
+        cross_position_pct = ((cross_level - pl) / pr) * 100.0
+        if not (cross_position_pct == cross_position_pct) or abs(cross_position_pct - expected_position_pct) > entry_price_range_position_max_deviation_pct:
+            rej_price_range_position += 1
+            continue
+
         entry_price = ask[i] if direction == 1 else bid[i]
 
         stop_price = 0.0
@@ -220,23 +243,14 @@ def simulate_core(
                 stop_price = entry_price + stop_points
                 tp_price = entry_price - take_profit_points
         else:
-            pl = np.nan
-            ph = np.nan
             sl = np.nan
             su = np.nan
-            pr = np.nan
             if 0 <= bar_i < profile_low.shape[0]:
-                pl = profile_low[bar_i]
-                ph = profile_high[bar_i]
                 sl = stop_lower[bar_i]
                 su = stop_upper[bar_i]
-                pr = profile_range[bar_i]
-            if not ((pl == pl) and (ph == ph) and (sl == sl) and (su == su) and (pr == pr)):
+            if not ((sl == sl) and (su == su)):
                 valid = False
                 reject = 1
-            elif pr < min_profile_range_points:
-                valid = False
-                reject = 2
             else:
                 if direction == 1:
                     stop_price = sl - stop_buffer
@@ -349,6 +363,7 @@ def simulate_core(
         short_signals,
         rej_missing,
         rej_narrow,
+        rej_price_range_position,
         rej_small,
         rej_large,
         skipped_no_size,
@@ -379,6 +394,9 @@ def simulate_session_portfolio_core(
     stop_points_by_slot,
     take_profit_points_by_slot,
     min_profile_range_points_by_slot,
+    long_cross_quantile_by_slot,
+    short_cross_quantile_by_slot,
+    entry_price_range_position_max_deviation_pct_by_slot,
     stop_buffer_by_slot,
     min_stop_distance_by_slot,
     max_stop_distance_by_slot,
@@ -444,6 +462,7 @@ def simulate_session_portfolio_core(
     short_signals = 0
     rej_missing = 0
     rej_narrow = 0
+    rej_price_range_position = 0
     rej_small = 0
     rej_large = 0
     skipped_no_size = 0
@@ -543,6 +562,29 @@ def simulate_session_portfolio_core(
         else:
             short_signals += 1
 
+        pl = np.nan
+        ph = np.nan
+        pr = np.nan
+        if 0 <= bar_i < profile_low_by_slot.shape[1]:
+            pl = profile_low_by_slot[slot, bar_i]
+            ph = profile_high_by_slot[slot, bar_i]
+            pr = profile_range_by_slot[slot, bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            rej_missing += 1
+            continue
+        if stop_mode_fixed_by_slot[slot] != 1 and pr < min_profile_range_points_by_slot[slot]:
+            rej_narrow += 1
+            continue
+        expected_position_pct = (
+            long_cross_quantile_by_slot[slot] * 100.0
+            if direction == 1
+            else short_cross_quantile_by_slot[slot] * 100.0
+        )
+        cross_position_pct = ((cross_level - pl) / pr) * 100.0
+        if not (cross_position_pct == cross_position_pct) or abs(cross_position_pct - expected_position_pct) > entry_price_range_position_max_deviation_pct_by_slot[slot]:
+            rej_price_range_position += 1
+            continue
+
         entry_price = ask[i] if direction == 1 else bid[i]
 
         stop_price = 0.0
@@ -559,23 +601,14 @@ def simulate_session_portfolio_core(
                 stop_price = entry_price + stop_distance
                 tp_price = entry_price - take_profit_points_by_slot[slot]
         else:
-            pl = np.nan
-            ph = np.nan
             sl = np.nan
             su = np.nan
-            pr = np.nan
             if 0 <= bar_i < profile_low_by_slot.shape[1]:
-                pl = profile_low_by_slot[slot, bar_i]
-                ph = profile_high_by_slot[slot, bar_i]
                 sl = stop_lower_by_slot[slot, bar_i]
                 su = stop_upper_by_slot[slot, bar_i]
-                pr = profile_range_by_slot[slot, bar_i]
-            if not ((pl == pl) and (ph == ph) and (sl == sl) and (su == su) and (pr == pr)):
+            if not ((sl == sl) and (su == su)):
                 valid = False
                 reject = 1
-            elif pr < min_profile_range_points_by_slot[slot]:
-                valid = False
-                reject = 2
             else:
                 if direction == 1:
                     stop_price = sl - stop_buffer_by_slot[slot]
@@ -690,6 +723,7 @@ def simulate_session_portfolio_core(
         short_signals,
         rej_missing,
         rej_narrow,
+        rej_price_range_position,
         rej_small,
         rej_large,
         skipped_no_size,
@@ -774,6 +808,9 @@ def simulate_core_from_events(
     stop_points,
     take_profit_points,
     min_profile_range_points,
+    long_cross_quantile,
+    short_cross_quantile,
+    entry_price_range_position_max_deviation_pct,
     stop_buffer,
     min_stop_distance,
     max_stop_distance,
@@ -823,6 +860,7 @@ def simulate_core_from_events(
     short_signals = 0
     rej_missing = 0
     rej_narrow = 0
+    rej_price_range_position = 0
     rej_small = 0
     rej_large = 0
     skipped_no_size = 0
@@ -843,6 +881,28 @@ def simulate_core_from_events(
             short_signals += 1
 
         bar_i = tick_bar_index[i]
+        pl = np.nan
+        ph = np.nan
+        pr = np.nan
+        if 0 <= bar_i < profile_low.shape[0]:
+            pl = profile_low[bar_i]
+            ph = profile_high[bar_i]
+            pr = profile_range[bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            rej_missing += 1
+            ev += 1
+            continue
+        if stop_mode_fixed != 1 and pr < min_profile_range_points:
+            rej_narrow += 1
+            ev += 1
+            continue
+        expected_position_pct = long_cross_quantile * 100.0 if direction == 1 else short_cross_quantile * 100.0
+        cross_position_pct = ((cross_level - pl) / pr) * 100.0
+        if not (cross_position_pct == cross_position_pct) or abs(cross_position_pct - expected_position_pct) > entry_price_range_position_max_deviation_pct:
+            rej_price_range_position += 1
+            ev += 1
+            continue
+
         entry_price = ask[i] if direction == 1 else bid[i]
 
         stop_price = 0.0
@@ -859,23 +919,14 @@ def simulate_core_from_events(
                 stop_price = entry_price + stop_points
                 tp_price = entry_price - take_profit_points
         else:
-            pl = np.nan
-            ph = np.nan
             sl = np.nan
             su = np.nan
-            pr = np.nan
             if 0 <= bar_i < profile_low.shape[0]:
-                pl = profile_low[bar_i]
-                ph = profile_high[bar_i]
                 sl = stop_lower[bar_i]
                 su = stop_upper[bar_i]
-                pr = profile_range[bar_i]
-            if not ((pl == pl) and (ph == ph) and (sl == sl) and (su == su) and (pr == pr)):
+            if not ((sl == sl) and (su == su)):
                 valid = False
                 reject = 1
-            elif pr < min_profile_range_points:
-                valid = False
-                reject = 2
             else:
                 if direction == 1:
                     stop_price = sl - stop_buffer
@@ -1052,6 +1103,7 @@ def simulate_core_from_events(
         short_signals,
         rej_missing,
         rej_narrow,
+        rej_price_range_position,
         rej_small,
         rej_large,
         skipped_no_size,
@@ -1073,7 +1125,7 @@ def warmup() -> None:
     simulate_core(
         zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
         allowed,
-        0, 10.0, 10.0, 0.0, 1.0, 1.0, 1e18,
+        0, 10.0, 10.0, 0.0, 0.5, 0.5, 100.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_f.copy(), out_f.copy(),
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
@@ -1091,7 +1143,7 @@ def warmup() -> None:
         ev_tick, ev_dir, ev_cross, 0,
         zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros,
         n,
-        0, 10.0, 10.0, 0.0, 1.0, 1.0, 1e18,
+        0, 10.0, 10.0, 0.0, 0.5, 0.5, 100.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_f.copy(), out_f.copy(),
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
