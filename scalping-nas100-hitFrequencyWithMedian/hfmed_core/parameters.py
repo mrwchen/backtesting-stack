@@ -5,8 +5,9 @@ from __future__ import annotations
 import configparser
 import hashlib
 import itertools
+import math
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator, NamedTuple
 
 import numpy as np
 
@@ -29,6 +30,15 @@ PARAMETER_NAMES = [
     "BAND_STOP_MAX_DISTANCE_POINTS",
 ]
 
+PROFILE_PARAMETER_NAMES = [
+    "LOOKBACK_BARS",
+    "LONG_CROSS_QUANTILE",
+    "SHORT_CROSS_QUANTILE",
+    "BAND_STOP_PROFILE_LOWER_QUANTILE",
+    "BAND_STOP_PROFILE_UPPER_QUANTILE",
+]
+NON_PROFILE_PARAMETER_NAMES = [name for name in PARAMETER_NAMES if name not in PROFILE_PARAMETER_NAMES]
+
 INTEGER_PARAMETERS = {"LOOKBACK_BARS"}
 QUANTILE_PARAMETERS = {
     "LONG_CROSS_QUANTILE",
@@ -36,6 +46,11 @@ QUANTILE_PARAMETERS = {
     "BAND_STOP_PROFILE_LOWER_QUANTILE",
     "BAND_STOP_PROFILE_UPPER_QUANTILE",
 }
+
+
+class CandidateBatch(NamedTuple):
+    start_index: int
+    candidates: list[dict[str, int | float]]
 
 
 def load_grid(path: str) -> dict[str, list[int | float]]:
@@ -53,6 +68,62 @@ def load_grid(path: str) -> dict[str, list[int | float]]:
             raise RuntimeError(f"Parameter grid misses {name}")
         grid[name] = _parse_values(name, section[name])
     return grid
+
+
+def stage1_candidate_count(grid: dict[str, list[int | float]], max_sets: int = 0) -> int:
+    full_size = _valid_stage1_grid_size(grid)
+    if max_sets <= 0:
+        return full_size
+    return min(full_size, int(max_sets))
+
+
+def iter_stage1_candidate_batches(
+    grid: dict[str, list[int | float]],
+    max_sets: int = 0,
+    seed: int = DEFAULT_SAMPLING_SEED,
+    batch_size: int = 65_536,
+) -> Iterator[CandidateBatch]:
+    batch_size = max(1, int(batch_size))
+    target_count = stage1_candidate_count(grid, max_sets)
+    if target_count <= 0:
+        return
+
+    profile_combos = _profile_combinations(grid)
+    non_profile_combos = _non_profile_combinations(grid)
+    if not profile_combos or not non_profile_combos:
+        return
+
+    full_size = len(profile_combos) * len(non_profile_combos)
+    sample = target_count < full_size
+    base_take, remainder = divmod(target_count, len(profile_combos))
+
+    yielded = 0
+    batch: list[dict[str, int | float]] = []
+    batch_start = 0
+    for profile_index, profile_values in enumerate(profile_combos):
+        take = base_take + (1 if profile_index < remainder else 0)
+        if take <= 0:
+            continue
+        if sample:
+            non_profile_indexes = _lcg_indexes(len(non_profile_combos), take, seed + profile_index * 104_729)
+        else:
+            non_profile_indexes = range(len(non_profile_combos))
+
+        profile_dict = dict(zip(PROFILE_PARAMETER_NAMES, profile_values))
+        for non_profile_index in non_profile_indexes:
+            non_profile_dict = dict(zip(NON_PROFILE_PARAMETER_NAMES, non_profile_combos[non_profile_index]))
+            candidate = {**profile_dict, **non_profile_dict}
+            if not is_valid(candidate):
+                continue
+            if not batch:
+                batch_start = yielded
+            batch.append(candidate)
+            yielded += 1
+            if len(batch) >= batch_size:
+                yield CandidateBatch(batch_start, batch)
+                batch = []
+    if batch:
+        yield CandidateBatch(batch_start, batch)
 
 
 def build_stage1_candidates(
@@ -129,6 +200,50 @@ def _sample_candidates(
                 break
     out.sort(key=parameter_signature)
     return out
+
+
+def _valid_stage1_grid_size(grid: dict[str, list[int | float]]) -> int:
+    profile_count = len(_profile_combinations(grid))
+    non_profile_count = len(_non_profile_combinations(grid))
+    return profile_count * non_profile_count
+
+
+def _profile_combinations(grid: dict[str, list[int | float]]) -> list[tuple[int | float, ...]]:
+    combos = []
+    for values in itertools.product(*(grid[name] for name in PROFILE_PARAMETER_NAMES)):
+        candidate = dict(zip(PROFILE_PARAMETER_NAMES, values))
+        lower = float(candidate["BAND_STOP_PROFILE_LOWER_QUANTILE"])
+        upper = float(candidate["BAND_STOP_PROFILE_UPPER_QUANTILE"])
+        if 0.0 <= lower < upper <= 1.0:
+            combos.append(values)
+    return combos
+
+
+def _non_profile_combinations(grid: dict[str, list[int | float]]) -> list[tuple[int | float, ...]]:
+    combos = []
+    for values in itertools.product(*(grid[name] for name in NON_PROFILE_PARAMETER_NAMES)):
+        candidate = dict(zip(NON_PROFILE_PARAMETER_NAMES, values))
+        min_stop = float(candidate["BAND_STOP_MIN_DISTANCE_POINTS"])
+        max_stop = float(candidate["BAND_STOP_MAX_DISTANCE_POINTS"])
+        if min_stop > 0.0 and max_stop > min_stop:
+            combos.append(values)
+    return combos
+
+
+def _lcg_indexes(size: int, take: int, seed: int) -> Iterator[int]:
+    if take >= size:
+        yield from range(size)
+        return
+
+    rng = np.random.default_rng(seed)
+    offset = int(rng.integers(0, size))
+    step = int(rng.integers(1, size))
+    while math.gcd(step, size) != 1:
+        step += 1
+        if step >= size:
+            step = 1
+    for index in range(take):
+        yield (offset + index * step) % size
 
 
 def _lhs_draw(

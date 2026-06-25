@@ -763,9 +763,7 @@ def insert_parameter_sets(conn, run_id: int, aggregates: list[dict]) -> dict[str
     return {digest: parameter_set_id for parameter_set_id, digest in returned}
 
 
-def insert_parameter_stubs(conn, run_id: int, stage: str, candidates: list[dict[str, int | float]]) -> dict[str, int]:
-    if not candidates:
-        return {}
+def insert_parameter_stubs(conn, run_id: int, stage: str, candidate_batches) -> int:
     columns = [
         "run_id",
         "stage",
@@ -784,36 +782,77 @@ def insert_parameter_stubs(conn, run_id: int, stage: str, candidates: list[dict[
         "min_stop_distance_points",
         "max_stop_distance_points",
     ]
-    rows = [
-        (
-            run_id,
-            stage,
-            parameters.parameter_hash(values),
-            parameters.parameter_label(values),
-            parameters.parameter_signature(values),
-            int(values["LOOKBACK_BARS"]),
-            values["LONG_CROSS_QUANTILE"],
-            values["SHORT_CROSS_QUANTILE"],
-            values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"],
-            values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"],
-            values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"],
-            values["BAND_STOP_PROFILE_LOWER_QUANTILE"],
-            values["BAND_STOP_PROFILE_UPPER_QUANTILE"],
-            values["BAND_STOP_PROFILE_BUFFER_POINTS"],
-            values["BAND_STOP_MIN_DISTANCE_POINTS"],
-            values["BAND_STOP_MAX_DISTANCE_POINTS"],
-        )
-        for values in candidates
-    ]
-    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s RETURNING parameter_set_id, parameter_hash").format(
+    query = sql.SQL("INSERT INTO {tbl} ({cols}) VALUES %s").format(
         tbl=_table(PARAMETER_TABLE),
         cols=sql.SQL(", ").join(map(sql.Identifier, columns)),
     )
+    inserted = 0
     with conn.cursor() as cur:
-        returned = execute_values(cur, query.as_string(conn), rows, page_size=2000, fetch=True)
+        for _start_index, candidates in candidate_batches:
+            if not candidates:
+                continue
+            rows = [
+                (
+                    run_id,
+                    stage,
+                    parameters.parameter_hash(values),
+                    parameters.parameter_label(values),
+                    parameters.parameter_signature(values),
+                    int(values["LOOKBACK_BARS"]),
+                    values["LONG_CROSS_QUANTILE"],
+                    values["SHORT_CROSS_QUANTILE"],
+                    values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"],
+                    values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"],
+                    values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"],
+                    values["BAND_STOP_PROFILE_LOWER_QUANTILE"],
+                    values["BAND_STOP_PROFILE_UPPER_QUANTILE"],
+                    values["BAND_STOP_PROFILE_BUFFER_POINTS"],
+                    values["BAND_STOP_MIN_DISTANCE_POINTS"],
+                    values["BAND_STOP_MAX_DISTANCE_POINTS"],
+                )
+                for values in candidates
+            ]
+            execute_values(cur, query.as_string(conn), rows, page_size=2000)
+            inserted += len(rows)
+            if inserted % 250_000 < len(rows):
+                log.info("Inserted parameter stubs stage %s progress %d", stage, inserted)
     conn.commit()
-    log.info("Inserted parameter stubs stage %s count %d", stage, len(returned))
-    return {digest: parameter_set_id for parameter_set_id, digest in returned}
+    log.info("Inserted parameter stubs stage %s count %d", stage, inserted)
+    return inserted
+
+
+def fetch_parameter_ids(conn, run_id: int, stage: str, parameter_hashes) -> dict[str, int]:
+    hashes = sorted(set(parameter_hashes))
+    if not hashes:
+        return {}
+    query = sql.SQL("""
+        SELECT parameter_hash, parameter_set_id
+        FROM {tbl}
+        WHERE run_id = %s
+          AND stage = %s
+          AND parameter_hash = ANY(%s)
+    """).format(tbl=_table(PARAMETER_TABLE))
+    with conn.cursor() as cur:
+        cur.execute(query, (run_id, stage, hashes))
+        rows = cur.fetchall()
+    return {str(digest): int(parameter_set_id) for digest, parameter_set_id in rows}
+
+
+def fetch_existing_parameter_hashes(conn, run_id: int, stage: str, parameter_hashes) -> set[str]:
+    hashes = sorted(set(parameter_hashes))
+    if not hashes:
+        return set()
+    query = sql.SQL("""
+        SELECT parameter_hash
+        FROM {tbl}
+        WHERE run_id = %s
+          AND stage = %s
+          AND parameter_hash = ANY(%s)
+    """).format(tbl=_table(PARAMETER_TABLE))
+    with conn.cursor() as cur:
+        cur.execute(query, (run_id, stage, hashes))
+        rows = cur.fetchall()
+    return {str(row[0]) for row in rows}
 
 
 def update_parameter_set_results(conn, run_id: int, aggregates: list[dict]) -> None:
