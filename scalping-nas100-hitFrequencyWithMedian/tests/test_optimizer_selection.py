@@ -80,7 +80,8 @@ class SessionSelectionTests(unittest.TestCase):
         self.base_cfg = replace(config.active_run_config(), initial_equity=5000.0)
         self.opt_cfg = replace(
             config.active_optimizer_config(),
-            session_selector_min_trades=20,
+            session_selector_min_trades_floor=20,
+            session_selector_min_trades_per_train_day=0.0,
             session_selector_lcb_z=1.0,
             session_selector_top_n=5,
             session_selector_plateau_weight=0.0,
@@ -186,6 +187,17 @@ class SessionSelectionTests(unittest.TestCase):
             [(item.train_days, item.test_days, item.step_days) for item in matrix],
             [(10, 5, 5), (10, 10, 10), (15, 5, 5), (15, 10, 10)],
         )
+
+    def test_session_selector_min_trades_scales_with_train_days(self):
+        opt_cfg = replace(
+            self.opt_cfg,
+            session_selector_min_trades_floor=5,
+            session_selector_min_trades_per_train_day=0.25,
+        )
+
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=15)), 5)
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=20)), 5)
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=30)), 8)
 
 
 if __name__ == "__main__":

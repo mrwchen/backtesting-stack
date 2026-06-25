@@ -1,5 +1,6 @@
 """Environment-backed configuration for the NAS100 hit-frequency median backtest."""
 
+import math
 import os
 import re
 from dataclasses import dataclass, replace
@@ -159,7 +160,9 @@ if BAND_STOP_MIN_DISTANCE_POINTS <= 0 or BAND_STOP_MAX_DISTANCE_POINTS <= BAND_S
 # Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
 SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
 _validate_timezone(SESSION_TIMEZONE, "SESSION_TIMEZONE")
-SESSION_OVERNIGHT_ENABLED = env_bool("SESSION_OVERNIGHT_ENABLED", True)
+SESSION_ASIA_EARLY_ENABLED = env_bool("SESSION_ASIA_EARLY_ENABLED", True)
+SESSION_ASIA_LATE_ENABLED = env_bool("SESSION_ASIA_LATE_ENABLED", True)
+SESSION_LONDON_OPEN_ENABLED = env_bool("SESSION_LONDON_OPEN_ENABLED", True)
 SESSION_PRE_MARKET_EARLY_ENABLED = env_bool("SESSION_PRE_MARKET_EARLY_ENABLED", True)
 SESSION_PRE_MARKET_ACTIVE_ENABLED = env_bool("SESSION_PRE_MARKET_ACTIVE_ENABLED", True)
 SESSION_PRE_MARKET_MACRO_ENABLED = env_bool("SESSION_PRE_MARKET_MACRO_ENABLED", True)
@@ -236,7 +239,8 @@ MIN_OOS_TRADES = max(0, env_int("MIN_OOS_TRADES", 100))
 MIN_OOS_PROFIT_FACTOR = env_float("MIN_OOS_PROFIT_FACTOR", 1.1)
 MAX_OOS_DRAWDOWN_PCT = env_float("MAX_OOS_DRAWDOWN_PCT", 25.0)
 MAX_MC_RUIN_PCT = env_float("MAX_MC_RUIN_PCT", 5.0)
-SESSION_SELECTOR_MIN_TRADES = max(1, env_int("SESSION_SELECTOR_MIN_TRADES", 20))
+SESSION_SELECTOR_MIN_TRADES_FLOOR = max(1, env_int("SESSION_SELECTOR_MIN_TRADES_FLOOR", 20))
+SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY = max(0.0, env_float("SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY", 0.0))
 SESSION_SELECTOR_LCB_Z = max(0.0, env_float("SESSION_SELECTOR_LCB_Z", 1.0))
 SESSION_SELECTOR_TOP_N = max(1, env_int("SESSION_SELECTOR_TOP_N", 25))
 SESSION_SELECTOR_PLATEAU_WEIGHT = min(1.0, max(0.0, env_float("SESSION_SELECTOR_PLATEAU_WEIGHT", 0.35)))
@@ -305,7 +309,9 @@ class RunConfig:
     slippage_points: float
     commission_per_unit: float
     session_timezone: str
-    session_overnight_enabled: bool
+    session_asia_early_enabled: bool
+    session_asia_late_enabled: bool
+    session_london_open_enabled: bool
     session_pre_market_early_enabled: bool
     session_pre_market_active_enabled: bool
     session_pre_market_macro_enabled: bool
@@ -352,7 +358,8 @@ class OptimizerConfig:
     min_oos_profit_factor: float
     max_oos_drawdown_pct: float
     max_mc_ruin_pct: float
-    session_selector_min_trades: int
+    session_selector_min_trades_floor: int
+    session_selector_min_trades_per_train_day: float
     session_selector_lcb_z: float
     session_selector_top_n: int
     session_selector_plateau_weight: float
@@ -399,7 +406,9 @@ def active_run_config() -> RunConfig:
         slippage_points=SLIPPAGE_POINTS,
         commission_per_unit=COMMISSION_PER_UNIT,
         session_timezone=SESSION_TIMEZONE,
-        session_overnight_enabled=SESSION_OVERNIGHT_ENABLED,
+        session_asia_early_enabled=SESSION_ASIA_EARLY_ENABLED,
+        session_asia_late_enabled=SESSION_ASIA_LATE_ENABLED,
+        session_london_open_enabled=SESSION_LONDON_OPEN_ENABLED,
         session_pre_market_early_enabled=SESSION_PRE_MARKET_EARLY_ENABLED,
         session_pre_market_active_enabled=SESSION_PRE_MARKET_ACTIVE_ENABLED,
         session_pre_market_macro_enabled=SESSION_PRE_MARKET_MACRO_ENABLED,
@@ -447,7 +456,8 @@ def active_optimizer_config() -> OptimizerConfig:
         min_oos_profit_factor=MIN_OOS_PROFIT_FACTOR,
         max_oos_drawdown_pct=MAX_OOS_DRAWDOWN_PCT,
         max_mc_ruin_pct=MAX_MC_RUIN_PCT,
-        session_selector_min_trades=SESSION_SELECTOR_MIN_TRADES,
+        session_selector_min_trades_floor=SESSION_SELECTOR_MIN_TRADES_FLOOR,
+        session_selector_min_trades_per_train_day=SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY,
         session_selector_lcb_z=SESSION_SELECTOR_LCB_Z,
         session_selector_top_n=SESSION_SELECTOR_TOP_N,
         session_selector_plateau_weight=SESSION_SELECTOR_PLATEAU_WEIGHT,
@@ -473,6 +483,14 @@ def build_optimizer_config_matrix(
         for test_days in test_days_values:
             configs.append(replace(base, train_days=train_days, test_days=test_days, step_days=test_days))
     return configs
+
+
+def effective_session_selector_min_trades(opt: OptimizerConfig) -> int:
+    floor = max(1, int(opt.session_selector_min_trades_floor))
+    scaled = math.ceil(
+        max(0.0, float(opt.session_selector_min_trades_per_train_day)) * max(1, int(opt.train_days))
+    )
+    return max(floor, scaled)
 
 
 def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> RunConfig:
@@ -514,7 +532,9 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
 
 
 SESSION_CONFIG_FIELDS = (
-    ("session_overnight_enabled", "overnight_2000_0400"),
+    ("session_asia_early_enabled", "asia_early_2000_0000"),
+    ("session_asia_late_enabled", "asia_late_0000_0300"),
+    ("session_london_open_enabled", "london_open_0300_0400"),
     ("session_pre_market_early_enabled", "pre_market_early_0400_0700"),
     ("session_pre_market_active_enabled", "pre_market_active_0700_0830"),
     ("session_pre_market_macro_enabled", "pre_market_macro_0830_0930"),

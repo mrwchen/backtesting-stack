@@ -22,7 +22,9 @@ log = logging.getLogger(__name__)
 
 def _all_sessions_enabled(cfg: RunConfig) -> bool:
     return (
-        cfg.session_overnight_enabled
+        cfg.session_asia_early_enabled
+        and cfg.session_asia_late_enabled
+        and cfg.session_london_open_enabled
         and cfg.session_pre_market_early_enabled
         and cfg.session_pre_market_active_enabled
         and cfg.session_pre_market_macro_enabled
@@ -40,8 +42,12 @@ def _entry_session_allowed_mask(entry_session_code: np.ndarray, cfg: RunConfig) 
     if _all_sessions_enabled(cfg):
         return None
     enabled = []
-    if cfg.session_overnight_enabled:
-        enabled.append(SESSION_CODE_BY_KEY["overnight"])
+    if cfg.session_asia_early_enabled:
+        enabled.append(SESSION_CODE_BY_KEY["asia_early"])
+    if cfg.session_asia_late_enabled:
+        enabled.append(SESSION_CODE_BY_KEY["asia_late"])
+    if cfg.session_london_open_enabled:
+        enabled.append(SESSION_CODE_BY_KEY["london_open"])
     if cfg.session_pre_market_early_enabled:
         enabled.append(SESSION_CODE_BY_KEY["pre_market_early"])
     if cfg.session_pre_market_active_enabled:

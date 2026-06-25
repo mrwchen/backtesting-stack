@@ -106,7 +106,9 @@ America/New_York. Offene Positionen werden auch ausserhalb aktivierter
 Entry-Sessions weiter tickgenau ueber SL/TP geschlossen.
 
 Default: alle Sessions true.
-  SESSION_OVERNIGHT_ENABLED=true             # 20:00-04:00
+  SESSION_ASIA_EARLY_ENABLED=true            # 20:00-00:00
+  SESSION_ASIA_LATE_ENABLED=true             # 00:00-03:00
+  SESSION_LONDON_OPEN_ENABLED=true           # 03:00-04:00
   SESSION_PRE_MARKET_EARLY_ENABLED=true      # 04:00-07:00
   SESSION_PRE_MARKET_ACTIVE_ENABLED=true     # 07:00-08:30
   SESSION_PRE_MARKET_MACRO_ENABLED=true      # 08:30-09:30

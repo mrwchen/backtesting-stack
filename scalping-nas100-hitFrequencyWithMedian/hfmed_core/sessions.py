@@ -18,19 +18,23 @@ NY_POWER_HOUR_START_MINUTE = 15 * 60
 AFTER_CLOSE_SHOCK_START_MINUTE = 16 * 60
 AFTER_HOURS_LATE_START_MINUTE = 17 * 60
 OVERNIGHT_START_MINUTE = 20 * 60
+ASIA_LATE_START_MINUTE = 0
+LONDON_OPEN_START_MINUTE = 3 * 60
 
 SESSION_TYPES = (
-    ("overnight", "Overnight", 1),
-    ("pre_market_early", "Pre-Market Early", 2),
-    ("pre_market_active", "Pre-Market Active", 3),
-    ("pre_market_macro", "Pre-Market Macro", 4),
-    ("ny_open_impulse", "NY Open Impulse", 5),
-    ("ny_morning", "NY Morning", 6),
-    ("ny_midday", "NY Midday", 7),
-    ("ny_late", "NY Late", 8),
-    ("ny_power_hour", "NY Power Hour", 9),
-    ("after_close_shock", "After Close Shock", 10),
-    ("after_hours_late", "After Hours Late", 11),
+    ("asia_early", "Asia Early", 1),
+    ("asia_late", "Asia Late", 2),
+    ("london_open", "London Open", 3),
+    ("pre_market_early", "Pre-Market Early", 4),
+    ("pre_market_active", "Pre-Market Active", 5),
+    ("pre_market_macro", "Pre-Market Macro", 6),
+    ("ny_open_impulse", "NY Open Impulse", 7),
+    ("ny_morning", "NY Morning", 8),
+    ("ny_midday", "NY Midday", 9),
+    ("ny_late", "NY Late", 10),
+    ("ny_power_hour", "NY Power Hour", 11),
+    ("after_close_shock", "After Close Shock", 12),
+    ("after_hours_late", "After Hours Late", 13),
 )
 
 SESSION_LABELS = {key: label for key, label, _sort_order in SESSION_TYPES}
@@ -40,7 +44,9 @@ SESSION_KEY_BY_CODE = {code: key for key, code in SESSION_CODE_BY_KEY.items()}
 
 
 def classify_minutes(minute_of_day: np.ndarray) -> np.ndarray:
-    sessions = np.full(len(minute_of_day), "overnight", dtype=object)
+    sessions = np.full(len(minute_of_day), "asia_early", dtype=object)
+    sessions[(ASIA_LATE_START_MINUTE <= minute_of_day) & (minute_of_day < LONDON_OPEN_START_MINUTE)] = "asia_late"
+    sessions[(LONDON_OPEN_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_START_MINUTE)] = "london_open"
     sessions[(PRE_MARKET_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_ACTIVE_START_MINUTE)] = "pre_market_early"
     sessions[(PRE_MARKET_ACTIVE_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_MACRO_START_MINUTE)] = "pre_market_active"
     sessions[(PRE_MARKET_MACRO_START_MINUTE <= minute_of_day) & (minute_of_day < NY_OPEN_IMPULSE_START_MINUTE)] = "pre_market_macro"
@@ -55,7 +61,9 @@ def classify_minutes(minute_of_day: np.ndarray) -> np.ndarray:
 
 
 def classify_minutes_codes(minute_of_day: np.ndarray) -> np.ndarray:
-    sessions = np.full(len(minute_of_day), SESSION_CODE_BY_KEY["overnight"], dtype=np.uint8)
+    sessions = np.full(len(minute_of_day), SESSION_CODE_BY_KEY["asia_early"], dtype=np.uint8)
+    sessions[(ASIA_LATE_START_MINUTE <= minute_of_day) & (minute_of_day < LONDON_OPEN_START_MINUTE)] = SESSION_CODE_BY_KEY["asia_late"]
+    sessions[(LONDON_OPEN_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_START_MINUTE)] = SESSION_CODE_BY_KEY["london_open"]
     sessions[(PRE_MARKET_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_ACTIVE_START_MINUTE)] = SESSION_CODE_BY_KEY["pre_market_early"]
     sessions[(PRE_MARKET_ACTIVE_START_MINUTE <= minute_of_day) & (minute_of_day < PRE_MARKET_MACRO_START_MINUTE)] = SESSION_CODE_BY_KEY["pre_market_active"]
     sessions[(PRE_MARKET_MACRO_START_MINUTE <= minute_of_day) & (minute_of_day < NY_OPEN_IMPULSE_START_MINUTE)] = SESSION_CODE_BY_KEY["pre_market_macro"]
@@ -82,7 +90,7 @@ def classify_timestamp_codes(timestamps, timezone: str) -> np.ndarray:
 
 
 def session_key_for_code(code: int) -> str:
-    return SESSION_KEY_BY_CODE.get(int(code), "overnight")
+    return SESSION_KEY_BY_CODE.get(int(code), "asia_early")
 
 
 def add_entry_session_column(ticks: pd.DataFrame, timezone: str) -> pd.DataFrame:

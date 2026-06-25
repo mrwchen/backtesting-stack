@@ -75,7 +75,9 @@ services:
 
       # Entry sessions.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
-      - SESSION_OVERNIGHT_ENABLED=true # Enable new entries from 20:00-04:00.
+      - SESSION_ASIA_EARLY_ENABLED=true # Enable new entries from 20:00-00:00.
+      - SESSION_ASIA_LATE_ENABLED=true # Enable new entries from 00:00-03:00.
+      - SESSION_LONDON_OPEN_ENABLED=true # Enable new entries from 03:00-04:00.
       - SESSION_PRE_MARKET_EARLY_ENABLED=true # Enable new entries from 04:00-07:00.
       - SESSION_PRE_MARKET_ACTIVE_ENABLED=true # Enable new entries from 07:00-08:30.
       - SESSION_PRE_MARKET_MACRO_ENABLED=true # Enable new entries from 08:30-09:30.
@@ -133,7 +135,8 @@ services:
       - WF_FINALIST_MAX_SETS=2000 # Hard cap on the finalist set (kept by best cumulative train score); 0 means unlimited.
       - WF_FINALIST_KEEP_TRADES=false # Persist only summary metrics for finalist OOS evaluations.
       - WF_FINALIST_PERSIST_FOLD_RESULTS=true # Write finalist OOS per-fold results to DB.
-      - SESSION_SELECTOR_MIN_TRADES=10 # Minimum train trades expected for a session-specific parameter winner.
+      - SESSION_SELECTOR_MIN_TRADES_FLOOR=3 # Floor for minimum train trades expected per session-specific parameter winner.
+      - SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY=0.20 # Scales minimum train trades by WF train_days; effective minimum is max(floor, ceil(train_days * value)).
       - SESSION_SELECTOR_LCB_Z=1 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
       - SESSION_SELECTOR_TOP_N=1000 # Candidate pool per session used for robust plateau selection.
       - SESSION_SELECTOR_PLATEAU_WEIGHT=0.20 # Blend candidate score with nearby-parameter median score.

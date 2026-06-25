@@ -673,7 +673,7 @@ def _session_selection_score(stats: dict, cfg: RunConfig, opt: OptimizerConfig) 
     uncertainty_eur = float(opt.session_selector_lcb_z) * std_trade_pnl * math.sqrt(float(trades))
     conservative_net_profit = net_profit - uncertainty_eur
     total_return = conservative_net_profit / max(1.0, float(cfg.initial_equity)) * 100.0
-    min_session_trades = max(1, int(opt.session_selector_min_trades))
+    min_session_trades = config.effective_session_selector_min_trades(opt)
     score = total_return
     score += min(profit_factor, 3.0) * 12.0
     score += min(trades / max(1.0, float(min_session_trades)), 2.0) * 8.0

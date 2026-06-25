@@ -14,7 +14,7 @@ from typing import Callable, Iterable
 import numpy as np
 
 from . import parameters, persistence
-from .config import OptimizerConfig, RunConfig, apply_parameter_values
+from .config import OptimizerConfig, RunConfig, apply_parameter_values, effective_session_selector_min_trades
 from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
 from .profile import ProfileArrays, rolling_profile_arrays, warmup as warmup_profile
@@ -1365,7 +1365,7 @@ def _global_finalist_sort_key(evaluation: Evaluation) -> tuple:
 
 
 def _session_selector_min_trades(opt_cfg: OptimizerConfig) -> int:
-    return max(1, int(opt_cfg.session_selector_min_trades))
+    return effective_session_selector_min_trades(opt_cfg)
 
 
 def _parameter_distance(left: dict[str, int | float], right: dict[str, int | float]) -> float:
