@@ -99,6 +99,14 @@ class CandidateSource:
     iter_batches: Callable[[], Iterable[parameters.CandidateBatch]]
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluationProgressContext:
+    batch_index: int
+    batch_count: int
+    fold_completed_offset: int
+    fold_total: int
+
+
 @dataclass(slots=True)
 class StageResult:
     stage: str
@@ -761,9 +769,26 @@ def run_stage(
         session_pools = _empty_session_candidate_pools()
         global_finalist_pool: list[tuple[tuple, Evaluation, int]] = []
         session_pool_limit = max(1, int(opt_cfg.session_selector_top_n), int(opt_cfg.finalist_top_n_per_session))
+        batch_count = max(1, math.ceil(candidate_source.count / STREAM_CANDIDATE_BATCH_SIZE))
 
-        for batch in candidate_source.iter_batches():
-            train_evals = evaluate_many(stage, batch.candidates, fold, "train", base_cfg, opt_cfg, ticks, bars, keep_trades=False)
+        for batch_index, batch in enumerate(candidate_source.iter_batches(), start=1):
+            train_evals = evaluate_many(
+                stage,
+                batch.candidates,
+                fold,
+                "train",
+                base_cfg,
+                opt_cfg,
+                ticks,
+                bars,
+                keep_trades=False,
+                progress_context=EvaluationProgressContext(
+                    batch_index=batch_index,
+                    batch_count=batch_count,
+                    fold_completed_offset=batch.start_index,
+                    fold_total=candidate_source.count,
+                ),
+            )
             index_by_hash = {
                 parameters.parameter_hash(values): batch.start_index + offset
                 for offset, values in enumerate(batch.candidates)
@@ -1566,6 +1591,7 @@ def evaluate_many(
     ticks: TickData,
     bars: BarData,
     keep_trades: bool,
+    progress_context: EvaluationProgressContext | None = None,
 ) -> list[Evaluation]:
     tasks = _group_evaluation_tasks(stage, candidates, fold, role, keep_trades, base_cfg)
     total = len(candidates)
@@ -1575,19 +1601,39 @@ def evaluate_many(
     chunk_size = _evaluation_group_chunk_size(total_groups, opt_cfg)
 
     started = time.monotonic()
-    log.info(
-        "Stage %s fold %d %s %s evaluate start candidates %d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
-        stage,
-        fold.fold_index,
-        role,
-        _fold_role_period(fold, role),
-        total,
-        total_groups,
-        opt_cfg.processes if total > 1 else 1,
-        chunk_size if opt_cfg.processes > 1 and total_groups > 1 else 1,
-        opt_cfg.progress_log_every,
-        opt_cfg.progress_log_seconds,
-    )
+    if progress_context:
+        log.info(
+            "Stage %s fold %d %s %s evaluate start batch %d/%d batch_candidates %d fold_candidates %d fold_progress %d/%d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            progress_context.batch_index,
+            progress_context.batch_count,
+            total,
+            progress_context.fold_total,
+            progress_context.fold_completed_offset,
+            progress_context.fold_total,
+            total_groups,
+            opt_cfg.processes if total > 1 else 1,
+            chunk_size if opt_cfg.processes > 1 and total_groups > 1 else 1,
+            opt_cfg.progress_log_every,
+            opt_cfg.progress_log_seconds,
+        )
+    else:
+        log.info(
+            "Stage %s fold %d %s %s evaluate start candidates %d groups %d processes %d chunk_size %d progress_every %d progress_seconds %d",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            total,
+            total_groups,
+            opt_cfg.processes if total > 1 else 1,
+            chunk_size if opt_cfg.processes > 1 and total_groups > 1 else 1,
+            opt_cfg.progress_log_every,
+            opt_cfg.progress_log_seconds,
+        )
 
     if opt_cfg.processes <= 1 or total_groups <= 1:
         results: list[Evaluation] = []
@@ -1598,8 +1644,8 @@ def evaluate_many(
             evaluations = _evaluate_group_with_window(task, window, base_cfg)
             results.extend(evaluations)
             completed += len(evaluations)
-            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg)
-        _log_evaluation_complete(stage, fold, role, total, started)
+            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg, progress_context)
+        _log_evaluation_complete(stage, fold, role, total, started, progress_context)
         return results
 
     ctx_name = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
@@ -1619,24 +1665,43 @@ def evaluate_many(
                 evaluations = iterator.next(timeout=opt_cfg.progress_log_seconds)
             except mp.TimeoutError:
                 elapsed = time.monotonic() - started
-                log.info(
-                    "Stage %s fold %d %s %s waiting progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
-                    stage,
-                    fold.fold_index,
-                    role,
-                    _fold_role_period(fold, role),
-                    completed,
-                    total,
-                    elapsed,
-                    total_groups,
-                    opt_cfg.progress_log_seconds,
-                )
+                if progress_context:
+                    fold_completed = min(progress_context.fold_total, progress_context.fold_completed_offset + completed)
+                    log.info(
+                        "Stage %s fold %d %s %s waiting batch %d/%d batch_progress %d/%d fold_progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
+                        stage,
+                        fold.fold_index,
+                        role,
+                        _fold_role_period(fold, role),
+                        progress_context.batch_index,
+                        progress_context.batch_count,
+                        completed,
+                        total,
+                        fold_completed,
+                        progress_context.fold_total,
+                        elapsed,
+                        total_groups,
+                        opt_cfg.progress_log_seconds,
+                    )
+                else:
+                    log.info(
+                        "Stage %s fold %d %s %s waiting progress %d/%d elapsed %.1fs groups %d no_result_for %ds",
+                        stage,
+                        fold.fold_index,
+                        role,
+                        _fold_role_period(fold, role),
+                        completed,
+                        total,
+                        elapsed,
+                        total_groups,
+                        opt_cfg.progress_log_seconds,
+                    )
                 continue
             except StopIteration:
                 break
             results.extend(evaluations)
             completed += len(evaluations)
-            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg)
+            _log_evaluation_progress(stage, fold, role, completed, total, progress, opt_cfg, progress_context)
         if completed < total:
             log.warning(
                 "Stage %s fold %d %s %s evaluate ended with incomplete results %d/%d groups %d",
@@ -1648,7 +1713,7 @@ def evaluate_many(
                 total,
                 total_groups,
             )
-    _log_evaluation_complete(stage, fold, role, total, started)
+    _log_evaluation_complete(stage, fold, role, total, started, progress_context)
     return results
 
 
@@ -1683,6 +1748,7 @@ def _log_evaluation_progress(
     total: int,
     progress: _ProgressLogState,
     opt_cfg: OptimizerConfig,
+    progress_context: EvaluationProgressContext | None = None,
 ) -> None:
     if completed >= total:
         return
@@ -1697,35 +1763,81 @@ def _log_evaluation_progress(
     rate = completed / elapsed if elapsed > 0 else 0.0
     remaining = total - completed
     eta = remaining / rate if rate > 0 else 0.0
-    log.info(
-        "Stage %s fold %d %s %s progress %d/%d elapsed %.1fs rate %.2f/s eta %.1fs",
-        stage,
-        fold.fold_index,
-        role,
-        _fold_role_period(fold, role),
-        completed,
-        total,
-        elapsed,
-        rate,
-        eta,
-    )
+    if progress_context:
+        fold_completed = min(progress_context.fold_total, progress_context.fold_completed_offset + completed)
+        fold_remaining = max(0, progress_context.fold_total - fold_completed)
+        eta_fold = fold_remaining / rate if rate > 0 else 0.0
+        log.info(
+            "Stage %s fold %d %s %s batch %d/%d batch_progress %d/%d fold_progress %d/%d elapsed %.1fs rate %.2f/s eta_batch %.1fs eta_fold %.1fs",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            progress_context.batch_index,
+            progress_context.batch_count,
+            completed,
+            total,
+            fold_completed,
+            progress_context.fold_total,
+            elapsed,
+            rate,
+            eta,
+            eta_fold,
+        )
+    else:
+        log.info(
+            "Stage %s fold %d %s %s progress %d/%d elapsed %.1fs rate %.2f/s eta %.1fs",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            completed,
+            total,
+            elapsed,
+            rate,
+            eta,
+        )
     progress.last_logged_at = now
     progress.last_logged_completed = completed
 
 
-def _log_evaluation_complete(stage: str, fold: FoldSpec, role: str, total: int, started: float) -> None:
+def _log_evaluation_complete(
+    stage: str,
+    fold: FoldSpec,
+    role: str,
+    total: int,
+    started: float,
+    progress_context: EvaluationProgressContext | None = None,
+) -> None:
     elapsed = time.monotonic() - started
     rate = total / elapsed if elapsed > 0 else 0.0
-    log.info(
-        "Stage %s fold %d %s %s complete candidates %d elapsed %.1fs rate %.2f/s",
-        stage,
-        fold.fold_index,
-        role,
-        _fold_role_period(fold, role),
-        total,
-        elapsed,
-        rate,
-    )
+    if progress_context:
+        fold_completed = min(progress_context.fold_total, progress_context.fold_completed_offset + total)
+        log.info(
+            "Stage %s fold %d %s %s complete batch %d/%d batch_candidates %d fold_progress %d/%d elapsed %.1fs rate %.2f/s",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            progress_context.batch_index,
+            progress_context.batch_count,
+            total,
+            fold_completed,
+            progress_context.fold_total,
+            elapsed,
+            rate,
+        )
+    else:
+        log.info(
+            "Stage %s fold %d %s %s complete candidates %d elapsed %.1fs rate %.2f/s",
+            stage,
+            fold.fold_index,
+            role,
+            _fold_role_period(fold, role),
+            total,
+            elapsed,
+            rate,
+        )
 
 
 def _group_evaluation_tasks(

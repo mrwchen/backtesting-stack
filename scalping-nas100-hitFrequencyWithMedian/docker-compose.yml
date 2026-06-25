@@ -153,8 +153,8 @@ services:
 
       # Stage 2 local refinement.
       - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
-      - STAGE2_SEED_TOP_N=20 # Number of Stage 1 seeds for Stage 2 refinement.
-      - STAGE2_MAX_PARAMETER_SETS=500 # Max Stage 2 candidates; 0 means unlimited.
+      - STAGE2_SEED_TOP_N=30 # Number of Stage 1 seeds for Stage 2 refinement.
+      - STAGE2_MAX_PARAMETER_SETS=1500 # Max Stage 2 candidates; 0 means unlimited.
 
       # Final scoring, filtering and persistence.
       - MC_SCORE_TOP_N=1000 # Number of top parameter sets scored with Monte-Carlo.
