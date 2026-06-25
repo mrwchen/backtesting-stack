@@ -141,7 +141,7 @@ services:
       - SESSION_SELECTOR_PREVIOUS_KEEP_SCORE_TOLERANCE=2.0 # Keep prior fold's session parameter if still this close to the best score.
 
       # Optimizer execution.
-      - OPTIMIZER_PROCESSES=3 # Number of worker processes for candidate evaluation.
+      - OPTIMIZER_PROCESSES=4 # Number of worker processes for candidate evaluation.
       - OPTIMIZER_PROCESS_CHUNK_SIZE=64 # Number of profile-groups handed to each worker per pool chunk.
       - OPTIMIZER_PROFILE_CACHE_SIZE=1 # Rolling profile cache size per worker window.
       - OPTIMIZER_PROGRESS_LOG_EVERY=5000 # Log optimizer progress after this many completed candidates.
@@ -149,7 +149,7 @@ services:
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
 
       # Stage 1 coarse search.
-      - STAGE1_MAX_PARAMETER_SETS=4194304 #65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
+      - STAGE1_MAX_PARAMETER_SETS=1048576 #65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
 
       # Stage 2 local refinement.
       - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
