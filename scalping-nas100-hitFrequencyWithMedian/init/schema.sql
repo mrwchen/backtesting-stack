@@ -13,6 +13,14 @@ GRANT CONNECT ON DATABASE postgres TO "market-data-account";
 GRANT USAGE, CREATE ON SCHEMA public TO "market-data-account";
 GRANT SELECT ON public.pepperstone_ticks_data TO "market-data-account";
 
+DO $$
+BEGIN
+    IF to_regclass('public.trade_history') IS NOT NULL THEN
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.trade_history TO "market-data-account"';
+    END IF;
+END;
+$$;
+
 \if :drop_hfmed_tables_on_start
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_trades CASCADE;
 DROP TABLE IF EXISTS backtest2_nas100_hfmed_monte_carlo CASCADE;

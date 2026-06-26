@@ -44,6 +44,8 @@ def main() -> None:
     conn = connect_with_retry()
     try:
         persistence.validate_schema(conn)
+        if config.RUN_MODE == "single" and config.TRADE_HISTORY_PERSIST_ENABLED:
+            persistence.validate_trade_history_schema(conn)
         raw_ticks = load_ticks(conn, cfg)
         ticks, bars = build_mid_bars(raw_ticks, cfg)
         del raw_ticks

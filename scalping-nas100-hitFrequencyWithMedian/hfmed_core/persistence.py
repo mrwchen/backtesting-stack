@@ -169,9 +169,43 @@ for _prefix in ("train", "oos"):
     for _metric, _type_name in METRIC_COLUMN_TYPES.items():
         PARAMETER_SET_UPDATE_COLUMN_TYPES[f"{_prefix}_{_metric}"] = _type_name
 
+TRADE_HISTORY_COLUMNS = [
+    "account_number",
+    "closing_deal_id",
+    "position_id",
+    "symbol_name",
+    "trade_type",
+    "volume_in_units",
+    "quantity_lots",
+    "entry_time_utc",
+    "entry_price",
+    "closing_time_utc",
+    "closing_price",
+    "holding_duration",
+    "gross_profit",
+    "net_profit",
+    "commissions",
+    "swap",
+    "pips",
+    "balance",
+    "label",
+    "comment",
+    "channel",
+    "broker_name",
+    "deposit_asset",
+    "account_type",
+]
+
 
 def _table(name: str) -> sql.Composed:
     return sql.SQL("{}.{}").format(sql.Identifier(config.RESULT_SCHEMA), sql.Identifier(name))
+
+
+def _trade_history_table() -> sql.Composed:
+    return sql.SQL("{}.{}").format(
+        sql.Identifier(config.TRADE_HISTORY_SCHEMA),
+        sql.Identifier(config.TRADE_HISTORY_TABLE),
+    )
 
 
 def _parameter_set_update_type(column: str) -> str:
@@ -287,6 +321,30 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
             + ", ".join(missing_columns)
             + ". Recreate the HFMED result tables with init/schema.sql."
         )
+
+
+def validate_trade_history_schema(conn: psycopg2.extensions.connection) -> None:
+    table_ref = f"{config.TRADE_HISTORY_SCHEMA}.{config.TRADE_HISTORY_TABLE}"
+    missing_columns = []
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s)", (table_ref,))
+        if cur.fetchone()[0] is None:
+            raise RuntimeError(f"Missing trade history table: {table_ref}")
+        for column in TRADE_HISTORY_COLUMNS:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = %s
+                  AND column_name = %s
+                """,
+                (config.TRADE_HISTORY_SCHEMA, config.TRADE_HISTORY_TABLE, column),
+            )
+            if cur.fetchone() is None:
+                missing_columns.append(f"{table_ref}.{column}")
+    if missing_columns:
+        raise RuntimeError("Missing trade history columns: " + ", ".join(missing_columns))
 
 
 def create_run(
@@ -1340,6 +1398,125 @@ def insert_trade_rows(conn, rows: list[tuple], run_id: int | None = None) -> Non
         execute_values(cur, query.as_string(conn), rows, page_size=1000)
     conn.commit()
     log.info("Inserted top trades %d", len(rows))
+
+
+def _trade_history_rows(cfg: RunConfig, trades: list[ClosedTrade]) -> list[tuple]:
+    rows = []
+    ordered = sorted(
+        trades,
+        key=lambda trade: (
+            _db_scalar(trade.exit_ts),
+            _db_scalar(trade.entry_ts),
+            trade.direction,
+            trade.entry_session,
+        ),
+    )
+    for index, trade in enumerate(ordered, start=1):
+        entry_ts = _db_scalar(trade.entry_ts)
+        exit_ts = _db_scalar(trade.exit_ts)
+        holding_duration = exit_ts - entry_ts
+        deal_id = -index
+        trade_type = "Buy" if trade.direction == "LONG" else "Sell"
+        rows.append(
+            (
+                config.TRADE_HISTORY_ACCOUNT_NUMBER,
+                deal_id,
+                deal_id,
+                cfg.symbol,
+                trade_type,
+                _db_round(trade.units, 8),
+                _db_round(trade.units, 8),
+                entry_ts,
+                _db_round(trade.entry_price, 4),
+                exit_ts,
+                _db_round(trade.exit_price, 4),
+                holding_duration,
+                _db_round(trade.gross_pnl_eur, 2),
+                _db_round(trade.pnl_eur, 2),
+                -abs(_db_round(trade.extra_costs_eur, 2) or 0.0),
+                0.0,
+                _db_round(trade.price_pnl_points, 4),
+                _db_round(trade.equity_after, 2),
+                config.TRADE_HISTORY_LABEL,
+                None,
+                config.TRADE_HISTORY_CHANNEL,
+                config.TRADE_HISTORY_BROKER_NAME,
+                cfg.account_currency,
+                config.TRADE_HISTORY_ACCOUNT_TYPE,
+            )
+        )
+    return rows
+
+
+def upsert_single_run_trade_history(conn, cfg: RunConfig, trades: list[ClosedTrade]) -> None:
+    if not config.TRADE_HISTORY_PERSIST_ENABLED:
+        return
+    rows = _trade_history_rows(cfg, trades)
+    old_autocommit = conn.autocommit
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (
+                    "|".join(
+                        [
+                            config.TRADE_HISTORY_SCHEMA,
+                            config.TRADE_HISTORY_TABLE,
+                            config.TRADE_HISTORY_ACCOUNT_NUMBER,
+                            config.TRADE_HISTORY_ACCOUNT_TYPE,
+                            config.TRADE_HISTORY_BROKER_NAME,
+                            config.TRADE_HISTORY_CHANNEL,
+                        ]
+                    ),
+                ),
+            )
+            if rows:
+                insert_query = sql.SQL(
+                    """
+                    INSERT INTO {tbl} ({cols}) VALUES %s
+                    ON CONFLICT (account_number, closing_deal_id, closing_time_utc)
+                    DO UPDATE SET
+                        position_id = EXCLUDED.position_id,
+                        symbol_name = EXCLUDED.symbol_name,
+                        trade_type = EXCLUDED.trade_type,
+                        volume_in_units = EXCLUDED.volume_in_units,
+                        quantity_lots = EXCLUDED.quantity_lots,
+                        entry_time_utc = EXCLUDED.entry_time_utc,
+                        entry_price = EXCLUDED.entry_price,
+                        closing_price = EXCLUDED.closing_price,
+                        holding_duration = EXCLUDED.holding_duration,
+                        gross_profit = EXCLUDED.gross_profit,
+                        net_profit = EXCLUDED.net_profit,
+                        commissions = EXCLUDED.commissions,
+                        swap = EXCLUDED.swap,
+                        pips = EXCLUDED.pips,
+                        balance = EXCLUDED.balance,
+                        label = EXCLUDED.label,
+                        comment = EXCLUDED.comment,
+                        channel = EXCLUDED.channel,
+                        broker_name = EXCLUDED.broker_name,
+                        deposit_asset = EXCLUDED.deposit_asset,
+                        account_type = EXCLUDED.account_type,
+                        updated_at = now()
+                    """
+                ).format(
+                    tbl=_trade_history_table(),
+                    cols=sql.SQL(", ").join(map(sql.Identifier, TRADE_HISTORY_COLUMNS)),
+                )
+                execute_values(cur, insert_query.as_string(conn), rows, page_size=1000)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.autocommit = old_autocommit
+    log.info(
+        "Upserted single-run trade_history rows %d account_number %s account_type %s",
+        len(rows),
+        config.TRADE_HISTORY_ACCOUNT_NUMBER,
+        config.TRADE_HISTORY_ACCOUNT_TYPE,
+    )
 
 
 def mark_top_trade_sets(conn, run_id: int, parameter_set_ids: list[int]) -> None:

@@ -55,6 +55,9 @@ services:
       - RUN_NOTES_EXTRA= # Optional extra run note.
       - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
+      - TRADE_HISTORY_PERSIST_ENABLED=true # If true, RUN_MODE=single additionally upserts trades into trade_history.
+      - TRADE_HISTORY_ACCOUNT_NUMBER=000001 # trade_history account_number used when RUN_MODE=single.
+      - TRADE_HISTORY_ACCOUNT_TYPE=backtesting # trade_history account_type used when RUN_MODE=single.
 
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.

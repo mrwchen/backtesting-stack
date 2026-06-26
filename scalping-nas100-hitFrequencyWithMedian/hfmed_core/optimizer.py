@@ -529,6 +529,7 @@ def _run_single_session_parameter_backtest(
         {session: evaluation.parameter_hash for session, evaluation in selected_by_session.items()},
         parameter_ids,
     )
+    persistence.upsert_single_run_trade_history(conn, cfg, portfolio_eval.trades)
     persistence.mark_top_trade_sets(conn, run_id, list(parameter_ids.values()))
     persistence.update_run_complete(
         conn,
