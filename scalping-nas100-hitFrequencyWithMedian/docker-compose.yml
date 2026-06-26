@@ -53,7 +53,7 @@ services:
       - LOG_LEVEL=INFO # Python logging level.
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
       - RUN_NOTES_EXTRA= # Optional extra run note.
-      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      - RUN_MODE=single #walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - TRADE_HISTORY_PERSIST_ENABLED=true # If true, RUN_MODE=single additionally upserts trades into trade_history.
       - TRADE_HISTORY_ACCOUNT_NUMBER=000001 # trade_history account_number used when RUN_MODE=single.
