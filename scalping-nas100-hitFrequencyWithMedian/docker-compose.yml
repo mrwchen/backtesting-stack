@@ -54,6 +54,7 @@ services:
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
       - RUN_NOTES_EXTRA= # Optional extra run note.
       - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
 
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
@@ -63,15 +64,9 @@ services:
 
       # Bar and profile construction.
       - BAR_SECONDS=5 # Mid-price bar duration built from ticks.
-      - LOOKBACK_BARS=90 # Rolling profile lookback window in bars.
-      - MIN_LOOKBACK_BARS=30 # Minimum completed bars before profile signals are valid.
-      - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means LOOKBACK_BARS * BAR_SECONDS.
+      - MIN_LOOKBACK_BARS=30 # Minimum completed bars before profile signals are valid; per-session/candidate LOOKBACK_BARS lives in the parameter files.
+      - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means per-session/candidate LOOKBACK_BARS * BAR_SECONDS.
       - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
-
-      # Entry signal thresholds.
-      - LONG_CROSS_QUANTILE=0.40 # Long entry when mid crosses this profile quantile upward.
-      - SHORT_CROSS_QUANTILE=0.60 # Short entry when mid crosses this profile quantile downward.
-      - ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT=15.0 # Reject entries when cross level is farther from its quantile's price-range percent.
 
       # Entry sessions.
       - SESSION_TIMEZONE=America/New_York # Timezone used to interpret entry sessions.
@@ -90,15 +85,7 @@ services:
       - SESSION_AFTER_HOURS_LATE_ENABLED=true # Enable new entries from 17:00-20:00.
 
       # Exit and stop logic.
-      - STOP_MODE=band # Stop mode; band uses BAND_STOP_* parameters, fixed uses FIXED_STOP_POINTS.
-      - ALL_STOP_MODES_TAKE_PROFIT_POINTS=10.0 # Take-profit distance used by STOP_MODE=band and STOP_MODE=fixed.
-      - FIXED_STOP_POINTS=10.0 # Stop distance used only when STOP_MODE=fixed.
-      - BAND_STOP_MIN_PROFILE_RANGE_POINTS=60.0 # Minimum q100-q0 profile range required only when STOP_MODE=band.
-      - BAND_STOP_PROFILE_LOWER_QUANTILE=0.0 # Lower profile quantile used for long stops only when STOP_MODE=band.
-      - BAND_STOP_PROFILE_UPPER_QUANTILE=1.0 # Upper profile quantile used for short stops only when STOP_MODE=band.
-      - BAND_STOP_PROFILE_BUFFER_POINTS=1 # Buffer added outside the stop profile quantile only when STOP_MODE=band.
-      - BAND_STOP_MIN_DISTANCE_POINTS=12.0 # Reject band-stop entries with a smaller stop distance.
-      - BAND_STOP_MAX_DISTANCE_POINTS=30.0 # Reject band-stop entries with a larger stop distance.
+      - STOP_MODE=band # Stop mode; concrete TP/stop/range values live in single_parameter.ini or parameter_grid.ini.
 
       # Account, sizing and risk.
       - ACCOUNT_PROFILE=PS_ACC # Pepperstone-style CFD account profile label.

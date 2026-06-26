@@ -14,7 +14,7 @@ from typing import Callable, Iterable
 import numpy as np
 
 from . import parameters, persistence
-from .config import OptimizerConfig, RunConfig, apply_parameter_values, effective_session_selector_min_trades
+from .config import OptimizerConfig, RunConfig, apply_parameter_values, effective_session_selector_min_trades, enabled_session_keys
 from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
 from .profile import ProfileArrays, rolling_profile_arrays, warmup as warmup_profile
@@ -414,9 +414,14 @@ def run_single_backtest(
     warmup_profile()
     data_start_ts = ns_to_datetime(int(ticks.tick_time_ns[0]))
     data_end_ts = ns_to_datetime(int(ticks.tick_time_ns[-1]))
+    session_values = parameters.load_single_session_parameters(opt_cfg.single_parameter_path)
+    active_sessions = enabled_session_keys(cfg)
+    if not active_sessions:
+        raise RuntimeError("RUN_MODE=single has no enabled sessions")
+    run_metadata_cfg = apply_parameter_values(cfg, session_values[active_sessions[0]])
     run_id = persistence.create_run(
         conn,
-        cfg,
+        run_metadata_cfg,
         opt_cfg,
         mode="single",
         data_start_ts=data_start_ts,
@@ -425,85 +430,210 @@ def run_single_backtest(
         bars_built=len(bars),
         folds_built=1,
     )
-    window = _prepare_full_window_data(ticks, bars, opt_cfg.profile_cache_size)
-    result = run_simulation(window.ticks, window.bars, window.tick_bar_index, cfg, log_result=True)
-    summary = summarize_trades(result.trades, cfg.initial_equity, result.final_equity)
-    session_stats = summarize_trades_by_session(result.trades)
-    values = parameters.values_from_config(cfg)
-    evaluation = Evaluation(
-        stage="single",
-        fold_index=1,
-        window_role="full",
-        values=values,
-        parameter_hash=parameters.parameter_hash(values),
-        parameter_label=parameters.parameter_label(values),
-        window_start=data_start_ts,
-        window_end=data_end_ts,
-        ticks_simulated=result.ticks_simulated,
-        bars_total=result.bars_total,
-        signals_total=result.signals_total,
-        long_signals=result.long_signals,
-        short_signals=result.short_signals,
-        rejected_missing_band=result.rejected_signals_missing_band,
-        rejected_band_too_narrow=result.rejected_signals_band_too_narrow,
-        rejected_price_range_position=result.rejected_signals_price_range_position,
-        rejected_stop_too_small=result.rejected_signals_stop_too_small,
-        rejected_stop_too_large=result.rejected_signals_stop_too_large,
-        skipped_no_size=result.skipped_signals_no_size,
-        ruined=result.ruined,
-        summary=summary,
-        score=score_evaluation(summary, result),
-        session_stats=session_stats,
-        trades=result.trades,
+    _run_single_session_parameter_backtest(
+        conn,
+        run_id,
+        cfg,
+        opt_cfg,
+        ticks,
+        bars,
+        started,
+        data_start_ts,
+        data_end_ts,
+        session_values,
+        active_sessions,
     )
-    train_by_hash = {evaluation.parameter_hash: []}
-    oos_by_hash = {evaluation.parameter_hash: [evaluation]}
-    full_by_hash = {evaluation.parameter_hash: [evaluation]}
-    aggregates = build_aggregates("single", [values], train_by_hash, oos_by_hash, 1, opt_cfg)
-    mc_by_hash = score_monte_carlo(aggregates, oos_by_hash, cfg, opt_cfg)
-    apply_final_scores(aggregates, mc_by_hash, opt_cfg)
-    aggregates[0]["stage_rank"] = 1
-    parameter_ids = persistence.insert_parameter_sets(conn, run_id, aggregates)
+
+
+def _run_single_session_parameter_backtest(
+    conn,
+    run_id: int,
+    cfg: RunConfig,
+    opt_cfg: OptimizerConfig,
+    ticks: TickData,
+    bars: BarData,
+    started: float,
+    data_start_ts,
+    data_end_ts,
+    session_values: dict[str, dict[str, int | float]],
+    active_sessions: list[str],
+) -> None:
+    stage = "single"
+    trade_start_ns = int(ticks.tick_time_ns[0])
+    trade_end_ns = int(ticks.tick_time_ns[-1]) + 1
+    fold = FoldSpec(
+        fold_index=1,
+        train_start_ns=trade_start_ns,
+        train_end_ns=trade_start_ns,
+        test_start_ns=trade_start_ns,
+        test_end_ns=trade_end_ns,
+    )
+    selected_by_session = {
+        session_type: _manual_selection_evaluation(
+            stage,
+            session_type,
+            session_values[session_type],
+            data_start_ts,
+            data_end_ts,
+        )
+        for session_type in active_sessions
+    }
+    unique_values = _dedupe_values([evaluation.values for evaluation in selected_by_session.values()])
+
+    persistence.insert_parameter_stubs(conn, run_id, stage, [(0, unique_values)])
+    parameter_ids = persistence.fetch_parameter_ids(
+        conn,
+        run_id,
+        stage,
+        (parameters.parameter_hash(values) for values in unique_values),
+    )
+    portfolio_id = persistence.insert_portfolio_stub(conn, run_id, stage)
+    selection_ids = persistence.insert_session_selections(
+        conn,
+        run_id,
+        portfolio_id,
+        stage,
+        fold,
+        selected_by_session,
+        parameter_ids,
+        cfg,
+        opt_cfg,
+    )
+
+    portfolio_eval = evaluate_session_portfolio(
+        stage,
+        fold,
+        selected_by_session,
+        cfg,
+        opt_cfg,
+        ticks,
+        bars,
+        keep_trades=True,
+    )
+    portfolio_aggregate, mc = build_portfolio_aggregate(stage, [portfolio_eval], 1, cfg, opt_cfg)
+    persistence.insert_portfolio_fold_result(conn, portfolio_id, portfolio_eval)
+    persistence.update_portfolio_results(conn, portfolio_id, portfolio_aggregate, mc)
+    persistence.update_session_selection_oos_stats(conn, selection_ids, portfolio_eval.session_stats)
     persistence.upsert_parameter_session_stats(
         conn,
         run_id,
-        build_session_aggregates(
-            "single",
-            [values],
-            train_by_hash,
-            oos_by_hash,
-            1,
-            (("full", full_by_hash),),
-        ),
+        _single_parameter_session_aggregates(stage, selected_by_session, portfolio_eval.session_stats),
         parameter_ids,
     )
-    persistence.insert_fold_results(conn, run_id, [evaluation], parameter_ids)
-    persistence.insert_monte_carlo(conn, mc_by_hash, parameter_ids)
-    parameter_set_id = parameter_ids[evaluation.parameter_hash]
-    persistence.insert_trade_rows(
+    persistence.insert_portfolio_trade_rows(
         conn,
-        persistence.trade_rows(parameter_set_id, "single", 1, "full", evaluation.trades),
+        run_id,
+        portfolio_id,
+        portfolio_eval,
+        selection_ids,
+        {session: evaluation.parameter_hash for session, evaluation in selected_by_session.items()},
+        parameter_ids,
     )
-    persistence.mark_top_trade_sets(conn, run_id, [parameter_set_id])
+    persistence.mark_top_trade_sets(conn, run_id, list(parameter_ids.values()))
     persistence.update_run_complete(
         conn,
         run_id,
         status="complete",
         run_duration_seconds=time.time() - started,
-        stage1_parameter_sets=1,
+        stage1_parameter_sets=len(unique_values),
         stage2_parameter_sets=0,
-        best_parameter_set_id=parameter_set_id,
-        best_portfolio_id=None,
-        best_score=aggregates[0]["score"],
+        best_parameter_set_id=None,
+        best_portfolio_id=portfolio_id,
+        best_score=portfolio_aggregate["score"],
     )
     log.info(
-        "Single run complete score %.4f trades %d return %.4f profit_factor %.4f max_drawdown %.4f",
-        aggregates[0]["score"],
-        aggregates[0]["oos_total_trades"],
-        aggregates[0]["oos_total_return_pct"],
-        aggregates[0]["oos_profit_factor"] if aggregates[0]["oos_profit_factor"] is not None else 0.0,
-        aggregates[0]["oos_max_drawdown_pct"],
+        "Single session-parameter run complete portfolio_id %s sessions %d unique_parameter_sets %d score %.4f trades %d return %.4f profit_factor %.4f max_drawdown %.4f",
+        portfolio_id,
+        len(selected_by_session),
+        len(unique_values),
+        portfolio_aggregate["score"],
+        portfolio_aggregate["oos_total_trades"],
+        portfolio_aggregate["oos_total_return_pct"],
+        portfolio_aggregate["oos_profit_factor"] if portfolio_aggregate["oos_profit_factor"] is not None else 0.0,
+        portfolio_aggregate["oos_max_drawdown_pct"],
     )
+
+
+def _manual_selection_evaluation(
+    stage: str,
+    session_type: str,
+    values: dict[str, int | float],
+    data_start_ts,
+    data_end_ts,
+) -> Evaluation:
+    digest = parameters.parameter_hash(values)
+    return Evaluation(
+        stage=stage,
+        fold_index=1,
+        window_role="manual",
+        values=values,
+        parameter_hash=digest,
+        parameter_label=parameters.parameter_label(values),
+        window_start=data_start_ts,
+        window_end=data_end_ts,
+        ticks_simulated=0,
+        bars_total=0,
+        signals_total=0,
+        long_signals=0,
+        short_signals=0,
+        rejected_missing_band=0,
+        rejected_band_too_narrow=0,
+        rejected_price_range_position=0,
+        rejected_stop_too_small=0,
+        rejected_stop_too_large=0,
+        skipped_no_size=0,
+        ruined=False,
+        summary={},
+        score=0.0,
+        session_stats={session_type: _empty_manual_session_stats()},
+        trades=[],
+    )
+
+
+def _empty_manual_session_stats() -> dict:
+    return {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "breakeven_trades": 0,
+        "win_rate_pct": 0.0,
+        "gross_profit_eur": 0.0,
+        "gross_loss_eur": 0.0,
+        "net_profit_eur": 0.0,
+        "avg_trade_pnl_eur": 0.0,
+    }
+
+
+def _single_parameter_session_aggregates(
+    stage: str,
+    selected_by_session: dict[str, Evaluation],
+    session_stats: dict[str, dict],
+) -> list[dict]:
+    rows = []
+    for session_type, evaluation in selected_by_session.items():
+        stats = session_stats.get(session_type, _empty_manual_session_stats())
+        rows.append(
+            {
+                "stage": stage,
+                "parameter_hash": evaluation.parameter_hash,
+                "window_role": "oos",
+                "session_type": session_type,
+                "session_label": SESSION_LABELS[session_type],
+                "session_sort_order": SESSION_SORT_ORDERS[session_type],
+                "folds": 1,
+                "expected_folds": 1,
+                "total_trades": int(stats.get("total_trades") or 0),
+                "winning_trades": int(stats.get("winning_trades") or 0),
+                "losing_trades": int(stats.get("losing_trades") or 0),
+                "breakeven_trades": int(stats.get("breakeven_trades") or 0),
+                "win_rate_pct": float(stats.get("win_rate_pct") or 0.0),
+                "gross_profit_eur": float(stats.get("gross_profit_eur") or 0.0),
+                "gross_loss_eur": float(stats.get("gross_loss_eur") or 0.0),
+                "net_profit_eur": float(stats.get("net_profit_eur") or 0.0),
+                "avg_trade_pnl_eur": float(stats.get("avg_trade_pnl_eur") or 0.0),
+            }
+        )
+    return rows
 
 
 def _empty_aggregate_metrics(expected_folds: int) -> dict:
@@ -1912,17 +2042,6 @@ def _prepare_window_data(
         tick_bar_index=tick_bar_index,
         trade_start_ns=trade_start,
         trade_end_ns=trade_end,
-        profile_cache_size=profile_cache_size,
-    )
-
-
-def _prepare_full_window_data(ticks: TickData, bars: BarData, profile_cache_size: int) -> WindowData:
-    return WindowData(
-        ticks=ticks,
-        bars=bars,
-        tick_bar_index=ticks.bar_index,
-        trade_start_ns=int(ticks.tick_time_ns[0]),
-        trade_end_ns=int(ticks.tick_time_ns[-1]) + 1,
         profile_cache_size=profile_cache_size,
     )
 

@@ -10,6 +10,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY parameter_grid.ini .
+COPY single_parameter.ini .
 COPY hfmed_core/ ./hfmed_core/
 COPY backtest_runner.py .
 CMD ["python", "backtest_runner.py"]

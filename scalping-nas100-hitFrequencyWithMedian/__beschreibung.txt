@@ -22,16 +22,19 @@ abgeschlossenen Lookback-Bars berechnet.
 
 Default:
   BAR_SECONDS=10
-  LOOKBACK_BARS=90
-  MIN_LOOKBACK_BARS=90
+  MIN_LOOKBACK_BARS=30
   PROFILE_MAX_LOOKBACK_SECONDS=
   PRICE_STEP=1.0
-  LONG_CROSS_QUANTILE=0.50
-  SHORT_CROSS_QUANTILE=0.50
+
+Strategieparameter wie LOOKBACK_BARS, LONG_CROSS_QUANTILE,
+SHORT_CROSS_QUANTILE, ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT,
+Take-Profit und Band-Stop-Werte liegen nicht in docker-compose.yml:
+  RUN_MODE=single       -> single_parameter.ini
+  RUN_MODE=walk_forward -> parameter_grid.ini
 
 Das Profil ist zusaetzlich wall-clock-bounded. Wenn
-PROFILE_MAX_LOOKBACK_SECONDS leer bleibt, gilt LOOKBACK_BARS * BAR_SECONDS.
-Bei 90 Bars und 10 Sekunden sind das 900 Sekunden. Dadurch werden nach
+PROFILE_MAX_LOOKBACK_SECONDS leer bleibt, gilt der jeweilige
+per-Session-/Kandidatenwert LOOKBACK_BARS * BAR_SECONDS. Dadurch werden nach
 Overnight-/Wochenend- oder anderen grossen Tick-Luecken alte Bars vor der
 Profilberechnung entfernt; Entries sind erst wieder moeglich, wenn
 MIN_LOOKBACK_BARS frische Bars im Zeitfenster liegen.
@@ -72,16 +75,6 @@ End-of-data Exits nutzen den tatsaechlichen Exit-Quote.
 
 Es ist immer nur eine Position gleichzeitig offen. Neue Signale werden waehrend
 einer offenen Position ignoriert.
-
-Default:
-  STOP_MODE=band
-  BAND_STOP_MIN_PROFILE_RANGE_POINTS=60.0
-  BAND_STOP_PROFILE_LOWER_QUANTILE=0.0
-  BAND_STOP_PROFILE_UPPER_QUANTILE=1.0
-  BAND_STOP_PROFILE_BUFFER_POINTS=1.0
-  BAND_STOP_MIN_DISTANCE_POINTS=12.0
-  BAND_STOP_MAX_DISTANCE_POINTS=30.0
-  ALL_STOP_MODES_TAKE_PROFIT_POINTS=10.0
 
 Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens
 BAND_STOP_MIN_PROFILE_RANGE_POINTS betraegt. Long-Stop liegt am unteren
@@ -134,6 +127,18 @@ Die Tabellen werden ausschliesslich durch init/schema.sql angelegt:
   backtest2_nas100_hfmed_monte_carlo
 
 DROP_ALL_HFMED_TABLES_ON_START=false ist der Default.
+
+Manueller Single-Modus
+----------------------
+RUN_MODE=single laedt single_parameter.ini. Die Datei enthaelt pro Entry-
+Session eine Section mit genau einem Wert je Parameter. Nur die per
+SESSION_*_ENABLED aktivierten Sessions werden gehandelt. Der Backtest laeuft
+wie im Live-Bot als gemeinsames Session-Portfolio: Pro Tick bestimmt die
+aktuelle Entry-Session das Parameterset, global bleibt aber immer nur eine
+Position gleichzeitig offen.
+Die Defaultwerte in single_parameter.ini entsprechen
+algo-trading-stack/pepperstone_ctrader_nas100_scalper/code/PepperstoneNas100Scalper.cs
+aus BuildSessionParameters().
 
 Parameter-Optimizer
 -------------------

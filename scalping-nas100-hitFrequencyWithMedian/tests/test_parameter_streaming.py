@@ -7,7 +7,7 @@ class ParameterStreamingTests(unittest.TestCase):
     def test_streaming_stage1_count_matches_current_grid(self):
         grid = parameters.load_grid("parameter_grid.ini")
 
-        self.assertEqual(parameters.stage1_candidate_count(grid, 0), 136_080_000)
+        self.assertEqual(parameters.stage1_candidate_count(grid, 0), 187_704_000)
         self.assertEqual(parameters.stage1_candidate_count(grid, 262_144), 262_144)
         self.assertEqual(parameters.stage1_candidate_count(grid, 8_388_608), 8_388_608)
 

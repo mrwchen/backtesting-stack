@@ -113,10 +113,8 @@ if START_TS_UTC is not None and END_TS_UTC is not None and END_TS_UTC <= START_T
 
 # Hit-frequency profile.
 BAR_SECONDS = max(1, env_int("BAR_SECONDS", 10))
-LOOKBACK_BARS = max(1, env_int("LOOKBACK_BARS", 10))
-MIN_LOOKBACK_BARS = max(1, env_int("MIN_LOOKBACK_BARS", LOOKBACK_BARS))
-if MIN_LOOKBACK_BARS > LOOKBACK_BARS:
-    raise ValueError("MIN_LOOKBACK_BARS must be <= LOOKBACK_BARS")
+MIN_LOOKBACK_BARS = max(1, env_int("MIN_LOOKBACK_BARS", 30))
+LOOKBACK_BARS = MIN_LOOKBACK_BARS
 PROFILE_MAX_LOOKBACK_SECONDS = env_optional_int("PROFILE_MAX_LOOKBACK_SECONDS")
 if PROFILE_MAX_LOOKBACK_SECONDS is not None and PROFILE_MAX_LOOKBACK_SECONDS <= 0:
     raise ValueError("PROFILE_MAX_LOOKBACK_SECONDS must be positive when set")
@@ -126,36 +124,22 @@ if PRICE_STEP <= 0:
 MEDIAN_QUANTILE = 0.5
 BAND_LOWER_QUANTILE = 0.45
 BAND_UPPER_QUANTILE = 0.55
-LONG_CROSS_QUANTILE = env_float("LONG_CROSS_QUANTILE", MEDIAN_QUANTILE)
-SHORT_CROSS_QUANTILE = env_float("SHORT_CROSS_QUANTILE", MEDIAN_QUANTILE)
-if not 0.0 <= LONG_CROSS_QUANTILE <= 1.0:
-    raise ValueError("LONG_CROSS_QUANTILE must be between 0.0 and 1.0")
-if not 0.0 <= SHORT_CROSS_QUANTILE <= 1.0:
-    raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
-ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT = env_float("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT", 15.0)
-if ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT < 0:
-    raise ValueError("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT must be >= 0")
+LONG_CROSS_QUANTILE = MEDIAN_QUANTILE
+SHORT_CROSS_QUANTILE = MEDIAN_QUANTILE
+ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT = 0.0
 
 # Trade rules.
 STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
 FIXED_STOP_POINTS = env_float("FIXED_STOP_POINTS", 10.0)
-ALL_STOP_MODES_TAKE_PROFIT_POINTS = env_float("ALL_STOP_MODES_TAKE_PROFIT_POINTS", 10.0)
-if FIXED_STOP_POINTS <= 0 or ALL_STOP_MODES_TAKE_PROFIT_POINTS <= 0:
-    raise ValueError("FIXED_STOP_POINTS and ALL_STOP_MODES_TAKE_PROFIT_POINTS must be positive")
-BAND_STOP_MIN_PROFILE_RANGE_POINTS = env_float("BAND_STOP_MIN_PROFILE_RANGE_POINTS", 40.0)
-BAND_STOP_PROFILE_LOWER_QUANTILE = env_float("BAND_STOP_PROFILE_LOWER_QUANTILE", 0.0)
-BAND_STOP_PROFILE_UPPER_QUANTILE = env_float("BAND_STOP_PROFILE_UPPER_QUANTILE", 1.0)
-BAND_STOP_PROFILE_BUFFER_POINTS = env_float("BAND_STOP_PROFILE_BUFFER_POINTS", 0.5)
-BAND_STOP_MIN_DISTANCE_POINTS = env_float("BAND_STOP_MIN_DISTANCE_POINTS", 12.0)
-BAND_STOP_MAX_DISTANCE_POINTS = env_float("BAND_STOP_MAX_DISTANCE_POINTS", 20.0)
-if BAND_STOP_MIN_PROFILE_RANGE_POINTS < 0:
-    raise ValueError("BAND_STOP_MIN_PROFILE_RANGE_POINTS must be >= 0")
-if not 0.0 <= BAND_STOP_PROFILE_LOWER_QUANTILE < BAND_STOP_PROFILE_UPPER_QUANTILE <= 1.0:
-    raise ValueError("BAND_STOP_PROFILE_LOWER_QUANTILE and BAND_STOP_PROFILE_UPPER_QUANTILE must satisfy 0 <= lower < upper <= 1")
-if BAND_STOP_PROFILE_BUFFER_POINTS < 0:
-    raise ValueError("BAND_STOP_PROFILE_BUFFER_POINTS must be >= 0")
-if BAND_STOP_MIN_DISTANCE_POINTS <= 0 or BAND_STOP_MAX_DISTANCE_POINTS <= BAND_STOP_MIN_DISTANCE_POINTS:
-    raise ValueError("BAND_STOP_MAX_DISTANCE_POINTS must be greater than BAND_STOP_MIN_DISTANCE_POINTS")
+if FIXED_STOP_POINTS <= 0:
+    raise ValueError("FIXED_STOP_POINTS must be positive")
+ALL_STOP_MODES_TAKE_PROFIT_POINTS = 1.0
+BAND_STOP_MIN_PROFILE_RANGE_POINTS = 0.0
+BAND_STOP_PROFILE_LOWER_QUANTILE = 0.0
+BAND_STOP_PROFILE_UPPER_QUANTILE = 1.0
+BAND_STOP_PROFILE_BUFFER_POINTS = 0.0
+BAND_STOP_MIN_DISTANCE_POINTS = 1.0
+BAND_STOP_MAX_DISTANCE_POINTS = 2.0
 
 # Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
 SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
@@ -205,6 +189,7 @@ RUN_LABEL_TZ = env_str("RUN_LABEL_TZ", "Europe/Berlin")
 RUN_NOTES_EXTRA = env_str("RUN_NOTES_EXTRA", "")
 
 # Walk-forward optimizer.
+SINGLE_PARAMETER_PATH = env_str("SINGLE_PARAMETER_PATH", "single_parameter.ini")
 PARAMETER_GRID_PATH = env_str("PARAMETER_GRID_PATH", "parameter_grid.ini")
 WF_TRAIN_DAYS = max(1, env_int("WF_TRAIN_DAYS", 60))
 WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
@@ -332,6 +317,7 @@ class RunConfig:
 
 @dataclass(frozen=True)
 class OptimizerConfig:
+    single_parameter_path: str
     parameter_grid_path: str
     train_days: int
     test_days: int
@@ -430,6 +416,7 @@ def active_run_config() -> RunConfig:
 
 def active_optimizer_config() -> OptimizerConfig:
     return OptimizerConfig(
+        single_parameter_path=SINGLE_PARAMETER_PATH,
         parameter_grid_path=PARAMETER_GRID_PATH,
         train_days=WF_TRAIN_DAYS,
         test_days=WF_TEST_DAYS,
@@ -546,6 +533,27 @@ SESSION_CONFIG_FIELDS = (
     ("session_after_close_shock_enabled", "after_close_shock_1600_1700"),
     ("session_after_hours_late_enabled", "after_hours_late_1700_2000"),
 )
+
+
+SESSION_ENABLE_FIELDS = (
+    ("session_asia_early_enabled", "asia_early"),
+    ("session_asia_late_enabled", "asia_late"),
+    ("session_london_open_enabled", "london_open"),
+    ("session_pre_market_early_enabled", "pre_market_early"),
+    ("session_pre_market_active_enabled", "pre_market_active"),
+    ("session_pre_market_macro_enabled", "pre_market_macro"),
+    ("session_ny_open_impulse_enabled", "ny_open_impulse"),
+    ("session_ny_morning_enabled", "ny_morning"),
+    ("session_ny_midday_enabled", "ny_midday"),
+    ("session_ny_late_enabled", "ny_late"),
+    ("session_ny_power_hour_enabled", "ny_power_hour"),
+    ("session_after_close_shock_enabled", "after_close_shock"),
+    ("session_after_hours_late_enabled", "after_hours_late"),
+)
+
+
+def enabled_session_keys(cfg: RunConfig) -> list[str]:
+    return [session_type for field, session_type in SESSION_ENABLE_FIELDS if getattr(cfg, field)]
 
 
 def enabled_session_labels(cfg: RunConfig) -> list[str]:

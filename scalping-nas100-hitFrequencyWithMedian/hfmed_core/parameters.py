@@ -11,7 +11,7 @@ from typing import Iterable, Iterator, NamedTuple
 
 import numpy as np
 
-from .config import RunConfig
+from .sessions import SESSION_TYPES
 
 
 DEFAULT_SAMPLING_SEED = 12345
@@ -68,6 +68,36 @@ def load_grid(path: str) -> dict[str, list[int | float]]:
             raise RuntimeError(f"Parameter grid misses {name}")
         grid[name] = _parse_values(name, section[name])
     return grid
+
+
+def load_single_session_parameters(path: str) -> dict[str, dict[str, int | float]]:
+    parser = configparser.ConfigParser()
+    loaded = parser.read(path)
+    if not loaded:
+        raise RuntimeError(f"Single parameter file not found: {Path(path).resolve()}")
+
+    expected_sections = {session_type for session_type, _label, _sort_order in SESSION_TYPES}
+    actual_sections = set(parser.sections())
+    unknown_sections = sorted(actual_sections - expected_sections)
+    if unknown_sections:
+        raise RuntimeError(f"Single parameter file has unknown session sections: {', '.join(unknown_sections)}")
+
+    missing_sections = [session_type for session_type, _label, _sort_order in SESSION_TYPES if session_type not in parser]
+    if missing_sections:
+        raise RuntimeError(f"Single parameter file misses session sections: {', '.join(missing_sections)}")
+
+    out: dict[str, dict[str, int | float]] = {}
+    for session_type, _label, _sort_order in SESSION_TYPES:
+        section = parser[session_type]
+        values: dict[str, int | float] = {}
+        for name in PARAMETER_NAMES:
+            if name not in section:
+                raise RuntimeError(f"Single parameter file section [{session_type}] misses {name}")
+            values[name] = _parse_single_value(name, section[name], session_type)
+        if not is_valid(values):
+            raise RuntimeError(f"Single parameter file section [{session_type}] has invalid parameter values")
+        out[session_type] = values
+    return out
 
 
 def stage1_candidate_count(grid: dict[str, list[int | float]], max_sets: int = 0) -> int:
@@ -317,22 +347,6 @@ def parameter_label(values: dict[str, int | float]) -> str:
     )
 
 
-def values_from_config(cfg: RunConfig) -> dict[str, int | float]:
-    return {
-        "LOOKBACK_BARS": cfg.lookback_bars,
-        "LONG_CROSS_QUANTILE": cfg.long_cross_quantile,
-        "SHORT_CROSS_QUANTILE": cfg.short_cross_quantile,
-        "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT": cfg.entry_price_range_position_max_deviation_pct,
-        "ALL_STOP_MODES_TAKE_PROFIT_POINTS": cfg.take_profit_points,
-        "BAND_STOP_MIN_PROFILE_RANGE_POINTS": cfg.min_profile_range_points,
-        "BAND_STOP_PROFILE_LOWER_QUANTILE": cfg.stop_profile_lower_quantile,
-        "BAND_STOP_PROFILE_UPPER_QUANTILE": cfg.stop_profile_upper_quantile,
-        "BAND_STOP_PROFILE_BUFFER_POINTS": cfg.stop_profile_buffer_points,
-        "BAND_STOP_MIN_DISTANCE_POINTS": cfg.min_stop_distance_points,
-        "BAND_STOP_MAX_DISTANCE_POINTS": cfg.max_stop_distance_points,
-    }
-
-
 def _parse_values(name: str, raw: str) -> list[int | float]:
     values: list[int | float] = []
     for part in raw.split(","):
@@ -347,6 +361,13 @@ def _parse_values(name: str, raw: str) -> list[int | float]:
     if not values:
         raise RuntimeError(f"Parameter grid {name} has no values")
     return sorted(set(values))
+
+
+def _parse_single_value(name: str, raw: str, session_type: str) -> int | float:
+    values = _parse_values(name, raw)
+    if len(values) != 1:
+        raise RuntimeError(f"Single parameter file section [{session_type}] {name} must contain exactly one value")
+    return values[0]
 
 
 def _local_values(name: str, value: int | float, coarse_values: list[int | float]) -> list[int | float]:

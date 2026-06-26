@@ -183,20 +183,26 @@ def _run_label() -> str:
 
 
 def _notes(cfg: RunConfig, mode: str) -> str:
+    profile_max = (
+        str(cfg.profile_max_lookback_seconds)
+        if cfg.profile_max_lookback_seconds is not None
+        else "per_parameter_lookback"
+    )
     parts = [
         cfg.symbol,
         f"mode {mode}",
         f"source {cfg.source_table}",
         f"bar_seconds {cfg.bar_seconds}",
-        f"profile_max_lookback_seconds {cfg.profile_max_lookback_seconds or cfg.lookback_bars * cfg.bar_seconds}",
-        f"cross long {cfg.long_cross_quantile:g}",
-        f"cross short {cfg.short_cross_quantile:g}",
-        f"entry_range_position_max_deviation_pct {cfg.entry_price_range_position_max_deviation_pct:g}",
+        f"profile_max_lookback_seconds {profile_max}",
         f"stop_mode {cfg.stop_mode}",
         f"account {cfg.account_profile}",
         f"sessions {config.session_filter_summary(cfg)}",
         "spread live_bid_ask",
     ]
+    if mode == "single":
+        parts.append(f"single_parameter_path {config.SINGLE_PARAMETER_PATH}")
+    elif mode == "walk_forward":
+        parts.append(f"parameter_grid_path {config.PARAMETER_GRID_PATH}")
     if config.RUN_NOTES_EXTRA:
         parts.append(config.RUN_NOTES_EXTRA)
     return " | ".join(parts)
