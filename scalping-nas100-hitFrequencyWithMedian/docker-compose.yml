@@ -127,8 +127,8 @@ services:
       # Walk-forward windows and candidate promotion.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
-      - WF_MATRIX_TRAIN_DAYS=15,20,30 # Train window lengths tested by the matrix.
-      - WF_MATRIX_TEST_DAYS=10,15,20 # OOS window lengths tested by the matrix; step_days equals test_days.
+      - WF_MATRIX_TRAIN_DAYS=15,30 # Train window lengths tested by the matrix.
+      - WF_MATRIX_TEST_DAYS=10,20 # OOS window lengths tested by the matrix; step_days equals test_days.
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
       - WF_FINALIST_TOP_N_PER_SESSION=2000 # Per-session train top-N collected into the finalist union.
       - WF_FINALIST_GLOBAL_TOP_N=5000 # Additional global train top-N collected into the finalist union; 0 disables.
@@ -152,7 +152,7 @@ services:
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
 
       # Stage 1 coarse search.
-      - STAGE1_MAX_PARAMETER_SETS=8388608 #65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
+      - STAGE1_MAX_PARAMETER_SETS=4194304 #65536  # Max coarse-grid Stage 1 candidates; 0 means unlimited.
 
       # Stage 2 local refinement.
       - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
