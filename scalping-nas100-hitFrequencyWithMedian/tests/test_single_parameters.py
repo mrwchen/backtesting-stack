@@ -15,7 +15,7 @@ class SingleParameterFileTests(unittest.TestCase):
         self.assertEqual(0.40, values["asia_early"]["LONG_CROSS_QUANTILE"])
         self.assertEqual(210, values["ny_morning"]["LOOKBACK_BARS"])
         self.assertEqual(0.65, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
-        self.assertEqual(19.0, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_POINTS"])
+        self.assertEqual(9.5, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_BPS"])
 
     def test_rejects_multiple_values_for_single_parameter(self):
         path = Path(__file__).resolve().parents[1] / "single_parameter.ini"

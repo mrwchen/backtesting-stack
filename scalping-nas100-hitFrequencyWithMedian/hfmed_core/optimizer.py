@@ -1505,13 +1505,13 @@ def _parameter_distance(left: dict[str, int | float], right: dict[str, int | flo
         "LONG_CROSS_QUANTILE": 0.05,
         "SHORT_CROSS_QUANTILE": 0.05,
         "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT": 5.0,
-        "ALL_STOP_MODES_TAKE_PROFIT_POINTS": 3.0,
-        "BAND_STOP_MIN_PROFILE_RANGE_POINTS": 10.0,
+        "ALL_STOP_MODES_TAKE_PROFIT_BPS": 1.5,
+        "BAND_STOP_MIN_PROFILE_RANGE_BPS": 5.0,
         "BAND_STOP_PROFILE_LOWER_QUANTILE": 0.05,
         "BAND_STOP_PROFILE_UPPER_QUANTILE": 0.05,
         "BAND_STOP_PROFILE_BUFFER_POINTS": 1.0,
-        "BAND_STOP_MIN_DISTANCE_POINTS": 3.0,
-        "BAND_STOP_MAX_DISTANCE_POINTS": 5.0,
+        "BAND_STOP_MIN_DISTANCE_BPS": 1.5,
+        "BAND_STOP_MAX_DISTANCE_BPS": 2.5,
     }
     total = 0.0
     count = 0

@@ -30,6 +30,7 @@ class RawTickData:
     mid: np.ndarray
     bar_start_ns: np.ndarray
     entry_session_code: np.ndarray
+    parameter_reference_price: np.ndarray
 
     def __len__(self) -> int:
         return int(self.tick_time_ns.shape[0])
@@ -43,6 +44,7 @@ class TickData:
     mid: np.ndarray
     bar_index: np.ndarray
     entry_session_code: np.ndarray
+    parameter_reference_price: np.ndarray
 
     def __len__(self) -> int:
         return int(self.tick_time_ns.shape[0])
@@ -55,6 +57,7 @@ class TickData:
             mid=self.mid[start:end],
             bar_index=self.bar_index[start:end],
             entry_session_code=self.entry_session_code[start:end],
+            parameter_reference_price=self.parameter_reference_price[start:end],
         )
 
     def slice_time(self, start_ns: int, end_ns: int) -> "TickData":
@@ -181,6 +184,7 @@ def load_ticks(conn: psycopg2.extensions.connection, cfg: RunConfig) -> RawTickD
     bar_ns = int(cfg.bar_seconds) * NANOSECONDS_PER_SECOND
     bar_start_ns = (tick_time_ns // bar_ns) * bar_ns
     entry_session_code = classify_timestamp_codes(pd.to_datetime(tick_time_ns, utc=True), cfg.session_timezone)
+    parameter_reference_price = build_parameter_reference_prices(tick_time_ns, mid, cfg.session_timezone)
 
     log.info(
         "Loaded ticks %d raw_rows %d invalid_ask_lt_bid %d for %s from %s to %s",
@@ -198,6 +202,7 @@ def load_ticks(conn: psycopg2.extensions.connection, cfg: RunConfig) -> RawTickD
         mid=mid,
         bar_start_ns=bar_start_ns,
         entry_session_code=entry_session_code,
+        parameter_reference_price=parameter_reference_price,
     )
 
 
@@ -227,6 +232,7 @@ def build_mid_bars(raw_ticks: RawTickData, cfg: RunConfig) -> tuple[TickData, Ba
         mid=raw_ticks.mid,
         bar_index=bar_index.astype(np.int32, copy=False),
         entry_session_code=raw_ticks.entry_session_code,
+        parameter_reference_price=raw_ticks.parameter_reference_price,
     )
     log.info(
         "Built %d mid-price bars of %ds from %d ticks",
@@ -235,6 +241,25 @@ def build_mid_bars(raw_ticks: RawTickData, cfg: RunConfig) -> tuple[TickData, Ba
         len(ticks),
     )
     return ticks, bars
+
+
+def build_parameter_reference_prices(tick_time_ns: np.ndarray, mid: np.ndarray, timezone_name: str) -> np.ndarray:
+    if len(tick_time_ns) <= 0:
+        return np.empty(0, dtype=np.float64)
+
+    local_midnights = pd.to_datetime(tick_time_ns, utc=True).tz_convert(timezone_name).normalize().asi8
+    day_starts = np.flatnonzero(np.r_[True, local_midnights[1:] != local_midnights[:-1]])
+    day_ends = np.r_[day_starts[1:], len(tick_time_ns)]
+    counts = day_ends - day_starts
+    refs = np.repeat(mid[day_starts].astype(np.float64, copy=False), counts).astype(np.float64, copy=False)
+    log.info(
+        "Built parameter reference prices timezone %s days %d first_ref %.2f last_ref %.2f",
+        timezone_name,
+        len(day_starts),
+        float(refs[0]),
+        float(refs[-1]),
+    )
+    return refs
 
 
 def _fmt_ns(value: int) -> str:

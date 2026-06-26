@@ -217,6 +217,7 @@ def _simulate_events(
     mid = _as_float(ticks.mid)
     bid = _as_float(ticks.bid)
     ask = _as_float(ticks.ask)
+    parameter_reference_price = _as_float(ticks.parameter_reference_price)
     local_bar_index = _as_int32(tick_bar_index)
     median_level = _as_float(profile.median_level)
     profile_low = _as_float(profile.profile_low)
@@ -233,14 +234,14 @@ def _simulate_events(
     scalar_args = (
         1 if cfg.stop_mode == "fixed" else 0,
         float(cfg.stop_points),
-        float(cfg.take_profit_points),
-        float(cfg.min_profile_range_points),
+        float(cfg.take_profit_bps),
+        float(cfg.min_profile_range_bps),
         float(cfg.long_cross_quantile),
         float(cfg.short_cross_quantile),
         float(cfg.entry_price_range_position_max_deviation_pct),
         float(cfg.stop_profile_buffer_points),
-        float(cfg.min_stop_distance_points),
-        float(cfg.max_stop_distance_points),
+        float(cfg.min_stop_distance_bps),
+        float(cfg.max_stop_distance_bps),
         float(cfg.initial_equity),
         float(cfg.contract_multiplier),
         float(cfg.eurusd_rate),
@@ -258,7 +259,7 @@ def _simulate_events(
         ev_tick, ev_dir, ev_cross, n_events,
         mid, bid, ask, local_bar_index, median_level,
         profile_low, profile_high, stop_lower, stop_upper, profile_range,
-        n, *scalar_args, *out, cap,
+        parameter_reference_price, n, *scalar_args, *out, cap,
     )
     return out, stats, int(stats[0]), bid, ask
 
@@ -643,8 +644,8 @@ def run_session_portfolio_simulation(
 
     stop_mode_fixed = np.ascontiguousarray([1 if cfg.stop_mode == "fixed" else 0 for cfg in slot_cfgs], dtype=np.int8)
     stop_points = np.ascontiguousarray([float(cfg.stop_points) for cfg in slot_cfgs], dtype=np.float64)
-    take_profit_points = np.ascontiguousarray([float(cfg.take_profit_points) for cfg in slot_cfgs], dtype=np.float64)
-    min_profile_range_points = np.ascontiguousarray([float(cfg.min_profile_range_points) for cfg in slot_cfgs], dtype=np.float64)
+    take_profit_bps = np.ascontiguousarray([float(cfg.take_profit_bps) for cfg in slot_cfgs], dtype=np.float64)
+    min_profile_range_bps = np.ascontiguousarray([float(cfg.min_profile_range_bps) for cfg in slot_cfgs], dtype=np.float64)
     long_cross_quantiles = np.ascontiguousarray([float(cfg.long_cross_quantile) for cfg in slot_cfgs], dtype=np.float64)
     short_cross_quantiles = np.ascontiguousarray([float(cfg.short_cross_quantile) for cfg in slot_cfgs], dtype=np.float64)
     entry_price_range_position_max_deviation = np.ascontiguousarray(
@@ -652,12 +653,13 @@ def run_session_portfolio_simulation(
         dtype=np.float64,
     )
     stop_buffer = np.ascontiguousarray([float(cfg.stop_profile_buffer_points) for cfg in slot_cfgs], dtype=np.float64)
-    min_stop_distance = np.ascontiguousarray([float(cfg.min_stop_distance_points) for cfg in slot_cfgs], dtype=np.float64)
-    max_stop_distance = np.ascontiguousarray([float(cfg.max_stop_distance_points) for cfg in slot_cfgs], dtype=np.float64)
+    min_stop_distance_bps = np.ascontiguousarray([float(cfg.min_stop_distance_bps) for cfg in slot_cfgs], dtype=np.float64)
+    max_stop_distance_bps = np.ascontiguousarray([float(cfg.max_stop_distance_bps) for cfg in slot_cfgs], dtype=np.float64)
 
     mid = _as_float(ticks.mid)
     bid = _as_float(ticks.bid)
     ask = _as_float(ticks.ask)
+    parameter_reference_price = _as_float(ticks.parameter_reference_price)
     local_bar_index = _as_int32(tick_bar_index)
     entry_session_code = np.ascontiguousarray(ticks.entry_session_code, dtype=np.uint8)
     entry_allowed = _build_time_allowed(ticks, trade_start_ns, trade_end_ns)
@@ -678,18 +680,19 @@ def run_session_portfolio_simulation(
         _stack("profile_range_points"),
         session_to_slot,
         entry_allowed,
+        parameter_reference_price,
     )
     scalar_args = (
         stop_mode_fixed,
         stop_points,
-        take_profit_points,
-        min_profile_range_points,
+        take_profit_bps,
+        min_profile_range_bps,
         long_cross_quantiles,
         short_cross_quantiles,
         entry_price_range_position_max_deviation,
         stop_buffer,
-        min_stop_distance,
-        max_stop_distance,
+        min_stop_distance_bps,
+        max_stop_distance_bps,
         float(base_cfg.initial_equity),
         float(base_cfg.contract_multiplier),
         float(base_cfg.eurusd_rate),

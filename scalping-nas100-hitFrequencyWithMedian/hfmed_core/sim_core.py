@@ -46,16 +46,17 @@ def simulate_core(
     stop_upper,
     profile_range,
     entry_allowed,
+    parameter_reference_price,
     stop_mode_fixed,
     stop_points,
-    take_profit_points,
-    min_profile_range_points,
+    take_profit_bps,
+    min_profile_range_bps,
     long_cross_quantile,
     short_cross_quantile,
     entry_price_range_position_max_deviation_pct,
     stop_buffer,
-    min_stop_distance,
-    max_stop_distance,
+    min_stop_distance_bps,
+    max_stop_distance_bps,
     initial_equity,
     mult,
     eurusd,
@@ -218,6 +219,18 @@ def simulate_core(
         if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
             rej_missing += 1
             continue
+
+        ref_price = np.nan
+        if 0 <= i < parameter_reference_price.shape[0]:
+            ref_price = parameter_reference_price[i]
+        if not ((ref_price == ref_price) and ref_price > 0.0):
+            rej_missing += 1
+            continue
+        take_profit_points = ref_price * take_profit_bps / 10000.0
+        min_profile_range_points = ref_price * min_profile_range_bps / 10000.0
+        min_stop_distance = ref_price * min_stop_distance_bps / 10000.0
+        max_stop_distance = ref_price * max_stop_distance_bps / 10000.0
+
         if stop_mode_fixed != 1 and pr < min_profile_range_points:
             rej_narrow += 1
             continue
@@ -390,16 +403,17 @@ def simulate_session_portfolio_core(
     profile_range_by_slot,
     session_to_slot,
     entry_allowed,
+    parameter_reference_price,
     stop_mode_fixed_by_slot,
     stop_points_by_slot,
-    take_profit_points_by_slot,
-    min_profile_range_points_by_slot,
+    take_profit_bps_by_slot,
+    min_profile_range_bps_by_slot,
     long_cross_quantile_by_slot,
     short_cross_quantile_by_slot,
     entry_price_range_position_max_deviation_pct_by_slot,
     stop_buffer_by_slot,
-    min_stop_distance_by_slot,
-    max_stop_distance_by_slot,
+    min_stop_distance_bps_by_slot,
+    max_stop_distance_bps_by_slot,
     initial_equity,
     mult,
     eurusd,
@@ -572,7 +586,19 @@ def simulate_session_portfolio_core(
         if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
             rej_missing += 1
             continue
-        if stop_mode_fixed_by_slot[slot] != 1 and pr < min_profile_range_points_by_slot[slot]:
+
+        ref_price = np.nan
+        if 0 <= i < parameter_reference_price.shape[0]:
+            ref_price = parameter_reference_price[i]
+        if not ((ref_price == ref_price) and ref_price > 0.0):
+            rej_missing += 1
+            continue
+        take_profit_points = ref_price * take_profit_bps_by_slot[slot] / 10000.0
+        min_profile_range_points = ref_price * min_profile_range_bps_by_slot[slot] / 10000.0
+        min_stop_distance = ref_price * min_stop_distance_bps_by_slot[slot] / 10000.0
+        max_stop_distance = ref_price * max_stop_distance_bps_by_slot[slot] / 10000.0
+
+        if stop_mode_fixed_by_slot[slot] != 1 and pr < min_profile_range_points:
             rej_narrow += 1
             continue
         expected_position_pct = (
@@ -596,10 +622,10 @@ def simulate_session_portfolio_core(
             stop_distance = stop_points_by_slot[slot]
             if direction == 1:
                 stop_price = entry_price - stop_distance
-                tp_price = entry_price + take_profit_points_by_slot[slot]
+                tp_price = entry_price + take_profit_points
             else:
                 stop_price = entry_price + stop_distance
-                tp_price = entry_price - take_profit_points_by_slot[slot]
+                tp_price = entry_price - take_profit_points
         else:
             sl = np.nan
             su = np.nan
@@ -612,16 +638,16 @@ def simulate_session_portfolio_core(
             else:
                 if direction == 1:
                     stop_price = sl - stop_buffer_by_slot[slot]
-                    tp_price = entry_price + take_profit_points_by_slot[slot]
+                    tp_price = entry_price + take_profit_points
                     stop_distance = entry_price - stop_price
                 else:
                     stop_price = su + stop_buffer_by_slot[slot]
-                    tp_price = entry_price - take_profit_points_by_slot[slot]
+                    tp_price = entry_price - take_profit_points
                     stop_distance = stop_price - entry_price
-                if stop_distance < min_stop_distance_by_slot[slot]:
+                if stop_distance < min_stop_distance:
                     valid = False
                     reject = 3
-                elif stop_distance > max_stop_distance_by_slot[slot]:
+                elif stop_distance > max_stop_distance:
                     valid = False
                     reject = 4
 
@@ -803,17 +829,18 @@ def simulate_core_from_events(
     stop_lower,
     stop_upper,
     profile_range,
+    parameter_reference_price,
     n_ticks,
     stop_mode_fixed,
     stop_points,
-    take_profit_points,
-    min_profile_range_points,
+    take_profit_bps,
+    min_profile_range_bps,
     long_cross_quantile,
     short_cross_quantile,
     entry_price_range_position_max_deviation_pct,
     stop_buffer,
-    min_stop_distance,
-    max_stop_distance,
+    min_stop_distance_bps,
+    max_stop_distance_bps,
     initial_equity,
     mult,
     eurusd,
@@ -892,6 +919,19 @@ def simulate_core_from_events(
             rej_missing += 1
             ev += 1
             continue
+
+        ref_price = np.nan
+        if 0 <= i < parameter_reference_price.shape[0]:
+            ref_price = parameter_reference_price[i]
+        if not ((ref_price == ref_price) and ref_price > 0.0):
+            rej_missing += 1
+            ev += 1
+            continue
+        take_profit_points = ref_price * take_profit_bps / 10000.0
+        min_profile_range_points = ref_price * min_profile_range_bps / 10000.0
+        min_stop_distance = ref_price * min_stop_distance_bps / 10000.0
+        max_stop_distance = ref_price * max_stop_distance_bps / 10000.0
+
         if stop_mode_fixed != 1 and pr < min_profile_range_points:
             rej_narrow += 1
             ev += 1
@@ -1124,7 +1164,7 @@ def warmup() -> None:
     out_f = np.zeros(1, dtype=np.float64)
     simulate_core(
         zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
-        allowed,
+        allowed, zeros,
         0, 10.0, 10.0, 0.0, 0.5, 0.5, 100.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_f.copy(), out_f.copy(),
@@ -1142,7 +1182,7 @@ def warmup() -> None:
     simulate_core_from_events(
         ev_tick, ev_dir, ev_cross, 0,
         zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros,
-        n,
+        zeros, n,
         0, 10.0, 10.0, 0.0, 0.5, 0.5, 100.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_f.copy(), out_f.copy(),

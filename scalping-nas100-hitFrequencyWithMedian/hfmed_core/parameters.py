@@ -21,13 +21,13 @@ PARAMETER_NAMES = [
     "LONG_CROSS_QUANTILE",
     "SHORT_CROSS_QUANTILE",
     "ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT",
-    "ALL_STOP_MODES_TAKE_PROFIT_POINTS",
-    "BAND_STOP_MIN_PROFILE_RANGE_POINTS",
+    "ALL_STOP_MODES_TAKE_PROFIT_BPS",
+    "BAND_STOP_MIN_PROFILE_RANGE_BPS",
     "BAND_STOP_PROFILE_LOWER_QUANTILE",
     "BAND_STOP_PROFILE_UPPER_QUANTILE",
     "BAND_STOP_PROFILE_BUFFER_POINTS",
-    "BAND_STOP_MIN_DISTANCE_POINTS",
-    "BAND_STOP_MAX_DISTANCE_POINTS",
+    "BAND_STOP_MIN_DISTANCE_BPS",
+    "BAND_STOP_MAX_DISTANCE_BPS",
 ]
 
 PROFILE_PARAMETER_NAMES = [
@@ -253,8 +253,8 @@ def _non_profile_combinations(grid: dict[str, list[int | float]]) -> list[tuple[
     combos = []
     for values in itertools.product(*(grid[name] for name in NON_PROFILE_PARAMETER_NAMES)):
         candidate = dict(zip(NON_PROFILE_PARAMETER_NAMES, values))
-        min_stop = float(candidate["BAND_STOP_MIN_DISTANCE_POINTS"])
-        max_stop = float(candidate["BAND_STOP_MAX_DISTANCE_POINTS"])
+        min_stop = float(candidate["BAND_STOP_MIN_DISTANCE_BPS"])
+        max_stop = float(candidate["BAND_STOP_MAX_DISTANCE_BPS"])
         if min_stop > 0.0 and max_stop > min_stop:
             combos.append(values)
     return combos
@@ -304,17 +304,17 @@ def is_valid(values: dict[str, int | float]) -> bool:
             return False
         if float(values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"]) < 0:
             return False
-        if float(values["ALL_STOP_MODES_TAKE_PROFIT_POINTS"]) <= 0:
+        if float(values["ALL_STOP_MODES_TAKE_PROFIT_BPS"]) <= 0:
             return False
-        if float(values["BAND_STOP_MIN_PROFILE_RANGE_POINTS"]) < 0:
+        if float(values["BAND_STOP_MIN_PROFILE_RANGE_BPS"]) < 0:
             return False
         if not 0.0 <= float(values["BAND_STOP_PROFILE_LOWER_QUANTILE"]) < float(values["BAND_STOP_PROFILE_UPPER_QUANTILE"]) <= 1.0:
             return False
         if float(values["BAND_STOP_PROFILE_BUFFER_POINTS"]) < 0:
             return False
-        if float(values["BAND_STOP_MIN_DISTANCE_POINTS"]) <= 0:
+        if float(values["BAND_STOP_MIN_DISTANCE_BPS"]) <= 0:
             return False
-        if float(values["BAND_STOP_MAX_DISTANCE_POINTS"]) <= float(values["BAND_STOP_MIN_DISTANCE_POINTS"]):
+        if float(values["BAND_STOP_MAX_DISTANCE_BPS"]) <= float(values["BAND_STOP_MIN_DISTANCE_BPS"]):
             return False
     except (KeyError, TypeError, ValueError):
         return False
@@ -339,11 +339,11 @@ def parameter_label(values: dict[str, int | float]) -> str:
         f"lq{_format_value(values['LONG_CROSS_QUANTILE'])}_"
         f"sq{_format_value(values['SHORT_CROSS_QUANTILE'])}_"
         f"rangepos{_format_value(values['ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT'])}_"
-        f"alltp{_format_value(values['ALL_STOP_MODES_TAKE_PROFIT_POINTS'])}_"
-        f"bandrange{_format_value(values['BAND_STOP_MIN_PROFILE_RANGE_POINTS'])}_"
+        f"alltpbps{_format_value(values['ALL_STOP_MODES_TAKE_PROFIT_BPS'])}_"
+        f"bandrangebps{_format_value(values['BAND_STOP_MIN_PROFILE_RANGE_BPS'])}_"
         f"bandq{_format_value(values['BAND_STOP_PROFILE_LOWER_QUANTILE'])}-{_format_value(values['BAND_STOP_PROFILE_UPPER_QUANTILE'])}_"
         f"bandbuf{_format_value(values['BAND_STOP_PROFILE_BUFFER_POINTS'])}_"
-        f"bandstop{_format_value(values['BAND_STOP_MIN_DISTANCE_POINTS'])}-{_format_value(values['BAND_STOP_MAX_DISTANCE_POINTS'])}"
+        f"bandstopbps{_format_value(values['BAND_STOP_MIN_DISTANCE_BPS'])}-{_format_value(values['BAND_STOP_MAX_DISTANCE_BPS'])}"
     )
 
 
