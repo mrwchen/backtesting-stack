@@ -33,6 +33,7 @@ class RangeProfileConfig:
 @dataclass(frozen=True)
 class RangeProfileArrays:
     profile_low: np.ndarray
+    median_level: np.ndarray
     profile_high: np.ndarray
     profile_range_points: np.ndarray
 
@@ -49,6 +50,7 @@ def _rolling_range_core(
     max_age_ns,
     step,
     out_q0,
+    out_q50,
     out_q100,
 ):
     n = bar_start_ns.shape[0]
@@ -73,16 +75,26 @@ def _rolling_range_core(
         if (wr - wl) >= min_lookback and total_hits > 0:
             first_nonzero = 0
             last_nonzero = 0
+            median_level = 0
             seen = False
+            median_done = False
+            cumulative = 0
+            median_threshold = total_hits * 0.5
             for lv in range(win_lo, win_hi + 1):
-                if counts[lv - offset] <= 0:
+                c = counts[lv - offset]
+                if c <= 0:
                     continue
                 if not seen:
                     first_nonzero = lv
                     seen = True
                 last_nonzero = lv
+                cumulative += c
+                if not median_done and cumulative >= median_threshold:
+                    median_level = lv
+                    median_done = True
             if seen:
                 out_q0[pos] = first_nonzero * step
+                out_q50[pos] = median_level * step
                 out_q100[pos] = last_nonzero * step
                 win_lo = first_nonzero
                 win_hi = last_nonzero
@@ -122,6 +134,7 @@ def rolling_range_profile_arrays(bars: BarData, cfg: RangeProfileConfig) -> Rang
     n = len(bars)
 
     q0 = np.full(n, np.nan, dtype=np.float64)
+    q50 = np.full(n, np.nan, dtype=np.float64)
     q100 = np.full(n, np.nan, dtype=np.float64)
 
     if n > 0:
@@ -146,11 +159,13 @@ def rolling_range_profile_arrays(bars: BarData, cfg: RangeProfileConfig) -> Rang
             np.int64(max_age_ns),
             step,
             q0,
+            q50,
             q100,
         )
 
     return RangeProfileArrays(
         profile_low=q0,
+        median_level=q50,
         profile_high=q100,
         profile_range_points=q100 - q0,
     )
@@ -175,4 +190,3 @@ def warmup() -> None:
             profile_max_lookback_seconds=None,
         ),
     )
-

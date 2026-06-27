@@ -6,7 +6,8 @@ Eigenstaendiger Analyse-Stack fuer public.pepperstone_ticks_data.
 Ziel
 ----
 Die Analyse laedt NAS100-Ticks ab START_TS_UTC, baut daraus Midprice-Bars
-und speichert pro Bar und Lookback die Hit-Frequency-Profilrange in TimescaleDB.
+und speichert pro Lookback nur dann ein Ergebnis, wenn der Tick-Midprice die
+q50-Linie der Hit-Frequency-Verteilung kreuzt.
 
 Default:
   BAR_SECONDS=5
@@ -16,10 +17,11 @@ Default:
   MIN_LOOKBACK_BARS=30
   PRICE_STEP=1.0
 
-Damit entstehen bei BAR_SECONDS=5 pro 5-Sekunden-Bar 24 Zeilen, eine je
-Lookback 30, 40, 50, ..., 260. In der Warmup-Phase stehen profile_low,
-profile_high und profile_range_points auf NULL, weil noch nicht genug
-abgeschlossene Vor-Bars vorhanden sind.
+BAR_SECONDS bestimmt die Bar-Groesse fuer die Profilberechnung. Bei
+BAR_SECONDS=5 wird die q50-Linie also aus abgeschlossenen 5-Sekunden-Bars
+berechnet. Gespeichert wird aber nicht jede Bar, sondern nur ein Tick-Level
+Crossing-Event je Lookback, wenn der Tick-Midprice q50 von unten oder oben
+kreuzt.
 
 Range-Logik
 -----------
@@ -30,7 +32,8 @@ scalping-nas100-hitFrequencyWithMedian:
 
 profile_low entspricht q0 und profile_high entspricht q100 der
 Hit-Frequency-Verteilung aus den bereits abgeschlossenen Lookback-Bars.
-Es ist also nicht die einfache High-Low-Range der aktuellen Bar.
+q50 ist der Median-Level derselben Verteilung. Es ist also nicht die einfache
+High-Low-Range der aktuellen Bar.
 
 Wenn PROFILE_MAX_LOOKBACK_SECONDS leer bleibt, gilt je Lookback:
 
@@ -44,13 +47,17 @@ Ergebnis-Tabelle
 Die Tabellenstruktur wird ausschliesslich durch init/schema.sql angelegt:
 
   public.backtest2_nas100_hfmed_range_analysis
+  public.backtest2_nas100_hfmed_range_weekly_session_stats_for_grafana
 
-Die Tabelle ist eine Timescale-Hypertable auf bar_start_ts mit Default Chunk
-Interval 365 days. Der Init-Parameter
+Beide Tabellen sind Timescale-Hypertables mit Default Chunk Interval 365 days.
+Die Roh-Tabelle nutzt cross_ts, die Grafana-Wochentabelle nutzt week_start_ts.
+Die Wochentabelle enthaelt pro Kalenderwoche, New-York-Session und Lookback die
+aggregierten Range-Statistiken der q50-Crossing-Events fuer schnelle
+Dashboards.
+Der Init-Parameter
 DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START ist standardmaessig false.
 
 Ausfuehrung auf dem Server
 --------------------------
-cd backtesting-stack/scalping-nas100-hitFrequencyWithMedian-Analyses
+cd backtesting-stack/analysis-nas100-hitFrequencyWithMedian
 docker compose up --build
-

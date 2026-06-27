@@ -6,7 +6,7 @@ services:
       - ./init/schema.sql:/init.sql:ro
     environment:
       PGPASSWORD: postgres-ts-root-pw
-      DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START: "false"
+      DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START: "true"
       HFMED_RANGE_ANALYSIS_CHUNK_INTERVAL: "365 days"
     command:
       - sh
@@ -41,6 +41,7 @@ services:
       - PGOPTIONS=-c search_path=public
       - RESULT_SCHEMA=public
       - RESULT_TABLE=backtest2_nas100_hfmed_range_analysis
+      - WEEKLY_RESULT_TABLE=backtest2_nas100_hfmed_range_weekly_session_stats_for_grafana
 
       # Database timeouts and retries.
       - DB_CONNECT_TIMEOUT_SECONDS=10
@@ -59,7 +60,7 @@ services:
       - START_TS_UTC=2026-01-01T00:00:00Z
       - END_TS_UTC=
 
-      # Bar and hit-frequency range construction.
+      # Bar-based hit-frequency profile and tick-level q50 crossing detection.
       - BAR_SECONDS=5
       - MIN_LOOKBACK_BARS=30
       - LOOKBACK_START=30
@@ -77,4 +78,3 @@ services:
 networks:
   shared_net:
     external: true
-

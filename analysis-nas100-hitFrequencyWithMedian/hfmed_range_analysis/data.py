@@ -44,6 +44,18 @@ class BarData:
         return int(self.bar_start_ns.shape[0])
 
 
+@dataclass(frozen=True)
+class TickData:
+    tick_time_ns: np.ndarray
+    bid: np.ndarray
+    ask: np.ndarray
+    mid: np.ndarray
+    bar_index: np.ndarray
+
+    def __len__(self) -> int:
+        return int(self.tick_time_ns.shape[0])
+
+
 def datetime_to_ns(value: datetime) -> int:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -152,7 +164,7 @@ def load_ticks(conn: psycopg2.extensions.connection, cfg: AnalysisConfig) -> Raw
     )
 
 
-def build_mid_bars(raw_ticks: RawTickData, cfg: AnalysisConfig) -> BarData:
+def build_mid_bars(raw_ticks: RawTickData, cfg: AnalysisConfig) -> tuple[TickData, BarData]:
     if len(raw_ticks) <= 0:
         raise RuntimeError("Cannot build bars without ticks")
 
@@ -162,6 +174,7 @@ def build_mid_bars(raw_ticks: RawTickData, cfg: AnalysisConfig) -> BarData:
         return_counts=True,
     )
     last_idx = first_idx + counts - 1
+    bar_index = np.repeat(np.arange(len(bar_start_ns), dtype=np.int32), counts)
     bars = BarData(
         bar_start_ns=bar_start_ns.astype(np.int64, copy=False),
         open=raw_ticks.mid[first_idx].astype(np.float64, copy=False),
@@ -170,11 +183,17 @@ def build_mid_bars(raw_ticks: RawTickData, cfg: AnalysisConfig) -> BarData:
         close=raw_ticks.mid[last_idx].astype(np.float64, copy=False),
         tick_count=counts.astype(np.int32, copy=False),
     )
+    ticks = TickData(
+        tick_time_ns=raw_ticks.tick_time_ns,
+        bid=raw_ticks.bid,
+        ask=raw_ticks.ask,
+        mid=raw_ticks.mid,
+        bar_index=bar_index.astype(np.int32, copy=False),
+    )
     log.info(
         "Built mid-price bars %d bar_seconds %d ticks %d",
         len(bars),
         cfg.bar_seconds,
         len(raw_ticks),
     )
-    return bars
-
+    return ticks, bars

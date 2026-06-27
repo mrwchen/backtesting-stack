@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from io import StringIO
 import logging
 import math
@@ -13,13 +13,14 @@ import psycopg2
 from psycopg2 import sql
 
 from .config import AnalysisConfig
-from .data import BarData, ns_to_datetime
-from .profile import RangeProfileArrays
+from .data import ns_to_datetime
+from .events import CrossingEvents
+from .weekly import WeeklySessionStat
 
 log = logging.getLogger(__name__)
 
 RESULT_COLUMNS = (
-    "bar_start_ts",
+    "cross_ts",
     "analysis_id",
     "created_at",
     "symbol",
@@ -35,14 +36,47 @@ RESULT_COLUMNS = (
     "lookback_bars",
     "min_lookback_bars",
     "profile_max_lookback_seconds",
-    "bar_open",
-    "bar_high",
-    "bar_low",
-    "bar_close",
-    "bar_tick_count",
+    "event_tick_index",
+    "bar_start_ts",
+    "direction_code",
+    "direction",
+    "previous_mid",
+    "signal_mid",
+    "q50_level",
     "profile_low",
     "profile_high",
     "profile_range_points",
+)
+
+WEEKLY_RESULT_COLUMNS = (
+    "week_start_ts",
+    "analysis_id",
+    "created_at",
+    "symbol",
+    "source_table",
+    "source_start_ts",
+    "source_end_ts",
+    "data_start_ts",
+    "data_end_ts",
+    "bar_seconds",
+    "price_step",
+    "lookback_bars",
+    "min_lookback_bars",
+    "profile_max_lookback_seconds",
+    "session_timezone",
+    "session_sort_order",
+    "session_label",
+    "session_start_local_time",
+    "session_end_local_time",
+    "crossings_total",
+    "week_first_cross_ts",
+    "week_last_cross_ts",
+    "min_range_points",
+    "avg_range_points",
+    "median_range_points",
+    "p75_range_points",
+    "p95_range_points",
+    "max_range_points",
 )
 
 
@@ -62,7 +96,21 @@ def validate_schema(conn: psycopg2.extensions.connection, cfg: AnalysisConfig) -
         set(RESULT_COLUMNS),
         "result",
     )
-    log.info("Validated source table %s and result table %s.%s", cfg.source_table, cfg.result_schema, cfg.result_table)
+    _validate_table_columns(
+        conn,
+        cfg.result_schema,
+        cfg.weekly_result_table,
+        set(WEEKLY_RESULT_COLUMNS),
+        "weekly result",
+    )
+    log.info(
+        "Validated source table %s result table %s.%s weekly table %s.%s",
+        cfg.source_table,
+        cfg.result_schema,
+        cfg.result_table,
+        cfg.result_schema,
+        cfg.weekly_result_table,
+    )
 
 
 def split_table_path(value: str) -> tuple[str, str]:
@@ -97,7 +145,7 @@ def _validate_table_columns(
         raise RuntimeError(f"Table {schema_name}.{table_name} is missing columns: {', '.join(missing)}")
 
 
-def copy_profile_rows(
+def copy_crossing_events(
     conn: psycopg2.extensions.connection,
     cfg: AnalysisConfig,
     analysis_id: UUID,
@@ -105,25 +153,29 @@ def copy_profile_rows(
     data_start_ts: datetime,
     data_end_ts: datetime,
     ticks_loaded: int,
-    bars: BarData,
+    bars_loaded: int,
     lookback_bars: int,
     min_lookback_bars: int,
-    profile: RangeProfileArrays,
+    events: CrossingEvents,
 ) -> int:
+    if len(events) == 0:
+        return 0
+
     copy_sql = sql.SQL("COPY {table} ({columns}) FROM STDIN WITH (FORMAT csv, NULL '\\N')").format(
         table=sql.Identifier(cfg.result_schema, cfg.result_table),
         columns=sql.SQL(", ").join(sql.Identifier(col) for col in RESULT_COLUMNS),
     )
 
     total = 0
-    for start in range(0, len(bars), cfg.copy_batch_rows):
-        end = min(start + cfg.copy_batch_rows, len(bars))
+    for start in range(0, len(events), cfg.copy_batch_rows):
+        end = min(start + cfg.copy_batch_rows, len(events))
         buffer = StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
         for idx in range(start, end):
+            direction_code = int(events.direction_code[idx])
             writer.writerow(
                 (
-                    _pg_value(ns_to_datetime(int(bars.bar_start_ns[idx]))),
+                    _pg_value(ns_to_datetime(int(events.cross_ts_ns[idx]))),
                     str(analysis_id),
                     _pg_value(created_at),
                     cfg.symbol,
@@ -133,20 +185,22 @@ def copy_profile_rows(
                     _pg_value(data_start_ts),
                     _pg_value(data_end_ts),
                     int(ticks_loaded),
-                    int(len(bars)),
+                    int(bars_loaded),
                     int(cfg.bar_seconds),
                     _pg_value(float(cfg.price_step)),
                     int(lookback_bars),
                     int(min_lookback_bars),
                     _pg_value(cfg.profile_max_lookback_seconds),
-                    _pg_value(float(bars.open[idx])),
-                    _pg_value(float(bars.high[idx])),
-                    _pg_value(float(bars.low[idx])),
-                    _pg_value(float(bars.close[idx])),
-                    int(bars.tick_count[idx]),
-                    _pg_value(float(profile.profile_low[idx])),
-                    _pg_value(float(profile.profile_high[idx])),
-                    _pg_value(float(profile.profile_range_points[idx])),
+                    int(events.tick_index[idx]),
+                    _pg_value(ns_to_datetime(int(events.bar_start_ns[idx]))),
+                    direction_code,
+                    "UP" if direction_code > 0 else "DOWN",
+                    _pg_value(float(events.previous_mid[idx])),
+                    _pg_value(float(events.signal_mid[idx])),
+                    _pg_value(float(events.q50_level[idx])),
+                    _pg_value(float(events.profile_low[idx])),
+                    _pg_value(float(events.profile_high[idx])),
+                    _pg_value(float(events.profile_range_points[idx])),
                 )
             )
         buffer.seek(0)
@@ -156,11 +210,73 @@ def copy_profile_rows(
     return total
 
 
+def copy_weekly_session_stats(
+    conn: psycopg2.extensions.connection,
+    cfg: AnalysisConfig,
+    analysis_id: UUID,
+    created_at: datetime,
+    data_start_ts: datetime,
+    data_end_ts: datetime,
+    lookback_bars: int,
+    min_lookback_bars: int,
+    stats: list[WeeklySessionStat],
+) -> int:
+    if not stats:
+        return 0
+
+    copy_sql = sql.SQL("COPY {table} ({columns}) FROM STDIN WITH (FORMAT csv, NULL '\\N')").format(
+        table=sql.Identifier(cfg.result_schema, cfg.weekly_result_table),
+        columns=sql.SQL(", ").join(sql.Identifier(col) for col in WEEKLY_RESULT_COLUMNS),
+    )
+
+    buffer = StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    for row in stats:
+        writer.writerow(
+            (
+                _pg_value(row.week_start_ts),
+                str(analysis_id),
+                _pg_value(created_at),
+                cfg.symbol,
+                cfg.source_table,
+                _pg_value(cfg.start_ts_utc),
+                _pg_value(cfg.end_ts_utc),
+                _pg_value(data_start_ts),
+                _pg_value(data_end_ts),
+                int(cfg.bar_seconds),
+                _pg_value(float(cfg.price_step)),
+                int(lookback_bars),
+                int(min_lookback_bars),
+                _pg_value(cfg.profile_max_lookback_seconds),
+                "America/New_York",
+                int(row.session_sort_order),
+                row.session_label,
+                _pg_value(row.session_start_local_time),
+                _pg_value(row.session_end_local_time),
+                int(row.crossings_total),
+                _pg_value(row.week_first_cross_ts),
+                _pg_value(row.week_last_cross_ts),
+                _pg_value(row.min_range_points),
+                _pg_value(row.avg_range_points),
+                _pg_value(row.median_range_points),
+                _pg_value(row.p75_range_points),
+                _pg_value(row.p95_range_points),
+                _pg_value(row.max_range_points),
+            )
+        )
+    buffer.seek(0)
+    with conn.cursor() as cur:
+        cur.copy_expert(copy_sql.as_string(conn), buffer)
+    return len(stats)
+
+
 def _pg_value(value: object) -> object:
     if value is None:
         return r"\N"
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
     if isinstance(value, float):
         if not math.isfinite(value):
             return r"\N"

@@ -12,9 +12,11 @@ from uuid import UUID, uuid4
 
 from . import config, persistence, profile
 from .config import AnalysisConfig
-from .data import BarData, build_mid_bars, load_ticks, ns_to_datetime
+from .data import BarData, TickData, build_mid_bars, load_ticks, ns_to_datetime
 from .db import connect_with_retry
+from .events import detect_q50_crossing_events
 from .profile import RangeProfileArrays, RangeProfileConfig, rolling_range_profile_arrays
+from .weekly import aggregate_weekly_session_stats
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ def main() -> None:
         data_start_ts = ns_to_datetime(int(raw_ticks.tick_time_ns[0]))
         data_end_ts = ns_to_datetime(int(raw_ticks.tick_time_ns[-1]))
         ticks_loaded = len(raw_ticks)
-        bars = build_mid_bars(raw_ticks, cfg)
+        ticks, bars = build_mid_bars(raw_ticks, cfg)
     finally:
         read_conn.close()
 
@@ -69,7 +71,8 @@ def main() -> None:
     profile.warmup()
 
     write_conn = None
-    total_rows = 0
+    total_crossing_events = 0
+    total_weekly_rows = 0
     try:
         if cfg.analysis_processes > 1 and len(lookbacks) > 1:
             ctx = _multiprocessing_context()
@@ -81,7 +84,7 @@ def main() -> None:
                 write_conn = connect_with_retry()
                 persistence.validate_schema(write_conn, cfg)
                 for result in pool.imap_unordered(_compute_worker_lookback, lookbacks, chunksize=1):
-                    total_rows += _persist_result(
+                    rows_inserted, weekly_rows_inserted = _persist_result(
                         write_conn,
                         cfg,
                         analysis_id,
@@ -89,9 +92,12 @@ def main() -> None:
                         data_start_ts,
                         data_end_ts,
                         ticks_loaded,
+                        ticks,
                         bars,
                         result,
                     )
+                    total_crossing_events += rows_inserted
+                    total_weekly_rows += weekly_rows_inserted
                     del result
                     gc.collect()
         else:
@@ -99,7 +105,7 @@ def main() -> None:
             persistence.validate_schema(write_conn, cfg)
             for lookback in lookbacks:
                 result = compute_lookback(bars, cfg, lookback)
-                total_rows += _persist_result(
+                rows_inserted, weekly_rows_inserted = _persist_result(
                     write_conn,
                     cfg,
                     analysis_id,
@@ -107,9 +113,12 @@ def main() -> None:
                     data_start_ts,
                     data_end_ts,
                     ticks_loaded,
+                    ticks,
                     bars,
                     result,
                 )
+                total_crossing_events += rows_inserted
+                total_weekly_rows += weekly_rows_inserted
                 del result
                 gc.collect()
     finally:
@@ -118,10 +127,11 @@ def main() -> None:
 
     elapsed = time.time() - started
     log.info(
-        "NAS100 hit-frequency range analysis complete analysis_id %s lookbacks %d rows_inserted %d elapsed_seconds %.1f",
+        "NAS100 hit-frequency range analysis complete analysis_id %s lookbacks %d crossing_events_inserted %d weekly_rows_inserted %d elapsed_seconds %.1f",
         analysis_id,
         len(lookbacks),
-        total_rows,
+        total_crossing_events,
+        total_weekly_rows,
         elapsed,
     )
 
@@ -155,11 +165,14 @@ def _persist_result(
     data_start_ts: datetime,
     data_end_ts: datetime,
     ticks_loaded: int,
+    ticks: TickData,
     bars: BarData,
     result: LookbackResult,
-) -> int:
-    log.info("DB copy start lookback_bars %d bars %d", result.lookback_bars, len(bars))
-    inserted = persistence.copy_profile_rows(
+) -> tuple[int, int]:
+    log.info("Q50 crossing detection start lookback_bars %d ticks %d bars %d", result.lookback_bars, len(ticks), len(bars))
+    events = detect_q50_crossing_events(ticks, bars, result.arrays)
+    log.info("DB copy start lookback_bars %d crossing_events %d", result.lookback_bars, len(events))
+    inserted = persistence.copy_crossing_events(
         conn,
         cfg,
         analysis_id,
@@ -167,13 +180,30 @@ def _persist_result(
         data_start_ts,
         data_end_ts,
         ticks_loaded,
-        bars,
+        len(bars),
         result.lookback_bars,
         result.min_lookback_bars,
-        result.arrays,
+        events,
     )
-    log.info("DB copy complete lookback_bars %d rows %d", result.lookback_bars, inserted)
-    return inserted
+    weekly_stats = aggregate_weekly_session_stats(events)
+    weekly_inserted = persistence.copy_weekly_session_stats(
+        conn,
+        cfg,
+        analysis_id,
+        created_at,
+        data_start_ts,
+        data_end_ts,
+        result.lookback_bars,
+        result.min_lookback_bars,
+        weekly_stats,
+    )
+    log.info(
+        "DB copy complete lookback_bars %d crossing_events %d weekly_rows %d",
+        result.lookback_bars,
+        inserted,
+        weekly_inserted,
+    )
+    return inserted, weekly_inserted
 
 
 def _multiprocessing_context() -> mp.context.BaseContext:
@@ -194,4 +224,3 @@ def _compute_worker_lookback(lookback_bars: int) -> LookbackResult:
     if _WORKER_BARS is None or _WORKER_CFG is None:
         raise RuntimeError("Worker was not initialized")
     return compute_lookback(_WORKER_BARS, _WORKER_CFG, int(lookback_bars))
-

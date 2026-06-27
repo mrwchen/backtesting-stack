@@ -76,6 +76,7 @@ class AnalysisConfig:
     price_step: float
     result_schema: str
     result_table: str
+    weekly_result_table: str
     copy_batch_rows: int
     analysis_processes: int
 
@@ -111,6 +112,11 @@ RESULT_SCHEMA = env_str("RESULT_SCHEMA", "public")
 _validate_identifier(RESULT_SCHEMA, "RESULT_SCHEMA")
 RESULT_TABLE = env_str("RESULT_TABLE", "backtest2_nas100_hfmed_range_analysis")
 _validate_identifier(RESULT_TABLE, "RESULT_TABLE")
+WEEKLY_RESULT_TABLE = env_str(
+    "WEEKLY_RESULT_TABLE",
+    "backtest2_nas100_hfmed_range_weekly_session_stats_for_grafana",
+)
+_validate_identifier(WEEKLY_RESULT_TABLE, "WEEKLY_RESULT_TABLE")
 
 COPY_BATCH_ROWS = max(1, env_int("COPY_BATCH_ROWS", 20_000))
 ANALYSIS_PROCESSES = max(1, env_int("ANALYSIS_PROCESSES", 4))
@@ -148,7 +154,7 @@ def active_analysis_config() -> AnalysisConfig:
         price_step=PRICE_STEP,
         result_schema=RESULT_SCHEMA,
         result_table=RESULT_TABLE,
+        weekly_result_table=WEEKLY_RESULT_TABLE,
         copy_batch_rows=COPY_BATCH_ROWS,
         analysis_processes=ANALYSIS_PROCESSES,
     )
-

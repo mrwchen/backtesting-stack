@@ -43,9 +43,11 @@ class RollingRangeProfileTests(unittest.TestCase):
 
         self.assertTrue(np.isnan(arrays.profile_range_points[:2]).all())
         self.assertEqual(arrays.profile_low[2], 100.0)
+        self.assertEqual(arrays.median_level[2], 101.0)
         self.assertEqual(arrays.profile_high[2], 103.0)
         self.assertEqual(arrays.profile_range_points[2], 3.0)
         self.assertEqual(arrays.profile_low[3], 101.0)
+        self.assertEqual(arrays.median_level[3], 103.0)
         self.assertEqual(arrays.profile_high[3], 201.0)
         self.assertEqual(arrays.profile_range_points[3], 100.0)
 
@@ -60,10 +62,10 @@ class RollingRangeProfileTests(unittest.TestCase):
 
         self.assertTrue(np.isnan(arrays.profile_range_points[3:6]).all())
         self.assertEqual(arrays.profile_low[6], 100.0)
+        self.assertEqual(arrays.median_level[6], 101.0)
         self.assertEqual(arrays.profile_high[6], 102.0)
         self.assertEqual(arrays.profile_range_points[6], 2.0)
 
 
 if __name__ == "__main__":
     unittest.main()
-
