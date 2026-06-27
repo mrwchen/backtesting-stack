@@ -6,6 +6,11 @@ import logging
 
 import numpy as np
 
+try:
+    from numba.typed import List as NumbaList
+except ImportError:  # pragma: no cover - sim_core falls back to plain Python too
+    NumbaList = None
+
 from .config import RunConfig
 from .data import BarData, TickData, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
@@ -109,6 +114,16 @@ def _as_float(values: np.ndarray) -> np.ndarray:
 
 def _as_int32(values: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(values, dtype=np.int32)
+
+
+def _as_float_array_list(values: list[np.ndarray]):
+    arrays = [np.ascontiguousarray(value, dtype=np.float64) for value in values]
+    if NumbaList is None:
+        return arrays
+    typed = NumbaList()
+    for array in arrays:
+        typed.append(array)
+    return typed
 
 
 def _profile_position_values(
@@ -635,8 +650,8 @@ def run_session_portfolio_simulation(
     slot_cfgs = [cfg for _key, cfg in ordered]
     slot_profiles = [profiles[key] for key in slot_keys]
 
-    def _stack(name: str) -> np.ndarray:
-        return np.ascontiguousarray(np.vstack([getattr(profile, name) for profile in slot_profiles]), dtype=np.float64)
+    def _slot_arrays(name: str):
+        return _as_float_array_list([getattr(profile, name) for profile in slot_profiles])
 
     session_to_slot = np.full(max(SESSION_CODE_BY_KEY.values()) + 1, -1, dtype=np.int32)
     for slot, key in enumerate(slot_keys):
@@ -670,14 +685,14 @@ def run_session_portfolio_simulation(
         ask,
         local_bar_index,
         entry_session_code,
-        _stack("median_level"),
-        _stack("long_cross_level"),
-        _stack("short_cross_level"),
-        _stack("profile_low"),
-        _stack("profile_high"),
-        _stack("stop_profile_lower"),
-        _stack("stop_profile_upper"),
-        _stack("profile_range_points"),
+        _slot_arrays("median_level"),
+        _slot_arrays("long_cross_level"),
+        _slot_arrays("short_cross_level"),
+        _slot_arrays("profile_low"),
+        _slot_arrays("profile_high"),
+        _slot_arrays("stop_profile_lower"),
+        _slot_arrays("stop_profile_upper"),
+        _slot_arrays("profile_range_points"),
         session_to_slot,
         entry_allowed,
         parameter_reference_price,

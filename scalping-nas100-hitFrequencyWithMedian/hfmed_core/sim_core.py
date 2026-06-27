@@ -18,7 +18,10 @@ import numpy as np
 
 try:
     from numba import njit
+    from numba.typed import List as NumbaList
 except ImportError:  # pragma: no cover - fallback keeps the code runnable
+    NumbaList = None
+
     def njit(*args, **kwargs):
         if len(args) == 1 and callable(args[0]) and not kwargs:
             return args[0]
@@ -27,6 +30,15 @@ except ImportError:  # pragma: no cover - fallback keeps the code runnable
             return func
 
         return _wrap
+
+
+def _array_list(*arrays):
+    if NumbaList is None:
+        return list(arrays)
+    values = NumbaList()
+    for array in arrays:
+        values.append(array)
+    return values
 
 
 # Number of per-trade output columns written by the core (kept here so the
@@ -554,11 +566,13 @@ def simulate_session_portfolio_core(
         prev_mid = mid[i - 1]
         m = mid[i]
         bar_i = tick_bar_index[i]
+        long_cross = long_cross_by_slot[slot]
+        short_cross = short_cross_by_slot[slot]
         lc = np.nan
         sc = np.nan
-        if 0 <= bar_i < long_cross_by_slot.shape[1]:
-            lc = long_cross_by_slot[slot, bar_i]
-            sc = short_cross_by_slot[slot, bar_i]
+        if 0 <= bar_i < long_cross.shape[0]:
+            lc = long_cross[bar_i]
+            sc = short_cross[bar_i]
         direction = 0
         cross_level = np.nan
         if (lc == lc) and (prev_mid < lc) and (lc <= m):
@@ -570,6 +584,13 @@ def simulate_session_portfolio_core(
         if direction == 0:
             continue
 
+        median_level = median_level_by_slot[slot]
+        profile_low = profile_low_by_slot[slot]
+        profile_high = profile_high_by_slot[slot]
+        stop_lower = stop_lower_by_slot[slot]
+        stop_upper = stop_upper_by_slot[slot]
+        profile_range = profile_range_by_slot[slot]
+
         signals_total += 1
         if direction == 1:
             long_signals += 1
@@ -579,10 +600,10 @@ def simulate_session_portfolio_core(
         pl = np.nan
         ph = np.nan
         pr = np.nan
-        if 0 <= bar_i < profile_low_by_slot.shape[1]:
-            pl = profile_low_by_slot[slot, bar_i]
-            ph = profile_high_by_slot[slot, bar_i]
-            pr = profile_range_by_slot[slot, bar_i]
+        if 0 <= bar_i < profile_low.shape[0]:
+            pl = profile_low[bar_i]
+            ph = profile_high[bar_i]
+            pr = profile_range[bar_i]
         if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
             rej_missing += 1
             continue
@@ -629,9 +650,9 @@ def simulate_session_portfolio_core(
         else:
             sl = np.nan
             su = np.nan
-            if 0 <= bar_i < profile_low_by_slot.shape[1]:
-                sl = stop_lower_by_slot[slot, bar_i]
-                su = stop_upper_by_slot[slot, bar_i]
+            if 0 <= bar_i < stop_lower.shape[0]:
+                sl = stop_lower[bar_i]
+                su = stop_upper[bar_i]
             if not ((sl == sl) and (su == su)):
                 valid = False
                 reject = 1
@@ -700,7 +721,7 @@ def simulate_session_portfolio_core(
         p_margin = margin
         p_equity_before = equity
         p_cross_level = cross_level
-        p_median = median_level_by_slot[slot, bar_i] if 0 <= bar_i < median_level_by_slot.shape[1] else np.nan
+        p_median = median_level[bar_i] if 0 <= bar_i < median_level.shape[0] else np.nan
         p_prev_mid = prev_mid
         p_signal_mid = m
         p_ticks_held = 0
@@ -1190,5 +1211,26 @@ def warmup() -> None:
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
         out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(), out_d.copy(),
         out_i.copy(), out_d.copy(),
+        0,
+    )
+
+    entry_session_code = np.zeros(n, dtype=np.uint8)
+    session_to_slot = np.zeros(1, dtype=np.int32)
+    slot_i8 = np.zeros(1, dtype=np.int8)
+    slot_f = np.zeros(1, dtype=np.float64)
+    out_s = np.zeros(1, dtype=np.int16)
+    slot_arrays = _array_list(zeros)
+    simulate_session_portfolio_core(
+        zeros, zeros, zeros, bar_index, entry_session_code,
+        slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays,
+        session_to_slot, allowed, zeros,
+        slot_i8, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f,
+        5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
+        out_i.copy(), out_i.copy(), out_d.copy(), out_s.copy(),
+        out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
+        out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
+        out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
+        out_f.copy(), out_f.copy(), out_f.copy(), out_f.copy(),
+        out_d.copy(), out_i.copy(), out_d.copy(),
         0,
     )

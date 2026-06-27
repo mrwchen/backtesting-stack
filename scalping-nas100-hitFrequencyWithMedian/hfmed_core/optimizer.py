@@ -1603,8 +1603,24 @@ def evaluate_session_portfolio(
         for session_type, evaluation in selected_by_session.items()
     }
     profiles = {}
+    profiles_by_key: dict[tuple, tuple[str, ProfileArrays]] = {}
     profile_total = len(session_cfgs)
     for profile_index, (session_type, session_cfg) in enumerate(session_cfgs.items(), start=1):
+        profile_key = _profile_cache_key(session_cfg)
+        reused = profiles_by_key.get(profile_key)
+        if reused is not None:
+            source_session, profile = reused
+            profiles[session_type] = profile
+            log.info(
+                "Session portfolio profile reuse stage %s fold %d session %s profile %d/%d source_session %s",
+                stage,
+                fold.fold_index,
+                session_type,
+                profile_index,
+                profile_total,
+                source_session,
+            )
+            continue
         log.info(
             "Session portfolio profile start stage %s fold %d session %s profile %d/%d lookback_bars %d",
             stage,
@@ -1614,7 +1630,9 @@ def evaluate_session_portfolio(
             profile_total,
             session_cfg.lookback_bars,
         )
-        profiles[session_type] = _profile_for_config(window, session_cfg)
+        profile = _profile_for_config(window, session_cfg)
+        profiles[session_type] = profile
+        profiles_by_key[profile_key] = (session_type, profile)
         log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} after profile {session_type}")
         log.info(
             "Session portfolio profile complete stage %s fold %d session %s profile %d/%d",
@@ -1625,12 +1643,13 @@ def evaluate_session_portfolio(
             profile_total,
         )
     log.info(
-        "Session portfolio simulation start stage %s fold %d window_ticks %d window_bars %d sessions %d",
+        "Session portfolio simulation start stage %s fold %d window_ticks %d window_bars %d sessions %d unique_profiles %d",
         stage,
         fold.fold_index,
         len(window.ticks),
         len(window.bars),
         len(session_cfgs),
+        len(profiles_by_key),
     )
     log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} before simulation")
     result = run_session_portfolio_simulation(
