@@ -17,6 +17,7 @@ from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values, effective_session_selector_min_trades, enabled_session_keys
 from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
+from .logging_utils import log_resource_snapshot
 from .profile import ProfileArrays, rolling_profile_arrays, warmup as warmup_profile
 from .risk import run_monte_carlo, summarize_trades, summarize_trades_by_session
 from .sessions import SESSION_LABELS, SESSION_SORT_ORDERS, SESSION_TYPES
@@ -499,6 +500,17 @@ def _run_single_session_parameter_backtest(
         cfg,
         opt_cfg,
     )
+    log.info(
+        "Single portfolio evaluation start run_id %d portfolio_id %d sessions %d unique_parameter_sets %d ticks %d bars %d keep_trades %s",
+        run_id,
+        portfolio_id,
+        len(selected_by_session),
+        len(unique_values),
+        len(ticks),
+        len(bars),
+        True,
+    )
+    log_resource_snapshot(log, f"single run {run_id} before portfolio evaluation")
 
     portfolio_eval = evaluate_session_portfolio(
         stage,
@@ -510,16 +522,33 @@ def _run_single_session_parameter_backtest(
         bars,
         keep_trades=True,
     )
+    log_resource_snapshot(log, f"single run {run_id} after portfolio evaluation")
+    log.info(
+        "Single portfolio evaluation complete run_id %d portfolio_id %d ticks_simulated %d signals %d trades %d score %.4f",
+        run_id,
+        portfolio_id,
+        portfolio_eval.ticks_simulated,
+        portfolio_eval.signals_total,
+        len(portfolio_eval.trades),
+        portfolio_eval.score,
+    )
+    log.info("Single portfolio aggregate start run_id %d portfolio_id %d", run_id, portfolio_id)
     portfolio_aggregate, mc = build_portfolio_aggregate(stage, [portfolio_eval], 1, cfg, opt_cfg)
+    log_resource_snapshot(log, f"single run {run_id} after portfolio aggregate")
+    log.info("Single portfolio persist start run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.insert_portfolio_fold_result(conn, portfolio_id, portfolio_eval)
+    log.info("Single portfolio fold result persisted run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.update_portfolio_results(conn, portfolio_id, portfolio_aggregate, mc)
+    log.info("Single portfolio results persisted run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.update_session_selection_oos_stats(conn, selection_ids, portfolio_eval.session_stats)
+    log.info("Single session selection stats persisted run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.upsert_parameter_session_stats(
         conn,
         run_id,
         _single_parameter_session_aggregates(stage, selected_by_session, portfolio_eval.session_stats),
         parameter_ids,
     )
+    log.info("Single parameter session stats persisted run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.insert_portfolio_trade_rows(
         conn,
         run_id,
@@ -529,8 +558,11 @@ def _run_single_session_parameter_backtest(
         {session: evaluation.parameter_hash for session, evaluation in selected_by_session.items()},
         parameter_ids,
     )
+    log.info("Single portfolio trades persisted run_id %d portfolio_id %d trades %d", run_id, portfolio_id, len(portfolio_eval.trades))
     persistence.upsert_single_run_trade_history(conn, cfg, portfolio_eval.trades)
+    log.info("Single trade history upsert complete run_id %d portfolio_id %d trades %d", run_id, portfolio_id, len(portfolio_eval.trades))
     persistence.mark_top_trade_sets(conn, run_id, list(parameter_ids.values()))
+    log.info("Single top trade sets marked run_id %d portfolio_id %d", run_id, portfolio_id)
     persistence.update_run_complete(
         conn,
         run_id,
@@ -1546,15 +1578,61 @@ def evaluate_session_portfolio(
     bars: BarData,
     keep_trades: bool,
 ) -> Evaluation:
+    log.info(
+        "Session portfolio window prepare start stage %s fold %d ticks %d bars %d keep_trades %s",
+        stage,
+        fold.fold_index,
+        len(ticks),
+        len(bars),
+        keep_trades,
+    )
+    log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} before window prepare")
     window = _prepare_window_data(ticks, bars, fold, "oos", opt_cfg.profile_cache_size)
+    log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} after window prepare")
+    log.info(
+        "Session portfolio window prepare complete stage %s fold %d window_ticks %d window_bars %d trade_start %s trade_end %s",
+        stage,
+        fold.fold_index,
+        len(window.ticks),
+        len(window.bars),
+        ns_to_datetime(window.trade_start_ns),
+        ns_to_datetime(window.trade_end_ns),
+    )
     session_cfgs = {
         session_type: apply_parameter_values(base_cfg, evaluation.values)
         for session_type, evaluation in selected_by_session.items()
     }
-    profiles = {
-        session_type: _profile_for_config(window, session_cfg)
-        for session_type, session_cfg in session_cfgs.items()
-    }
+    profiles = {}
+    profile_total = len(session_cfgs)
+    for profile_index, (session_type, session_cfg) in enumerate(session_cfgs.items(), start=1):
+        log.info(
+            "Session portfolio profile start stage %s fold %d session %s profile %d/%d lookback_bars %d",
+            stage,
+            fold.fold_index,
+            session_type,
+            profile_index,
+            profile_total,
+            session_cfg.lookback_bars,
+        )
+        profiles[session_type] = _profile_for_config(window, session_cfg)
+        log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} after profile {session_type}")
+        log.info(
+            "Session portfolio profile complete stage %s fold %d session %s profile %d/%d",
+            stage,
+            fold.fold_index,
+            session_type,
+            profile_index,
+            profile_total,
+        )
+    log.info(
+        "Session portfolio simulation start stage %s fold %d window_ticks %d window_bars %d sessions %d",
+        stage,
+        fold.fold_index,
+        len(window.ticks),
+        len(window.bars),
+        len(session_cfgs),
+    )
+    log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} before simulation")
     result = run_session_portfolio_simulation(
         window.ticks,
         window.bars,
@@ -1566,9 +1644,27 @@ def evaluate_session_portfolio(
         log_result=False,
         profiles=profiles,
     )
+    log_resource_snapshot(log, f"session portfolio fold {fold.fold_index} after simulation")
+    log.info(
+        "Session portfolio simulation complete stage %s fold %d ticks_simulated %d signals %d trades %d final_equity %.2f",
+        stage,
+        fold.fold_index,
+        result.ticks_simulated,
+        result.signals_total,
+        len(result.trades),
+        result.final_equity,
+    )
+    log.info("Session portfolio summary start stage %s fold %d trades %d", stage, fold.fold_index, len(result.trades))
     summary = summarize_trades(result.trades, base_cfg.initial_equity, result.final_equity)
     session_stats = summarize_trades_by_session(result.trades)
     score = score_evaluation(summary, result)
+    log.info(
+        "Session portfolio summary complete stage %s fold %d trades %d score %.4f",
+        stage,
+        fold.fold_index,
+        len(result.trades),
+        score,
+    )
     trades = result.trades
     if not keep_trades:
         trades = []
