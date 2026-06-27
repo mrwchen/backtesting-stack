@@ -128,7 +128,7 @@ services:
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
       - WF_FINALIST_TOP_N_PER_SESSION=2000 # Per-session train top-N collected into the finalist union.
       - WF_FINALIST_GLOBAL_TOP_N=5000 # Additional global train top-N collected into the finalist union; 0 disables.
-      - WF_FINALIST_MAX_SETS=2000 # Hard cap on the finalist set (kept by best cumulative train score); 0 means unlimited.
+      - WF_FINALIST_MAX_SETS=10000 # Hard cap on the finalist set (kept by best cumulative train score); 0 means unlimited.
       - WF_FINALIST_KEEP_TRADES=false # Persist only summary metrics for finalist OOS evaluations.
       - WF_FINALIST_PERSIST_FOLD_RESULTS=true # Write finalist OOS per-fold results to DB.
 
