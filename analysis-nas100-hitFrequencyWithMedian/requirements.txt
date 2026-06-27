@@ -1,0 +1,5 @@
+numpy>=1.26,<2.2
+psycopg2-binary>=2.9.9
+numba>=0.61
+tzdata>=2024.1
+

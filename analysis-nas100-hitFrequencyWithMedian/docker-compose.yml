@@ -1,0 +1,80 @@
+services:
+  init-hfmed-range-analysis-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: postgres-ts-root-pw
+      DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START: "false"
+      HFMED_RANGE_ANALYSIS_CHUNK_INTERVAL: "365 days"
+    command:
+      - sh
+      - -c
+      - >
+        psql -v ON_ERROR_STOP=1
+        -v drop_hfmed_range_analysis_tables_on_start="$${DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START:-false}"
+        -v hfmed_range_analysis_chunk_interval="$${HFMED_RANGE_ANALYSIS_CHUNK_INTERVAL:-365 days}"
+        -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql
+    networks:
+      - shared_net
+
+  nas100-hfmed-range-analysis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    mem_limit: 8g
+    memswap_limit: 8g
+    cpus: "4.0"
+    depends_on:
+      init-hfmed-range-analysis-schema:
+        condition: service_completed_successfully
+    environment:
+      # Database connection and schema.
+      - PGHOST=timescaledb
+      - PGPORT=5432
+      - PGDATABASE=postgres
+      - PGUSER=market-data-account
+      - PGPASSWORD=market-data-account-pw
+      - PGAPPNAME=nas100_hfmed_range_analysis
+      - PGOPTIONS=-c search_path=public
+      - RESULT_SCHEMA=public
+      - RESULT_TABLE=backtest2_nas100_hfmed_range_analysis
+
+      # Database timeouts and retries.
+      - DB_CONNECT_TIMEOUT_SECONDS=10
+      - DB_CONNECT_RETRIES=5
+      - DB_CONNECT_RETRY_DELAY_SECONDS=5.0
+      - DB_STATEMENT_TIMEOUT_MS=120000
+      - DB_LOCK_TIMEOUT_MS=5000
+      - DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=120000
+
+      # Logging.
+      - LOG_LEVEL=INFO
+
+      # Market data source and date range.
+      - SOURCE_TABLE=public.pepperstone_ticks_data
+      - SYMBOL=NAS100
+      - START_TS_UTC=2026-01-01T00:00:00Z
+      - END_TS_UTC=
+
+      # Bar and hit-frequency range construction.
+      - BAR_SECONDS=5
+      - MIN_LOOKBACK_BARS=30
+      - LOOKBACK_START=30
+      - LOOKBACK_END=260
+      - LOOKBACK_STEP=10
+      - PROFILE_MAX_LOOKBACK_SECONDS=
+      - PRICE_STEP=1.0
+
+      # Runtime and persistence.
+      - ANALYSIS_PROCESSES=4
+      - COPY_BATCH_ROWS=20000
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+
