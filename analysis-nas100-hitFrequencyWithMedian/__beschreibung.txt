@@ -23,8 +23,8 @@ berechnet. Gespeichert wird aber nicht jede Bar, sondern nur ein Tick-Level
 Crossing-Event je Lookback, wenn der Tick-Midprice q50 von unten oder oben
 kreuzt.
 
-Range-Logik
------------
+Range-Logik und Normalisierung
+------------------------------
 Die Range ist identisch zur bestehenden Logik aus
 scalping-nas100-hitFrequencyWithMedian:
 
@@ -34,6 +34,14 @@ profile_low entspricht q0 und profile_high entspricht q100 der
 Hit-Frequency-Verteilung aus den bereits abgeschlossenen Lookback-Bars.
 q50 ist der Median-Level derselben Verteilung. Es ist also nicht die einfache
 High-Low-Range der aktuellen Bar.
+
+Fuer die Stabilitaetsanalyse wird diese Punkt-Range am Crossing-Tick auf den
+aktuellen Kurs normalisiert:
+
+  range_to_price_pct = profile_range_points / signal_mid * 100
+  range_to_price_bps = profile_range_points / signal_mid * 10000
+
+Das Dashboard wertet diese Basispunkte aus, nicht die absoluten Range-Punkte.
 
 Wenn PROFILE_MAX_LOOKBACK_SECONDS leer bleibt, gilt je Lookback:
 
@@ -47,13 +55,13 @@ Ergebnis-Tabelle
 Die Tabellenstruktur wird ausschliesslich durch init/schema.sql angelegt:
 
   public.backtest2_nas100_hfmed_range_analysis
-  public.backtest2_nas100_hfmed_range_weekly_session_stats_for_grafana
+  public.backtest2_nas100_hfmed_range_daily_session_stats_for_grafana
 
 Beide Tabellen sind Timescale-Hypertables mit Default Chunk Interval 365 days.
-Die Roh-Tabelle nutzt cross_ts, die Grafana-Wochentabelle nutzt week_start_ts.
-Die Wochentabelle enthaelt pro Kalenderwoche, New-York-Session und Lookback die
-aggregierten Range-Statistiken der q50-Crossing-Events fuer schnelle
-Dashboards.
+Die Roh-Tabelle nutzt cross_ts, die Grafana-Tagestabelle nutzt day_start_ts.
+Die Tagestabelle enthaelt pro New-York-Kalendertag, New-York-Session und
+Lookback die aggregierten range_to_price_bps-Statistiken der
+q50-Crossing-Events fuer schnelle Dashboards.
 Der Init-Parameter
 DROP_ALL_HFMED_RANGE_ANALYSIS_TABLES_ON_START ist standardmaessig false.
 

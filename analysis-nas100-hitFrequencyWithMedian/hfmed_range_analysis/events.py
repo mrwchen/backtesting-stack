@@ -22,6 +22,8 @@ class CrossingEvents:
     profile_low: np.ndarray
     profile_high: np.ndarray
     profile_range_points: np.ndarray
+    range_to_price_pct: np.ndarray
+    range_to_price_bps: np.ndarray
 
     def __len__(self) -> int:
         return int(self.tick_index.shape[0])
@@ -55,17 +57,26 @@ def detect_q50_crossing_events(
 
     event_bar_index = bar_index[idx]
     direction = np.where(up_cross[idx], 1, -1).astype(np.int8, copy=False)
+    signal_mid = mid[idx].astype(np.float64, copy=False)
+    range_points = profile.profile_range_points[event_bar_index].astype(np.float64, copy=False)
+    valid_ratio = np.isfinite(range_points) & np.isfinite(signal_mid) & (signal_mid > 0.0)
+    range_to_price_pct = np.full(idx.size, np.nan, dtype=np.float64)
+    np.divide(range_points * 100.0, signal_mid, out=range_to_price_pct, where=valid_ratio)
+    range_to_price_bps = range_to_price_pct * 100.0
+
     return CrossingEvents(
         tick_index=idx,
         cross_ts_ns=ticks.tick_time_ns[idx].astype(np.int64, copy=False),
         bar_start_ns=bars.bar_start_ns[event_bar_index].astype(np.int64, copy=False),
         direction_code=direction,
         previous_mid=prev_mid[idx].astype(np.float64, copy=False),
-        signal_mid=mid[idx].astype(np.float64, copy=False),
+        signal_mid=signal_mid,
         q50_level=q50[idx].astype(np.float64, copy=False),
         profile_low=profile.profile_low[event_bar_index].astype(np.float64, copy=False),
         profile_high=profile.profile_high[event_bar_index].astype(np.float64, copy=False),
-        profile_range_points=profile.profile_range_points[event_bar_index].astype(np.float64, copy=False),
+        profile_range_points=range_points,
+        range_to_price_pct=range_to_price_pct,
+        range_to_price_bps=range_to_price_bps,
     )
 
 
@@ -81,4 +92,6 @@ def _empty_events() -> CrossingEvents:
         profile_low=np.empty(0, dtype=np.float64),
         profile_high=np.empty(0, dtype=np.float64),
         profile_range_points=np.empty(0, dtype=np.float64),
+        range_to_price_pct=np.empty(0, dtype=np.float64),
+        range_to_price_bps=np.empty(0, dtype=np.float64),
     )

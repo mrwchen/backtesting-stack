@@ -41,7 +41,7 @@ services:
       - PGOPTIONS=-c search_path=public
       - RESULT_SCHEMA=public
       - RESULT_TABLE=backtest2_nas100_hfmed_range_analysis
-      - WEEKLY_RESULT_TABLE=backtest2_nas100_hfmed_range_weekly_session_stats_for_grafana
+      - DAILY_RESULT_TABLE=backtest2_nas100_hfmed_range_daily_session_stats_for_grafana
 
       # Database timeouts and retries.
       - DB_CONNECT_TIMEOUT_SECONDS=10

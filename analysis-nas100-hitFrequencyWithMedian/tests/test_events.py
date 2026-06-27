@@ -38,6 +38,8 @@ class CrossingEventTests(unittest.TestCase):
         np.testing.assert_array_equal(events.direction_code, np.array([1, -1, 1], dtype=np.int8))
         np.testing.assert_allclose(events.q50_level, np.array([100.0, 100.0, 100.0]))
         np.testing.assert_allclose(events.profile_range_points, np.array([4.0, 6.0, 6.0]))
+        np.testing.assert_allclose(events.range_to_price_pct, np.array([4.0 / 101.0 * 100.0, 6.0 / 98.0 * 100.0, 6.0]))
+        np.testing.assert_allclose(events.range_to_price_bps, np.array([4.0 / 101.0 * 10000.0, 6.0 / 98.0 * 10000.0, 600.0]))
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ from psycopg2 import sql
 
 from .config import AnalysisConfig
 from .data import ns_to_datetime
+from .daily import DailySessionStat
 from .events import CrossingEvents
-from .weekly import WeeklySessionStat
 
 log = logging.getLogger(__name__)
 
@@ -46,10 +46,12 @@ RESULT_COLUMNS = (
     "profile_low",
     "profile_high",
     "profile_range_points",
+    "range_to_price_pct",
+    "range_to_price_bps",
 )
 
-WEEKLY_RESULT_COLUMNS = (
-    "week_start_ts",
+DAILY_RESULT_COLUMNS = (
+    "day_start_ts",
     "analysis_id",
     "created_at",
     "symbol",
@@ -69,14 +71,14 @@ WEEKLY_RESULT_COLUMNS = (
     "session_start_local_time",
     "session_end_local_time",
     "crossings_total",
-    "week_first_cross_ts",
-    "week_last_cross_ts",
-    "min_range_points",
-    "avg_range_points",
-    "median_range_points",
-    "p75_range_points",
-    "p95_range_points",
-    "max_range_points",
+    "day_first_cross_ts",
+    "day_last_cross_ts",
+    "min_range_to_price_bps",
+    "avg_range_to_price_bps",
+    "median_range_to_price_bps",
+    "p75_range_to_price_bps",
+    "p95_range_to_price_bps",
+    "max_range_to_price_bps",
 )
 
 
@@ -99,17 +101,17 @@ def validate_schema(conn: psycopg2.extensions.connection, cfg: AnalysisConfig) -
     _validate_table_columns(
         conn,
         cfg.result_schema,
-        cfg.weekly_result_table,
-        set(WEEKLY_RESULT_COLUMNS),
-        "weekly result",
+        cfg.daily_result_table,
+        set(DAILY_RESULT_COLUMNS),
+        "daily result",
     )
     log.info(
-        "Validated source table %s result table %s.%s weekly table %s.%s",
+        "Validated source table %s result table %s.%s daily table %s.%s",
         cfg.source_table,
         cfg.result_schema,
         cfg.result_table,
         cfg.result_schema,
-        cfg.weekly_result_table,
+        cfg.daily_result_table,
     )
 
 
@@ -201,6 +203,8 @@ def copy_crossing_events(
                     _pg_value(float(events.profile_low[idx])),
                     _pg_value(float(events.profile_high[idx])),
                     _pg_value(float(events.profile_range_points[idx])),
+                    _pg_value(float(events.range_to_price_pct[idx])),
+                    _pg_value(float(events.range_to_price_bps[idx])),
                 )
             )
         buffer.seek(0)
@@ -210,7 +214,7 @@ def copy_crossing_events(
     return total
 
 
-def copy_weekly_session_stats(
+def copy_daily_session_stats(
     conn: psycopg2.extensions.connection,
     cfg: AnalysisConfig,
     analysis_id: UUID,
@@ -219,14 +223,14 @@ def copy_weekly_session_stats(
     data_end_ts: datetime,
     lookback_bars: int,
     min_lookback_bars: int,
-    stats: list[WeeklySessionStat],
+    stats: list[DailySessionStat],
 ) -> int:
     if not stats:
         return 0
 
     copy_sql = sql.SQL("COPY {table} ({columns}) FROM STDIN WITH (FORMAT csv, NULL '\\N')").format(
-        table=sql.Identifier(cfg.result_schema, cfg.weekly_result_table),
-        columns=sql.SQL(", ").join(sql.Identifier(col) for col in WEEKLY_RESULT_COLUMNS),
+        table=sql.Identifier(cfg.result_schema, cfg.daily_result_table),
+        columns=sql.SQL(", ").join(sql.Identifier(col) for col in DAILY_RESULT_COLUMNS),
     )
 
     buffer = StringIO()
@@ -234,7 +238,7 @@ def copy_weekly_session_stats(
     for row in stats:
         writer.writerow(
             (
-                _pg_value(row.week_start_ts),
+                _pg_value(row.day_start_ts),
                 str(analysis_id),
                 _pg_value(created_at),
                 cfg.symbol,
@@ -254,14 +258,14 @@ def copy_weekly_session_stats(
                 _pg_value(row.session_start_local_time),
                 _pg_value(row.session_end_local_time),
                 int(row.crossings_total),
-                _pg_value(row.week_first_cross_ts),
-                _pg_value(row.week_last_cross_ts),
-                _pg_value(row.min_range_points),
-                _pg_value(row.avg_range_points),
-                _pg_value(row.median_range_points),
-                _pg_value(row.p75_range_points),
-                _pg_value(row.p95_range_points),
-                _pg_value(row.max_range_points),
+                _pg_value(row.day_first_cross_ts),
+                _pg_value(row.day_last_cross_ts),
+                _pg_value(row.min_range_to_price_bps),
+                _pg_value(row.avg_range_to_price_bps),
+                _pg_value(row.median_range_to_price_bps),
+                _pg_value(row.p75_range_to_price_bps),
+                _pg_value(row.p95_range_to_price_bps),
+                _pg_value(row.max_range_to_price_bps),
             )
         )
     buffer.seek(0)
