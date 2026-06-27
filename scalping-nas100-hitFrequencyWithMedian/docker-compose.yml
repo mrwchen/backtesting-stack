@@ -8,7 +8,7 @@ services:
       # Init database connection.
       PGPASSWORD: postgres-ts-root-pw # Password for the postgres-ts init connection.
       # Schema lifecycle.
-      DROP_ALL_HFMED_TABLES_ON_START: "true" # Drop existing hfmed result tables before recreating them.
+      DROP_ALL_HFMED_TABLES_ON_START: "false" # Drop existing hfmed result tables before recreating them.
     command: # Run schema.sql against the TimescaleDB/PostgreSQL service.
       - sh
       - -c
@@ -55,13 +55,13 @@ services:
       - RUN_NOTES_EXTRA= # Optional extra run note.
 
       # Run mode and parameter source.
-      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      - RUN_MODE=single #walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
       # Single-mode trade_history export.
       - TRADE_HISTORY_PERSIST_ENABLED=true # If true, RUN_MODE=single additionally upserts trades into trade_history.
-      - TRADE_HISTORY_ACCOUNT_NUMBER=000001 # trade_history account_number used when RUN_MODE=single.
+      - TRADE_HISTORY_ACCOUNT_NUMBER=000002 # trade_history account_number used when RUN_MODE=single.
       - TRADE_HISTORY_ACCOUNT_TYPE=backtesting # trade_history account_type used when RUN_MODE=single.
 
       # Market data source and date range.
