@@ -133,13 +133,13 @@ STOP_MODE = _one_of("STOP_MODE", "band", {"fixed", "band"})
 FIXED_STOP_POINTS = env_float("FIXED_STOP_POINTS", 10.0)
 if FIXED_STOP_POINTS <= 0:
     raise ValueError("FIXED_STOP_POINTS must be positive")
-ALL_STOP_MODES_TAKE_PROFIT_BPS = 1.0
-BAND_STOP_MIN_PROFILE_RANGE_BPS = 0.0
+ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT = 1.0
+BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT = 0.0
 BAND_STOP_PROFILE_LOWER_QUANTILE = 0.0
 BAND_STOP_PROFILE_UPPER_QUANTILE = 1.0
 BAND_STOP_PROFILE_BUFFER_POINTS = 0.0
-BAND_STOP_MIN_DISTANCE_BPS = 1.0
-BAND_STOP_MAX_DISTANCE_BPS = 2.0
+BAND_STOP_MIN_DISTANCE_ATR_MULT = 1.0
+BAND_STOP_MAX_DISTANCE_ATR_MULT = 2.0
 
 # Entry session switches. Session boundaries are interpreted in SESSION_TIMEZONE.
 SESSION_TIMEZONE = env_str("SESSION_TIMEZONE", "America/New_York")
@@ -292,13 +292,13 @@ class RunConfig:
     entry_price_range_position_max_deviation_pct: float
     stop_mode: str
     stop_points: float
-    take_profit_bps: float
-    min_profile_range_bps: float
+    take_profit_atr_mult: float
+    min_profile_range_atr_mult: float
     stop_profile_lower_quantile: float
     stop_profile_upper_quantile: float
     stop_profile_buffer_points: float
-    min_stop_distance_bps: float
-    max_stop_distance_bps: float
+    min_stop_distance_atr_mult: float
+    max_stop_distance_atr_mult: float
     account_profile: str
     initial_equity: float
     account_currency: str
@@ -391,13 +391,13 @@ def active_run_config() -> RunConfig:
         entry_price_range_position_max_deviation_pct=ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT,
         stop_mode=STOP_MODE,
         stop_points=FIXED_STOP_POINTS,
-        take_profit_bps=ALL_STOP_MODES_TAKE_PROFIT_BPS,
-        min_profile_range_bps=BAND_STOP_MIN_PROFILE_RANGE_BPS,
+        take_profit_atr_mult=ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT,
+        min_profile_range_atr_mult=BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT,
         stop_profile_lower_quantile=BAND_STOP_PROFILE_LOWER_QUANTILE,
         stop_profile_upper_quantile=BAND_STOP_PROFILE_UPPER_QUANTILE,
         stop_profile_buffer_points=BAND_STOP_PROFILE_BUFFER_POINTS,
-        min_stop_distance_bps=BAND_STOP_MIN_DISTANCE_BPS,
-        max_stop_distance_bps=BAND_STOP_MAX_DISTANCE_BPS,
+        min_stop_distance_atr_mult=BAND_STOP_MIN_DISTANCE_ATR_MULT,
+        max_stop_distance_atr_mult=BAND_STOP_MAX_DISTANCE_ATR_MULT,
         account_profile=ACCOUNT_PROFILE,
         initial_equity=INITIAL_EQUITY,
         account_currency=ACCOUNT_CURRENCY,
@@ -514,13 +514,13 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
         "long_cross_quantile": float(values["LONG_CROSS_QUANTILE"]),
         "short_cross_quantile": float(values["SHORT_CROSS_QUANTILE"]),
         "entry_price_range_position_max_deviation_pct": float(values["ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT"]),
-        "take_profit_bps": float(values["ALL_STOP_MODES_TAKE_PROFIT_BPS"]),
-        "min_profile_range_bps": float(values["BAND_STOP_MIN_PROFILE_RANGE_BPS"]),
+        "take_profit_atr_mult": float(values["ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT"]),
+        "min_profile_range_atr_mult": float(values["BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT"]),
         "stop_profile_lower_quantile": float(values["BAND_STOP_PROFILE_LOWER_QUANTILE"]),
         "stop_profile_upper_quantile": float(values["BAND_STOP_PROFILE_UPPER_QUANTILE"]),
         "stop_profile_buffer_points": float(values["BAND_STOP_PROFILE_BUFFER_POINTS"]),
-        "min_stop_distance_bps": float(values["BAND_STOP_MIN_DISTANCE_BPS"]),
-        "max_stop_distance_bps": float(values["BAND_STOP_MAX_DISTANCE_BPS"]),
+        "min_stop_distance_atr_mult": float(values["BAND_STOP_MIN_DISTANCE_ATR_MULT"]),
+        "max_stop_distance_atr_mult": float(values["BAND_STOP_MAX_DISTANCE_ATR_MULT"]),
     }
     fields["min_lookback_bars"] = min(base.min_lookback_bars, fields["lookback_bars"])
     if fields["lookback_bars"] < 1:
@@ -531,18 +531,18 @@ def apply_parameter_values(base: RunConfig, values: dict[str, float | int]) -> R
         raise ValueError("SHORT_CROSS_QUANTILE must be between 0.0 and 1.0")
     if fields["entry_price_range_position_max_deviation_pct"] < 0:
         raise ValueError("ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT must be >= 0")
-    if fields["take_profit_bps"] <= 0:
-        raise ValueError("ALL_STOP_MODES_TAKE_PROFIT_BPS must be positive")
-    if fields["min_profile_range_bps"] < 0:
-        raise ValueError("BAND_STOP_MIN_PROFILE_RANGE_BPS must be >= 0")
+    if fields["take_profit_atr_mult"] <= 0:
+        raise ValueError("ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT must be positive")
+    if fields["min_profile_range_atr_mult"] < 0:
+        raise ValueError("BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT must be >= 0")
     if not 0.0 <= fields["stop_profile_lower_quantile"] < fields["stop_profile_upper_quantile"] <= 1.0:
         raise ValueError("BAND_STOP_PROFILE quantiles must satisfy 0 <= lower < upper <= 1")
     if fields["stop_profile_buffer_points"] < 0:
         raise ValueError("BAND_STOP_PROFILE_BUFFER_POINTS must be >= 0")
-    if fields["min_stop_distance_bps"] <= 0:
-        raise ValueError("BAND_STOP_MIN_DISTANCE_BPS must be positive")
-    if fields["max_stop_distance_bps"] <= fields["min_stop_distance_bps"]:
-        raise ValueError("BAND_STOP_MAX_DISTANCE_BPS must be greater than BAND_STOP_MIN_DISTANCE_BPS")
+    if fields["min_stop_distance_atr_mult"] <= 0:
+        raise ValueError("BAND_STOP_MIN_DISTANCE_ATR_MULT must be positive")
+    if fields["max_stop_distance_atr_mult"] <= fields["min_stop_distance_atr_mult"]:
+        raise ValueError("BAND_STOP_MAX_DISTANCE_ATR_MULT must be greater than BAND_STOP_MIN_DISTANCE_ATR_MULT")
     return replace(base, **fields)
 
 

@@ -49,6 +49,7 @@ def _profile() -> ProfileArrays:
         stop_profile_upper=np.array([100.0], dtype=np.float64),
         band_width_points=one,
         profile_range_points=np.array([100.0], dtype=np.float64),
+        atr_points=one,
     )
 
 
@@ -62,13 +63,13 @@ def _cfg(deviation: float):
         short_cross_quantile=0.50,
         entry_price_range_position_max_deviation_pct=deviation,
         stop_mode="band",
-        take_profit_bps=1.0,
-        min_profile_range_bps=0.0,
+        take_profit_atr_mult=1.0,
+        min_profile_range_atr_mult=0.0,
         stop_profile_lower_quantile=0.0,
         stop_profile_upper_quantile=1.0,
         stop_profile_buffer_points=0.0,
-        min_stop_distance_bps=1.0,
-        max_stop_distance_bps=100.0,
+        min_stop_distance_atr_mult=1.0,
+        max_stop_distance_atr_mult=100.0,
         initial_equity=1000.0,
         risk_per_trade_pct=1.0,
         max_margin_pct=100.0,

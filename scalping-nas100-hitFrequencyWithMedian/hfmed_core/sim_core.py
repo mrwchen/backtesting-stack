@@ -57,18 +57,18 @@ def simulate_core(
     stop_lower,
     stop_upper,
     profile_range,
+    atr_points,
     entry_allowed,
-    parameter_reference_price,
     stop_mode_fixed,
     stop_points,
-    take_profit_bps,
-    min_profile_range_bps,
+    take_profit_atr_mult,
+    min_profile_range_atr_mult,
     long_cross_quantile,
     short_cross_quantile,
     entry_price_range_position_max_deviation_pct,
     stop_buffer,
-    min_stop_distance_bps,
-    max_stop_distance_bps,
+    min_stop_distance_atr_mult,
+    max_stop_distance_atr_mult,
     initial_equity,
     mult,
     eurusd,
@@ -224,24 +224,20 @@ def simulate_core(
         pl = np.nan
         ph = np.nan
         pr = np.nan
+        atr = np.nan
         if 0 <= bar_i < profile_low.shape[0]:
             pl = profile_low[bar_i]
             ph = profile_high[bar_i]
             pr = profile_range[bar_i]
-        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            atr = atr_points[bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0 and (atr == atr) and atr > 0.0):
             rej_missing += 1
             continue
 
-        ref_price = np.nan
-        if 0 <= i < parameter_reference_price.shape[0]:
-            ref_price = parameter_reference_price[i]
-        if not ((ref_price == ref_price) and ref_price > 0.0):
-            rej_missing += 1
-            continue
-        take_profit_points = ref_price * take_profit_bps / 10000.0
-        min_profile_range_points = ref_price * min_profile_range_bps / 10000.0
-        min_stop_distance = ref_price * min_stop_distance_bps / 10000.0
-        max_stop_distance = ref_price * max_stop_distance_bps / 10000.0
+        take_profit_points = atr * take_profit_atr_mult
+        min_profile_range_points = atr * min_profile_range_atr_mult
+        min_stop_distance = atr * min_stop_distance_atr_mult
+        max_stop_distance = atr * max_stop_distance_atr_mult
 
         if stop_mode_fixed != 1 and pr < min_profile_range_points:
             rej_narrow += 1
@@ -413,19 +409,19 @@ def simulate_session_portfolio_core(
     stop_lower_by_slot,
     stop_upper_by_slot,
     profile_range_by_slot,
+    atr_points_by_slot,
     session_to_slot,
     entry_allowed,
-    parameter_reference_price,
     stop_mode_fixed_by_slot,
     stop_points_by_slot,
-    take_profit_bps_by_slot,
-    min_profile_range_bps_by_slot,
+    take_profit_atr_mult_by_slot,
+    min_profile_range_atr_mult_by_slot,
     long_cross_quantile_by_slot,
     short_cross_quantile_by_slot,
     entry_price_range_position_max_deviation_pct_by_slot,
     stop_buffer_by_slot,
-    min_stop_distance_bps_by_slot,
-    max_stop_distance_bps_by_slot,
+    min_stop_distance_atr_mult_by_slot,
+    max_stop_distance_atr_mult_by_slot,
     initial_equity,
     mult,
     eurusd,
@@ -590,6 +586,7 @@ def simulate_session_portfolio_core(
         stop_lower = stop_lower_by_slot[slot]
         stop_upper = stop_upper_by_slot[slot]
         profile_range = profile_range_by_slot[slot]
+        atr_slot_points = atr_points_by_slot[slot]
 
         signals_total += 1
         if direction == 1:
@@ -600,24 +597,20 @@ def simulate_session_portfolio_core(
         pl = np.nan
         ph = np.nan
         pr = np.nan
+        atr = np.nan
         if 0 <= bar_i < profile_low.shape[0]:
             pl = profile_low[bar_i]
             ph = profile_high[bar_i]
             pr = profile_range[bar_i]
-        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            atr = atr_slot_points[bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0 and (atr == atr) and atr > 0.0):
             rej_missing += 1
             continue
 
-        ref_price = np.nan
-        if 0 <= i < parameter_reference_price.shape[0]:
-            ref_price = parameter_reference_price[i]
-        if not ((ref_price == ref_price) and ref_price > 0.0):
-            rej_missing += 1
-            continue
-        take_profit_points = ref_price * take_profit_bps_by_slot[slot] / 10000.0
-        min_profile_range_points = ref_price * min_profile_range_bps_by_slot[slot] / 10000.0
-        min_stop_distance = ref_price * min_stop_distance_bps_by_slot[slot] / 10000.0
-        max_stop_distance = ref_price * max_stop_distance_bps_by_slot[slot] / 10000.0
+        take_profit_points = atr * take_profit_atr_mult_by_slot[slot]
+        min_profile_range_points = atr * min_profile_range_atr_mult_by_slot[slot]
+        min_stop_distance = atr * min_stop_distance_atr_mult_by_slot[slot]
+        max_stop_distance = atr * max_stop_distance_atr_mult_by_slot[slot]
 
         if stop_mode_fixed_by_slot[slot] != 1 and pr < min_profile_range_points:
             rej_narrow += 1
@@ -850,18 +843,18 @@ def simulate_core_from_events(
     stop_lower,
     stop_upper,
     profile_range,
-    parameter_reference_price,
+    atr_points,
     n_ticks,
     stop_mode_fixed,
     stop_points,
-    take_profit_bps,
-    min_profile_range_bps,
+    take_profit_atr_mult,
+    min_profile_range_atr_mult,
     long_cross_quantile,
     short_cross_quantile,
     entry_price_range_position_max_deviation_pct,
     stop_buffer,
-    min_stop_distance_bps,
-    max_stop_distance_bps,
+    min_stop_distance_atr_mult,
+    max_stop_distance_atr_mult,
     initial_equity,
     mult,
     eurusd,
@@ -932,26 +925,21 @@ def simulate_core_from_events(
         pl = np.nan
         ph = np.nan
         pr = np.nan
+        atr = np.nan
         if 0 <= bar_i < profile_low.shape[0]:
             pl = profile_low[bar_i]
             ph = profile_high[bar_i]
             pr = profile_range[bar_i]
-        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0):
+            atr = atr_points[bar_i]
+        if not ((pl == pl) and (ph == ph) and (pr == pr) and pr > 0.0 and (atr == atr) and atr > 0.0):
             rej_missing += 1
             ev += 1
             continue
 
-        ref_price = np.nan
-        if 0 <= i < parameter_reference_price.shape[0]:
-            ref_price = parameter_reference_price[i]
-        if not ((ref_price == ref_price) and ref_price > 0.0):
-            rej_missing += 1
-            ev += 1
-            continue
-        take_profit_points = ref_price * take_profit_bps / 10000.0
-        min_profile_range_points = ref_price * min_profile_range_bps / 10000.0
-        min_stop_distance = ref_price * min_stop_distance_bps / 10000.0
-        max_stop_distance = ref_price * max_stop_distance_bps / 10000.0
+        take_profit_points = atr * take_profit_atr_mult
+        min_profile_range_points = atr * min_profile_range_atr_mult
+        min_stop_distance = atr * min_stop_distance_atr_mult
+        max_stop_distance = atr * max_stop_distance_atr_mult
 
         if stop_mode_fixed != 1 and pr < min_profile_range_points:
             rej_narrow += 1
@@ -1185,7 +1173,7 @@ def warmup() -> None:
     out_f = np.zeros(1, dtype=np.float64)
     simulate_core(
         zeros, zeros, zeros, bar_index, zeros, zeros, zeros, zeros, zeros, zeros, zeros, zeros,
-        allowed, zeros,
+        zeros, allowed,
         0, 10.0, 10.0, 0.0, 0.5, 0.5, 100.0, 1.0, 1.0, 1e18,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_f.copy(), out_f.copy(),
@@ -1223,7 +1211,7 @@ def warmup() -> None:
     simulate_session_portfolio_core(
         zeros, zeros, zeros, bar_index, entry_session_code,
         slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays, slot_arrays,
-        session_to_slot, allowed, zeros,
+        slot_arrays, session_to_slot, allowed,
         slot_i8, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f, slot_f,
         5000.0, 1.0, 1.0, 1.5, 5.0, 45.0, 0.1, 0.0, 0.0, 0.0,
         out_i.copy(), out_i.copy(), out_d.copy(), out_s.copy(),

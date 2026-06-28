@@ -44,6 +44,7 @@ class ProfileArrays:
     stop_profile_upper: np.ndarray
     band_width_points: np.ndarray
     profile_range_points: np.ndarray
+    atr_points: np.ndarray
 
 
 def level_indices_between(low: float, high: float, step: float) -> list[int]:
@@ -63,6 +64,7 @@ def _rolling_profile_core(
     bar_start_ns,
     lo_idx,
     hi_idx,
+    true_range,
     offset,
     counts,
     lookback,
@@ -85,9 +87,11 @@ def _rolling_profile_core(
     out_q100,
     out_sl,
     out_su,
+    out_atr,
 ):
     n = bar_start_ns.shape[0]
     total_hits = 0
+    tr_sum = 0.0
     wl = 0  # window left bar index (inclusive)
     wr = 0  # window right bar index (exclusive) == bars added so far
     win_lo = 0  # loosely-tracked min active level (<= true min)
@@ -104,10 +108,12 @@ def _rolling_profile_core(
             for lv in range(lo, hi + 1):
                 counts[lv - offset] -= 1
                 total_hits -= 1
+            tr_sum -= true_range[wl]
             wl += 1
 
         # 2. compute quantiles from prior completed bars only.
         if (wr - wl) >= min_lookback and total_hits > 0:
+            out_atr[pos] = tr_sum / (wr - wl)
             # scan the active level range once; capture min/max and 7 quantiles.
             lo_scan = win_lo
             hi_scan = win_hi
@@ -182,6 +188,7 @@ def _rolling_profile_core(
             for lv in range(lo, hi + 1):
                 counts[lv - offset] += 1
                 total_hits += 1
+            tr_sum += true_range[pos]
         wr = pos + 1
 
         # 4. evict by lookback-count cap from the front (oldest first).
@@ -191,6 +198,7 @@ def _rolling_profile_core(
             for lv in range(lo, hi + 1):
                 counts[lv - offset] -= 1
                 total_hits -= 1
+            tr_sum -= true_range[wl]
             wl += 1
 
 
@@ -211,11 +219,19 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
     q100 = np.full(n, np.nan, dtype=np.float64)
     stop_lower = np.full(n, np.nan, dtype=np.float64)
     stop_upper = np.full(n, np.nan, dtype=np.float64)
+    atr = np.full(n, np.nan, dtype=np.float64)
 
     if n > 0:
         low = np.ascontiguousarray(bars.low, dtype=np.float64)
         high = np.ascontiguousarray(bars.high, dtype=np.float64)
+        close = np.ascontiguousarray(bars.close, dtype=np.float64)
         bar_start_ns = np.ascontiguousarray(bars.bar_start_ns, dtype=np.int64)
+        prev_close = np.empty(n, dtype=np.float64)
+        prev_close[0] = close[0]
+        if n > 1:
+            prev_close[1:] = close[:-1]
+        true_range = np.maximum(high - low, np.maximum(np.abs(high - prev_close), np.abs(low - prev_close)))
+        true_range = np.ascontiguousarray(true_range, dtype=np.float64)
         # integer level bounds per bar, matching level_indices_between exactly.
         tol = step * 1e-9
         lo_idx = np.ceil((low - tol) / step).astype(np.int64)
@@ -228,6 +244,7 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
             bar_start_ns,
             lo_idx,
             hi_idx,
+            true_range,
             np.int64(offset),
             counts,
             np.int64(lookback),
@@ -241,7 +258,7 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
             float(cfg.short_cross_quantile),
             float(cfg.stop_profile_lower_quantile),
             float(cfg.stop_profile_upper_quantile),
-            q0, q45, q50, q55, long_cross, short_cross, q100, stop_lower, stop_upper,
+            q0, q45, q50, q55, long_cross, short_cross, q100, stop_lower, stop_upper, atr,
         )
 
     return ProfileArrays(
@@ -256,6 +273,7 @@ def rolling_profile_arrays(bars: BarData, cfg: RunConfig) -> ProfileArrays:
         stop_profile_upper=stop_upper,
         band_width_points=q55 - q45,
         profile_range_points=q100 - q0,
+        atr_points=atr,
     )
 
 

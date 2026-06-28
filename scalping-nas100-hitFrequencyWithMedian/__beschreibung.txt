@@ -28,7 +28,8 @@ Default:
 
 Strategieparameter wie LOOKBACK_BARS, LONG_CROSS_QUANTILE,
 SHORT_CROSS_QUANTILE, ENTRY_PRICE_RANGE_POSITION_MAX_DEVIATION_PCT,
-Take-Profit-BPS und Band-Stop-BPS liegen nicht in docker-compose.yml:
+Take-Profit-ATR-Multiple und Band-Stop-ATR-Multiple liegen nicht in
+docker-compose.yml:
   RUN_MODE=single       -> single_parameter.ini
   RUN_MODE=walk_forward -> parameter_grid.ini
 
@@ -76,29 +77,29 @@ End-of-data Exits nutzen den tatsaechlichen Exit-Quote.
 Es ist immer nur eine Position gleichzeitig offen. Neue Signale werden waehrend
 einer offenen Position ignoriert.
 
-Die folgenden Werte sind keine festen NAS100-Punkte mehr, sondern Basis Points
-relativ zum Tages-Referenzpreis:
-  ALL_STOP_MODES_TAKE_PROFIT_BPS
-  BAND_STOP_MIN_PROFILE_RANGE_BPS
-  BAND_STOP_MIN_DISTANCE_BPS
-  BAND_STOP_MAX_DISTANCE_BPS
+Die folgenden Werte sind keine festen NAS100-Punkte, sondern ATR-Multiplikatoren
+auf Basis derselben abgeschlossenen LOOKBACK_BARS, aus denen auch das Profil
+berechnet wird:
+  ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT
+  BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT
+  BAND_STOP_MIN_DISTANCE_ATR_MULT
+  BAND_STOP_MAX_DISTANCE_ATR_MULT
 
-Der Tages-Referenzpreis ist der erste verfuegbare Mid-Quote ab 00:00 in
-SESSION_TIMEZONE (Default: America/New_York). Die daraus berechneten effektiven
-Punktwerte gelten bis zum naechsten lokalen 00:00. Beispiel:
+Die ATR wird aus abgeschlossenen Bars berechnet und nutzt keine aktuelle oder
+zukuenftige Bar. Beispiel:
   effective_take_profit_points =
-    reference_price_0000 * ALL_STOP_MODES_TAKE_PROFIT_BPS / 10000
+    atr_points * ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT
 
 Bei STOP_MODE=band sind Entries nur erlaubt, wenn q100 - q0 mindestens dem
-effektiven BAND_STOP_MIN_PROFILE_RANGE_BPS-Punktwert entspricht. Long-Stop
+effektiven BAND_STOP_MIN_PROFILE_RANGE_ATR_MULT-Punktwert entspricht. Long-Stop
 liegt am unteren Stop-Quantil minus BAND_STOP_PROFILE_BUFFER_POINTS. Short-Stop
 liegt am oberen Stop-Quantil plus BAND_STOP_PROFILE_BUFFER_POINTS. Der TP wird
-aus ALL_STOP_MODES_TAKE_PROFIT_BPS berechnet:
+aus ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT berechnet:
 Long entry + effective_take_profit_points, Short entry -
 effective_take_profit_points.
 Wenn die dadurch entstehende Entry-zu-Stop-Distanz ausserhalb der effektiven
-BAND_STOP_MIN_DISTANCE_BPS- und BAND_STOP_MAX_DISTANCE_BPS-Punktwerte liegt,
-wird der Trade uebersprungen. Mit BAND_STOP_PROFILE_LOWER_QUANTILE=0.0 und
+BAND_STOP_MIN_DISTANCE_ATR_MULT- und BAND_STOP_MAX_DISTANCE_ATR_MULT-Punktwerte
+liegt, wird der Trade uebersprungen. Mit BAND_STOP_PROFILE_LOWER_QUANTILE=0.0 und
 BAND_STOP_PROFILE_UPPER_QUANTILE=1.0 bleibt q0/q100 der strukturelle Stop.
 Fuer q10/q90 werden 0.10 und 0.90 gesetzt.
 
@@ -150,8 +151,8 @@ SESSION_*_ENABLED aktivierten Sessions werden gehandelt. Der Backtest laeuft
 wie im Live-Bot als gemeinsames Session-Portfolio: Pro Tick bestimmt die
 aktuelle Entry-Session das Parameterset, global bleibt aber immer nur eine
 Position gleichzeitig offen.
-Die Defaultwerte in single_parameter.ini sind aus den frueheren Punktwerten
-bei einem NAS100-Referenzstand von 20000 in BPS umgerechnet.
+Die Defaultwerte in single_parameter.ini sind ATR-Multiplikatoren und werden
+zur Laufzeit mit der aktuellen Lookback-ATR in Punkte umgerechnet.
 
 Parameter-Optimizer
 -------------------
