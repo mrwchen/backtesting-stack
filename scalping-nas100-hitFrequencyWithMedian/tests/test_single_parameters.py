@@ -11,17 +11,17 @@ class SingleParameterFileTests(unittest.TestCase):
         values = parameters.load_single_session_parameters(str(path))
 
         self.assertEqual(13, len(values))
-        self.assertEqual(260, values["asia_early"]["LOOKBACK_BARS"])
-        self.assertEqual(0.50, values["asia_early"]["LONG_CROSS_QUANTILE"])
-        self.assertEqual(260, values["ny_morning"]["LOOKBACK_BARS"])
-        self.assertEqual(0.60, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
-        self.assertEqual(5.5, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_BPS"])
+        self.assertEqual(72, values["asia_early"]["LOOKBACK_BARS"])
+        self.assertEqual(0.45, values["asia_early"]["LONG_CROSS_QUANTILE"])
+        self.assertEqual(108, values["ny_morning"]["LOOKBACK_BARS"])
+        self.assertEqual(0.55, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
+        self.assertEqual(2.0, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_BPS"])
 
     def test_rejects_multiple_values_for_single_parameter(self):
         path = Path(__file__).resolve().parents[1] / "single_parameter.ini"
         text = path.read_text(encoding="utf-8").replace(
-            "LOOKBACK_BARS = 260",
-            "LOOKBACK_BARS = 260, 240",
+            "LOOKBACK_BARS = 72",
+            "LOOKBACK_BARS = 72, 48",
             1,
         )
 

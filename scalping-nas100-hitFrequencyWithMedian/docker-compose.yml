@@ -55,7 +55,7 @@ services:
       - RUN_NOTES_EXTRA= # Optional extra run note.
 
       # Run mode and parameter source.
-      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
+      - RUN_MODE=single #walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
@@ -67,7 +67,7 @@ services:
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
       - SYMBOL=NAS100 # Symbol filter for source ticks.
-      - START_TS_UTC=2026-03-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
+      - START_TS_UTC=2025-11-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
