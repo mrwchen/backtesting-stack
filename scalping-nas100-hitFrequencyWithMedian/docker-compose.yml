@@ -71,7 +71,7 @@ services:
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
-      - BAR_SECONDS=5 # Mid-price bar duration built from ticks.
+      - BAR_SECONDS=60 # Mid-price bar duration built from ticks.
       - MIN_LOOKBACK_BARS=30 # Minimum completed bars before profile signals are valid; per-session/candidate LOOKBACK_BARS lives in the parameter files.
       - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means per-session/candidate LOOKBACK_BARS * BAR_SECONDS.
       - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
