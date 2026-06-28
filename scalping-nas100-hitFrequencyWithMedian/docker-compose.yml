@@ -150,7 +150,7 @@ services:
       - OPTIMIZER_SAMPLING_SEED=12345 # Seed for reproducible Stage 1/2 candidate sampling.
 
       # Stage 1 coarse search.
-      - STAGE1_MAX_PARAMETER_SETS=1048576 # Max coarse-grid Stage 1 candidates; 0 means unlimited.
+      - STAGE1_MAX_PARAMETER_SETS=2097152 # Max coarse-grid Stage 1 candidates; 0 means unlimited.
 
       # Stage 2 local refinement.
       - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
