@@ -121,8 +121,8 @@ services:
 
       # Walk-forward windows.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
-      - WF_MATRIX_TRAIN_DAYS=10, 20 # Train window lengths tested by the matrix.
-      - WF_MATRIX_TEST_DAYS=25, 40 # OOS window lengths tested by the matrix; step_days equals test_days.
+      - WF_MATRIX_TRAIN_DAYS=7, 14, 21 # Train window lengths tested by the matrix.
+      - WF_MATRIX_TEST_DAYS=7, 14, 21 # OOS window lengths tested by the matrix; step_days equals test_days.
 
       # Walk-forward finalist candidate validation.
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
