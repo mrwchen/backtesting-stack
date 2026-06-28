@@ -188,7 +188,7 @@ def _rolling_profile_core(
             for lv in range(lo, hi + 1):
                 counts[lv - offset] += 1
                 total_hits += 1
-            tr_sum += true_range[pos]
+        tr_sum += true_range[pos]
         wr = pos + 1
 
         # 4. evict by lookback-count cap from the front (oldest first).
