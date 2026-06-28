@@ -81,7 +81,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.opt_cfg = replace(
             config.active_optimizer_config(),
             session_selector_min_trades_floor=20,
-            session_selector_min_trades_per_train_day=0.0,
+            session_selector_min_trades_per_train_trading_day=0.0,
             session_selector_lcb_z=1.0,
             session_selector_top_n=5,
             session_selector_plateau_weight=0.0,
@@ -176,28 +176,28 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertEqual(selected_hashes[0], session_winner.parameter_hash)
         self.assertIn(global_winner.parameter_hash, selected_hashes)
 
-    def test_optimizer_config_matrix_uses_test_days_as_step_days(self):
+    def test_optimizer_config_matrix_uses_test_trading_days_as_step_trading_days(self):
         matrix = config.build_optimizer_config_matrix(
             self.opt_cfg,
-            train_days_values=(10, 15),
-            test_days_values=(5, 10),
+            train_trading_days_values=(10, 15),
+            test_trading_days_values=(5, 10),
         )
 
         self.assertEqual(
-            [(item.train_days, item.test_days, item.step_days) for item in matrix],
+            [(item.train_trading_days, item.test_trading_days, item.step_trading_days) for item in matrix],
             [(10, 5, 5), (10, 10, 10), (15, 5, 5), (15, 10, 10)],
         )
 
-    def test_session_selector_min_trades_scales_with_train_days(self):
+    def test_session_selector_min_trades_scales_with_train_trading_days(self):
         opt_cfg = replace(
             self.opt_cfg,
             session_selector_min_trades_floor=5,
-            session_selector_min_trades_per_train_day=0.25,
+            session_selector_min_trades_per_train_trading_day=0.25,
         )
 
-        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=15)), 5)
-        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=20)), 5)
-        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_days=30)), 8)
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_trading_days=15)), 5)
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_trading_days=20)), 5)
+        self.assertEqual(config.effective_session_selector_min_trades(replace(opt_cfg, train_trading_days=30)), 8)
 
 
 if __name__ == "__main__":

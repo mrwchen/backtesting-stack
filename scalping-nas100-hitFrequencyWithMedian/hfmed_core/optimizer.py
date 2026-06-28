@@ -12,10 +12,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 import numpy as np
+import pandas as pd
 
 from . import parameters, persistence
 from .config import OptimizerConfig, RunConfig, apply_parameter_values, effective_session_selector_min_trades, enabled_session_keys
-from .data import BarData, TickData, NANOSECONDS_PER_DAY, ns_to_datetime
+from .data import BarData, TickData, ns_to_datetime
 from .entities import ClosedTrade, SimulationResult
 from .logging_utils import log_resource_snapshot
 from .profile import ProfileArrays, rolling_profile_arrays, warmup as warmup_profile
@@ -1789,22 +1790,31 @@ def _trades_for_evaluations(evaluations: list[Evaluation]) -> list[ClosedTrade]:
     return trades
 
 
+def _trading_day_boundaries(tick_time_ns: np.ndarray, timezone: str) -> np.ndarray:
+    if tick_time_ns.size <= 0:
+        return np.array([], dtype=np.int64)
+    local_midnights = pd.to_datetime(tick_time_ns, utc=True).tz_convert(timezone).normalize()
+    _day_markers, first_indices = np.unique(local_midnights.asi8, return_index=True)
+    first_indices = np.sort(first_indices)
+    boundaries = np.empty(first_indices.shape[0] + 1, dtype=np.int64)
+    boundaries[:-1] = tick_time_ns[first_indices]
+    boundaries[-1] = int(tick_time_ns[-1]) + 1
+    return boundaries
+
+
 def build_folds(ticks: TickData, opt_cfg: OptimizerConfig) -> list[FoldSpec]:
-    data_start = int(ticks.tick_time_ns[0])
-    data_end = int(ticks.tick_time_ns[-1])
-    train_delta = opt_cfg.train_days * NANOSECONDS_PER_DAY
-    test_delta = opt_cfg.test_days * NANOSECONDS_PER_DAY
-    step_delta = opt_cfg.step_days * NANOSECONDS_PER_DAY
+    boundaries = _trading_day_boundaries(ticks.tick_time_ns, opt_cfg.trading_day_timezone)
+    trading_days = max(0, len(boundaries) - 1)
 
     folds: list[FoldSpec] = []
-    train_start = data_start
+    start_day_index = 0
     fold_index = 1
-    while True:
-        train_end = train_start + train_delta
+    window_days = opt_cfg.train_trading_days + opt_cfg.test_trading_days
+    while start_day_index + window_days <= trading_days:
+        train_start = int(boundaries[start_day_index])
+        train_end = int(boundaries[start_day_index + opt_cfg.train_trading_days])
         test_start = train_end
-        test_end = test_start + test_delta
-        if test_end > data_end:
-            break
+        test_end = int(boundaries[start_day_index + window_days])
         folds.append(
             FoldSpec(
                 fold_index=fold_index,
@@ -1815,15 +1825,22 @@ def build_folds(ticks: TickData, opt_cfg: OptimizerConfig) -> list[FoldSpec]:
             )
         )
         fold_index += 1
-        train_start = train_start + step_delta
+        start_day_index += opt_cfg.step_trading_days
 
     if not folds:
-        needed_days = opt_cfg.train_days + opt_cfg.test_days
-        available_days = (data_end - data_start) / NANOSECONDS_PER_DAY
         raise RuntimeError(
-            f"Not enough data for walk-forward: available_days={available_days:.2f} needed_days={needed_days}"
+            f"Not enough data for walk-forward: available_trading_days {trading_days} "
+            f"needed_trading_days {window_days} trading_day_timezone {opt_cfg.trading_day_timezone}"
         )
-    log.info("Built walk-forward folds %d train_days %d test_days %d step_days %d", len(folds), opt_cfg.train_days, opt_cfg.test_days, opt_cfg.step_days)
+    log.info(
+        "Built walk-forward folds %d train_trading_days %d test_trading_days %d step_trading_days %d trading_day_timezone %s observed_trading_days %d",
+        len(folds),
+        opt_cfg.train_trading_days,
+        opt_cfg.test_trading_days,
+        opt_cfg.step_trading_days,
+        opt_cfg.trading_day_timezone,
+        trading_days,
+    )
     return folds
 
 

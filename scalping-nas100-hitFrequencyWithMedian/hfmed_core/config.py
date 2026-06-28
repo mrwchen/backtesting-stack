@@ -191,14 +191,16 @@ RUN_NOTES_EXTRA = env_str("RUN_NOTES_EXTRA", "")
 # Walk-forward optimizer.
 SINGLE_PARAMETER_PATH = env_str("SINGLE_PARAMETER_PATH", "single_parameter.ini")
 PARAMETER_GRID_PATH = env_str("PARAMETER_GRID_PATH", "parameter_grid.ini")
-WF_TRAIN_DAYS = max(1, env_int("WF_TRAIN_DAYS", 60))
-WF_TEST_DAYS = max(1, env_int("WF_TEST_DAYS", 20))
-WF_STEP_DAYS = max(1, env_int("WF_STEP_DAYS", 20))
+WF_TRAIN_TRADING_DAYS = max(1, env_int("WF_TRAIN_TRADING_DAYS", 60))
+WF_TEST_TRADING_DAYS = max(1, env_int("WF_TEST_TRADING_DAYS", 20))
+WF_STEP_TRADING_DAYS = max(1, env_int("WF_STEP_TRADING_DAYS", 20))
+WF_TRADING_DAY_TIMEZONE = env_str("WF_TRADING_DAY_TIMEZONE", "America/New_York")
+_validate_timezone(WF_TRADING_DAY_TIMEZONE, "WF_TRADING_DAY_TIMEZONE")
 WF_MATRIX_ENABLED = env_bool("WF_MATRIX_ENABLED", False)
-WF_MATRIX_TRAIN_DAYS = env_int_list("WF_MATRIX_TRAIN_DAYS")
-WF_MATRIX_TEST_DAYS = env_int_list("WF_MATRIX_TEST_DAYS")
-if WF_MATRIX_ENABLED and (not WF_MATRIX_TRAIN_DAYS or not WF_MATRIX_TEST_DAYS):
-    raise ValueError("WF_MATRIX_TRAIN_DAYS and WF_MATRIX_TEST_DAYS must be set when WF_MATRIX_ENABLED=true")
+WF_MATRIX_TRAIN_TRADING_DAYS = env_int_list("WF_MATRIX_TRAIN_TRADING_DAYS")
+WF_MATRIX_TEST_TRADING_DAYS = env_int_list("WF_MATRIX_TEST_TRADING_DAYS")
+if WF_MATRIX_ENABLED and (not WF_MATRIX_TRAIN_TRADING_DAYS or not WF_MATRIX_TEST_TRADING_DAYS):
+    raise ValueError("WF_MATRIX_TRAIN_TRADING_DAYS and WF_MATRIX_TEST_TRADING_DAYS must be set when WF_MATRIX_ENABLED=true")
 # Finalist OOS validation. A fixed candidate set (per-session train top-N union
 # global train top-N, capped at MAX_SETS) is evaluated OOS in *every* fold, so the
 # per-candidate oos_* columns have consistent, comparable full-fold coverage.
@@ -225,7 +227,10 @@ MIN_OOS_PROFIT_FACTOR = env_float("MIN_OOS_PROFIT_FACTOR", 1.1)
 MAX_OOS_DRAWDOWN_PCT = env_float("MAX_OOS_DRAWDOWN_PCT", 25.0)
 MAX_MC_RUIN_PCT = env_float("MAX_MC_RUIN_PCT", 5.0)
 SESSION_SELECTOR_MIN_TRADES_FLOOR = max(1, env_int("SESSION_SELECTOR_MIN_TRADES_FLOOR", 20))
-SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY = max(0.0, env_float("SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY", 0.0))
+SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY = max(
+    0.0,
+    env_float("SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY", 0.0),
+)
 SESSION_SELECTOR_LCB_Z = max(0.0, env_float("SESSION_SELECTOR_LCB_Z", 1.0))
 SESSION_SELECTOR_TOP_N = max(1, env_int("SESSION_SELECTOR_TOP_N", 25))
 SESSION_SELECTOR_PLATEAU_WEIGHT = min(1.0, max(0.0, env_float("SESSION_SELECTOR_PLATEAU_WEIGHT", 0.35)))
@@ -332,9 +337,10 @@ class RunConfig:
 class OptimizerConfig:
     single_parameter_path: str
     parameter_grid_path: str
-    train_days: int
-    test_days: int
-    step_days: int
+    train_trading_days: int
+    test_trading_days: int
+    step_trading_days: int
+    trading_day_timezone: str
     finalist_enabled: bool
     finalist_top_n_per_session: int
     finalist_global_top_n: int
@@ -358,7 +364,7 @@ class OptimizerConfig:
     max_oos_drawdown_pct: float
     max_mc_ruin_pct: float
     session_selector_min_trades_floor: int
-    session_selector_min_trades_per_train_day: float
+    session_selector_min_trades_per_train_trading_day: float
     session_selector_lcb_z: float
     session_selector_top_n: int
     session_selector_plateau_weight: float
@@ -431,9 +437,10 @@ def active_optimizer_config() -> OptimizerConfig:
     return OptimizerConfig(
         single_parameter_path=SINGLE_PARAMETER_PATH,
         parameter_grid_path=PARAMETER_GRID_PATH,
-        train_days=WF_TRAIN_DAYS,
-        test_days=WF_TEST_DAYS,
-        step_days=WF_STEP_DAYS,
+        train_trading_days=WF_TRAIN_TRADING_DAYS,
+        test_trading_days=WF_TEST_TRADING_DAYS,
+        step_trading_days=WF_STEP_TRADING_DAYS,
+        trading_day_timezone=WF_TRADING_DAY_TIMEZONE,
         finalist_enabled=WF_FINALIST_ENABLED,
         finalist_top_n_per_session=WF_FINALIST_TOP_N_PER_SESSION,
         finalist_global_top_n=WF_FINALIST_GLOBAL_TOP_N,
@@ -457,7 +464,7 @@ def active_optimizer_config() -> OptimizerConfig:
         max_oos_drawdown_pct=MAX_OOS_DRAWDOWN_PCT,
         max_mc_ruin_pct=MAX_MC_RUIN_PCT,
         session_selector_min_trades_floor=SESSION_SELECTOR_MIN_TRADES_FLOOR,
-        session_selector_min_trades_per_train_day=SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY,
+        session_selector_min_trades_per_train_trading_day=SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY,
         session_selector_lcb_z=SESSION_SELECTOR_LCB_Z,
         session_selector_top_n=SESSION_SELECTOR_TOP_N,
         session_selector_plateau_weight=SESSION_SELECTOR_PLATEAU_WEIGHT,
@@ -470,25 +477,33 @@ def active_optimizer_configs() -> list[OptimizerConfig]:
     base = active_optimizer_config()
     if not WF_MATRIX_ENABLED:
         return [base]
-    return build_optimizer_config_matrix(base, WF_MATRIX_TRAIN_DAYS, WF_MATRIX_TEST_DAYS)
+    return build_optimizer_config_matrix(base, WF_MATRIX_TRAIN_TRADING_DAYS, WF_MATRIX_TEST_TRADING_DAYS)
 
 
 def build_optimizer_config_matrix(
     base: OptimizerConfig,
-    train_days_values: tuple[int, ...],
-    test_days_values: tuple[int, ...],
+    train_trading_days_values: tuple[int, ...],
+    test_trading_days_values: tuple[int, ...],
 ) -> list[OptimizerConfig]:
     configs: list[OptimizerConfig] = []
-    for train_days in train_days_values:
-        for test_days in test_days_values:
-            configs.append(replace(base, train_days=train_days, test_days=test_days, step_days=test_days))
+    for train_trading_days in train_trading_days_values:
+        for test_trading_days in test_trading_days_values:
+            configs.append(
+                replace(
+                    base,
+                    train_trading_days=train_trading_days,
+                    test_trading_days=test_trading_days,
+                    step_trading_days=test_trading_days,
+                )
+            )
     return configs
 
 
 def effective_session_selector_min_trades(opt: OptimizerConfig) -> int:
     floor = max(1, int(opt.session_selector_min_trades_floor))
     scaled = math.ceil(
-        max(0.0, float(opt.session_selector_min_trades_per_train_day)) * max(1, int(opt.train_days))
+        max(0.0, float(opt.session_selector_min_trades_per_train_trading_day))
+        * max(1, int(opt.train_trading_days))
     )
     return max(floor, scaled)
 

@@ -92,9 +92,9 @@ CREATE TABLE IF NOT EXISTS backtest2_nas100_hfmed_runs (
     mc_ruin_drawdown_pct                NUMERIC(8,4),
     mc_random_seed                      BIGINT,
 
-    wf_train_days                       INTEGER,
-    wf_test_days                        INTEGER,
-    wf_step_days                        INTEGER,
+    wf_train_trading_days               INTEGER,
+    wf_test_trading_days                INTEGER,
+    wf_step_trading_days                INTEGER,
     optimizer_processes                 INTEGER,
     stage1_max_parameter_sets           INTEGER,
     stage2_enabled                      BOOLEAN,

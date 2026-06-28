@@ -71,7 +71,7 @@ services:
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
-      - BAR_SECONDS=30 # Mid-price bar duration built from ticks.
+      - BAR_SECONDS=60 # Mid-price bar duration built from ticks.
       - MIN_LOOKBACK_BARS=30 # Minimum completed bars before profile signals are valid; per-session/candidate LOOKBACK_BARS lives in the parameter files.
       - PROFILE_MAX_LOOKBACK_SECONDS= # Optional wall-clock cap; empty means per-session/candidate LOOKBACK_BARS * BAR_SECONDS.
       - PRICE_STEP=1.0 # Price level grid size for the hit-frequency profile.
@@ -121,8 +121,9 @@ services:
 
       # Walk-forward windows.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
-      - WF_MATRIX_TRAIN_DAYS=7, 14, 21 # Train window lengths tested by the matrix.
-      - WF_MATRIX_TEST_DAYS=7, 14, 21 # OOS window lengths tested by the matrix; step_days equals test_days.
+      - WF_TRADING_DAY_TIMEZONE=America/New_York # Timezone used to count observed trading days.
+      - WF_MATRIX_TRAIN_TRADING_DAYS=5,10  # Train window lengths in observed trading days.
+      - WF_MATRIX_TEST_TRADING_DAYS=5,10 # OOS window lengths in observed trading days; step_trading_days equals test_trading_days.
 
       # Walk-forward finalist candidate validation.
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
@@ -134,7 +135,7 @@ services:
 
       # Session parameter selection.
       - SESSION_SELECTOR_MIN_TRADES_FLOOR=5 # Floor for minimum train trades expected per session-specific parameter winner.
-      - SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_DAY=0.20 # Scales minimum train trades by WF train_days; effective minimum is max(floor, ceil(train_days * value)).
+      - SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY=0.20 # Scales minimum train trades by WF train_trading_days; effective minimum is max(floor, ceil(train_trading_days * value)).
       - SESSION_SELECTOR_LCB_Z=1 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
       - SESSION_SELECTOR_TOP_N=1000 # Candidate pool per session used for robust plateau selection.
       - SESSION_SELECTOR_PLATEAU_WEIGHT=0.20 # Blend candidate score with nearby-parameter median score.

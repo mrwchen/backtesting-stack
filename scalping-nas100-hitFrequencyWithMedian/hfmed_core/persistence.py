@@ -286,7 +286,7 @@ def validate_schema(conn: psycopg2.extensions.connection) -> None:
             if cur.fetchone()[0] is None:
                 missing.append(f"{config.RESULT_SCHEMA}.{table}")
         required_columns = {
-            RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile", "baseline_entry_price_range_position_max_deviation_pct", "best_portfolio_id"),
+            RUN_TABLE: ("baseline_long_cross_quantile", "baseline_short_cross_quantile", "baseline_entry_price_range_position_max_deviation_pct", "wf_train_trading_days", "wf_test_trading_days", "wf_step_trading_days", "best_portfolio_id"),
             PARAMETER_TABLE: ("long_cross_quantile", "short_cross_quantile", "entry_price_range_position_max_deviation_pct", "oos_full_coverage"),
             SESSION_TABLE: ("session_type", "win_rate_pct"),
             PORTFOLIO_TABLE: ("portfolio_id", "oos_total_trades"),
@@ -409,9 +409,9 @@ def create_run(
         "mc_block_size": cfg.mc_block_size,
         "mc_ruin_drawdown_pct": cfg.mc_ruin_drawdown_pct,
         "mc_random_seed": cfg.mc_random_seed,
-        "wf_train_days": opt.train_days if opt else None,
-        "wf_test_days": opt.test_days if opt else None,
-        "wf_step_days": opt.step_days if opt else None,
+        "wf_train_trading_days": opt.train_trading_days if opt else None,
+        "wf_test_trading_days": opt.test_trading_days if opt else None,
+        "wf_step_trading_days": opt.step_trading_days if opt else None,
         "optimizer_processes": opt.processes if opt else None,
         "stage1_max_parameter_sets": opt.stage1_max_parameter_sets if opt else None,
         "stage2_enabled": opt.stage2_enabled if opt else None,

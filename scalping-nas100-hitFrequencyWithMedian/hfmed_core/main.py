@@ -56,12 +56,13 @@ def main() -> None:
             for index, opt_cfg in enumerate(opt_cfgs, start=1):
                 run_started = time.time()
                 log.info(
-                    "Walk-forward matrix run %d/%d train_days %d test_days %d step_days %d",
+                    "Walk-forward matrix run %d/%d train_trading_days %d test_trading_days %d step_trading_days %d trading_day_timezone %s",
                     index,
                     len(opt_cfgs),
-                    opt_cfg.train_days,
-                    opt_cfg.test_days,
-                    opt_cfg.step_days,
+                    opt_cfg.train_trading_days,
+                    opt_cfg.test_trading_days,
+                    opt_cfg.step_trading_days,
+                    opt_cfg.trading_day_timezone,
                 )
                 run_walk_forward_optimizer(conn, cfg, opt_cfg, ticks, bars, run_started)
                 gc.collect()
