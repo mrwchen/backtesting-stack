@@ -55,7 +55,7 @@ services:
       - RUN_NOTES_EXTRA= # Optional extra run note.
 
       # Run mode and parameter source.
-      - RUN_MODE=single #walk_forward # Runner mode; single or walk_forward.
+      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
@@ -100,7 +100,7 @@ services:
       - INITIAL_EQUITY=5000 # Starting account equity.
       - ACCOUNT_CURRENCY=EUR # Account currency used for persisted metrics.
       - MARGIN_REQUIREMENT_PCT=5 # Margin requirement percentage.
-      - RISK_PER_TRADE_PCT=1.5 # Equity risk budget per trade.
+      - RISK_PER_TRADE_PCT=1 # Equity risk budget per trade.
       - MAX_MARGIN_PCT=100 # Maximum equity share allowed as position margin.
       - CONTRACT_MULTIPLIER=1.0 # PnL multiplier per unit and point.
       - LOT_SIZE=0.1 # Position units are rounded down to this lot size.
