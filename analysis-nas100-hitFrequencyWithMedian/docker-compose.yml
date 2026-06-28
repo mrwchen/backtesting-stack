@@ -61,10 +61,10 @@ services:
       - END_TS_UTC=
 
       # Bar-based hit-frequency profile and tick-level q50 crossing detection.
-      - BAR_SECONDS=5
+      - BAR_SECONDS=60
       - MIN_LOOKBACK_BARS=30
-      - LOOKBACK_START=30
-      - LOOKBACK_END=260
+      - LOOKBACK_START=20
+      - LOOKBACK_END=300
       - LOOKBACK_STEP=10
       - PROFILE_MAX_LOOKBACK_SECONDS=
       - PRICE_STEP=1.0
