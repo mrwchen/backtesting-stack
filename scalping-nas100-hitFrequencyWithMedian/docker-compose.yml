@@ -59,7 +59,7 @@ services:
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
-      # Single-mode trade_history export.
+      # Single-modeasdf trade_history export.
       - TRADE_HISTORY_PERSIST_ENABLED=true # If true, RUN_MODE=single additionally upserts trades into trade_history.
       - TRADE_HISTORY_ACCOUNT_NUMBER=000004 # trade_history account_number used when RUN_MODE=single.
       - TRADE_HISTORY_ACCOUNT_TYPE=backtesting # trade_history account_type used when RUN_MODE=single.
@@ -67,7 +67,7 @@ services:
       # Market data source and date range.
       - SOURCE_TABLE=public.pepperstone_ticks_data # Tick source table with tick_time, bid and ask.
       - SYMBOL=NAS100 # Symbol filter for source ticks.
-      - START_TS_UTC=2026-04-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
+      - START_TS_UTC=2026-01-01T00:00:00Z # Inclusive UTC start; leave empty to use earliest tick.
       - END_TS_UTC= # Exclusive UTC end; leave empty to use latest tick.
 
       # Bar and profile construction.
