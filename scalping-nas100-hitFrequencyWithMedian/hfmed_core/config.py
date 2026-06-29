@@ -213,7 +213,7 @@ WF_FINALIST_PERSIST_FOLD_RESULTS = env_bool("WF_FINALIST_PERSIST_FOLD_RESULTS", 
 # When true, the walk-forward portfolio uses ONE global parameter set (the train
 # best of each fold) applied to every enabled session, instead of selecting a
 # separate parameter set per session. Removes the per-session overfitting source.
-WF_GLOBAL_PARAMETER_SET = env_bool("WF_GLOBAL_PARAMETER_SET", False)
+WF_GLOBAL_PARAMETER_SET = env_bool("WF_GLOBAL_PARAMETER_SET", True)
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
 OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
 OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
