@@ -61,7 +61,7 @@ services:
 
       # Single-modeasdf trade_history export.
       - TRADE_HISTORY_PERSIST_ENABLED=true # If true, RUN_MODE=single additionally upserts trades into trade_history.
-      - TRADE_HISTORY_ACCOUNT_NUMBER=000006 # trade_history account_number used when RUN_MODE=single.
+      - TRADE_HISTORY_ACCOUNT_NUMBER=000007 # trade_history account_number used when RUN_MODE=single.
       - TRADE_HISTORY_ACCOUNT_TYPE=backtesting # trade_history account_type used when RUN_MODE=single.
 
       # Market data source and date range.
