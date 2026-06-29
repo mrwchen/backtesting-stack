@@ -122,8 +122,8 @@ services:
       # Walk-forward windows.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
       - WF_TRADING_DAY_TIMEZONE=America/New_York # Timezone used to count observed trading days.
-      - WF_MATRIX_TRAIN_TRADING_DAYS=5,10  # Train window lengths in observed trading days.
-      - WF_MATRIX_TEST_TRADING_DAYS=5,10 # OOS window lengths in observed trading days; step_trading_days equals test_trading_days.
+      - WF_MATRIX_TRAIN_TRADING_DAYS=5,10,15  # Train window lengths in observed trading days.
+      - WF_MATRIX_TEST_TRADING_DAYS=5,10,15 # OOS window lengths in observed trading days; step_trading_days equals test_trading_days.
 
       # Walk-forward finalist candidate validation.
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
