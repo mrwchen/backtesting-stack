@@ -10,12 +10,12 @@ class SingleParameterFileTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / "single_parameter.ini"
         values = parameters.load_single_session_parameters(str(path))
 
-        # Phase 0/2 baseline: one global parameter set applied to every session.
+        # Phase 2 validation: one static consensus global set applied to every session.
         self.assertEqual(13, len(values))
         self.assertEqual(180, values["asia_early"]["LOOKBACK_BARS"])
         self.assertEqual(0.55, values["asia_early"]["LONG_CROSS_QUANTILE"])
         self.assertEqual(180, values["ny_morning"]["LOOKBACK_BARS"])
-        self.assertEqual(0.50, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
+        self.assertEqual(0.475, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
         self.assertEqual(24.0, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT"])
 
     def test_rejects_multiple_values_for_single_parameter(self):
