@@ -52,10 +52,10 @@ services:
       # Logging and run metadata.
       - LOG_LEVEL=INFO # Python logging level.
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
-      - RUN_NOTES_EXTRA=phase2-cost-real-session-pruned # Optional extra run note.
+      - RUN_NOTES_EXTRA=phase3-cross-year-regime-test # Optional extra run note.
 
       # Run mode and parameter source.
-      - RUN_MODE=single # Runner mode; single or walk_forward. Phase 2 validation: static consensus global set over full period.
+      - RUN_MODE=walk_forward # Runner mode; single or walk_forward. Phase 3: cross-regime robustness test (see __preregistration_regime_test.md).
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
@@ -83,8 +83,8 @@ services:
       - SESSION_LONDON_OPEN_ENABLED=true # Enable new entries from 03:00-04:00.
       - SESSION_PRE_MARKET_EARLY_ENABLED=true # Enable new entries from 04:00-07:00.
       - SESSION_PRE_MARKET_ACTIVE_ENABLED=true # Enable new entries from 07:00-08:30.
-      - SESSION_PRE_MARKET_MACRO_ENABLED=false # Disabled: OOS-negative under the global set (-778 EUR in run 16).
-      - SESSION_NY_OPEN_IMPULSE_ENABLED=false # Disabled: OOS-negative under the global set (-336 EUR in run 16).
+      - SESSION_PRE_MARKET_MACRO_ENABLED=true # Enable new entries from 08:30-09:30.
+      - SESSION_NY_OPEN_IMPULSE_ENABLED=true # Enable new entries from 09:30-10:00.
       - SESSION_NY_MORNING_ENABLED=true # Enable new entries from 10:00-11:30.
       - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
       - SESSION_NY_LATE_ENABLED=true # Enable new entries from 14:00-15:00.
