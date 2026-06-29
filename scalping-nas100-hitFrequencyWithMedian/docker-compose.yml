@@ -52,10 +52,10 @@ services:
       # Logging and run metadata.
       - LOG_LEVEL=INFO # Python logging level.
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
-      - RUN_NOTES_EXTRA=phase0-global-set-run1rank1 # Optional extra run note.
+      - RUN_NOTES_EXTRA=phase1-global-search-longer-train # Optional extra run note.
 
       # Run mode and parameter source.
-      - RUN_MODE=single # Runner mode; single or walk_forward. Phase 0: single global parameter set across all sessions.
+      - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
       - SINGLE_PARAMETER_PATH=single_parameter.ini # Per-session manual parameter file used by RUN_MODE=single.
       - PARAMETER_GRID_PATH=parameter_grid.ini # Parameter grid file for optimizer candidates.
 
@@ -81,14 +81,14 @@ services:
       - SESSION_ASIA_EARLY_ENABLED=true # Enable new entries from 20:00-00:00.
       - SESSION_ASIA_LATE_ENABLED=true # Enable new entries from 00:00-03:00.
       - SESSION_LONDON_OPEN_ENABLED=true # Enable new entries from 03:00-04:00.
-      - SESSION_PRE_MARKET_EARLY_ENABLED=true # Enable new entries from 04:00-07:00.
+      - SESSION_PRE_MARKET_EARLY_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
       - SESSION_PRE_MARKET_ACTIVE_ENABLED=true # Enable new entries from 07:00-08:30.
       - SESSION_PRE_MARKET_MACRO_ENABLED=true # Enable new entries from 08:30-09:30.
       - SESSION_NY_OPEN_IMPULSE_ENABLED=true # Enable new entries from 09:30-10:00.
       - SESSION_NY_MORNING_ENABLED=true # Enable new entries from 10:00-11:30.
       - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
-      - SESSION_NY_LATE_ENABLED=true # Enable new entries from 14:00-15:00.
-      - SESSION_NY_POWER_HOUR_ENABLED=true # Enable new entries from 15:00-16:00.
+      - SESSION_NY_LATE_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
+      - SESSION_NY_POWER_HOUR_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
       - SESSION_AFTER_CLOSE_SHOCK_ENABLED=true # Enable new entries from 16:00-17:00.
       - SESSION_AFTER_HOURS_LATE_ENABLED=true # Enable new entries from 17:00-20:00.
 
@@ -122,8 +122,8 @@ services:
       # Walk-forward windows.
       - WF_MATRIX_ENABLED=true # Run several walk-forward window combinations in one container run.
       - WF_TRADING_DAY_TIMEZONE=America/New_York # Timezone used to count observed trading days.
-      - WF_MATRIX_TRAIN_TRADING_DAYS=5,10,15  # Train window lengths in observed trading days.
-      - WF_MATRIX_TEST_TRADING_DAYS=5,10,15 # OOS window lengths in observed trading days; step_trading_days equals test_trading_days.
+      - WF_MATRIX_TRAIN_TRADING_DAYS=20,40,60  # Train window lengths in observed trading days.
+      - WF_MATRIX_TEST_TRADING_DAYS=10,20 # OOS window lengths in observed trading days; step_trading_days equals test_trading_days.
 
       # Walk-forward finalist candidate validation.
       - WF_FINALIST_ENABLED=true # Validate a fixed finalist candidate set OOS in every fold (consistent full coverage).
@@ -134,8 +134,8 @@ services:
       - WF_FINALIST_PERSIST_FOLD_RESULTS=true # Write finalist OOS per-fold results to DB.
 
       # Session parameter selection.
-      - SESSION_SELECTOR_MIN_TRADES_FLOOR=1 # Floor for minimum train trades expected per session-specific parameter winner.
-      - SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY=0.25 # Scales minimum train trades by WF train_trading_days; effective minimum is max(floor, ceil(train_trading_days * value)).
+      - SESSION_SELECTOR_MIN_TRADES_FLOOR=30 # Floor for minimum train trades expected per session-specific parameter winner.
+      - SESSION_SELECTOR_MIN_TRADES_PER_TRAIN_TRADING_DAY=1.0 # Scales minimum train trades by WF train_trading_days; effective minimum is max(floor, ceil(train_trading_days * value)).
       - SESSION_SELECTOR_LCB_Z=1 # Lower-confidence penalty: net P&L minus z * trade P&L std * sqrt(trades).
       - SESSION_SELECTOR_TOP_N=1000 # Candidate pool per session used for robust plateau selection.
       - SESSION_SELECTOR_PLATEAU_WEIGHT=0.20 # Blend candidate score with nearby-parameter median score.
@@ -154,7 +154,7 @@ services:
       - STAGE1_MAX_PARAMETER_SETS=131072 # Max coarse-grid Stage 1 candidates; 0 means unlimited.
 
       # Stage 2 local refinement.
-      - STAGE2_ENABLED=false # Enable local midpoint refinement around best Stage 1 candidates.
+      - STAGE2_ENABLED=true # Enable local midpoint refinement around best Stage 1 candidates.
       - STAGE2_SEED_TOP_N=30 # Number of Stage 1 seeds for Stage 2 refinement.
       - STAGE2_MAX_PARAMETER_SETS=1500 # Max Stage 2 candidates; 0 means unlimited.
 
