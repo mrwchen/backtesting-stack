@@ -10,18 +10,19 @@ class SingleParameterFileTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / "single_parameter.ini"
         values = parameters.load_single_session_parameters(str(path))
 
+        # Phase 0/2 baseline: one global parameter set applied to every session.
         self.assertEqual(13, len(values))
-        self.assertEqual(72, values["asia_early"]["LOOKBACK_BARS"])
-        self.assertEqual(0.45, values["asia_early"]["LONG_CROSS_QUANTILE"])
-        self.assertEqual(108, values["ny_morning"]["LOOKBACK_BARS"])
-        self.assertEqual(0.55, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
-        self.assertEqual(2.0, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT"])
+        self.assertEqual(180, values["asia_early"]["LOOKBACK_BARS"])
+        self.assertEqual(0.55, values["asia_early"]["LONG_CROSS_QUANTILE"])
+        self.assertEqual(180, values["ny_morning"]["LOOKBACK_BARS"])
+        self.assertEqual(0.50, values["ny_morning"]["SHORT_CROSS_QUANTILE"])
+        self.assertEqual(24.0, values["after_hours_late"]["ALL_STOP_MODES_TAKE_PROFIT_ATR_MULT"])
 
     def test_rejects_multiple_values_for_single_parameter(self):
         path = Path(__file__).resolve().parents[1] / "single_parameter.ini"
         text = path.read_text(encoding="utf-8").replace(
-            "LOOKBACK_BARS = 72",
-            "LOOKBACK_BARS = 72, 48",
+            "LOOKBACK_BARS = 180",
+            "LOOKBACK_BARS = 180, 90",
             1,
         )
 

@@ -52,7 +52,7 @@ services:
       # Logging and run metadata.
       - LOG_LEVEL=INFO # Python logging level.
       - RUN_LABEL_TZ=Europe/Berlin # Timezone used for run labels.
-      - RUN_NOTES_EXTRA=phase1-global-search-longer-train # Optional extra run note.
+      - RUN_NOTES_EXTRA=phase2-global-parameter-set-wf # Optional extra run note.
 
       # Run mode and parameter source.
       - RUN_MODE=walk_forward # Runner mode; single or walk_forward.
@@ -81,14 +81,14 @@ services:
       - SESSION_ASIA_EARLY_ENABLED=true # Enable new entries from 20:00-00:00.
       - SESSION_ASIA_LATE_ENABLED=true # Enable new entries from 00:00-03:00.
       - SESSION_LONDON_OPEN_ENABLED=true # Enable new entries from 03:00-04:00.
-      - SESSION_PRE_MARKET_EARLY_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
+      - SESSION_PRE_MARKET_EARLY_ENABLED=true # Enable new entries from 04:00-07:00.
       - SESSION_PRE_MARKET_ACTIVE_ENABLED=true # Enable new entries from 07:00-08:30.
       - SESSION_PRE_MARKET_MACRO_ENABLED=true # Enable new entries from 08:30-09:30.
       - SESSION_NY_OPEN_IMPULSE_ENABLED=true # Enable new entries from 09:30-10:00.
       - SESSION_NY_MORNING_ENABLED=true # Enable new entries from 10:00-11:30.
       - SESSION_NY_MIDDAY_ENABLED=true # Enable new entries from 11:30-14:00.
-      - SESSION_NY_LATE_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
-      - SESSION_NY_POWER_HOUR_ENABLED=false # Disabled: chronic OOS loser in walk-forward runs 1-6.
+      - SESSION_NY_LATE_ENABLED=true # Enable new entries from 14:00-15:00.
+      - SESSION_NY_POWER_HOUR_ENABLED=true # Enable new entries from 15:00-16:00.
       - SESSION_AFTER_CLOSE_SHOCK_ENABLED=true # Enable new entries from 16:00-17:00.
       - SESSION_AFTER_HOURS_LATE_ENABLED=true # Enable new entries from 17:00-20:00.
 
@@ -132,6 +132,7 @@ services:
       - WF_FINALIST_MAX_SETS=10000 # Hard cap on the finalist set (kept by best cumulative train score); 0 means unlimited.
       - WF_FINALIST_KEEP_TRADES=false # Persist only summary metrics for finalist OOS evaluations.
       - WF_FINALIST_PERSIST_FOLD_RESULTS=true # Write finalist OOS per-fold results to DB.
+      - WF_GLOBAL_PARAMETER_SET=true # Phase 2: portfolio uses ONE global set (fold train best) across all enabled sessions instead of per-session selection.
 
       # Session parameter selection.
       - SESSION_SELECTOR_MIN_TRADES_FLOOR=30 # Floor for minimum train trades expected per session-specific parameter winner.

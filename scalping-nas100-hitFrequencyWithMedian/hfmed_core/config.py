@@ -210,6 +210,10 @@ WF_FINALIST_GLOBAL_TOP_N = max(0, env_int("WF_FINALIST_GLOBAL_TOP_N", 0))
 WF_FINALIST_MAX_SETS = max(0, env_int("WF_FINALIST_MAX_SETS", 2000))
 WF_FINALIST_KEEP_TRADES = env_bool("WF_FINALIST_KEEP_TRADES", False)
 WF_FINALIST_PERSIST_FOLD_RESULTS = env_bool("WF_FINALIST_PERSIST_FOLD_RESULTS", True)
+# When true, the walk-forward portfolio uses ONE global parameter set (the train
+# best of each fold) applied to every enabled session, instead of selecting a
+# separate parameter set per session. Removes the per-session overfitting source.
+WF_GLOBAL_PARAMETER_SET = env_bool("WF_GLOBAL_PARAMETER_SET", False)
 OPTIMIZER_PROCESSES = max(1, env_int("OPTIMIZER_PROCESSES", 1))
 OPTIMIZER_PROCESS_CHUNK_SIZE = max(1, env_int("OPTIMIZER_PROCESS_CHUNK_SIZE", 32))
 OPTIMIZER_PROFILE_CACHE_SIZE = max(0, env_int("OPTIMIZER_PROFILE_CACHE_SIZE", 4))
@@ -347,6 +351,7 @@ class OptimizerConfig:
     finalist_max_sets: int
     finalist_keep_trades: bool
     finalist_persist_fold_results: bool
+    global_parameter_set: bool
     processes: int
     process_chunk_size: int
     profile_cache_size: int
@@ -447,6 +452,7 @@ def active_optimizer_config() -> OptimizerConfig:
         finalist_max_sets=WF_FINALIST_MAX_SETS,
         finalist_keep_trades=WF_FINALIST_KEEP_TRADES,
         finalist_persist_fold_results=WF_FINALIST_PERSIST_FOLD_RESULTS,
+        global_parameter_set=WF_GLOBAL_PARAMETER_SET,
         processes=OPTIMIZER_PROCESSES,
         process_chunk_size=OPTIMIZER_PROCESS_CHUNK_SIZE,
         profile_cache_size=OPTIMIZER_PROFILE_CACHE_SIZE,

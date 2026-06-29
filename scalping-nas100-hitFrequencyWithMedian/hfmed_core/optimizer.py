@@ -932,6 +932,7 @@ def run_stage(
         )
         session_pools = _empty_session_candidate_pools()
         global_finalist_pool: list[tuple[tuple, Evaluation, int]] = []
+        global_best: Evaluation | None = None
         session_pool_limit = max(1, int(opt_cfg.session_selector_top_n), int(opt_cfg.finalist_top_n_per_session))
         batch_count = max(1, math.ceil(candidate_source.count / STREAM_CANDIDATE_BATCH_SIZE))
 
@@ -962,15 +963,30 @@ def run_stage(
                 train_metrics.add(candidate_index, evaluation)
                 _add_session_pool_candidates(session_pools, evaluation, candidate_index, base_cfg, opt_cfg, session_pool_limit)
                 _add_global_finalist_candidate(global_finalist_pool, evaluation, candidate_index, opt_cfg)
+                if opt_cfg.global_parameter_set:
+                    global_best = _better_global_candidate(global_best, evaluation)
             del train_evals
             del index_by_hash
 
-        selected_by_session = select_session_parameters_from_pools(
-            session_pools,
-            base_cfg,
-            opt_cfg,
-            previous_selected_by_session=previous_selected_by_session,
-        )
+        if opt_cfg.global_parameter_set:
+            selected_by_session = assign_global_parameter_set(global_best, base_cfg)
+            if global_best is not None:
+                log.info(
+                    "Stage %s fold %d global parameter set hash %s train_score %.4f trades %d sessions %d",
+                    stage,
+                    fold.fold_index,
+                    global_best.parameter_hash[:10],
+                    float(global_best.score),
+                    int(global_best.summary.get("total_trades") or 0),
+                    len(selected_by_session),
+                )
+        else:
+            selected_by_session = select_session_parameters_from_pools(
+                session_pools,
+                base_cfg,
+                opt_cfg,
+                previous_selected_by_session=previous_selected_by_session,
+            )
         previous_selected_by_session = selected_by_session
         selected = _unique_evaluations(selected_by_session.values())
         selected_values.extend(evaluation.values for evaluation in selected)
@@ -1401,6 +1417,25 @@ def select_session_parameters_from_pools(
             previous_hash[:10] if previous_hash else "-",
         )
     return selected
+
+
+def _better_global_candidate(current: Evaluation | None, evaluation: Evaluation) -> Evaluation | None:
+    """Track the single best candidate across a fold's train window by global
+    train score, used by walk-forward global-parameter-set mode."""
+    if int(evaluation.summary.get("total_trades") or 0) <= 0:
+        return current
+    if current is None:
+        return evaluation
+    return evaluation if _global_finalist_sort_key(evaluation) > _global_finalist_sort_key(current) else current
+
+
+def assign_global_parameter_set(global_best: Evaluation | None, base_cfg: RunConfig) -> dict[str, Evaluation]:
+    """Apply one global parameter set (the fold's train best) to every enabled
+    session, so the OOS portfolio evaluates a single global config instead of
+    per-session specialized sets."""
+    if global_best is None:
+        return {}
+    return {session_type: global_best for session_type in enabled_session_keys(base_cfg)}
 
 
 def score_session_stats(stats: dict | None, base_cfg: RunConfig, opt_cfg: OptimizerConfig) -> float:
