@@ -1,9 +1,0 @@
-psycopg2-binary>=2.9.9
-numpy>=1.26
-pandas>=2.2
-scipy>=1.13
-scikit-learn>=1.5
-statsmodels>=0.14
-arch>=7.0
-hmmlearn>=0.3.2
-tzdata>=2024.1
