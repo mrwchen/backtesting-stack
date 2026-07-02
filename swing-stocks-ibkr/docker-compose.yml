@@ -11,9 +11,7 @@ services:
       sh -c 'set -e;
       DROP_ALL_TABLES_NORMALIZED="$$(printf "%s" "$$DROP_ALL_TABLES_ON_START" | tr "[:upper:]" "[:lower:]")";
       until pg_isready -h timescaledb -p 5432 -U postgres-ts; do sleep 2; done;
-      psql -v ON_ERROR_STOP=1
-           -v drop_all_tables_on_start="$$DROP_ALL_TABLES_NORMALIZED"
-           -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql'
+      psql -v ON_ERROR_STOP=1 -v drop_all_tables_on_start="$$DROP_ALL_TABLES_NORMALIZED" -h timescaledb -p 5432 -U postgres-ts -d postgres -f /init.sql'
     networks:
       - shared_net
 
