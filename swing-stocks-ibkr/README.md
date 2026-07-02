@@ -9,8 +9,12 @@ Backtests three long-only daily swing setups for every eligible stock in the con
 With `STRATEGY_SET=all`, the service also runs filtered hypothesis variants derived from diagnostics:
 
 - `earnings_reaction_drift_liquid_largecap_v1`
+- `earnings_reaction_drift_liquid_largecap_hold20_v1`
+- `earnings_reaction_drift_liquid_largecap_hold30_v1`
 - `earnings_reaction_drift_sma50_momentum_v1`
 - `earnings_reaction_drift_stable_industries_v1`
+- `earnings_reaction_drift_stable_industries_hold20_v1`
+- `earnings_reaction_drift_stable_industries_hold30_v1`
 - `quality_momentum_swing_liquid_quality_v1`
 - `quality_momentum_swing_earnings_overlay_v1`
 - `quality_momentum_swing_tech_semis_v1`
@@ -70,4 +74,4 @@ The diagnostics service is behind the `diagnostics` Compose profile, so `docker 
 
 The diagnostics use the latest run by default. Set `DIAGNOSTICS_RUN_ID` to inspect a specific run. Results are written to `backtest_swing_stock_diagnostic_...` tables.
 
-Diagnostics include strategy edge, symbol breadth, yearly stability, exit reasons, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.
+Diagnostics include strategy edge, symbol breadth, yearly stability, exit reasons, exit reasons by year, holding period buckets, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.

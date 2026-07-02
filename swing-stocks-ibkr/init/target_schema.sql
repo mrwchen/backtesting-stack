@@ -2,6 +2,8 @@
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_feature_bucket_stability CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_feature_bucket_strength CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_top_bottom_symbols CASCADE;
+DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_holding_period_buckets CASCADE;
+DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_exit_reason_yearly CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_exit_reasons CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_yearly_stability CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_symbol_breadth CASCADE;
@@ -207,6 +209,37 @@ CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_exit_reasons (
     PRIMARY KEY (diagnostic_run_id, strategy_name, exit_reason)
 );
 
+CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_exit_reason_yearly (
+    diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
+    strategy_name                  TEXT NOT NULL,
+    exit_year                      INTEGER NOT NULL,
+    exit_reason                    TEXT NOT NULL,
+    trades                         INTEGER NOT NULL,
+    symbols                        INTEGER NOT NULL,
+    share_pct                      NUMERIC(18,6),
+    avg_net_return_pct             NUMERIC(18,6),
+    median_net_return_pct          NUMERIC(18,6),
+    win_rate_pct                   NUMERIC(18,6),
+    profit_factor                  NUMERIC(18,6),
+    avg_holding_days               NUMERIC(18,6),
+    PRIMARY KEY (diagnostic_run_id, strategy_name, exit_year, exit_reason)
+);
+
+CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_holding_period_buckets (
+    diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
+    strategy_name                  TEXT NOT NULL,
+    holding_days_bucket            TEXT NOT NULL,
+    trades                         INTEGER NOT NULL,
+    symbols                        INTEGER NOT NULL,
+    share_pct                      NUMERIC(18,6),
+    avg_net_return_pct             NUMERIC(18,6),
+    median_net_return_pct          NUMERIC(18,6),
+    win_rate_pct                   NUMERIC(18,6),
+    profit_factor                  NUMERIC(18,6),
+    avg_holding_days               NUMERIC(18,6),
+    PRIMARY KEY (diagnostic_run_id, strategy_name, holding_days_bucket)
+);
+
 CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_top_bottom_symbols (
     diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
     side                           TEXT NOT NULL CHECK (side IN ('best', 'worst')),
@@ -278,6 +311,14 @@ CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_runs_source
 CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_edge_strategy
     ON backtest_swing_stock_diagnostic_strategy_edge (diagnostic_run_id, strategy_name);
 
+CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_exit_year_lookup
+    ON backtest_swing_stock_diagnostic_exit_reason_yearly
+    (diagnostic_run_id, strategy_name, exit_year, exit_reason);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_holding_lookup
+    ON backtest_swing_stock_diagnostic_holding_period_buckets
+    (diagnostic_run_id, strategy_name, holding_days_bucket);
+
 CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_strength_lookup
     ON backtest_swing_stock_diagnostic_feature_bucket_strength
     (diagnostic_run_id, strategy_name, feature_name, side, rank);
@@ -295,6 +336,8 @@ ALTER TABLE backtest_swing_stock_diagnostic_strategy_edge OWNER TO "market-data-
 ALTER TABLE backtest_swing_stock_diagnostic_symbol_breadth OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_yearly_stability OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_exit_reasons OWNER TO "market-data-account";
+ALTER TABLE backtest_swing_stock_diagnostic_exit_reason_yearly OWNER TO "market-data-account";
+ALTER TABLE backtest_swing_stock_diagnostic_holding_period_buckets OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_top_bottom_symbols OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_feature_bucket_strength OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_feature_bucket_stability OWNER TO "market-data-account";
@@ -308,6 +351,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_strategy
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_symbol_breadth TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_yearly_stability TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_exit_reasons TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_exit_reason_yearly TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_holding_period_buckets TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_top_bottom_symbols TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_feature_bucket_strength TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_feature_bucket_stability TO "market-data-account";

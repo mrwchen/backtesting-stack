@@ -20,6 +20,8 @@ DIAGNOSTIC_TABLES: dict[str, str] = {
     "symbol_breadth": "public.backtest_swing_stock_diagnostic_symbol_breadth",
     "yearly_stability": "public.backtest_swing_stock_diagnostic_yearly_stability",
     "exit_reasons": "public.backtest_swing_stock_diagnostic_exit_reasons",
+    "exit_reason_yearly": "public.backtest_swing_stock_diagnostic_exit_reason_yearly",
+    "holding_period_buckets": "public.backtest_swing_stock_diagnostic_holding_period_buckets",
     "top_bottom_symbols": "public.backtest_swing_stock_diagnostic_top_bottom_symbols",
     "feature_bucket_strength": "public.backtest_swing_stock_diagnostic_feature_bucket_strength",
     "feature_bucket_stability": "public.backtest_swing_stock_diagnostic_feature_bucket_stability",
@@ -310,6 +312,107 @@ def exit_reason_query(cfg: BacktestConfig) -> sql.Composable:
         WHERE run_id = %s
         GROUP BY strategy_name, exit_reason
         ORDER BY strategy_name, trades DESC
+        """
+    ).format(trades=table_identifier(cfg.trades_table))
+
+
+def exit_reason_yearly_query(cfg: BacktestConfig) -> sql.Composable:
+    return sql.SQL(
+        """
+        WITH grouped AS (
+            SELECT
+                strategy_name,
+                extract(year FROM exit_date)::int AS exit_year,
+                exit_reason,
+                count(*) AS trades,
+                count(DISTINCT symbol) AS symbols,
+                avg(net_return_pct) AS avg_net_return_pct,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY net_return_pct)::numeric
+                    AS median_net_return_pct,
+                100.0 * count(*) FILTER (WHERE net_return_pct > 0)::numeric / nullif(count(*), 0)
+                    AS win_rate_pct,
+                (sum(net_return_pct) FILTER (WHERE net_return_pct > 0))
+                    / nullif(abs(sum(net_return_pct) FILTER (WHERE net_return_pct < 0)), 0)
+                    AS profit_factor,
+                avg(holding_days) AS avg_holding_days
+            FROM {trades}
+            WHERE run_id = %s
+            GROUP BY strategy_name, extract(year FROM exit_date)::int, exit_reason
+        )
+        SELECT
+            strategy_name,
+            exit_year,
+            exit_reason,
+            trades,
+            symbols,
+            round(100.0 * trades::numeric / nullif(sum(trades) OVER (
+                PARTITION BY strategy_name, exit_year
+            ), 0), 2) AS share_pct,
+            round(avg_net_return_pct, 4) AS avg_net_return_pct,
+            round(median_net_return_pct, 4) AS median_net_return_pct,
+            round(win_rate_pct, 2) AS win_rate_pct,
+            round(profit_factor, 4) AS profit_factor,
+            round(avg_holding_days, 2) AS avg_holding_days
+        FROM grouped
+        ORDER BY strategy_name, exit_year, trades DESC
+        """
+    ).format(trades=table_identifier(cfg.trades_table))
+
+
+def holding_period_bucket_query(cfg: BacktestConfig) -> sql.Composable:
+    return sql.SQL(
+        """
+        WITH bucketed AS (
+            SELECT
+                strategy_name,
+                symbol,
+                net_return_pct,
+                holding_days,
+                CASE
+                    WHEN holding_days <= 3 THEN '00_0_to_3'
+                    WHEN holding_days <= 7 THEN '01_4_to_7'
+                    WHEN holding_days <= 14 THEN '02_8_to_14'
+                    WHEN holding_days <= 21 THEN '03_15_to_21'
+                    WHEN holding_days <= 30 THEN '04_22_to_30'
+                    WHEN holding_days <= 45 THEN '05_31_to_45'
+                    ELSE '06_over_45'
+                END AS holding_days_bucket
+            FROM {trades}
+            WHERE run_id = %s
+        ),
+        grouped AS (
+            SELECT
+                strategy_name,
+                holding_days_bucket,
+                count(*) AS trades,
+                count(DISTINCT symbol) AS symbols,
+                avg(net_return_pct) AS avg_net_return_pct,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY net_return_pct)::numeric
+                    AS median_net_return_pct,
+                100.0 * count(*) FILTER (WHERE net_return_pct > 0)::numeric / nullif(count(*), 0)
+                    AS win_rate_pct,
+                (sum(net_return_pct) FILTER (WHERE net_return_pct > 0))
+                    / nullif(abs(sum(net_return_pct) FILTER (WHERE net_return_pct < 0)), 0)
+                    AS profit_factor,
+                avg(holding_days) AS avg_holding_days
+            FROM bucketed
+            GROUP BY strategy_name, holding_days_bucket
+        )
+        SELECT
+            strategy_name,
+            holding_days_bucket,
+            trades,
+            symbols,
+            round(100.0 * trades::numeric / nullif(sum(trades) OVER (
+                PARTITION BY strategy_name
+            ), 0), 2) AS share_pct,
+            round(avg_net_return_pct, 4) AS avg_net_return_pct,
+            round(median_net_return_pct, 4) AS median_net_return_pct,
+            round(win_rate_pct, 2) AS win_rate_pct,
+            round(profit_factor, 4) AS profit_factor,
+            round(avg_holding_days, 2) AS avg_holding_days
+        FROM grouped
+        ORDER BY strategy_name, holding_days_bucket
         """
     ).format(trades=table_identifier(cfg.trades_table))
 
@@ -893,6 +996,8 @@ def run_query_set(
         ("symbol_breadth", symbol_breadth_query(cfg), (run_id,)),
         ("yearly_stability", yearly_stability_query(cfg), (run_id,)),
         ("exit_reasons", exit_reason_query(cfg), (run_id,)),
+        ("exit_reason_yearly", exit_reason_yearly_query(cfg), (run_id,)),
+        ("holding_period_buckets", holding_period_bucket_query(cfg), (run_id,)),
         ("top_bottom_symbols", top_bottom_symbols_query(cfg), (run_id, diag.top_n, diag.top_n)),
         (
             "feature_bucket_strength",

@@ -339,6 +339,10 @@ def earnings_reaction_exit(rows: list[dict[str, Any]], index: int) -> bool:
     return close < sma10 * 0.985
 
 
+def never_close_signal_exit(rows: list[dict[str, Any]], index: int) -> bool:
+    return False
+
+
 EARNINGS_LIQUID_LARGECAP_RULES: tuple[FeatureRule, ...] = (
     avg_volume_at_least(5_000_000.0),
     market_cap_at_least(20_000_000_000.0),
@@ -564,6 +568,26 @@ HYPOTHESIS_STRATEGIES: tuple[StrategySpec, ...] = (
         exit_checker=earnings_reaction_exit,
     ),
     StrategySpec(
+        name="earnings_reaction_drift_liquid_largecap_hold20_v1",
+        version="1.0",
+        max_hold_days=20,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_liquid_largecap_entry,
+        exit_checker=never_close_signal_exit,
+    ),
+    StrategySpec(
+        name="earnings_reaction_drift_liquid_largecap_hold30_v1",
+        version="1.0",
+        max_hold_days=30,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_liquid_largecap_entry,
+        exit_checker=never_close_signal_exit,
+    ),
+    StrategySpec(
         name="earnings_reaction_drift_sma50_momentum_v1",
         version="1.0",
         max_hold_days=20,
@@ -582,6 +606,26 @@ HYPOTHESIS_STRATEGIES: tuple[StrategySpec, ...] = (
         fallback_stop_pct=0.09,
         entry_checker=earnings_stable_industry_entry,
         exit_checker=earnings_reaction_exit,
+    ),
+    StrategySpec(
+        name="earnings_reaction_drift_stable_industries_hold20_v1",
+        version="1.0",
+        max_hold_days=20,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_stable_industry_entry,
+        exit_checker=never_close_signal_exit,
+    ),
+    StrategySpec(
+        name="earnings_reaction_drift_stable_industries_hold30_v1",
+        version="1.0",
+        max_hold_days=30,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_stable_industry_entry,
+        exit_checker=never_close_signal_exit,
     ),
     StrategySpec(
         name="quality_momentum_swing_liquid_quality_v1",
@@ -920,7 +964,7 @@ def empty_strategy_results(
             status=status,
             error_text=error_text,
         )
-        for spec in STRATEGIES
+        for spec in strategies
     ]
 
 
