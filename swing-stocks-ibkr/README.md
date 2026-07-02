@@ -74,4 +74,6 @@ The diagnostics service is behind the `diagnostics` Compose profile, so `docker 
 
 The diagnostics use the latest run by default. Set `DIAGNOSTICS_RUN_ID` to inspect a specific run. Results are written to `backtest_swing_stock_diagnostic_...` tables.
 
-Diagnostics include strategy edge, symbol breadth, yearly stability, exit reasons, exit reasons by year, holding period buckets, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.
+Diagnostics include strategy edge, symbol breadth, yearly stability, fixed time splits, expanding walk-forward windows, exit reasons, exit reasons by year, holding period buckets, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.
+
+The time-split and walk-forward diagnostics are stability checks inside the historical run, not a substitute for genuinely unseen future out-of-sample data.

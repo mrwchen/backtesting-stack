@@ -5,6 +5,8 @@ DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_top_bottom_symbols CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_holding_period_buckets CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_exit_reason_yearly CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_exit_reasons CASCADE;
+DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_walk_forward_windows CASCADE;
+DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_time_splits CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_yearly_stability CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_symbol_breadth CASCADE;
 DROP TABLE IF EXISTS backtest_swing_stock_diagnostic_strategy_edge CASCADE;
@@ -197,6 +199,55 @@ CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_yearly_stability (
     PRIMARY KEY (diagnostic_run_id, strategy_name, exit_year)
 );
 
+CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_time_splits (
+    diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
+    strategy_name                  TEXT NOT NULL,
+    split_name                     TEXT NOT NULL,
+    split_order                    INTEGER NOT NULL,
+    split_start_date               DATE NOT NULL,
+    split_end_date                 DATE NOT NULL,
+    trades                         INTEGER NOT NULL,
+    symbols                        INTEGER NOT NULL,
+    avg_net_return_pct             NUMERIC(18,6),
+    median_net_return_pct          NUMERIC(18,6),
+    win_rate_pct                   NUMERIC(18,6),
+    profit_factor                  NUMERIC(18,6),
+    avg_holding_days               NUMERIC(18,6),
+    median_holding_days            NUMERIC(18,6),
+    positive_symbol_share_pct      NUMERIC(18,6),
+    p10_symbol_compounded_pct      NUMERIC(18,6),
+    p50_symbol_compounded_pct      NUMERIC(18,6),
+    p90_symbol_compounded_pct      NUMERIC(18,6),
+    PRIMARY KEY (diagnostic_run_id, strategy_name, split_name)
+);
+
+CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_walk_forward_windows (
+    diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
+    strategy_name                  TEXT NOT NULL,
+    validation_window              TEXT NOT NULL,
+    validation_order               INTEGER NOT NULL,
+    train_start_date               DATE NOT NULL,
+    train_end_date                 DATE NOT NULL,
+    test_start_date                DATE NOT NULL,
+    test_end_date                  DATE NOT NULL,
+    train_trades                   INTEGER,
+    train_symbols                  INTEGER,
+    train_avg_net_return_pct       NUMERIC(18,6),
+    train_median_net_return_pct    NUMERIC(18,6),
+    train_win_rate_pct             NUMERIC(18,6),
+    train_profit_factor            NUMERIC(18,6),
+    train_positive_symbol_share_pct NUMERIC(18,6),
+    test_trades                    INTEGER,
+    test_symbols                   INTEGER,
+    test_avg_net_return_pct        NUMERIC(18,6),
+    test_median_net_return_pct     NUMERIC(18,6),
+    test_win_rate_pct              NUMERIC(18,6),
+    test_profit_factor             NUMERIC(18,6),
+    test_positive_symbol_share_pct NUMERIC(18,6),
+    test_avg_holding_days          NUMERIC(18,6),
+    PRIMARY KEY (diagnostic_run_id, strategy_name, validation_window)
+);
+
 CREATE TABLE IF NOT EXISTS backtest_swing_stock_diagnostic_exit_reasons (
     diagnostic_run_id              BIGINT NOT NULL REFERENCES backtest_swing_stock_diagnostic_runs(diagnostic_run_id) ON DELETE CASCADE,
     strategy_name                  TEXT NOT NULL,
@@ -311,6 +362,14 @@ CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_runs_source
 CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_edge_strategy
     ON backtest_swing_stock_diagnostic_strategy_edge (diagnostic_run_id, strategy_name);
 
+CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_time_splits_lookup
+    ON backtest_swing_stock_diagnostic_time_splits
+    (diagnostic_run_id, strategy_name, split_order);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_walk_forward_lookup
+    ON backtest_swing_stock_diagnostic_walk_forward_windows
+    (diagnostic_run_id, strategy_name, validation_order);
+
 CREATE INDEX IF NOT EXISTS idx_backtest_swing_stock_diag_exit_year_lookup
     ON backtest_swing_stock_diagnostic_exit_reason_yearly
     (diagnostic_run_id, strategy_name, exit_year, exit_reason);
@@ -335,6 +394,8 @@ ALTER TABLE backtest_swing_stock_diagnostic_runs OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_strategy_edge OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_symbol_breadth OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_yearly_stability OWNER TO "market-data-account";
+ALTER TABLE backtest_swing_stock_diagnostic_time_splits OWNER TO "market-data-account";
+ALTER TABLE backtest_swing_stock_diagnostic_walk_forward_windows OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_exit_reasons OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_exit_reason_yearly OWNER TO "market-data-account";
 ALTER TABLE backtest_swing_stock_diagnostic_holding_period_buckets OWNER TO "market-data-account";
@@ -350,6 +411,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_runs TO 
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_strategy_edge TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_symbol_breadth TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_yearly_stability TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_time_splits TO "market-data-account";
+GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_walk_forward_windows TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_exit_reasons TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_exit_reason_yearly TO "market-data-account";
 GRANT SELECT, INSERT, UPDATE, DELETE ON backtest_swing_stock_diagnostic_holding_period_buckets TO "market-data-account";

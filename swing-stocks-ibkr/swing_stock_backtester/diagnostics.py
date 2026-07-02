@@ -19,6 +19,8 @@ DIAGNOSTIC_TABLES: dict[str, str] = {
     "strategy_edge": "public.backtest_swing_stock_diagnostic_strategy_edge",
     "symbol_breadth": "public.backtest_swing_stock_diagnostic_symbol_breadth",
     "yearly_stability": "public.backtest_swing_stock_diagnostic_yearly_stability",
+    "time_splits": "public.backtest_swing_stock_diagnostic_time_splits",
+    "walk_forward_windows": "public.backtest_swing_stock_diagnostic_walk_forward_windows",
     "exit_reasons": "public.backtest_swing_stock_diagnostic_exit_reasons",
     "exit_reason_yearly": "public.backtest_swing_stock_diagnostic_exit_reason_yearly",
     "holding_period_buckets": "public.backtest_swing_stock_diagnostic_holding_period_buckets",
@@ -292,6 +294,331 @@ def yearly_stability_query(cfg: BacktestConfig) -> sql.Composable:
         ORDER BY strategy_name, exit_year
         """
     ).format(trades=table_identifier(cfg.trades_table))
+
+
+def time_split_validation_query(cfg: BacktestConfig) -> sql.Composable:
+    return sql.SQL(
+        """
+        WITH selected_run AS (
+            SELECT run_id, start_date, end_date
+            FROM {runs}
+            WHERE run_id = %s
+        ),
+        split_defs(split_order, split_name, raw_start_date, raw_end_date) AS (
+            VALUES
+                (1, '2020_2021_discovery', DATE '2020-01-01', DATE '2021-12-31'),
+                (2, '2022_bear_test', DATE '2022-01-01', DATE '2022-12-31'),
+                (3, '2023_recovery_test', DATE '2023-01-01', DATE '2023-12-31'),
+                (4, '2024_2026_recent_test', DATE '2024-01-01', DATE '2026-12-31')
+        ),
+        splits AS (
+            SELECT
+                d.split_order,
+                d.split_name,
+                GREATEST(d.raw_start_date, r.start_date) AS split_start_date,
+                LEAST(d.raw_end_date, r.end_date) AS split_end_date
+            FROM split_defs d
+            CROSS JOIN selected_run r
+            WHERE d.raw_start_date <= r.end_date
+              AND d.raw_end_date >= r.start_date
+        ),
+        trades_in_split AS (
+            SELECT
+                s.split_order,
+                s.split_name,
+                s.split_start_date,
+                s.split_end_date,
+                t.strategy_name,
+                t.symbol,
+                t.exchange,
+                t.cik,
+                t.net_return_pct,
+                t.holding_days
+            FROM splits s
+            JOIN {trades} t
+              ON t.run_id = (SELECT run_id FROM selected_run)
+             AND t.exit_date BETWEEN s.split_start_date AND s.split_end_date
+        ),
+        trade_stats AS (
+            SELECT
+                strategy_name,
+                split_name,
+                split_order,
+                split_start_date,
+                split_end_date,
+                count(*) AS trades,
+                count(DISTINCT symbol) AS symbols,
+                round(avg(net_return_pct), 4) AS avg_net_return_pct,
+                round(percentile_cont(0.5) WITHIN GROUP (ORDER BY net_return_pct)::numeric, 4)
+                    AS median_net_return_pct,
+                round(100.0 * count(*) FILTER (WHERE net_return_pct > 0)::numeric / nullif(count(*), 0), 2)
+                    AS win_rate_pct,
+                round((sum(net_return_pct) FILTER (WHERE net_return_pct > 0))
+                    / nullif(abs(sum(net_return_pct) FILTER (WHERE net_return_pct < 0)), 0), 4)
+                    AS profit_factor,
+                round(avg(holding_days), 2) AS avg_holding_days,
+                round(percentile_cont(0.5) WITHIN GROUP (ORDER BY holding_days)::numeric, 2)
+                    AS median_holding_days
+            FROM trades_in_split
+            GROUP BY strategy_name, split_name, split_order, split_start_date, split_end_date
+        ),
+        symbol_stats AS (
+            SELECT
+                strategy_name,
+                split_name,
+                split_order,
+                symbol,
+                exchange,
+                cik,
+                (exp(sum(ln(GREATEST(0.000001::double precision, 1.0 + net_return_pct::double precision / 100.0))))
+                    - 1.0) * 100.0 AS symbol_compounded_return_pct
+            FROM trades_in_split
+            GROUP BY strategy_name, split_name, split_order, symbol, exchange, cik
+        ),
+        symbol_agg AS (
+            SELECT
+                strategy_name,
+                split_name,
+                split_order,
+                round(100.0 * count(*) FILTER (
+                    WHERE symbol_compounded_return_pct > 0
+                )::numeric / nullif(count(*), 0), 2) AS positive_symbol_share_pct,
+                round(percentile_cont(0.10) WITHIN GROUP (
+                    ORDER BY symbol_compounded_return_pct
+                )::numeric, 4) AS p10_symbol_compounded_pct,
+                round(percentile_cont(0.50) WITHIN GROUP (
+                    ORDER BY symbol_compounded_return_pct
+                )::numeric, 4) AS p50_symbol_compounded_pct,
+                round(percentile_cont(0.90) WITHIN GROUP (
+                    ORDER BY symbol_compounded_return_pct
+                )::numeric, 4) AS p90_symbol_compounded_pct
+            FROM symbol_stats
+            GROUP BY strategy_name, split_name, split_order
+        )
+        SELECT
+            t.strategy_name,
+            t.split_name,
+            t.split_order,
+            t.split_start_date,
+            t.split_end_date,
+            t.trades,
+            t.symbols,
+            t.avg_net_return_pct,
+            t.median_net_return_pct,
+            t.win_rate_pct,
+            t.profit_factor,
+            t.avg_holding_days,
+            t.median_holding_days,
+            s.positive_symbol_share_pct,
+            s.p10_symbol_compounded_pct,
+            s.p50_symbol_compounded_pct,
+            s.p90_symbol_compounded_pct
+        FROM trade_stats t
+        LEFT JOIN symbol_agg s
+          ON s.strategy_name = t.strategy_name
+         AND s.split_name = t.split_name
+         AND s.split_order = t.split_order
+        ORDER BY t.strategy_name, t.split_order
+        """
+    ).format(
+        runs=table_identifier(cfg.runs_table),
+        trades=table_identifier(cfg.trades_table),
+    )
+
+
+def walk_forward_validation_query(cfg: BacktestConfig) -> sql.Composable:
+    return sql.SQL(
+        """
+        WITH selected_run AS (
+            SELECT run_id, start_date, end_date
+            FROM {runs}
+            WHERE run_id = %s
+        ),
+        window_defs(
+            validation_order,
+            validation_window,
+            raw_train_start_date,
+            raw_train_end_date,
+            raw_test_start_date,
+            raw_test_end_date
+        ) AS (
+            VALUES
+                (1, 'train_2020_2021_test_2022', DATE '2020-01-01', DATE '2021-12-31',
+                    DATE '2022-01-01', DATE '2022-12-31'),
+                (2, 'train_2020_2022_test_2023', DATE '2020-01-01', DATE '2022-12-31',
+                    DATE '2023-01-01', DATE '2023-12-31'),
+                (3, 'train_2020_2023_test_2024', DATE '2020-01-01', DATE '2023-12-31',
+                    DATE '2024-01-01', DATE '2024-12-31'),
+                (4, 'train_2020_2024_test_2025', DATE '2020-01-01', DATE '2024-12-31',
+                    DATE '2025-01-01', DATE '2025-12-31'),
+                (5, 'train_2020_2025_test_2026', DATE '2020-01-01', DATE '2025-12-31',
+                    DATE '2026-01-01', DATE '2026-12-31')
+        ),
+        windows AS (
+            SELECT
+                d.validation_order,
+                d.validation_window,
+                GREATEST(d.raw_train_start_date, r.start_date) AS train_start_date,
+                LEAST(d.raw_train_end_date, r.end_date) AS train_end_date,
+                GREATEST(d.raw_test_start_date, r.start_date) AS test_start_date,
+                LEAST(d.raw_test_end_date, r.end_date) AS test_end_date
+            FROM window_defs d
+            CROSS JOIN selected_run r
+            WHERE d.raw_train_start_date <= r.end_date
+              AND d.raw_train_end_date >= r.start_date
+              AND d.raw_test_start_date <= r.end_date
+              AND d.raw_test_end_date >= r.start_date
+        ),
+        source_trades AS (
+            SELECT *
+            FROM {trades}
+            WHERE run_id = (SELECT run_id FROM selected_run)
+        ),
+        strategies AS (
+            SELECT DISTINCT strategy_name
+            FROM source_trades
+        ),
+        window_strategies AS (
+            SELECT
+                s.strategy_name,
+                w.validation_window,
+                w.validation_order,
+                w.train_start_date,
+                w.train_end_date,
+                w.test_start_date,
+                w.test_end_date
+            FROM strategies s
+            CROSS JOIN windows w
+        ),
+        period_trades AS (
+            SELECT
+                ws.strategy_name,
+                ws.validation_window,
+                ws.validation_order,
+                'train' AS period_name,
+                t.symbol,
+                t.exchange,
+                t.cik,
+                t.net_return_pct,
+                t.holding_days
+            FROM window_strategies ws
+            JOIN source_trades t
+              ON t.strategy_name = ws.strategy_name
+             AND t.exit_date BETWEEN ws.train_start_date AND ws.train_end_date
+            UNION ALL
+            SELECT
+                ws.strategy_name,
+                ws.validation_window,
+                ws.validation_order,
+                'test' AS period_name,
+                t.symbol,
+                t.exchange,
+                t.cik,
+                t.net_return_pct,
+                t.holding_days
+            FROM window_strategies ws
+            JOIN source_trades t
+              ON t.strategy_name = ws.strategy_name
+             AND t.exit_date BETWEEN ws.test_start_date AND ws.test_end_date
+        ),
+        period_stats AS (
+            SELECT
+                strategy_name,
+                validation_window,
+                validation_order,
+                period_name,
+                count(*) AS trades,
+                count(DISTINCT symbol) AS symbols,
+                round(avg(net_return_pct), 4) AS avg_net_return_pct,
+                round(percentile_cont(0.5) WITHIN GROUP (ORDER BY net_return_pct)::numeric, 4)
+                    AS median_net_return_pct,
+                round(100.0 * count(*) FILTER (WHERE net_return_pct > 0)::numeric / nullif(count(*), 0), 2)
+                    AS win_rate_pct,
+                round((sum(net_return_pct) FILTER (WHERE net_return_pct > 0))
+                    / nullif(abs(sum(net_return_pct) FILTER (WHERE net_return_pct < 0)), 0), 4)
+                    AS profit_factor,
+                round(avg(holding_days), 2) AS avg_holding_days
+            FROM period_trades
+            GROUP BY strategy_name, validation_window, validation_order, period_name
+        ),
+        symbol_stats AS (
+            SELECT
+                strategy_name,
+                validation_window,
+                validation_order,
+                period_name,
+                symbol,
+                exchange,
+                cik,
+                (exp(sum(ln(GREATEST(0.000001::double precision, 1.0 + net_return_pct::double precision / 100.0))))
+                    - 1.0) * 100.0 AS symbol_compounded_return_pct
+            FROM period_trades
+            GROUP BY strategy_name, validation_window, validation_order, period_name, symbol, exchange, cik
+        ),
+        symbol_agg AS (
+            SELECT
+                strategy_name,
+                validation_window,
+                validation_order,
+                period_name,
+                round(100.0 * count(*) FILTER (
+                    WHERE symbol_compounded_return_pct > 0
+                )::numeric / nullif(count(*), 0), 2) AS positive_symbol_share_pct
+            FROM symbol_stats
+            GROUP BY strategy_name, validation_window, validation_order, period_name
+        )
+        SELECT
+            ws.strategy_name,
+            ws.validation_window,
+            ws.validation_order,
+            ws.train_start_date,
+            ws.train_end_date,
+            ws.test_start_date,
+            ws.test_end_date,
+            tr.trades AS train_trades,
+            tr.symbols AS train_symbols,
+            tr.avg_net_return_pct AS train_avg_net_return_pct,
+            tr.median_net_return_pct AS train_median_net_return_pct,
+            tr.win_rate_pct AS train_win_rate_pct,
+            tr.profit_factor AS train_profit_factor,
+            tsa.positive_symbol_share_pct AS train_positive_symbol_share_pct,
+            te.trades AS test_trades,
+            te.symbols AS test_symbols,
+            te.avg_net_return_pct AS test_avg_net_return_pct,
+            te.median_net_return_pct AS test_median_net_return_pct,
+            te.win_rate_pct AS test_win_rate_pct,
+            te.profit_factor AS test_profit_factor,
+            tesa.positive_symbol_share_pct AS test_positive_symbol_share_pct,
+            te.avg_holding_days AS test_avg_holding_days
+        FROM window_strategies ws
+        LEFT JOIN period_stats tr
+          ON tr.strategy_name = ws.strategy_name
+         AND tr.validation_window = ws.validation_window
+         AND tr.validation_order = ws.validation_order
+         AND tr.period_name = 'train'
+        LEFT JOIN period_stats te
+          ON te.strategy_name = ws.strategy_name
+         AND te.validation_window = ws.validation_window
+         AND te.validation_order = ws.validation_order
+         AND te.period_name = 'test'
+        LEFT JOIN symbol_agg tsa
+          ON tsa.strategy_name = ws.strategy_name
+         AND tsa.validation_window = ws.validation_window
+         AND tsa.validation_order = ws.validation_order
+         AND tsa.period_name = 'train'
+        LEFT JOIN symbol_agg tesa
+          ON tesa.strategy_name = ws.strategy_name
+         AND tesa.validation_window = ws.validation_window
+         AND tesa.validation_order = ws.validation_order
+         AND tesa.period_name = 'test'
+        WHERE COALESCE(tr.trades, 0) > 0
+           OR COALESCE(te.trades, 0) > 0
+        ORDER BY ws.strategy_name, ws.validation_order
+        """
+    ).format(
+        runs=table_identifier(cfg.runs_table),
+        trades=table_identifier(cfg.trades_table),
+    )
 
 
 def exit_reason_query(cfg: BacktestConfig) -> sql.Composable:
@@ -995,6 +1322,8 @@ def run_query_set(
         ("strategy_edge", strategy_trade_edge_query(cfg), (run_id,)),
         ("symbol_breadth", symbol_breadth_query(cfg), (run_id,)),
         ("yearly_stability", yearly_stability_query(cfg), (run_id,)),
+        ("time_splits", time_split_validation_query(cfg), (run_id,)),
+        ("walk_forward_windows", walk_forward_validation_query(cfg), (run_id,)),
         ("exit_reasons", exit_reason_query(cfg), (run_id,)),
         ("exit_reason_yearly", exit_reason_yearly_query(cfg), (run_id,)),
         ("holding_period_buckets", holding_period_bucket_query(cfg), (run_id,)),
