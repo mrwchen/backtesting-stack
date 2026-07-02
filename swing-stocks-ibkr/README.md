@@ -39,3 +39,15 @@ docker compose up --build
 ```
 
 The init container creates or validates the `backtest_...` tables. `DROP_ALL_TABLES_ON_START` defaults to `false` and only affects this service's `backtest_swing_stock_...` tables.
+
+## Diagnostics
+
+Run diagnostics after a backtest:
+
+```bash
+docker compose run --rm swing-stocks-ibkr-diagnostics
+```
+
+The diagnostics use the latest run by default. Set `DIAGNOSTICS_RUN_ID` to inspect a specific run. Results are written to `backtest_swing_stock_diagnostic_...` tables.
+
+Diagnostics include strategy edge, symbol breadth, yearly stability, exit reasons, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.

@@ -61,6 +61,49 @@ services:
     networks:
       - shared_net
 
+  swing-stocks-ibkr-diagnostics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: swing-stocks-ibkr-diagnostics
+    restart: "no"
+    depends_on:
+      init-target-schema:
+        condition: service_completed_successfully
+    command: ["python", "-m", "swing_stock_backtester.diagnostics"]
+    environment:
+      LOG_LEVEL: INFO
+      PGHOST: timescaledb
+      PGPORT: "5432"
+      PGDATABASE: postgres
+      PGUSER: market-data-account
+      PGPASSWORD: market-data-account-pw
+      PGAPPNAME: swing_stocks_ibkr_diagnostics
+      DB_CONNECT_TIMEOUT_SECONDS: "15"
+      DB_STATEMENT_TIMEOUT_MS: "1800000"
+      DB_LOCK_TIMEOUT_MS: "60000"
+      DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: "300000"
+
+      CORE_TABLE: public.stock_core_security_master_current
+      MARKET_DAILY_TABLE: public.stock_core_market_metrics_daily
+      FUNDAMENTAL_DAILY_TABLE: public.stock_core_sec_fundamentals_asof_daily
+      EARNINGS_TABLE: public.stock_core_earnings_calendar_events
+      IBKR_SYMBOLS_TABLE: public.ibkr_symbols
+
+      BACKTEST_RUNS_TABLE: public.backtest_swing_stock_runs
+      BACKTEST_RESULTS_TABLE: public.backtest_swing_stock_strategy_results
+      BACKTEST_TRADES_TABLE: public.backtest_swing_stock_trades
+      BACKTEST_EQUITY_TABLE: public.backtest_swing_stock_equity_daily
+
+      LOOKBACK_DAYS: "430"
+      DIAGNOSTICS_RUN_ID: ""
+      DIAGNOSTICS_TOP_N: "20"
+      DIAGNOSTICS_MIN_BUCKET_TRADES: "100"
+      DIAGNOSTICS_MIN_YEAR_TRADES: "20"
+      DIAGNOSTICS_FEATURE_LOOKBACK_DAYS: "430"
+    networks:
+      - shared_net
+
 networks:
   shared_net:
     external: true
