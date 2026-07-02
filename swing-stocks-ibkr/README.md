@@ -66,6 +66,8 @@ Run diagnostics after a backtest:
 docker compose run --rm swing-stocks-ibkr-diagnostics
 ```
 
+The diagnostics service is behind the `diagnostics` Compose profile, so `docker compose up --build` runs the backtester without starting diagnostics in parallel.
+
 The diagnostics use the latest run by default. Set `DIAGNOSTICS_RUN_ID` to inspect a specific run. Results are written to `backtest_swing_stock_diagnostic_...` tables.
 
 Diagnostics include strategy edge, symbol breadth, yearly stability, exit reasons, top/bottom symbols, feature bucket strength, and feature bucket stability. Feature buckets are based on signal-day data, not post-trade data.

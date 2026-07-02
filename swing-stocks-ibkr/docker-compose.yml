@@ -67,6 +67,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: swing-stocks-ibkr-diagnostics
+    profiles:
+      - diagnostics
     restart: "no"
     depends_on:
       init-target-schema:
