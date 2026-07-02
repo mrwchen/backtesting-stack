@@ -125,6 +125,10 @@ def load_symbol_market_rows(conn, cfg: BacktestConfig, identity: StockIdentity) 
             m.fifty_day_average,
             m.two_hundred_day_average,
             m.historical_price_ts,
+            c.sector,
+            c.industry,
+            c.ibkr_category,
+            c.ibkr_subcategory,
             f.period_end_date AS fundamental_asof_date,
             f.sec_data_available_at,
             f.sec_latest_filing_date,
@@ -171,6 +175,10 @@ def load_symbol_market_rows(conn, cfg: BacktestConfig, identity: StockIdentity) 
             ORDER BY f.period_end_date DESC, f.last_update_ts DESC
             LIMIT 1
         ) f ON TRUE
+        LEFT JOIN {core} c
+          ON c.symbol = m.symbol
+         AND c.exchange = m.exchange
+         AND c.cik = m.cik
         WHERE m.symbol = %s
           AND m.exchange = %s
           AND m.cik = %s
@@ -182,6 +190,7 @@ def load_symbol_market_rows(conn, cfg: BacktestConfig, identity: StockIdentity) 
     ).format(
         market=table_identifier(cfg.market_daily_table),
         fundamental=table_identifier(cfg.fundamental_daily_table),
+        core=table_identifier(cfg.core_table),
     )
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(

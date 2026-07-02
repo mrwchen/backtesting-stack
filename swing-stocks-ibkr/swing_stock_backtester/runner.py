@@ -17,7 +17,7 @@ from .db import (
 )
 from .logging_utils import configure_logging
 from .models import StockIdentity, SymbolBacktestResult
-from .strategies import STRATEGIES, empty_strategy_results, run_strategies_for_symbol
+from .strategies import empty_strategy_results, run_strategies_for_symbol, strategies_for_config
 
 log = logging.getLogger(__name__)
 
@@ -36,12 +36,13 @@ def run_symbol_worker(args: tuple[BacktestConfig, StockIdentity]) -> SymbolBackt
         return SymbolBacktestResult(
             identity=identity,
             status="error",
-            results=empty_strategy_results(identity, "error", error_text),
+            results=empty_strategy_results(identity, "error", error_text, strategies_for_config(cfg)),
             error_text=error_text,
         )
 
 
 def run_backtest(cfg: BacktestConfig) -> int:
+    strategies = strategies_for_config(cfg)
     with connect(cfg) as conn:
         validate_tables(conn, cfg)
         universe = load_universe(conn, cfg)
@@ -50,9 +51,9 @@ def run_backtest(cfg: BacktestConfig) -> int:
             len(universe),
             cfg.start_date,
             cfg.end_date,
-            len(STRATEGIES),
+            len(strategies),
         )
-        run_id = create_run(conn, cfg, len(STRATEGIES), len(universe))
+        run_id = create_run(conn, cfg, len(strategies), len(universe))
 
     if not universe:
         with connect(cfg) as conn:
@@ -78,7 +79,12 @@ def run_backtest(cfg: BacktestConfig) -> int:
                         processed += 1
                         error_text = str(exc)[:4000]
                         log.exception("Symbol failed outside worker envelope: %s %s.", identity.symbol, error_text)
-                        save_results(write_conn, cfg, run_id, empty_strategy_results(identity, "error", error_text))
+                        save_results(
+                            write_conn,
+                            cfg,
+                            run_id,
+                            empty_strategy_results(identity, "error", error_text, strategies),
+                        )
                     else:
                         processed += 1
                         if symbol_result.status != "ok":

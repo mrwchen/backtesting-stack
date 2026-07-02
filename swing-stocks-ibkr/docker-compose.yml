@@ -48,6 +48,7 @@ services:
       MAX_SYMBOLS: "0"
       START_DATE: "2020-01-01"
       END_DATE: ""
+      STRATEGY_SET: all
 
       PROCESS_PARALLELISM: "4"
       MIN_HISTORY_DAYS: "260"

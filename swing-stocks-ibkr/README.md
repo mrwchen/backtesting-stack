@@ -6,6 +6,18 @@ Backtests three long-only daily swing setups for every eligible stock in the con
 - `trend_pullback`
 - `earnings_reaction_drift`
 
+With `STRATEGY_SET=all`, the service also runs filtered hypothesis variants derived from diagnostics:
+
+- `earnings_reaction_drift_liquid_largecap_v1`
+- `earnings_reaction_drift_sma50_momentum_v1`
+- `earnings_reaction_drift_stable_industries_v1`
+- `quality_momentum_swing_liquid_quality_v1`
+- `quality_momentum_swing_earnings_overlay_v1`
+- `quality_momentum_swing_tech_semis_v1`
+- `trend_pullback_liquid_moderate_vol_v1`
+- `trend_pullback_stable_industries_v1`
+- `trend_pullback_midtrend_v1`
+
 The service reads only the existing stock-core tables and writes results only to new `backtest_...` tables.
 
 ## Source Tables
@@ -39,6 +51,12 @@ docker compose up --build
 ```
 
 The init container creates or validates the `backtest_...` tables. `DROP_ALL_TABLES_ON_START` defaults to `false` and only affects this service's `backtest_swing_stock_...` tables.
+
+`STRATEGY_SET` controls which strategy set runs:
+
+- `baseline`: original three strategies
+- `hypotheses`: filtered variants only
+- `all`: original strategies plus filtered variants
 
 ## Diagnostics
 

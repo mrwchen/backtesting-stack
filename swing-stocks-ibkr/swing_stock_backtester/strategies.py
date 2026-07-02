@@ -22,6 +22,138 @@ class StrategySpec:
     exit_checker: Callable[[list[dict[str, Any]], int], bool]
 
 
+@dataclass(frozen=True)
+class FeatureRule:
+    label: str
+    check: Callable[[dict[str, Any]], bool]
+
+
+def text_value(row: dict[str, Any], key: str) -> str:
+    return str(row.get(key) or "").strip()
+
+
+def avg_volume(row: dict[str, Any]) -> float | None:
+    return safe_float(row.get("avg_volume_20")) or safe_float(row.get("average_daily_volume_3m"))
+
+
+def atr14_pct(row: dict[str, Any]) -> float | None:
+    atr = safe_float(row.get("atr_14"))
+    close = safe_float(row.get("close"))
+    if atr is None or close is None or close <= 0:
+        return None
+    return atr / close
+
+
+def distance_to_average(row: dict[str, Any], average_key: str) -> float | None:
+    close = safe_float(row.get("close"))
+    average = safe_float(row.get(average_key))
+    if close is None or average is None or average <= 0:
+        return None
+    return close / average - 1.0
+
+
+def value_between(value: float | None, low: float | None = None, high: float | None = None) -> bool:
+    if value is None:
+        return False
+    if low is not None and value < low:
+        return False
+    if high is not None and value > high:
+        return False
+    return True
+
+
+def market_cap_at_least(value: float) -> FeatureRule:
+    return FeatureRule(f"market_cap>={value:g}", lambda row: value_between(safe_float(row.get("market_cap")), value))
+
+
+def avg_volume_at_least(value: float) -> FeatureRule:
+    return FeatureRule(f"avg_volume>={value:g}", lambda row: value_between(avg_volume(row), value))
+
+
+def price_between(low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:g}"
+    label_high = "inf" if high is None else f"{high:g}"
+    return FeatureRule(
+        f"price={label_low}..{label_high}",
+        lambda row: value_between(safe_float(row.get("close")), low, high),
+    )
+
+
+def atr_pct_between(low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:.2f}"
+    label_high = "inf" if high is None else f"{high:.2f}"
+    return FeatureRule(f"atr14_pct={label_low}..{label_high}", lambda row: value_between(atr14_pct(row), low, high))
+
+
+def ret_between(key: str, low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:.2f}"
+    label_high = "inf" if high is None else f"{high:.2f}"
+    return FeatureRule(f"{key}={label_low}..{label_high}", lambda row: value_between(safe_float(row.get(key)), low, high))
+
+
+def distance_252d_high_between(low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:.2f}"
+    label_high = "inf" if high is None else f"{high:.2f}"
+    return FeatureRule(
+        f"distance_252d_high={label_low}..{label_high}",
+        lambda row: value_between(safe_float(row.get("distance_from_252d_high")), low, high),
+    )
+
+
+def distance_sma_between(average_key: str, label: str, low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:.2f}"
+    label_high = "inf" if high is None else f"{high:.2f}"
+    return FeatureRule(
+        f"{label}={label_low}..{label_high}",
+        lambda row: value_between(distance_to_average(row, average_key), low, high),
+    )
+
+
+def quality_at_least(value: float) -> FeatureRule:
+    return FeatureRule(f"quality>={value:g}", lambda row: value_between(safe_float(row.get("quality_score")), value))
+
+
+def momentum_between(low: float | None = None, high: float | None = None) -> FeatureRule:
+    label_low = "-inf" if low is None else f"{low:g}"
+    label_high = "inf" if high is None else f"{high:g}"
+    return FeatureRule(
+        f"momentum={label_low}..{label_high}",
+        lambda row: value_between(safe_float(row.get("momentum_score")), low, high),
+    )
+
+
+def requires_earnings_event() -> FeatureRule:
+    return FeatureRule("earnings_event", lambda row: row.get("earnings_known_asof_ts") is not None)
+
+
+def classification_in(keys: tuple[str, ...], allowed: set[str], label: str) -> FeatureRule:
+    normalized = {value.lower() for value in allowed}
+    return FeatureRule(
+        label,
+        lambda row: any(text_value(row, key).lower() in normalized for key in keys),
+    )
+
+
+def entry_with_rules(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+    base_entry: Callable[[list[dict[str, Any]], int, BacktestConfig], tuple[bool, str, float | None]],
+    rules: tuple[FeatureRule, ...],
+) -> tuple[bool, str, float | None]:
+    is_entry, condition, signal_score = base_entry(rows, index, cfg)
+    if not is_entry:
+        return False, "", None
+
+    row = rows[index]
+    for rule in rules:
+        if not rule.check(row):
+            return False, "", None
+
+    labels = ",".join(rule.label for rule in rules)
+    return True, f"{condition}; hypothesis_filters={labels}", signal_score
+
+
 def price_is_tradeable(row: dict[str, Any], cfg: BacktestConfig) -> bool:
     close = safe_float(row.get("close"))
     market_cap = safe_float(row.get("market_cap"))
@@ -207,7 +339,187 @@ def earnings_reaction_exit(rows: list[dict[str, Any]], index: int) -> bool:
     return close < sma10 * 0.985
 
 
-STRATEGIES: tuple[StrategySpec, ...] = (
+EARNINGS_LIQUID_LARGECAP_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(5_000_000.0),
+    market_cap_at_least(20_000_000_000.0),
+    atr_pct_between(None, 0.12),
+    distance_252d_high_between(-0.40, None),
+)
+
+EARNINGS_SMA50_MODERATE_MOMENTUM_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(1_000_000.0),
+    ret_between("ret_126", 0.0, 0.25),
+    ret_between("ret_20", 0.03, 0.10),
+    distance_sma_between("sma_50", "distance_sma50", 0.0, 0.05),
+)
+
+EARNINGS_STABLE_INDUSTRY_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(500_000.0),
+    distance_252d_high_between(-0.40, None),
+    classification_in(
+        ("industry", "ibkr_category", "ibkr_subcategory"),
+        {
+            "Aerospace/Defense",
+            "Building Materials",
+            "Computers",
+            "Electronic Compo-Semicon",
+            "Enterprise Software/Serv",
+            "Healthcare-Services",
+            "Oil&Gas",
+            "Oil Comp-Explor&Prodtn",
+            "Retail-Restaurants",
+            "Semiconductors",
+        },
+        "stable_earnings_industry",
+    ),
+)
+
+QUALITY_LIQUID_HIGH_QUALITY_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(5_000_000.0),
+    quality_at_least(85.0),
+    atr_pct_between(None, 0.12),
+    distance_252d_high_between(-0.20, None),
+)
+
+QUALITY_EARNINGS_OVERLAY_RULES: tuple[FeatureRule, ...] = (
+    requires_earnings_event(),
+    avg_volume_at_least(500_000.0),
+    atr_pct_between(None, 0.12),
+)
+
+QUALITY_TECH_SEMIS_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(1_000_000.0),
+    quality_at_least(55.0),
+    momentum_between(55.0, 85.0),
+    classification_in(
+        ("sector", "industry", "ibkr_category", "ibkr_subcategory"),
+        {
+            "Aerospace/Defense",
+            "Communications",
+            "Computers",
+            "Electronic Compo-Misc",
+            "Electronic Compo-Semicon",
+            "Electronics",
+            "Enterprise Software/Serv",
+            "Semiconductor Equipment",
+            "Semiconductors",
+            "Technology",
+            "Telecommunications",
+        },
+        "quality_tech_semis_group",
+    ),
+)
+
+TREND_LIQUID_MODERATE_VOL_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(5_000_000.0),
+    atr_pct_between(0.02, 0.07),
+    distance_sma_between("sma_200", "distance_sma200", 0.0, 0.50),
+    distance_252d_high_between(-0.40, -0.03),
+)
+
+TREND_STABLE_INDUSTRY_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(1_000_000.0),
+    atr_pct_between(None, 0.12),
+    classification_in(
+        ("industry", "ibkr_category", "ibkr_subcategory"),
+        {
+            "Aerospace/Defense",
+            "Banks",
+            "Beverages",
+            "Beverages-Non-alcoholic",
+            "Computers",
+            "Invest Mgmnt/Advis Serv",
+            "Semiconductor Equipment",
+            "Semiconductors",
+            "Transport-Marine",
+            "Transportation",
+        },
+        "trend_stable_industry",
+    ),
+)
+
+TREND_MIDTREND_RULES: tuple[FeatureRule, ...] = (
+    avg_volume_at_least(500_000.0),
+    ret_between("ret_126", 0.10, 0.50),
+    distance_sma_between("sma_200", "distance_sma200", 0.0, 0.50),
+    distance_252d_high_between(-0.40, None),
+    atr_pct_between(None, 0.12),
+)
+
+
+def earnings_liquid_largecap_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, earnings_reaction_entry, EARNINGS_LIQUID_LARGECAP_RULES)
+
+
+def earnings_sma50_moderate_momentum_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, earnings_reaction_entry, EARNINGS_SMA50_MODERATE_MOMENTUM_RULES)
+
+
+def earnings_stable_industry_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, earnings_reaction_entry, EARNINGS_STABLE_INDUSTRY_RULES)
+
+
+def quality_liquid_high_quality_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, quality_momentum_entry, QUALITY_LIQUID_HIGH_QUALITY_RULES)
+
+
+def quality_earnings_overlay_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, quality_momentum_entry, QUALITY_EARNINGS_OVERLAY_RULES)
+
+
+def quality_tech_semis_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, quality_momentum_entry, QUALITY_TECH_SEMIS_RULES)
+
+
+def trend_liquid_moderate_vol_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, trend_pullback_entry, TREND_LIQUID_MODERATE_VOL_RULES)
+
+
+def trend_stable_industry_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, trend_pullback_entry, TREND_STABLE_INDUSTRY_RULES)
+
+
+def trend_midtrend_entry(
+    rows: list[dict[str, Any]],
+    index: int,
+    cfg: BacktestConfig,
+) -> tuple[bool, str, float | None]:
+    return entry_with_rules(rows, index, cfg, trend_pullback_entry, TREND_MIDTREND_RULES)
+
+
+BASELINE_STRATEGIES: tuple[StrategySpec, ...] = (
     StrategySpec(
         name="quality_momentum_swing",
         version="1.0",
@@ -239,6 +551,112 @@ STRATEGIES: tuple[StrategySpec, ...] = (
         exit_checker=earnings_reaction_exit,
     ),
 )
+
+HYPOTHESIS_STRATEGIES: tuple[StrategySpec, ...] = (
+    StrategySpec(
+        name="earnings_reaction_drift_liquid_largecap_v1",
+        version="1.0",
+        max_hold_days=20,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_liquid_largecap_entry,
+        exit_checker=earnings_reaction_exit,
+    ),
+    StrategySpec(
+        name="earnings_reaction_drift_sma50_momentum_v1",
+        version="1.0",
+        max_hold_days=20,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_sma50_moderate_momentum_entry,
+        exit_checker=earnings_reaction_exit,
+    ),
+    StrategySpec(
+        name="earnings_reaction_drift_stable_industries_v1",
+        version="1.0",
+        max_hold_days=20,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=2.8,
+        fallback_stop_pct=0.09,
+        entry_checker=earnings_stable_industry_entry,
+        exit_checker=earnings_reaction_exit,
+    ),
+    StrategySpec(
+        name="quality_momentum_swing_liquid_quality_v1",
+        version="1.0",
+        max_hold_days=45,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=3.0,
+        fallback_stop_pct=0.10,
+        entry_checker=quality_liquid_high_quality_entry,
+        exit_checker=quality_momentum_exit,
+    ),
+    StrategySpec(
+        name="quality_momentum_swing_earnings_overlay_v1",
+        version="1.0",
+        max_hold_days=45,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=3.0,
+        fallback_stop_pct=0.10,
+        entry_checker=quality_earnings_overlay_entry,
+        exit_checker=quality_momentum_exit,
+    ),
+    StrategySpec(
+        name="quality_momentum_swing_tech_semis_v1",
+        version="1.0",
+        max_hold_days=45,
+        initial_stop_atr=2.5,
+        trailing_stop_atr=3.0,
+        fallback_stop_pct=0.10,
+        entry_checker=quality_tech_semis_entry,
+        exit_checker=quality_momentum_exit,
+    ),
+    StrategySpec(
+        name="trend_pullback_liquid_moderate_vol_v1",
+        version="1.0",
+        max_hold_days=30,
+        initial_stop_atr=2.2,
+        trailing_stop_atr=2.6,
+        fallback_stop_pct=0.08,
+        entry_checker=trend_liquid_moderate_vol_entry,
+        exit_checker=trend_pullback_exit,
+    ),
+    StrategySpec(
+        name="trend_pullback_stable_industries_v1",
+        version="1.0",
+        max_hold_days=30,
+        initial_stop_atr=2.2,
+        trailing_stop_atr=2.6,
+        fallback_stop_pct=0.08,
+        entry_checker=trend_stable_industry_entry,
+        exit_checker=trend_pullback_exit,
+    ),
+    StrategySpec(
+        name="trend_pullback_midtrend_v1",
+        version="1.0",
+        max_hold_days=30,
+        initial_stop_atr=2.2,
+        trailing_stop_atr=2.6,
+        fallback_stop_pct=0.08,
+        entry_checker=trend_midtrend_entry,
+        exit_checker=trend_pullback_exit,
+    ),
+)
+
+STRATEGIES: tuple[StrategySpec, ...] = BASELINE_STRATEGIES
+
+
+def strategies_for_config(cfg: BacktestConfig) -> tuple[StrategySpec, ...]:
+    strategy_set = cfg.strategy_set.strip().lower()
+    if strategy_set == "baseline":
+        return BASELINE_STRATEGIES
+    if strategy_set in {"hypothesis", "hypotheses"}:
+        return HYPOTHESIS_STRATEGIES
+    if strategy_set == "all":
+        return BASELINE_STRATEGIES + HYPOTHESIS_STRATEGIES
+    raise ValueError("STRATEGY_SET must be one of: baseline, hypotheses, all.")
 
 
 def execution_price(row: dict[str, Any], side: str, cfg: BacktestConfig) -> float | None:
@@ -488,7 +906,12 @@ def simulate_strategy(
     return result
 
 
-def empty_strategy_results(identity: StockIdentity, status: str, error_text: str | None = None) -> list[StrategyResult]:
+def empty_strategy_results(
+    identity: StockIdentity,
+    status: str,
+    error_text: str | None = None,
+    strategies: tuple[StrategySpec, ...] = STRATEGIES,
+) -> list[StrategyResult]:
     return [
         StrategyResult(
             strategy_name=spec.name,
@@ -508,10 +931,10 @@ def run_strategies_for_symbol(
     cfg: BacktestConfig,
 ) -> list[StrategyResult]:
     if not rows:
-        return empty_strategy_results(identity, "no_data")
+        return empty_strategy_results(identity, "no_data", strategies=strategies_for_config(cfg))
     if len(rows) < cfg.min_history_days:
-        return empty_strategy_results(identity, "insufficient_history")
+        return empty_strategy_results(identity, "insufficient_history", strategies=strategies_for_config(cfg))
 
     enrich_price_rows(rows)
     attach_earnings_reaction_features(rows, earnings_events)
-    return [simulate_strategy(identity, rows, spec, cfg) for spec in STRATEGIES]
+    return [simulate_strategy(identity, rows, spec, cfg) for spec in strategies_for_config(cfg)]

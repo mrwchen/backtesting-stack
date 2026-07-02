@@ -75,6 +75,7 @@ class BacktestConfig:
     commission_bps: float
     slippage_bps: float
     write_equity_daily: bool
+    strategy_set: str
     log_level: str
 
     @property
@@ -146,5 +147,6 @@ def load_config() -> BacktestConfig:
         commission_bps=env_float("COMMISSION_BPS", 1.0, 0.0),
         slippage_bps=env_float("SLIPPAGE_BPS", 2.0, 0.0),
         write_equity_daily=env_bool("WRITE_EQUITY_DAILY", False),
+        strategy_set=os.getenv("STRATEGY_SET", "baseline").strip().lower(),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip(),
     )
