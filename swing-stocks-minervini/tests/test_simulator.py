@@ -140,6 +140,34 @@ def test_all_simultaneous_signals_are_taken():
     assert (result.trades["shares"] == 200).all()  # fixed sizing base, no competition
 
 
+def test_market_gate_blocks_entries_but_not_exits():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.5)]   # breakout day 5 (gate on) -> entry at 100
+    bars += [(101, 102, 100, 101)]   # day 6: gate goes off, position keeps running
+    bars += [(96, 97, 94, 95)]       # day 7: stop 95 hit while gate off -> exit works
+    bars += [(99, 101, 98, 100.5)]   # day 8: second breakout, but gate off -> no entry
+    bars += [(99, 101, 98, 100.5)] * 8
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = pd.concat(
+        [
+            _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=6),
+            _setup_row(dates, detect_idx=6, pivot=100.0, stop=95.0, valid_idx=15).assign(setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    market_on = np.array([True] * 6 + [False] * (len(dates) - 6))
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups,
+        _clean_cfg(), market_on=market_on,
+    )
+    trades = result.trades
+
+    assert len(trades) == 1  # only the first breakout traded
+    assert trades.iloc[0]["exit_reason"] == "stop"  # exit executed despite gate off
+    assert trades.iloc[0]["entry_date"] == dates[5].date()
+
+
 def test_open_position_closed_at_end():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]

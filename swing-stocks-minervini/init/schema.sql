@@ -88,6 +88,15 @@ CREATE INDEX IF NOT EXISTS idx_bm_screen_period_pass
     ON backtesting_minervini_screen_daily (period_end_date DESC, screen_pass);
 
 -- ---------------------------------------------------------------------------
+-- Stage 1c: daily market regime (breadth of stocks above their 200d MA)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS backtesting_minervini_market_daily (
+    period_end_date     DATE PRIMARY KEY,
+    market_breadth_pct  NUMERIC(8,4),
+    market_on           BOOLEAN NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- Stage 2: detected VCP setups (pre-breakout bases with pivot and stop)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
@@ -154,7 +163,9 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_trades (
     exit_price          NUMERIC(15,4) NOT NULL,
     pnl                 NUMERIC(18,2) NOT NULL,
     r_multiple          NUMERIC(18,6),
-    holding_days        INTEGER NOT NULL
+    holding_days        INTEGER NOT NULL,
+    regime_composite    NUMERIC(18,6),
+    regime_label        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bm_trades_run
@@ -178,6 +189,8 @@ ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS sector TEXT;
 ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS industry TEXT;
 ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS sector TEXT;
 ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS industry TEXT;
+ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS regime_composite NUMERIC(18,6);
+ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS regime_label TEXT;
 ALTER TABLE backtesting_minervini_equity_daily DROP COLUMN IF EXISTS cash;
 
 -- Ensure the runtime account can use everything created above (existing objects).

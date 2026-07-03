@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 RS_TABLE = "backtesting_minervini_rs_daily"
 SCREEN_TABLE = "backtesting_minervini_screen_daily"
+MARKET_TABLE = "backtesting_minervini_market_daily"
 SETUPS_TABLE = "backtesting_minervini_setups"
 RUNS_TABLE = "backtesting_minervini_runs"
 TRADES_TABLE = "backtesting_minervini_trades"
@@ -40,7 +41,10 @@ TRADE_COLUMNS = [
     "leg", "exit_reason",
     "entry_date", "entry_price", "stop_price", "pivot", "shares",
     "exit_date", "exit_price", "pnl", "r_multiple", "holding_days",
+    "regime_composite", "regime_label",
 ]
+
+MARKET_COLUMNS = ["period_end_date", "market_breadth_pct", "market_on"]
 
 EQUITY_COLUMNS = ["run_id", "period_end_date", "equity", "open_positions", "exposure_pct"]
 
@@ -53,6 +57,11 @@ def write_rs(conn, df: pd.DataFrame, start, end) -> None:
 def write_screen(conn, df: pd.DataFrame, start, end) -> None:
     db.delete_range(conn, SCREEN_TABLE, "period_end_date", start, end)
     db.copy_df(conn, df, SCREEN_TABLE, SCREEN_COLUMNS)
+
+
+def write_market(conn, df: pd.DataFrame, start, end) -> None:
+    db.delete_range(conn, MARKET_TABLE, "period_end_date", start, end)
+    db.copy_df(conn, df, MARKET_TABLE, MARKET_COLUMNS)
 
 
 def write_setups(conn, df: pd.DataFrame, start, end) -> None:

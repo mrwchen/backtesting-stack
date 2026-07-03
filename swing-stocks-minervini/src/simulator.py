@@ -8,7 +8,9 @@ is opened in the same symbol.
 
 Entry:  stop-buy over the pivot, from the day after detection while the setup
         is valid. Fill = max(open, pivot) plus slippage; days that gap more
-        than MAX_GAP_PCT over the pivot are skipped.
+        than MAX_GAP_PCT over the pivot are skipped. When the market-breadth
+        gate is off (market_on[t] == False) no new entries are taken; open
+        positions keep running into their regular exits.
 Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
         us), partial profit at PARTIAL_AT_R with optional break-even stop,
@@ -64,6 +66,7 @@ def simulate(
     setups: pd.DataFrame,
     cfg: Config,
     sim_start_idx: int = 0,
+    market_on: np.ndarray | None = None,
 ) -> SimResult:
     o = open_m.to_numpy()
     h = high_m.to_numpy()
@@ -165,9 +168,11 @@ def simulate(
             next_setup += 1
         active_setups = [s for s in active_setups if s.end_idx >= t]
 
-        # ---- entries: every triggering setup is taken -------------------------
+        # ---- entries: every triggering setup is taken (unless the market
+        # breadth gate is off; setups stay active until they expire) ------------
         consumed = []
-        for s in active_setups:
+        entries_allowed = market_on is None or bool(market_on[t])
+        for s in active_setups if entries_allowed else []:
             if s.symbol in positions:
                 continue
             col = col_index[s.symbol]

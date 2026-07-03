@@ -43,6 +43,14 @@ WHERE upper(quote_type) = 'EQUITY'
 GROUP BY symbol
 """
 
+REGIME_SQL = """
+SELECT day::date              AS day,
+       composite_score::float8 AS regime_composite,
+       regime_label
+FROM world_regime_daily_scores_mv
+WHERE day <= %(end)s
+"""
+
 FUNDAMENTALS_SQL = """
 SELECT symbol,
        period_end_date::date                        AS available_date,
@@ -112,6 +120,22 @@ def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:
         return df
 
     return _cached(cfg, f"fundamentals_v2_{end}", _load)
+
+
+def load_regime_scores(conn, cfg: Config) -> pd.DataFrame:
+    """World-regime composite per day, used only as trade attribution.
+    Returns an empty frame if the materialized view is unavailable."""
+    end = effective_end(cfg)
+
+    def _load():
+        try:
+            return db.read_df(conn, REGIME_SQL, {"end": end})
+        except Exception:
+            conn.rollback()
+            log.warning("world_regime_daily_scores_mv not readable - regime attribution skipped")
+            return pd.DataFrame(columns=["day", "regime_composite", "regime_label"])
+
+    return _cached(cfg, f"regime_{end}", _load)
 
 
 def pivot_field(prices: pd.DataFrame, field: str) -> pd.DataFrame:

@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from . import data_loader, db, fundamentals, persistence, rs_rating, trend_template, vcp
+from . import data_loader, db, fundamentals, market_filter, persistence, rs_rating, trend_template, vcp
 from .config import Config
 from .simulator import simulate
 
@@ -44,7 +44,7 @@ def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, 
     return pd.DataFrame(out)
 
 
-def run_screen(conn, cfg: Config, matrices: dict, window: np.ndarray) -> pd.DataFrame:
+def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: np.ndarray) -> pd.DataFrame:
     dates, symbols = matrices["dates"], matrices["symbols"]
     close_m, volume_m = matrices["close"], matrices["volume"]
 
@@ -101,6 +101,11 @@ def run_screen(conn, cfg: Config, matrices: dict, window: np.ndarray) -> pd.Data
     )
     screen_df["rs_rating"] = screen_df["rs_rating"].astype("Int16")
     persistence.write_screen(conn, screen_df, start, end)
+
+    market_df = market.loc[window].reset_index(names="period_end_date")
+    market_df["period_end_date"] = market_df["period_end_date"].dt.date
+    market_df["market_breadth_pct"] = (market_df["market_breadth"] * 100).round(4)
+    persistence.write_market(conn, market_df, start, end)
     log.info(
         "screen done: %d rs rows, %d screen rows (%d screen passes)",
         len(rs_df), len(screen_df), int(screen_df["screen_pass"].sum()),
@@ -154,17 +159,21 @@ def run_setup(
     persistence.write_setups(conn, setups_df, start, end)
 
 
-def run_sim(conn, cfg: Config, matrices: dict, universe: pd.DataFrame, start, end) -> None:
+def run_sim(
+    conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
+    market: pd.DataFrame, start, end,
+) -> None:
     setups = persistence.read_setups(conn, start, end)
     if setups.empty:
         log.warning("no setups in %s..%s -> nothing to simulate", start, end)
         return
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
+    market_on = market["market_on"].to_numpy() if cfg.market_filter_enable else None
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
-        setups, cfg, sim_start_idx=sim_start_idx,
+        setups, cfg, sim_start_idx=sim_start_idx, market_on=market_on,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
     trades = result.trades
@@ -172,6 +181,16 @@ def run_sim(conn, cfg: Config, matrices: dict, universe: pd.DataFrame, start, en
         trades = trades.merge(
             universe[["symbol", "sector", "industry"]], on="symbol", how="left"
         )
+        regime = data_loader.load_regime_scores(conn, cfg)
+        if not regime.empty:
+            regime = regime.copy()
+            regime["day"] = pd.to_datetime(regime["day"]).dt.date
+            trades = trades.merge(
+                regime.rename(columns={"day": "entry_date"}), on="entry_date", how="left"
+            )
+        else:
+            trades["regime_composite"] = None
+            trades["regime_label"] = None
     persistence.write_trades(conn, run_id, trades)
     persistence.write_equity(conn, run_id, result.equity)
     log.info("run %d persisted: %s", run_id, result.metrics)
@@ -200,16 +219,23 @@ def main() -> None:
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
 
+    market = market_filter.compute_breadth(matrices["close"], cfg)
+    log.info(
+        "market breadth: %.1f%% latest, gate on for %d of %d days in window",
+        100 * market["market_breadth"].iloc[-1],
+        int(market.loc[window, "market_on"].sum()), int(window.sum()),
+    )
+
     stages = ("screen", "setup", "sim") if cfg.stage == "all" else (cfg.stage,)
     pass_days = None
     if "screen" in stages:
-        pass_days = run_screen(conn, cfg, matrices, window)
+        pass_days = run_screen(conn, cfg, matrices, market, window)
     if "setup" in stages:
         if pass_days is None:
             pass_days = persistence.read_screen_pass_days(conn, start, end)
         run_setup(conn, cfg, prices, pass_days, universe, start, end)
     if "sim" in stages:
-        run_sim(conn, cfg, matrices, universe, start, end)
+        run_sim(conn, cfg, matrices, universe, market, start, end)
     conn.close()
     log.info("done")
 

@@ -52,6 +52,11 @@ class Config:
     min_above_52w_low: float
     max_below_52w_high: float
 
+    # market regime filter (breadth of stocks above their 200d MA)
+    market_filter_enable: bool
+    breadth_on_threshold: float
+    breadth_off_threshold: float
+
     # fundamentals
     eps_yoy_min: float
     revenue_yoy_min: float
@@ -104,6 +109,9 @@ class Config:
             ma200_trend_days=int(_env("MA200_TREND_DAYS", "21")),
             min_above_52w_low=float(_env("MIN_ABOVE_52W_LOW", "1.30")),
             max_below_52w_high=float(_env("MAX_BELOW_52W_HIGH", "0.75")),
+            market_filter_enable=_env_bool("MARKET_FILTER_ENABLE", True),
+            breadth_on_threshold=float(_env("BREADTH_ON_THRESHOLD", "0.50")),
+            breadth_off_threshold=float(_env("BREADTH_OFF_THRESHOLD", "0.45")),
             eps_yoy_min=float(_env("EPS_YOY_MIN", "0.20")),
             revenue_yoy_min=float(_env("REVENUE_YOY_MIN", "0.10")),
             fundamentals_min_pass=int(_env("FUNDAMENTALS_MIN_PASS", "2")),

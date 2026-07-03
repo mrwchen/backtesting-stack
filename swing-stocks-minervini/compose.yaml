@@ -64,6 +64,12 @@ services:
       MIN_ABOVE_52W_LOW: "1.30"
       MAX_BELOW_52W_HIGH: "0.75"
 
+      # -- Market regime filter (breadth of stocks above their 200d MA;
+      #    hysteresis gate blocks new entries only, exits keep running) ----------
+      MARKET_FILTER_ENABLE: "true"
+      BREADTH_ON_THRESHOLD: "0.50"
+      BREADTH_OFF_THRESHOLD: "0.45"
+
       # -- Fundamentals (point-in-time from SEC filings; quarterly EPS derived
       #    from consecutive TTM net-income diffs / diluted shares) ---------------
       EPS_YOY_MIN: "0.20"

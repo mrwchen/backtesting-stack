@@ -22,9 +22,10 @@ practice). Annual-only filers never qualify for the EPS flag.
 |---|---|
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
 | `backtesting_minervini_screen_daily` | trend-template + fundamental flags per symbol/day |
+| `backtesting_minervini_market_daily` | daily market breadth (% above 200d MA) + hysteresis gate |
 | `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + sector/industry |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
-| `backtesting_minervini_trades` | trade legs per run + sector/industry attribution |
+| `backtesting_minervini_trades` | trade legs per run + sector/industry + world-regime attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
 
 ## Pipeline
@@ -36,6 +37,8 @@ independently; source data is cached locally as parquet in `./cache`.
 ```
 screen : RS rating (cross-sectional percentile) + 8-point trend template
          + point-in-time fundamentals  -> rs_daily, screen_daily
+         + market breadth gate (share of stocks above their 200d MA, on >= 50%
+         / off < 45% hysteresis) -> market_daily
 setup  : VCP detection on screen-pass days -> setups
 sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          Every triggered setup is traded independently — there is NO portfolio
@@ -46,6 +49,9 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          partial at PARTIAL_AT_R, MA-trail, end-of-data.
          equity_daily is an aggregate research curve (base + cumulative PnL),
          not a cash-constrained account.
+         New entries are blocked while the market breadth gate is off
+         (MARKET_FILTER_ENABLE); open positions keep running into their exits.
+         Trades carry the world-regime composite score at entry as attribution.
 ```
 
 ## Run
