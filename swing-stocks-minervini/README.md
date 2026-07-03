@@ -22,9 +22,9 @@ practice). Annual-only filers never qualify for the EPS flag.
 |---|---|
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
 | `backtesting_minervini_screen_daily` | trend-template + fundamental flags per symbol/day |
-| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) |
+| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + sector/industry |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
-| `backtesting_minervini_trades` | trade legs per run |
+| `backtesting_minervini_trades` | trade legs per run + sector/industry attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
 
 ## Pipeline

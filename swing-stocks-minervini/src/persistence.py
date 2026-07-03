@@ -30,13 +30,14 @@ SCREEN_COLUMNS = [
 ]
 
 SETUP_COLUMNS = [
-    "symbol", "detect_date", "pivot", "last_low", "stop_level",
+    "symbol", "sector", "industry", "detect_date", "pivot", "last_low", "stop_level",
     "base_start_date", "base_days", "n_contractions", "contraction_depths",
     "dryup_ratio", "close", "valid_until",
 ]
 
 TRADE_COLUMNS = [
-    "run_id", "position_id", "setup_id", "symbol", "leg", "exit_reason",
+    "run_id", "position_id", "setup_id", "symbol", "sector", "industry",
+    "leg", "exit_reason",
     "entry_date", "entry_price", "stop_price", "pivot", "shares",
     "exit_date", "exit_price", "pnl", "r_multiple", "holding_days",
 ]
@@ -54,12 +55,12 @@ def write_screen(conn, df: pd.DataFrame, start, end) -> None:
     db.copy_df(conn, df, SCREEN_TABLE, SCREEN_COLUMNS)
 
 
-def write_setups(conn, setups: list, start, end) -> None:
+def write_setups(conn, df: pd.DataFrame, start, end) -> None:
     db.delete_range(conn, SETUPS_TABLE, "detect_date", start, end)
-    if not setups:
+    if df.empty:
         log.warning("no setups detected in %s..%s", start, end)
         return
-    df = pd.DataFrame([vars(s) for s in setups])
+    df = df.copy()
     df["contraction_depths"] = df["contraction_depths"].map(json.dumps)
     db.copy_df(conn, df, SETUPS_TABLE, SETUP_COLUMNS)
 

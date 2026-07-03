@@ -35,9 +35,12 @@ WHERE period_end_date BETWEEN %(start)s AND %(end)s
 """
 
 UNIVERSE_SQL = """
-SELECT DISTINCT symbol
+SELECT symbol,
+       max(sector)   AS sector,
+       max(industry) AS industry
 FROM stock_core_security_master_current
 WHERE upper(quote_type) = 'EQUITY'
+GROUP BY symbol
 """
 
 FUNDAMENTALS_SQL = """
@@ -91,12 +94,13 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
     return _cached(cfg, f"prices_{start}_{end}", _load)
 
 
-def load_equity_symbols(conn, cfg: Config) -> set[str]:
+def load_universe(conn, cfg: Config) -> pd.DataFrame:
+    """Equity universe with sector/industry attribution (symbol, sector, industry)."""
+
     def _load():
         return db.read_df(conn, UNIVERSE_SQL)
 
-    df = _cached(cfg, f"universe_{effective_end(cfg)}", _load)
-    return set(df["symbol"])
+    return _cached(cfg, f"universe_v2_{effective_end(cfg)}", _load)
 
 
 def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:

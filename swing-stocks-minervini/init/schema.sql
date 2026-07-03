@@ -93,6 +93,8 @@ CREATE INDEX IF NOT EXISTS idx_bm_screen_period_pass
 CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     setup_id            BIGSERIAL PRIMARY KEY,
     symbol              TEXT NOT NULL,
+    sector              TEXT,
+    industry            TEXT,
     detect_date         DATE NOT NULL,
     pivot               NUMERIC(15,4) NOT NULL,
     last_low            NUMERIC(15,4) NOT NULL,
@@ -139,6 +141,8 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_trades (
     position_id         INTEGER NOT NULL,
     setup_id            BIGINT,
     symbol              TEXT NOT NULL,
+    sector              TEXT,
+    industry            TEXT,
     leg                 TEXT NOT NULL,
     exit_reason         TEXT NOT NULL,
     entry_date          DATE NOT NULL,
@@ -166,6 +170,15 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_equity_daily (
     exposure_pct        NUMERIC(18,6) NOT NULL,
     PRIMARY KEY (run_id, period_end_date)
 );
+
+-- ---------------------------------------------------------------------------
+-- Idempotent migrations for tables created by earlier versions of this schema
+-- ---------------------------------------------------------------------------
+ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS industry TEXT;
+ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS industry TEXT;
+ALTER TABLE backtesting_minervini_equity_daily DROP COLUMN IF EXISTS cash;
 
 -- Ensure the runtime account can use everything created above (existing objects).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "market-data-account";

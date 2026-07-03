@@ -92,10 +92,13 @@ def run_screen(conn, cfg: Config, matrices: dict, window: np.ndarray) -> pd.Data
     return _long_frame(screen_pass & window_m, dates, symbols, {})
 
 
-def run_setup(conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame, start, end) -> None:
+def run_setup(
+    conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame,
+    universe: pd.DataFrame, start, end,
+) -> None:
     if pass_days.empty:
         log.warning("no screen passes -> no setup detection")
-        persistence.write_setups(conn, [], start, end)
+        persistence.write_setups(conn, pd.DataFrame(), start, end)
         return
 
     pass_days = pass_days.copy()
@@ -127,10 +130,15 @@ def run_setup(conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame, 
             )
         )
     log.info("detected %d VCP setups across %d symbols", len(all_setups), len(pass_by_symbol))
-    persistence.write_setups(conn, all_setups, start, end)
+    setups_df = pd.DataFrame([vars(s) for s in all_setups])
+    if not setups_df.empty:
+        setups_df = setups_df.merge(
+            universe[["symbol", "sector", "industry"]], on="symbol", how="left"
+        )
+    persistence.write_setups(conn, setups_df, start, end)
 
 
-def run_sim(conn, cfg: Config, matrices: dict, start, end) -> None:
+def run_sim(conn, cfg: Config, matrices: dict, universe: pd.DataFrame, start, end) -> None:
     setups = persistence.read_setups(conn, start, end)
     if setups.empty:
         log.warning("no setups in %s..%s -> nothing to simulate", start, end)
@@ -143,7 +151,12 @@ def run_sim(conn, cfg: Config, matrices: dict, start, end) -> None:
         setups, cfg, sim_start_idx=sim_start_idx,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
-    persistence.write_trades(conn, run_id, result.trades)
+    trades = result.trades
+    if not trades.empty:
+        trades = trades.merge(
+            universe[["symbol", "sector", "industry"]], on="symbol", how="left"
+        )
+    persistence.write_trades(conn, run_id, trades)
     persistence.write_equity(conn, run_id, result.equity)
     log.info("run %d persisted: %s", run_id, result.metrics)
 
@@ -158,8 +171,8 @@ def main() -> None:
 
     conn = db.get_conn()
     prices = data_loader.load_prices(conn, cfg)
-    equity_symbols = data_loader.load_equity_symbols(conn, cfg)
-    prices = prices[prices["symbol"].isin(equity_symbols)]
+    universe = data_loader.load_universe(conn, cfg)
+    prices = prices[prices["symbol"].isin(set(universe["symbol"]))]
     log.info("loaded %d daily bars for %d equity symbols", len(prices), prices["symbol"].nunique())
 
     matrices = {"close": data_loader.pivot_field(prices, "close")}
@@ -169,7 +182,7 @@ def main() -> None:
         matrices[field] = data_loader.pivot_field(prices, field)
 
     dates = matrices["dates"]
-    window = (dates >= pd.Timestamp(cfg.start_date)).to_numpy()
+    window = np.asarray(dates >= pd.Timestamp(cfg.start_date))
     if not window.any():
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
@@ -181,9 +194,9 @@ def main() -> None:
     if "setup" in stages:
         if pass_days is None:
             pass_days = persistence.read_screen_pass_days(conn, start, end)
-        run_setup(conn, cfg, prices, pass_days, start, end)
+        run_setup(conn, cfg, prices, pass_days, universe, start, end)
     if "sim" in stages:
-        run_sim(conn, cfg, matrices, start, end)
+        run_sim(conn, cfg, matrices, universe, start, end)
     conn.close()
     log.info("done")
 

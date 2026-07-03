@@ -7,7 +7,7 @@ services:
     environment:
       PGPASSWORD: "postgres-ts-root-pw"
       PGAPPNAME: "backtesting_minervini_init"
-      DROP_ALL_MINERVINI_TABLES_ON_START: "false"
+      DROP_ALL_MINERVINI_TABLES_ON_START: "true"
     command:
       - sh
       - -c
