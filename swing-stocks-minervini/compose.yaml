@@ -1,0 +1,106 @@
+services:
+  init-minervini-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: "postgres-ts-root-pw"
+      PGAPPNAME: "backtesting_minervini_init"
+      DROP_ALL_MINERVINI_TABLES_ON_START: "false"
+    command:
+      - sh
+      - -c
+      - >
+        psql -h timescaledb -p 5432 -U postgres-ts -d postgres
+        -v ON_ERROR_STOP=1
+        -v drop_all_minervini_tables_on_start="$${DROP_ALL_MINERVINI_TABLES_ON_START:-false}"
+        -f /init.sql
+    networks:
+      - shared_net
+
+  minervini-backtester:
+    build: .
+    command: python -m src.runner
+    depends_on:
+      init-minervini-schema:
+        condition: service_completed_successfully
+    restart: "no"
+    volumes:
+      - ./cache:/cache
+    environment:
+      # -- Database connection ------------------------------------------------
+      PGHOST: "timescaledb"
+      PGPORT: "5432"
+      PGDATABASE: "postgres"
+      PGUSER: "market-data-account"
+      PGPASSWORD: "market-data-account-pw"
+
+      # -- Run control ----------------------------------------------------------
+      # STAGE: screen | setup | sim | all
+      STAGE: "all"
+      START_DATE: "2020-01-02"
+      END_DATE: ""
+      RUN_LABEL: "minervini_v1"
+      CACHE_DIR: "/cache"
+      FORCE_REFRESH: "false"
+      # Extra history fetched before START_DATE so MAs / 52w / RS are warm at start.
+      WARMUP_CALENDAR_DAYS: "550"
+      # passed = persist only rows where the full screen passes; universe = all rankable rows
+      SCREEN_PERSIST: "passed"
+      LOG_LEVEL: "INFO"
+
+      # -- Universe filters (applied as-of-date) --------------------------------
+      MIN_PRICE: "5.0"
+      MIN_DOLLAR_VOLUME: "2000000"
+
+      # -- Relative strength (IBD-style, latest quarter double-weighted) --------
+      RS_LOOKBACKS: "63,126,189,252"
+      RS_WEIGHTS: "2,1,1,1"
+      RS_MIN: "70"
+
+      # -- Trend template ---------------------------------------------------------
+      MA200_TREND_DAYS: "21"
+      MIN_ABOVE_52W_LOW: "1.30"
+      MAX_BELOW_52W_HIGH: "0.75"
+
+      # -- Fundamentals (point-in-time from SEC filings; quarterly EPS derived
+      #    from consecutive TTM net-income diffs / diluted shares) ---------------
+      EPS_YOY_MIN: "0.20"
+      REVENUE_YOY_MIN: "0.10"
+      FUNDAMENTALS_MIN_PASS: "2"
+      EPS_STALE_TRADING_DAYS: "130"
+      FILING_STALE_TRADING_DAYS: "280"
+
+      # -- VCP detection ----------------------------------------------------------
+      SWING_WINDOW: "3"
+      BASE_MIN_DAYS: "15"
+      BASE_MAX_DAYS: "75"
+      CONTRACTIONS_MIN: "2"
+      CONTRACTIONS_MAX: "4"
+      FINAL_DEPTH_MAX: "0.10"
+      BASE_DEPTH_MAX: "0.35"
+      PIVOT_BELOW_BASE_HIGH_MAX: "0.05"
+      DRYUP_RATIO_MAX: "0.70"
+      SETUP_VALID_DAYS: "15"
+
+      # -- Simulation (per-trade, no portfolio constraints: every triggered
+      #    setup is taken; sizing is fixed off INITIAL_EQUITY, no compounding) --
+      INITIAL_EQUITY: "100000"
+      RISK_PCT: "0.01"
+      STOP_MAX_PCT: "0.08"
+      MAX_POSITION_PCT: "0.25"
+      MAX_GAP_PCT: "0.05"
+      SLIPPAGE_PCT: "0.001"
+      COMMISSION_PCT: "0.0005"
+      PARTIAL_AT_R: "2.0"
+      PARTIAL_FRACTION: "0.5"
+      BREAKEVEN_AFTER_PARTIAL: "true"
+      TRAIL_MA_DAYS: "50"
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+    name: shared_net

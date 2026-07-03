@@ -1,0 +1,59 @@
+"""Thin psycopg2 helpers: connection, bulk COPY writes, range deletes."""
+from __future__ import annotations
+
+import io
+import logging
+import os
+
+import pandas as pd
+import psycopg2
+
+log = logging.getLogger(__name__)
+
+
+def get_conn():
+    return psycopg2.connect(
+        host=os.getenv("PGHOST", "timescaledb"),
+        port=int(os.getenv("PGPORT", "5432")),
+        dbname=os.getenv("PGDATABASE", "postgres"),
+        user=os.getenv("PGUSER", "market-data-account"),
+        password=os.getenv("PGPASSWORD", ""),
+        application_name="backtesting_minervini",
+        connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "15")),
+    )
+
+
+def read_df(conn, sql: str, params: dict | tuple | None = None) -> pd.DataFrame:
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        columns = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=columns)
+
+
+def copy_df(conn, df: pd.DataFrame, table: str, columns: list[str]) -> int:
+    """Bulk-insert df[columns] into table via COPY. Empty strings become NULL."""
+    if df.empty:
+        return 0
+    buf = io.StringIO()
+    df[columns].to_csv(buf, index=False, header=False, na_rep="")
+    buf.seek(0)
+    col_list = ", ".join(columns)
+    with conn.cursor() as cur:
+        cur.copy_expert(
+            f"COPY {table} ({col_list}) FROM STDIN WITH (FORMAT csv, NULL '')", buf
+        )
+    conn.commit()
+    log.info("wrote %d rows into %s", len(df), table)
+    return len(df)
+
+
+def delete_range(conn, table: str, date_col: str, start, end) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {table} WHERE {date_col} BETWEEN %s AND %s", (start, end)
+        )
+        deleted = cur.rowcount
+    conn.commit()
+    if deleted:
+        log.info("deleted %d existing rows from %s (%s..%s)", deleted, table, start, end)

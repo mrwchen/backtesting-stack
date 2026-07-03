@@ -1,0 +1,75 @@
+# swing-stocks-minervini
+
+Standalone backtester for Mark Minervini's SEPA swing approach (trend template,
+RS rating, VCP breakouts) on the daily stock universe. Fully decoupled from the
+other backtesting services.
+
+**Data sources (read-only, produced by `market-data-stack/stock_core_and_fundamental_data_fetcher`):**
+
+| Table | Used for |
+|---|---|
+| `stock_core_market_metrics_daily` | adjusted daily OHLCV (2020+) |
+| `stock_core_security_master_current` | universe filter (`quote_type = EQUITY`) |
+| `stock_core_sec_fundamentals_asof_daily` | SEC TTM revenue/margins/net income (point-in-time: `period_end_date` is the filing availability date) |
+
+Quarterly EPS is derived from consecutive quarterly TTM net-income diffs
+divided by diluted shares (the earnings calendar carries no reported EPS in
+practice). Annual-only filers never qualify for the EPS flag.
+
+**Result tables (all prefixed `backtesting_minervini_`):**
+
+| Table | Content |
+|---|---|
+| `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
+| `backtesting_minervini_screen_daily` | trend-template + fundamental flags per symbol/day |
+| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) |
+| `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
+| `backtesting_minervini_trades` | trade legs per run |
+| `backtesting_minervini_equity_daily` | daily equity curve per run |
+
+## Pipeline
+
+Three decoupled stages, selected via `STAGE` (`screen`, `setup`, `sim`, `all`).
+Each stage reads its input from the DB, so stages can be re-run and tuned
+independently; source data is cached locally as parquet in `./cache`.
+
+```
+screen : RS rating (cross-sectional percentile) + 8-point trend template
+         + point-in-time fundamentals  -> rs_daily, screen_daily
+setup  : VCP detection on screen-pass days -> setups
+sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
+         Every triggered setup is traded independently — there is NO portfolio
+         logic (no cash constraint, no position limit, no compounding), so the
+         results measure the strategy across the whole universe. Sizing is
+         fixed per trade (RISK_PCT of INITIAL_EQUITY, capped at
+         MAX_POSITION_PCT). Exits: stop (also checked on the entry bar itself),
+         partial at PARTIAL_AT_R, MA-trail, end-of-data.
+         equity_daily is an aggregate research curve (base + cumulative PnL),
+         not a cash-constrained account.
+```
+
+## Run
+
+```bash
+docker compose up --build        # runs STAGE=all over START_DATE..END_DATE
+```
+
+All parameters (thresholds, VCP geometry, risk settings) are env vars in
+`compose.yaml`. `SCREEN_PERSIST=universe` persists every rankable symbol/day
+instead of only passes (larger, useful for Grafana inspection).
+
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+## Known caveats
+
+- **Survivorship bias:** the price history only contains today's listed
+  universe backfilled to 2020; delisted losers are missing. Breakout results
+  are biased optimistic — read them conservatively.
+- Price history starts 2020-01-02; with ~1 year of indicator warmup the
+  effective backtest window begins ~2021.
+- Fundamentals are TTM (SEC); quarterly EPS is reconstructed from TTM diffs
+  and is therefore slightly noisier than reported quarterly EPS.
