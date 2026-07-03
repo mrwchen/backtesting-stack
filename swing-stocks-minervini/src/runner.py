@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,21 @@ from .config import Config
 from .simulator import simulate
 
 log = logging.getLogger("runner")
+
+
+class _UtcFormatter(logging.Formatter):
+    converter = time.gmtime
+
+
+def _configure_logging(level: str) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        _UtcFormatter(
+            "%(asctime)sZ %(levelname)s %(processName)s %(threadName)s %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+    )
+    logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
 def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, columns: dict) -> pd.DataFrame:
@@ -163,11 +179,8 @@ def run_sim(conn, cfg: Config, matrices: dict, universe: pd.DataFrame, start, en
 
 def main() -> None:
     cfg = Config.from_env()
-    logging.basicConfig(
-        level=cfg.log_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    log.info("stage=%s start=%s end=%s label=%s", cfg.stage, cfg.start_date, cfg.end_date, cfg.run_label)
+    _configure_logging(cfg.log_level)
+    log.info("Stage %s start %s end %s label %s", cfg.stage, cfg.start_date, cfg.end_date, cfg.run_label)
 
     conn = db.get_conn()
     prices = data_loader.load_prices(conn, cfg)

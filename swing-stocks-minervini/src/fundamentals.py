@@ -95,8 +95,10 @@ def revenue_margin_flags(
         fundamentals, "net_margin_ttm", dates, symbols, cfg.filing_stale_trading_days
     )
 
-    revenue_yoy = revenue / revenue.shift(252) - 1.0
-    revenue_pass = (revenue > 0) & (revenue_yoy >= cfg.revenue_yoy_min)
+    prev_revenue = revenue.shift(252)
+    revenue_yoy = revenue.div(prev_revenue.where(prev_revenue > 0)).sub(1.0)
+    revenue_yoy = revenue_yoy.where(np.isfinite(revenue_yoy))
+    revenue_pass = (revenue > 0) & (prev_revenue > 0) & (revenue_yoy >= cfg.revenue_yoy_min)
     margin_pass = margin > margin.shift(252)
     return revenue_pass, revenue_yoy, margin_pass
 

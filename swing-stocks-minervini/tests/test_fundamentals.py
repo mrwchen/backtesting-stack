@@ -79,6 +79,25 @@ def test_revenue_and_margin_flags():
     assert bool(margin_pass.loc[late:, "AAA"].iloc[0]) is True
 
 
+def test_revenue_yoy_zero_prior_revenue_is_not_infinite():
+    dates, symbols = _grid()
+    filings = pd.DataFrame(
+        {
+            "symbol": "AAA",
+            "available_date": pd.to_datetime(["2022-02-01", "2023-02-01"]),
+            "revenue_ttm": [0.0, 1000.0],
+            "net_margin_ttm": [0.10, 0.12],
+        }
+    )
+
+    revenue_pass, revenue_yoy, _ = revenue_margin_flags(filings, dates, symbols, make_cfg())
+
+    check_date = pd.Timestamp("2023-02-06")
+    assert not np.isinf(revenue_yoy.to_numpy(dtype=float)).any()
+    assert pd.isna(revenue_yoy.loc[check_date, "AAA"])
+    assert bool(revenue_pass.loc[check_date, "AAA"]) is False
+
+
 def test_combine_requires_min_pass():
     dates, symbols = _grid()
     yes = pd.DataFrame(True, index=dates, columns=symbols)

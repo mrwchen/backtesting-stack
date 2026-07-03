@@ -5,6 +5,7 @@ import io
 import logging
 import os
 
+import numpy as np
 import pandas as pd
 import psycopg2
 
@@ -36,7 +37,8 @@ def copy_df(conn, df: pd.DataFrame, table: str, columns: list[str]) -> int:
     if df.empty:
         return 0
     buf = io.StringIO()
-    df[columns].to_csv(buf, index=False, header=False, na_rep="")
+    out = df.loc[:, columns].replace([np.inf, -np.inf], np.nan)
+    out.to_csv(buf, index=False, header=False, na_rep="", lineterminator="\n")
     buf.seek(0)
     col_list = ", ".join(columns)
     with conn.cursor() as cur:
