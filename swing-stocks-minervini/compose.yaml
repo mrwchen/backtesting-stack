@@ -120,7 +120,7 @@ services:
       # true = neue Entries nur, wenn das zuletzt bekannte Welt-Regime zu den
       # erlaubten Labels gehoert. Es wird nur der letzte bekannte Stand am oder
       # vor dem Entry-Tag genutzt, kein Look-Ahead.
-      REGIME_ENTRY_FILTER_ENABLE: "true"
+      REGIME_ENTRY_FILTER_ENABLE: "false"
       # Defensive-Regime wird standardmaessig blockiert.
       REGIME_ALLOWED_LABELS: "CONSTRUCTIVE,NEUTRAL"
 
