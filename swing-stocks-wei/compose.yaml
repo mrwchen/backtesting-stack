@@ -55,7 +55,7 @@ services:
       HIGH_RECENT_DAYS: "10"
       EMA_FAST_DAYS: "9"
       EMA_SLOW_DAYS: "21"
-      VOLUME_SMA_DAYS: "20"
+      VOLUME_SMA_DAYS: "50"
       VOLUME_FILTER_ENABLE: "true"
       IBKR_INDUSTRY_BREADTH_FILTER_ENABLE: "true"
       IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
@@ -65,8 +65,8 @@ services:
       # Trade model. Position size is USD notional per trade.
       INITIAL_EQUITY: "100000"
       POSITION_SIZE_USD: "1000"
-      STOP_LOSS_PCT: "0.05"
-      TRAILING_ACTIVATE_PCT: "0.10"
+      STOP_LOSS_PCT: "0.07"
+      TRAILING_ACTIVATE_PCT: "0.12"
       TRAILING_LOSS_PCT: "0.05"
       ALLOW_FRACTIONAL_SHARES: "true"
     networks:

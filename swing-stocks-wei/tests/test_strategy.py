@@ -7,7 +7,7 @@ from src.strategy import compute_signals
 from tests.util import make_config
 
 
-def _prices(close_values, volume_values):
+def _prices(close_values, volume_values, feed="sip"):
     dates = pd.bdate_range("2024-01-01", periods=len(close_values))
     high = np.asarray(close_values, dtype=float) * 1.01
     high[31] = 130.0
@@ -20,6 +20,7 @@ def _prices(close_values, volume_values):
             "low": np.asarray(close_values, dtype=float) * 0.99,
             "close": np.asarray(close_values, dtype=float),
             "volume": np.asarray(volume_values, dtype=float),
+            "alpaca_price_feed": feed,
         }
     )
 
@@ -36,6 +37,7 @@ def _multi_industry_prices():
             "low": np.asarray(aaa_close, dtype=float) * 0.99,
             "close": aaa_close,
             "volume": [1000.0] * 218,
+            "alpaca_price_feed": "sip",
         }
     )
     base.loc[214, "volume"] = 5000.0
@@ -52,6 +54,7 @@ def _multi_industry_prices():
                     "low": np.asarray(close, dtype=float) * 0.99,
                     "close": close,
                     "volume": [1000.0] * 218,
+                    "alpaca_price_feed": "sip",
                 }
             )
         )
@@ -79,6 +82,8 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     signal = signals.iloc[0]
     assert signal["symbol"] == "AAA"
     assert signal["had_52w_high_last_10d"]
+    assert signal["volume_sma50_pass"]
+    assert signal["volume_feed_pass"]
     assert signal["volume_pass"]
     assert signal["planned_entry_date"] > signal["period_end_date"]
 
@@ -119,7 +124,29 @@ def test_signal_can_ignore_volume_filter_when_disabled():
     )
 
     assert len(signals) == 1
-    assert not signals.iloc[0]["volume_pass"]
+    assert not signals.iloc[0]["volume_sma50_pass"]
+    assert signals.iloc[0]["volume_feed_pass"]
+    assert signals.iloc[0]["volume_pass"]
+
+
+def test_signal_requires_sip_volume_feed_even_when_volume_filter_disabled():
+    close = [100.0] * 30 + [92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110]
+    volume = [1000.0] * len(close)
+    volume[35] = 5000.0
+    cfg = make_config(volume_filter_enable=False)
+    universe = pd.DataFrame(
+        {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
+    )
+
+    signals = compute_signals(
+        _prices(close, volume, feed="iex"),
+        universe,
+        cfg,
+        pd.Timestamp("2024-01-01").date(),
+        pd.Timestamp("2024-12-31").date(),
+    )
+
+    assert signals.empty
 
 
 def test_signal_requires_industry_breadth_gate_when_enabled():

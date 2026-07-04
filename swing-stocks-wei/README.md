@@ -8,7 +8,7 @@ Only these existing market-data tables are read:
 
 | Table | Used for |
 |---|---|
-| `stock_core_market_metrics_daily` | adjusted daily OHLCV |
+| `stock_core_market_metrics_daily` | adjusted daily OHLCV and Alpaca price feed |
 | `stock_core_security_master_current` | USD equity universe |
 | `ibkr_symbols` | IBKR-backed USD stock eligibility and industry/category metadata |
 
@@ -20,9 +20,12 @@ For every IBKR-backed USD equity:
 
 1. A 52-week high is detected with a 252-trading-day rolling high.
 2. A setup is active if at least one 52-week high occurred in the last 10 trading days.
-3. Entry signal is an EMA9 cross above EMA21 while `volume > SMA20(volume)`.
-   Set `VOLUME_FILTER_ENABLE=false` to ignore the volume gate while still
-   storing the raw `volume_pass` diagnostic.
+3. Entry signal is an EMA9 cross above EMA21 while the volume bar is from
+   Alpaca `sip`, not `iex`. With `VOLUME_FILTER_ENABLE=true`, volume must also
+   be `volume > SMA50(volume)`.
+   Set `VOLUME_FILTER_ENABLE=false` to ignore only the SMA50 volume-size gate;
+   the `sip` feed requirement still applies. Diagnostics are stored as
+   `volume_sma50_pass`, `volume_feed_pass` and final `volume_pass`.
 4. IBKR industry breadth must be on: at least 55% of eligible industry members
    above MA200 turns the gate on, and it stays on until breadth falls below 45%.
 5. The signal is known after the daily close, so the backtest enters at the next trading day's adjusted open.

@@ -18,13 +18,16 @@ SIGNAL_COLUMNS = [
     "close",
     "high",
     "volume",
+    "alpaca_price_feed",
     "rolling_52w_high",
     "had_52w_high_last_10d",
     "ema_fast",
     "ema_slow",
     "prev_ema_fast",
     "prev_ema_slow",
-    "volume_sma20",
+    "volume_sma50",
+    "volume_sma50_pass",
+    "volume_feed_pass",
     "volume_pass",
     "ibkr_industry_breadth_pct",
     "ibkr_industry_breadth_on",
@@ -61,6 +64,7 @@ def compute_signals(
         high = sub["high"]
         close = sub["close"]
         volume = sub["volume"]
+        alpaca_feed = sub["alpaca_price_feed"].astype("string").str.lower().str.strip()
         rolling_high = high.rolling(
             cfg.high_lookback_days,
             min_periods=cfg.high_lookback_days,
@@ -89,8 +93,9 @@ def compute_signals(
             cfg.volume_sma_days,
             min_periods=cfg.volume_sma_days,
         ).mean()
-        volume_pass = volume > volume_sma
-        volume_gate = volume_pass if cfg.volume_filter_enable else True
+        volume_sma50_pass = volume > volume_sma
+        volume_feed_pass = alpaca_feed.eq("sip").fillna(False)
+        volume_pass = volume_feed_pass & (volume_sma50_pass if cfg.volume_filter_enable else True)
         dates = pd.DatetimeIndex(sub["date"])
         if symbol in industry_breadth["ibkr_industry_breadth_pass"].columns:
             industry_breadth_raw = industry_breadth["ibkr_industry_breadth"][symbol].reindex(dates)
@@ -111,12 +116,14 @@ def compute_signals(
         sub["ema_slow"] = ema_slow
         sub["prev_ema_fast"] = prev_ema_fast
         sub["prev_ema_slow"] = prev_ema_slow
-        sub["volume_sma20"] = volume_sma
+        sub["volume_sma50"] = volume_sma
+        sub["volume_sma50_pass"] = volume_sma50_pass
+        sub["volume_feed_pass"] = volume_feed_pass
         sub["volume_pass"] = volume_pass
         sub["ibkr_industry_breadth_pct"] = (industry_breadth_raw.to_numpy(dtype=float) * 100).round(4)
         sub["ibkr_industry_breadth_on"] = industry_breadth_on.to_numpy(dtype=bool)
         sub["ibkr_industry_breadth_pass"] = industry_breadth_pass.to_numpy(dtype=bool)
-        sub["entry_signal"] = had_high_recent & crossed_up & volume_gate & sub["ibkr_industry_breadth_pass"]
+        sub["entry_signal"] = had_high_recent & crossed_up & volume_pass & sub["ibkr_industry_breadth_pass"]
         sub["planned_entry_date"] = sub["date"].shift(-1)
         sub["planned_entry_open"] = sub["open"].shift(-1)
 

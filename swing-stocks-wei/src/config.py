@@ -58,7 +58,7 @@ class Config:
             high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
             ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
             ema_slow_days=int(_env("EMA_SLOW_DAYS", "21")),
-            volume_sma_days=int(_env("VOLUME_SMA_DAYS", "20")),
+            volume_sma_days=int(_env("VOLUME_SMA_DAYS", "50")),
             volume_filter_enable=_env_bool("VOLUME_FILTER_ENABLE", True),
             ibkr_industry_breadth_filter_enable=_env_bool("IBKR_INDUSTRY_BREADTH_FILTER_ENABLE", True),
             ibkr_industry_breadth_on_threshold=float(_env("IBKR_INDUSTRY_BREADTH_ON_THRESHOLD", "0.55")),
