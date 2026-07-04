@@ -10,7 +10,7 @@ services:
       # Application name visible in pg_stat_activity.
       PGAPPNAME: "backtest_wei_init"
       # true = drop all backtest_wei_* result tables before recreating them.
-      DROP_ALL_WEI_TABLES_ON_START: "${DROP_ALL_WEI_TABLES_ON_START:-false}"
+      DROP_ALL_WEI_TABLES_ON_START: "${DROP_ALL_WEI_TABLES_ON_START:-true}"
     command:
       - sh
       - -c
