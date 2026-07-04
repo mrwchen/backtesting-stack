@@ -11,7 +11,7 @@ services:
       PGAPPNAME: "backtesting_minervini_init"
       # true = ALLE backtesting_minervini_*-Tabellen droppen und neu anlegen.
       # Achtung: loescht saemtliche bisherigen Runs/Trades/Screens unwiderruflich.
-      DROP_ALL_MINERVINI_TABLES_ON_START: "true"
+      DROP_ALL_MINERVINI_TABLES_ON_START: "false"
     command:
       - sh
       - -c
@@ -105,7 +105,7 @@ services:
       # true = Entry-Gate aktiv: bei schwachem Markt keine neuen Entries
       # (offene Positionen laufen weiter in ihre regulaeren Exits).
       # false = Filter komplett aus (fuer Vergleichs-Runs).
-      MARKET_FILTER_ENABLE: "false"
+      MARKET_FILTER_ENABLE: "true"
       # Gate schaltet AN, wenn die Breadth diesen Anteil erreicht (0.50 = 50 %).
       BREADTH_ON_THRESHOLD: "0.50"
       # Gate schaltet erst wieder AUS, wenn die Breadth darunter faellt (0.45 = 45 %).
