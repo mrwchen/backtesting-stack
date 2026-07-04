@@ -66,10 +66,13 @@ def run_screen(
 
     log.info("computing IBKR group leadership filter")
     leadership = group_filter.compute_leadership(rs["rs_raw"], universe, cfg)
+    log.info("computing IBKR industry breadth gate")
+    industry_breadth = group_filter.compute_industry_breadth(close_m, universe, cfg)
     screen_pass = (
         template["template_pass"]
         & fundamentals_pass
         & leadership["group_filter_pass"]
+        & industry_breadth["ibkr_industry_breadth_pass"]
     )
 
     window_m = pd.DataFrame(
@@ -100,6 +103,11 @@ def run_screen(
             "stock_industry_pass": leadership["stock_industry_pass"],
             "stock_category_pass": leadership["stock_category_pass"],
             "group_filter_pass": leadership["group_filter_pass"],
+            "ibkr_industry_breadth_pct": (
+                industry_breadth["ibkr_industry_breadth"] * 100
+            ).round(4),
+            "ibkr_industry_breadth_on": industry_breadth["ibkr_industry_breadth_on"],
+            "ibkr_industry_breadth_pass": industry_breadth["ibkr_industry_breadth_pass"],
             "crit_price_above_ma150_200": template["crit_price_above_ma150_200"],
             "crit_ma150_above_ma200": template["crit_ma150_above_ma200"],
             "crit_ma200_rising": template["crit_ma200_rising"],
@@ -136,9 +144,10 @@ def run_screen(
     market_df["market_breadth_pct"] = (market_df["market_breadth"] * 100).round(4)
     persistence.write_market(conn, market_df, start, end)
     log.info(
-        "screen done: %d rs rows, %d screen rows (%d screen passes, %d group passes)",
+        "screen done: %d rs rows, %d screen rows (%d screen passes, %d group passes, %d industry breadth passes)",
         len(rs_df), len(screen_df), int(screen_df["screen_pass"].sum()),
         int(screen_df["group_filter_pass"].sum()),
+        int(screen_df["ibkr_industry_breadth_pass"].sum()),
     )
     return _long_frame(screen_pass & window_m, dates, symbols, {})
 

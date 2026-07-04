@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_screen_daily (
     stock_industry_pass         BOOLEAN,
     stock_category_pass         BOOLEAN,
     group_filter_pass           BOOLEAN NOT NULL,
+    ibkr_industry_breadth_pct   NUMERIC(8,4),
+    ibkr_industry_breadth_on    BOOLEAN NOT NULL,
+    ibkr_industry_breadth_pass  BOOLEAN NOT NULL,
     crit_price_above_ma150_200  BOOLEAN,
     crit_ma150_above_ma200      BOOLEAN,
     crit_ma200_rising           BOOLEAN,
@@ -102,6 +105,11 @@ CREATE INDEX IF NOT EXISTS idx_bm_screen_period_pass
 CREATE INDEX IF NOT EXISTS idx_bm_screen_group_filter
     ON backtesting_minervini_screen_daily (
         period_end_date DESC, ibkr_industry, ibkr_category, group_filter_pass
+    );
+
+CREATE INDEX IF NOT EXISTS idx_bm_screen_industry_breadth
+    ON backtesting_minervini_screen_daily (
+        period_end_date DESC, ibkr_industry, ibkr_industry_breadth_pass
     );
 
 -- ---------------------------------------------------------------------------

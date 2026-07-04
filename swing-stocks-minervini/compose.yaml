@@ -105,7 +105,7 @@ services:
       # true = Entry-Gate aktiv: bei schwachem Markt keine neuen Entries
       # (offene Positionen laufen weiter in ihre regulaeren Exits).
       # false = Filter komplett aus (fuer Vergleichs-Runs).
-      MARKET_FILTER_ENABLE: "true"
+      MARKET_FILTER_ENABLE: "false"
       # Gate schaltet AN, wenn die Breadth diesen Anteil erreicht (0.50 = 50 %).
       BREADTH_ON_THRESHOLD: "0.50"
       # Gate schaltet erst wieder AUS, wenn die Breadth darunter faellt (0.45 = 45 %).
@@ -129,6 +129,15 @@ services:
       # als vergleichbare Gruppe gewertet wird.
       IBKR_INDUSTRY_MIN_SYMBOLS: "5"
       IBKR_CATEGORY_MIN_SYMBOLS: "3"
+      # Zusaetzlicher Breadth-Gate je IBKR Industry: Anteil der Aktien dieser
+      # Industry ueber ihrer 200d-MA. Nur aktive Industries duerfen screenen.
+      IBKR_INDUSTRY_BREADTH_FILTER_ENABLE: "true"
+      # Industry-Gate schaltet AN, wenn die Breadth mindestens 55 % erreicht.
+      IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
+      # Industry-Gate bleibt an bis die Breadth unter 45 % faellt.
+      IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD: "0.45"
+      # Mindestzahl rankbarer Aktien je Industry fuer die Breadth-Berechnung.
+      IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS: "5"
 
       # -- Fundamentals (point-in-time aus SEC-Filings; Quartals-EPS wird aus
       #    Differenzen aufeinanderfolgender TTM-Nettogewinne / verwaesserte Aktien

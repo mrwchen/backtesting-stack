@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.group_filter import compute_leadership
+from src.group_filter import compute_industry_breadth, compute_leadership
 from tests.util import make_cfg
 
 
@@ -73,3 +73,48 @@ def test_ibkr_group_filter_rejects_missing_taxonomy():
     leadership = compute_leadership(_rs_raw(close, cfg), universe, cfg)
 
     assert bool(leadership["group_filter_pass"].iloc[-1]["BBC"]) is False
+
+
+def test_industry_breadth_gate_uses_members_above_ma200():
+    close = _close_frame()
+    cfg = make_cfg(
+        min_price=1.0,
+        ibkr_industry_breadth_min_symbols=3,
+        ibkr_industry_breadth_on_threshold=0.55,
+        ibkr_industry_breadth_off_threshold=0.45,
+    )
+    universe = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAB", "AAC", "BBA", "BBB", "BBC"],
+            "ibkr_industry": ["TECH", "TECH", "TECH", "FIN", "FIN", "FIN"],
+            "ibkr_category": ["SOFTWARE", "SOFTWARE", "SOFTWARE", "BANKS", "BANKS", "BANKS"],
+        }
+    )
+
+    breadth = compute_industry_breadth(close, universe, cfg)
+
+    assert abs(breadth["ibkr_industry_breadth"].iloc[-1]["AAA"] - 1.0) < 1e-9
+    assert abs(breadth["ibkr_industry_breadth"].iloc[-1]["BBA"] - 0.0) < 1e-9
+    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["AAA"]) is True
+    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["BBA"]) is False
+
+
+def test_industry_breadth_gate_rejects_small_or_missing_industries():
+    close = _close_frame()
+    cfg = make_cfg(
+        min_price=1.0,
+        ibkr_industry_breadth_min_symbols=3,
+    )
+    universe = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAB", "AAC", "BBA", "BBB", "BBC"],
+            "ibkr_industry": ["TECH", "TECH", "TECH", "FIN", "FIN", None],
+            "ibkr_category": ["SOFTWARE", "SOFTWARE", "SOFTWARE", "BANKS", "BANKS", None],
+        }
+    )
+
+    breadth = compute_industry_breadth(close, universe, cfg)
+
+    assert np.isnan(breadth["ibkr_industry_breadth"].iloc[-1]["BBA"])
+    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["BBA"]) is False
+    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["BBC"]) is False

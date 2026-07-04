@@ -22,7 +22,7 @@ practice). Annual-only filers never qualify for the EPS flag.
 | Table | Content |
 |---|---|
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
-| `backtesting_minervini_screen_daily` | trend-template + fundamental + IBKR group-leadership flags per symbol/day |
+| `backtesting_minervini_screen_daily` | trend-template + fundamental + IBKR group-leadership + industry-breadth flags per symbol/day |
 | `backtesting_minervini_market_daily` | daily market breadth (% above 200d MA) + hysteresis gate |
 | `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
@@ -40,7 +40,10 @@ screen : RS rating (cross-sectional percentile) + 8-point trend template
          + point-in-time fundamentals
          + IBKR group leadership:
            strong industry, strong category, strongest stocks inside both
-           groups -> rs_daily, screen_daily
+           groups
+         + IBKR industry breadth:
+           industry gate on at >= 55% of members above their 200d MA, off
+           below 45% -> rs_daily, screen_daily
          + market breadth gate (share of stocks above their 200d MA, on >= 50%
          / off < 45% hysteresis) -> market_daily
 setup  : VCP detection on screen-pass days -> setups

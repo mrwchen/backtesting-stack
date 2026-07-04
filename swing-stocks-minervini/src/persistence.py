@@ -28,6 +28,8 @@ SCREEN_COLUMNS = [
     "stock_industry_rs_rating", "stock_category_rs_rating",
     "ibkr_industry_pass", "ibkr_category_pass",
     "stock_industry_pass", "stock_category_pass", "group_filter_pass",
+    "ibkr_industry_breadth_pct", "ibkr_industry_breadth_on",
+    "ibkr_industry_breadth_pass",
     "crit_price_above_ma150_200", "crit_ma150_above_ma200", "crit_ma200_rising",
     "crit_ma50_above_ma150_200", "crit_price_above_ma50", "crit_above_52w_low",
     "crit_near_52w_high", "crit_rs_rating", "trend_template_pass",
