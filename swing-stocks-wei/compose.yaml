@@ -51,23 +51,24 @@ services:
 
       # Universe and indicator settings.
       MIN_PRICE: "0.01"
+      MIN_MARKET_CAP_USD: "2000000000"
       HIGH_LOOKBACK_DAYS: "252"
-      HIGH_RECENT_DAYS: "10"
+      HIGH_RECENT_DAYS: "50"
       EMA_FAST_DAYS: "9"
       EMA_SLOW_DAYS: "21"
       VOLUME_SMA_DAYS: "50"
       VOLUME_FILTER_ENABLE: "true"
       IBKR_INDUSTRY_BREADTH_FILTER_ENABLE: "true"
-      IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
-      IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD: "0.45"
+      IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.65"
+      IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD: "0.55"
       IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS: "5"
 
       # Trade model. Position size is USD notional per trade.
       INITIAL_EQUITY: "100000"
       POSITION_SIZE_USD: "1000"
-      STOP_LOSS_PCT: "0.07"
-      TRAILING_ACTIVATE_PCT: "0.12"
-      TRAILING_LOSS_PCT: "0.05"
+      STOP_LOSS_PCT: "0.05"
+      TRAILING_ACTIVATE_PCT: "0.10"
+      TRAILING_LOSS_PCT: "0.04"
       ALLOW_FRACTIONAL_SHARES: "true"
     networks:
       - shared_net

@@ -26,7 +26,13 @@ SELECT symbol,
        COALESCE(adjusted_low, raw_low)::float8 AS low,
        COALESCE(adjusted_close, raw_close)::float8 AS close,
        COALESCE(adjusted_volume, raw_volume)::float8 AS volume,
-       lower(NULLIF(TRIM(alpaca_price_feed), '')) AS alpaca_price_feed
+       lower(NULLIF(TRIM(alpaca_price_feed), '')) AS alpaca_price_feed,
+       CASE
+           WHEN upper(NULLIF(TRIM(market_cap_currency), '')) = 'USD'
+           THEN market_cap::float8
+           ELSE NULL
+       END AS market_cap_usd,
+       upper(NULLIF(TRIM(market_cap_currency), '')) AS market_cap_currency
 FROM stock_core_market_metrics_daily
 WHERE period_end_date BETWEEN %(start)s AND %(end)s
   AND COALESCE(adjusted_open, raw_open) IS NOT NULL
@@ -109,8 +115,9 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
             return df
         df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
         df["alpaca_price_feed"] = df["alpaca_price_feed"].astype("string").str.lower().str.strip()
+        df["market_cap_currency"] = df["market_cap_currency"].astype("string").str.upper().str.strip()
         df["date"] = pd.to_datetime(df["date"])
-        for column in ("open", "high", "low", "close", "volume"):
+        for column in ("open", "high", "low", "close", "volume", "market_cap_usd"):
             df[column] = pd.to_numeric(df[column], errors="coerce")
         df = df.dropna(subset=["open", "high", "low", "close", "volume"])
         df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)]
@@ -121,7 +128,7 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
         )
         return df.drop(columns=["_feed_rank"]).reset_index(drop=True)
 
-    return _cached(cfg, f"wei_prices_v2_{start}_{end}", _load)
+    return _cached(cfg, f"wei_prices_v3_{start}_{end}", _load)
 
 
 def pivot_prices(prices: pd.DataFrame, field: str) -> pd.DataFrame:

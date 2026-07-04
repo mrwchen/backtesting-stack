@@ -13,6 +13,7 @@ def make_config(**overrides) -> Config:
         force_refresh=True,
         log_level="INFO",
         min_price=0.01,
+        min_market_cap_usd=2_000_000_000.0,
         high_lookback_days=30,
         high_recent_days=10,
         ema_fast_days=3,

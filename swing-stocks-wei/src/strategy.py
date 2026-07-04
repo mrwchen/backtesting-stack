@@ -19,6 +19,9 @@ SIGNAL_COLUMNS = [
     "high",
     "volume",
     "alpaca_price_feed",
+    "planned_entry_market_cap_usd",
+    "planned_entry_market_cap_currency",
+    "market_cap_pass",
     "rolling_52w_high",
     "had_52w_high_last_10d",
     "ema_fast",
@@ -126,6 +129,13 @@ def compute_signals(
         sub["entry_signal"] = had_high_recent & crossed_up & volume_pass & sub["ibkr_industry_breadth_pass"]
         sub["planned_entry_date"] = sub["date"].shift(-1)
         sub["planned_entry_open"] = sub["open"].shift(-1)
+        sub["planned_entry_market_cap_usd"] = sub["market_cap_usd"].shift(-1)
+        sub["planned_entry_market_cap_currency"] = sub["market_cap_currency"].shift(-1)
+        sub["market_cap_pass"] = (
+            sub["planned_entry_market_cap_usd"].notna()
+            & (sub["planned_entry_market_cap_usd"] >= cfg.min_market_cap_usd)
+            & sub["planned_entry_market_cap_currency"].eq("USD")
+        )
 
         selected = sub[
             sub["entry_signal"]
@@ -135,6 +145,7 @@ def compute_signals(
             & (sub["close"] >= cfg.min_price)
             & sub["planned_entry_open"].notna()
             & (sub["planned_entry_open"] >= cfg.min_price)
+            & sub["market_cap_pass"]
         ].copy()
         if selected.empty:
             continue

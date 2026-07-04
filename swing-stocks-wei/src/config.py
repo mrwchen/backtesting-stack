@@ -26,6 +26,7 @@ class Config:
     force_refresh: bool
     log_level: str
     min_price: float
+    min_market_cap_usd: float
     high_lookback_days: int
     high_recent_days: int
     ema_fast_days: int
@@ -54,6 +55,7 @@ class Config:
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             min_price=float(_env("MIN_PRICE", "0.01")),
+            min_market_cap_usd=float(_env("MIN_MARKET_CAP_USD", "2000000000")),
             high_lookback_days=int(_env("HIGH_LOOKBACK_DAYS", "252")),
             high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
             ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
@@ -79,6 +81,8 @@ class Config:
             raise ValueError("WARMUP_CALENDAR_DAYS should cover at least one 52-week lookback")
         if self.min_price <= 0:
             raise ValueError("MIN_PRICE must be > 0")
+        if self.min_market_cap_usd < 0:
+            raise ValueError("MIN_MARKET_CAP_USD must be >= 0")
         if self.high_lookback_days < 2:
             raise ValueError("HIGH_LOOKBACK_DAYS must be >= 2")
         if self.high_recent_days < 1:

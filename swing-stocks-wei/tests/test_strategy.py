@@ -7,7 +7,7 @@ from src.strategy import compute_signals
 from tests.util import make_config
 
 
-def _prices(close_values, volume_values, feed="sip"):
+def _prices(close_values, volume_values, feed="sip", market_cap_usd=3_000_000_000.0):
     dates = pd.bdate_range("2024-01-01", periods=len(close_values))
     high = np.asarray(close_values, dtype=float) * 1.01
     high[31] = 130.0
@@ -21,6 +21,8 @@ def _prices(close_values, volume_values, feed="sip"):
             "close": np.asarray(close_values, dtype=float),
             "volume": np.asarray(volume_values, dtype=float),
             "alpaca_price_feed": feed,
+            "market_cap_usd": market_cap_usd,
+            "market_cap_currency": "USD",
         }
     )
 
@@ -38,6 +40,8 @@ def _multi_industry_prices():
             "close": aaa_close,
             "volume": [1000.0] * 218,
             "alpaca_price_feed": "sip",
+            "market_cap_usd": 3_000_000_000.0,
+            "market_cap_currency": "USD",
         }
     )
     base.loc[214, "volume"] = 5000.0
@@ -55,6 +59,8 @@ def _multi_industry_prices():
                     "close": close,
                     "volume": [1000.0] * 218,
                     "alpaca_price_feed": "sip",
+                    "market_cap_usd": 3_000_000_000.0,
+                    "market_cap_currency": "USD",
                 }
             )
         )
@@ -85,6 +91,8 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     assert signal["volume_sma50_pass"]
     assert signal["volume_feed_pass"]
     assert signal["volume_pass"]
+    assert signal["market_cap_pass"]
+    assert signal["planned_entry_market_cap_usd"] >= 2_000_000_000
     assert signal["planned_entry_date"] > signal["period_end_date"]
 
 
@@ -140,6 +148,29 @@ def test_signal_requires_sip_volume_feed_even_when_volume_filter_disabled():
 
     signals = compute_signals(
         _prices(close, volume, feed="iex"),
+        universe,
+        cfg,
+        pd.Timestamp("2024-01-01").date(),
+        pd.Timestamp("2024-12-31").date(),
+    )
+
+    assert signals.empty
+
+
+def test_signal_requires_min_market_cap_on_planned_entry_date():
+    close = [100.0] * 30 + [92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110]
+    volume = [1000.0] * len(close)
+    volume[35] = 5000.0
+    prices = _prices(close, volume)
+    signal_idx = 35
+    prices.loc[signal_idx + 1, "market_cap_usd"] = 1_999_999_999.0
+    cfg = make_config()
+    universe = pd.DataFrame(
+        {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
+    )
+
+    signals = compute_signals(
+        prices,
         universe,
         cfg,
         pd.Timestamp("2024-01-01").date(),

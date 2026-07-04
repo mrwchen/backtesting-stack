@@ -8,7 +8,7 @@ Only these existing market-data tables are read:
 
 | Table | Used for |
 |---|---|
-| `stock_core_market_metrics_daily` | adjusted daily OHLCV and Alpaca price feed |
+| `stock_core_market_metrics_daily` | adjusted daily OHLCV, Alpaca price feed and USD market cap |
 | `stock_core_security_master_current` | USD equity universe |
 | `ibkr_symbols` | IBKR-backed USD stock eligibility and industry/category metadata |
 
@@ -28,10 +28,12 @@ For every IBKR-backed USD equity:
    `volume_sma50_pass`, `volume_feed_pass` and final `volume_pass`.
 4. IBKR industry breadth must be on: at least 55% of eligible industry members
    above MA200 turns the gate on, and it stays on until breadth falls below 45%.
-5. The signal is known after the daily close, so the backtest enters at the next trading day's adjusted open.
-6. Each trade gets USD 1000 notional exposure.
-7. Initial stop is 5% below entry.
-8. Once price has reached +10% from entry, a 5% trailing stop below the highest observed high becomes active for subsequent bars.
+5. Planned entry-day market cap must be at least USD 2,000,000,000 by default
+   (`MIN_MARKET_CAP_USD=2000000000`).
+6. The signal is known after the daily close, so the backtest enters at the next trading day's adjusted open.
+7. Each trade gets USD 1000 notional exposure.
+8. Initial stop is 5% below entry.
+9. Once price has reached +10% from entry, a 5% trailing stop below the highest observed high becomes active for subsequent bars.
 
 Signals are skipped while the same symbol already has an open simulated position.
 Different symbols trade independently.
