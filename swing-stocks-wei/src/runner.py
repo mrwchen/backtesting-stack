@@ -23,6 +23,7 @@ def main() -> None:
         db.validate_tables(conn, data_loader.SOURCE_TABLES + persistence.RESULT_TABLES)
         universe = data_loader.load_universe(conn, cfg)
         prices = data_loader.load_prices(conn, cfg)
+        fundamentals = data_loader.load_fundamentals(conn, cfg)
         prices = prices[prices["symbol"].isin(set(universe["symbol"]))].copy()
         prices = prices.sort_values(["symbol", "date"]).reset_index(drop=True)
         if prices.empty:
@@ -48,7 +49,7 @@ def main() -> None:
             len(universe),
         )
 
-        signals = strategy.compute_signals(prices, universe, cfg, start, end)
+        signals = strategy.compute_signals(prices, universe, fundamentals, cfg, start, end)
         persistence.write_signals(conn, signals, start, end)
         result = simulate(prices, signals, cfg, start, end)
         run_id = persistence.create_run(

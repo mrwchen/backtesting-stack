@@ -5,6 +5,7 @@ import logging
 
 import pandas as pd
 
+from . import fundamentals as fundamental_filter
 from . import group_filter
 from .config import Config
 
@@ -22,12 +23,20 @@ SIGNAL_COLUMNS = [
     "planned_entry_market_cap_usd",
     "planned_entry_market_cap_currency",
     "market_cap_pass",
+    "revenue_ttm",
+    "prev_revenue_ttm",
+    "revenue_yoy",
+    "revenue_pass",
     "rolling_52w_high",
+    "is_52w_high",
     "had_52w_high_last_10d",
     "ema_fast",
     "ema_slow",
     "prev_ema_fast",
     "prev_ema_slow",
+    "ema_cross_up",
+    "ema_already_above_on_52w_high",
+    "ema_entry_pass",
     "volume_sma50",
     "volume_sma50_pass",
     "volume_feed_pass",
@@ -44,6 +53,7 @@ SIGNAL_COLUMNS = [
 def compute_signals(
     prices: pd.DataFrame,
     universe: pd.DataFrame,
+    fundamentals: pd.DataFrame,
     cfg: Config,
     start,
     end,
@@ -58,6 +68,9 @@ def compute_signals(
 
     close_m = prices.pivot(index="date", columns="symbol", values="close").sort_index()
     industry_breadth = group_filter.compute_industry_breadth(close_m, universe, cfg)
+    revenue = fundamental_filter.compute_revenue_growth(
+        fundamentals, close_m.index, close_m.columns, cfg
+    )
     frames: list[pd.DataFrame] = []
     for symbol, sub in prices.groupby("symbol", sort=True):
         sub = sub.sort_values("date").copy()
@@ -92,6 +105,12 @@ def compute_signals(
         prev_ema_fast = ema_fast.shift(1)
         prev_ema_slow = ema_slow.shift(1)
         crossed_up = (prev_ema_fast <= prev_ema_slow) & (ema_fast > ema_slow)
+        ema_already_above_on_52w_high = (
+            is_52w_high
+            & (ema_fast > ema_slow)
+            & (prev_ema_fast > prev_ema_slow)
+        )
+        ema_entry_pass = crossed_up | ema_already_above_on_52w_high
         volume_sma = volume.rolling(
             cfg.volume_sma_days,
             min_periods=cfg.volume_sma_days,
@@ -100,6 +119,16 @@ def compute_signals(
         volume_feed_pass = alpaca_feed.eq("sip").fillna(False)
         volume_pass = volume_feed_pass & (volume_sma50_pass if cfg.volume_filter_enable else True)
         dates = pd.DatetimeIndex(sub["date"])
+        if symbol in revenue["revenue_pass"].columns:
+            revenue_pass = revenue["revenue_pass"][symbol].reindex(dates).fillna(False)
+            revenue_yoy = revenue["revenue_yoy"][symbol].reindex(dates)
+            revenue_ttm = revenue["revenue_ttm"][symbol].reindex(dates)
+            prev_revenue_ttm = revenue["prev_revenue_ttm"][symbol].reindex(dates)
+        else:
+            revenue_pass = pd.Series(False, index=dates)
+            revenue_yoy = pd.Series(float("nan"), index=dates)
+            revenue_ttm = pd.Series(float("nan"), index=dates)
+            prev_revenue_ttm = pd.Series(float("nan"), index=dates)
         if symbol in industry_breadth["ibkr_industry_breadth_pass"].columns:
             industry_breadth_raw = industry_breadth["ibkr_industry_breadth"][symbol].reindex(dates)
             industry_breadth_on = industry_breadth["ibkr_industry_breadth_on"][symbol].reindex(dates).fillna(False)
@@ -114,11 +143,15 @@ def compute_signals(
             industry_breadth_pass = pd.Series(not cfg.ibkr_industry_breadth_filter_enable, index=dates)
 
         sub["rolling_52w_high"] = rolling_high
+        sub["is_52w_high"] = is_52w_high
         sub["had_52w_high_last_10d"] = had_high_recent
         sub["ema_fast"] = ema_fast
         sub["ema_slow"] = ema_slow
         sub["prev_ema_fast"] = prev_ema_fast
         sub["prev_ema_slow"] = prev_ema_slow
+        sub["ema_cross_up"] = crossed_up
+        sub["ema_already_above_on_52w_high"] = ema_already_above_on_52w_high
+        sub["ema_entry_pass"] = ema_entry_pass
         sub["volume_sma50"] = volume_sma
         sub["volume_sma50_pass"] = volume_sma50_pass
         sub["volume_feed_pass"] = volume_feed_pass
@@ -126,7 +159,7 @@ def compute_signals(
         sub["ibkr_industry_breadth_pct"] = (industry_breadth_raw.to_numpy(dtype=float) * 100).round(4)
         sub["ibkr_industry_breadth_on"] = industry_breadth_on.to_numpy(dtype=bool)
         sub["ibkr_industry_breadth_pass"] = industry_breadth_pass.to_numpy(dtype=bool)
-        sub["entry_signal"] = had_high_recent & crossed_up & volume_pass & sub["ibkr_industry_breadth_pass"]
+        sub["entry_signal"] = had_high_recent & ema_entry_pass & volume_pass & sub["ibkr_industry_breadth_pass"]
         sub["planned_entry_date"] = sub["date"].shift(-1)
         sub["planned_entry_open"] = sub["open"].shift(-1)
         sub["planned_entry_market_cap_usd"] = sub["market_cap_usd"].shift(-1)
@@ -136,6 +169,10 @@ def compute_signals(
             & (sub["planned_entry_market_cap_usd"] >= cfg.min_market_cap_usd)
             & sub["planned_entry_market_cap_currency"].eq("USD")
         )
+        sub["revenue_ttm"] = revenue_ttm.to_numpy(dtype=float)
+        sub["prev_revenue_ttm"] = prev_revenue_ttm.to_numpy(dtype=float)
+        sub["revenue_yoy"] = revenue_yoy.to_numpy(dtype=float)
+        sub["revenue_pass"] = revenue_pass.to_numpy(dtype=bool)
 
         selected = sub[
             sub["entry_signal"]
@@ -146,6 +183,7 @@ def compute_signals(
             & sub["planned_entry_open"].notna()
             & (sub["planned_entry_open"] >= cfg.min_price)
             & sub["market_cap_pass"]
+            & sub["revenue_pass"]
         ].copy()
         if selected.empty:
             continue

@@ -52,6 +52,8 @@ services:
       # Universe and indicator settings.
       MIN_PRICE: "0.01"
       MIN_MARKET_CAP_USD: "2000000000"
+      REVENUE_YOY_MIN: "0.20"
+      REVENUE_STALE_TRADING_DAYS: "280"
       HIGH_LOOKBACK_DAYS: "252"
       HIGH_RECENT_DAYS: "50"
       EMA_FAST_DAYS: "9"

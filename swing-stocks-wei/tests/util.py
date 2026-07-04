@@ -14,6 +14,8 @@ def make_config(**overrides) -> Config:
         log_level="INFO",
         min_price=0.01,
         min_market_cap_usd=2_000_000_000.0,
+        revenue_yoy_min=0.20,
+        revenue_stale_trading_days=280,
         high_lookback_days=30,
         high_recent_days=10,
         ema_fast_days=3,

@@ -36,6 +36,7 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                  volume_sma_days, volume_filter_enable, position_size_usd, stop_loss_pct,
                  trailing_activate_pct, trailing_loss_pct, initial_equity,
                  allow_fractional_shares, min_price, min_market_cap_usd,
+                 revenue_yoy_min, revenue_stale_trading_days,
                  ibkr_industry_breadth_filter_enable,
                  ibkr_industry_breadth_on_threshold, ibkr_industry_breadth_off_threshold,
                  ibkr_industry_breadth_min_symbols, signal_count, trade_count,
@@ -44,7 +45,7 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s)
+                 %s, %s, %s, %s, %s, %s, %s)
             RETURNING run_id
             """,
             (
@@ -66,6 +67,8 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                 cfg.allow_fractional_shares,
                 cfg.min_price,
                 cfg.min_market_cap_usd,
+                cfg.revenue_yoy_min,
+                cfg.revenue_stale_trading_days,
                 cfg.ibkr_industry_breadth_filter_enable,
                 cfg.ibkr_industry_breadth_on_threshold,
                 cfg.ibkr_industry_breadth_off_threshold,

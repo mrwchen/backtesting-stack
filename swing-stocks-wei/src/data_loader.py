@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 SOURCE_TABLES = (
     "stock_core_market_metrics_daily",
     "stock_core_security_master_current",
+    "stock_core_sec_fundamentals_asof_daily",
     "ibkr_symbols",
 )
 
@@ -73,6 +74,17 @@ WHERE sm.symbol IS NOT NULL
 GROUP BY UPPER(TRIM(sm.symbol))
 """
 
+FUNDAMENTALS_SQL = """
+SELECT UPPER(TRIM(symbol)) AS symbol,
+       period_end_date::date AS available_date,
+       sec_revenue_ttm::float8 AS revenue_ttm
+FROM stock_core_sec_fundamentals_asof_daily
+WHERE period_end_date <= %(end)s
+  AND symbol IS NOT NULL
+  AND TRIM(symbol) <> ''
+  AND sec_revenue_ttm IS NOT NULL
+"""
+
 
 def warmup_start(cfg: Config) -> date:
     start = datetime.strptime(cfg.start_date, "%Y-%m-%d").date()
@@ -129,6 +141,21 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
         return df.drop(columns=["_feed_rank"]).reset_index(drop=True)
 
     return _cached(cfg, f"wei_prices_v3_{start}_{end}", _load)
+
+
+def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:
+    end = effective_end(cfg)
+
+    def _load() -> pd.DataFrame:
+        df = db.read_df(conn, FUNDAMENTALS_SQL, {"end": end})
+        if df.empty:
+            return df
+        df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+        df["available_date"] = pd.to_datetime(df["available_date"])
+        df["revenue_ttm"] = pd.to_numeric(df["revenue_ttm"], errors="coerce")
+        return df.dropna(subset=["symbol", "available_date", "revenue_ttm"]).reset_index(drop=True)
+
+    return _cached(cfg, f"wei_fundamentals_revenue_v1_{end}", _load)
 
 
 def pivot_prices(prices: pd.DataFrame, field: str) -> pd.DataFrame:

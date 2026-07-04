@@ -27,6 +27,8 @@ class Config:
     log_level: str
     min_price: float
     min_market_cap_usd: float
+    revenue_yoy_min: float
+    revenue_stale_trading_days: int
     high_lookback_days: int
     high_recent_days: int
     ema_fast_days: int
@@ -56,6 +58,8 @@ class Config:
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             min_price=float(_env("MIN_PRICE", "0.01")),
             min_market_cap_usd=float(_env("MIN_MARKET_CAP_USD", "2000000000")),
+            revenue_yoy_min=float(_env("REVENUE_YOY_MIN", "0.20")),
+            revenue_stale_trading_days=int(_env("REVENUE_STALE_TRADING_DAYS", "280")),
             high_lookback_days=int(_env("HIGH_LOOKBACK_DAYS", "252")),
             high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
             ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
@@ -83,6 +87,10 @@ class Config:
             raise ValueError("MIN_PRICE must be > 0")
         if self.min_market_cap_usd < 0:
             raise ValueError("MIN_MARKET_CAP_USD must be >= 0")
+        if self.revenue_yoy_min < -1:
+            raise ValueError("REVENUE_YOY_MIN must be >= -1")
+        if self.revenue_stale_trading_days < 1:
+            raise ValueError("REVENUE_STALE_TRADING_DAYS must be >= 1")
         if self.high_lookback_days < 2:
             raise ValueError("HIGH_LOOKBACK_DAYS must be >= 2")
         if self.high_recent_days < 1:
