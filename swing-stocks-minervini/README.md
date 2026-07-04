@@ -60,7 +60,8 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          fields from screen_daily. Very low dry-up is treated as dead tape
          instead of automatically better.
          Exits: stop (also checked on the entry bar itself), partial at
-         PARTIAL_AT_R, failed-breakout exit, MA-trail, end-of-data.
+         PARTIAL_AT_R, failed-breakout exit after a configurable wait when the
+         close falls back below pivot/R threshold, MA-trail, end-of-data.
          New entries are blocked while the market breadth gate is off
          (MARKET_FILTER_ENABLE); open positions keep running into their exits.
          Optional world-regime entry filtering blocks entries whose latest known

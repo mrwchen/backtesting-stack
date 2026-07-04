@@ -313,6 +313,57 @@ def test_failed_breakout_exits_next_open():
     assert trades.iloc[0]["pnl"] == -100.0
 
 
+def test_failed_breakout_waits_for_pivot_loss():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.2)]       # entry at 100
+    bars += [(100.2, 101, 98, 100.2)] * 9
+    bars += [(100.2, 101, 98, 99.8)]     # stale and back below pivot
+    bars += [(99.5, 100.0, 98, 99.6)]    # exit next open
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=16)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "failed_breakout_exit_enable": True,
+            "failed_breakout_days": 10,
+            "failed_breakout_min_r": -0.5,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+    trades = result.trades
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_reason"] == "failed_breakout"
+    assert trades.iloc[0]["exit_date"] == dates[16].date()
+
+
+def test_failed_breakout_does_not_exit_while_above_pivot():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.2)]       # entry at 100
+    bars += [(100.2, 101, 98, 100.2)] * 10
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "failed_breakout_exit_enable": True,
+            "failed_breakout_days": 5,
+            "failed_breakout_min_r": -0.5,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+    trades = result.trades
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_reason"] == "eod"
+
+
 def test_market_gate_blocks_entries_but_not_exits():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]   # breakout day 5 (gate on) -> entry at 100

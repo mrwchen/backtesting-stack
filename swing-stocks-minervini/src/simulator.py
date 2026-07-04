@@ -250,13 +250,17 @@ def simulate(
                     continue
 
             day_close = c[t, col]
+            failed_breakout_level = max(
+                pos.pivot,
+                pos.entry_price + cfg.failed_breakout_min_r * r_unit,
+            )
             if (
                 cfg.failed_breakout_exit_enable
                 and not pos.partial_done
                 and r_unit > 0
                 and t - pos.entry_idx >= cfg.failed_breakout_days
                 and not np.isnan(day_close)
-                and day_close <= pos.entry_price + cfg.failed_breakout_min_r * r_unit
+                and day_close <= failed_breakout_level
             ):
                 pos.exit_next_open_reason = "failed_breakout"
                 continue
