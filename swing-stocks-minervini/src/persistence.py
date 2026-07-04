@@ -22,7 +22,12 @@ EQUITY_TABLE = "backtesting_minervini_equity_daily"
 RS_COLUMNS = ["period_end_date", "symbol", "rs_raw", "rs_rating", "universe_size"]
 
 SCREEN_COLUMNS = [
-    "period_end_date", "symbol", "close", "rs_rating",
+    "period_end_date", "symbol", "ibkr_industry", "ibkr_category",
+    "close", "rs_rating",
+    "ibkr_industry_rs_rating", "ibkr_category_rs_rating",
+    "stock_industry_rs_rating", "stock_category_rs_rating",
+    "ibkr_industry_pass", "ibkr_category_pass",
+    "stock_industry_pass", "stock_category_pass", "group_filter_pass",
     "crit_price_above_ma150_200", "crit_ma150_above_ma200", "crit_ma200_rising",
     "crit_ma50_above_ma150_200", "crit_price_above_ma50", "crit_above_52w_low",
     "crit_near_52w_high", "crit_rs_rating", "trend_template_pass",
@@ -31,13 +36,13 @@ SCREEN_COLUMNS = [
 ]
 
 SETUP_COLUMNS = [
-    "symbol", "sector", "industry", "detect_date", "pivot", "last_low", "stop_level",
+    "symbol", "ibkr_industry", "ibkr_category", "detect_date", "pivot", "last_low", "stop_level",
     "base_start_date", "base_days", "n_contractions", "contraction_depths",
     "dryup_ratio", "close", "valid_until",
 ]
 
 TRADE_COLUMNS = [
-    "run_id", "position_id", "setup_id", "symbol", "sector", "industry",
+    "run_id", "position_id", "setup_id", "symbol", "ibkr_industry", "ibkr_category",
     "leg", "exit_reason",
     "entry_date", "entry_price", "stop_price", "pivot", "shares",
     "exit_date", "exit_price", "pnl", "r_multiple", "holding_days",

@@ -4,12 +4,13 @@ Standalone backtester for Mark Minervini's SEPA swing approach (trend template,
 RS rating, VCP breakouts) on the daily stock universe. Fully decoupled from the
 other backtesting services.
 
-**Data sources (read-only, produced by `market-data-stack/stock_core_and_fundamental_data_fetcher`):**
+**Data sources (read-only):**
 
 | Table | Used for |
 |---|---|
 | `stock_core_market_metrics_daily` | adjusted daily OHLCV (2020+) |
 | `stock_core_security_master_current` | universe filter (`quote_type = EQUITY`) |
+| `ibkr_symbols` | IBKR `industry` / `category` taxonomy for group leadership |
 | `stock_core_sec_fundamentals_asof_daily` | SEC TTM revenue/margins/net income (point-in-time: `period_end_date` is the filing availability date) |
 
 Quarterly EPS is derived from consecutive quarterly TTM net-income diffs
@@ -21,11 +22,11 @@ practice). Annual-only filers never qualify for the EPS flag.
 | Table | Content |
 |---|---|
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
-| `backtesting_minervini_screen_daily` | trend-template + fundamental flags per symbol/day |
+| `backtesting_minervini_screen_daily` | trend-template + fundamental + IBKR group-leadership flags per symbol/day |
 | `backtesting_minervini_market_daily` | daily market breadth (% above 200d MA) + hysteresis gate |
-| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + sector/industry |
+| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
-| `backtesting_minervini_trades` | trade legs per run + sector/industry + world-regime attribution |
+| `backtesting_minervini_trades` | trade legs per run + IBKR industry/category + world-regime attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
 
 ## Pipeline
@@ -36,7 +37,10 @@ independently; source data is cached locally as parquet in `./cache`.
 
 ```
 screen : RS rating (cross-sectional percentile) + 8-point trend template
-         + point-in-time fundamentals  -> rs_daily, screen_daily
+         + point-in-time fundamentals
+         + IBKR group leadership:
+           strong industry, strong category, strongest stocks inside both
+           groups -> rs_daily, screen_daily
          + market breadth gate (share of stocks above their 200d MA, on >= 50%
          / off < 45% hysteresis) -> market_daily
 setup  : VCP detection on screen-pass days -> setups

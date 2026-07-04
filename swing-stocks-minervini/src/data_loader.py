@@ -1,8 +1,9 @@
-"""Load source data from the stock_core_* tables with a local parquet cache.
+"""Load source data from TimescaleDB with a local parquet cache.
 
 Sources (all produced by market-data-stack/stock_core_and_fundamental_data_fetcher):
   - stock_core_market_metrics_daily        adjusted daily OHLCV
   - stock_core_security_master_current     universe / quote_type filter
+  - ibkr_symbols                           IBKR industry/category taxonomy
   - stock_core_sec_fundamentals_asof_daily SEC TTM fundamentals; period_end_date is
     the point-in-time availability date (filing acceptance), see column comment.
     Quarterly EPS is derived from TTM net-income diffs — the earnings calendar
@@ -35,12 +36,22 @@ WHERE period_end_date BETWEEN %(start)s AND %(end)s
 """
 
 UNIVERSE_SQL = """
-SELECT symbol,
-       max(sector)   AS sector,
-       max(industry) AS industry
-FROM stock_core_security_master_current
-WHERE upper(quote_type) = 'EQUITY'
-GROUP BY symbol
+WITH ibkr AS (
+    SELECT UPPER(TRIM(source_symbol)) AS symbol,
+           max(NULLIF(TRIM(ibkr_industry), '')) AS ibkr_industry,
+           max(NULLIF(TRIM(ibkr_category), '')) AS ibkr_category
+    FROM ibkr_symbols
+    WHERE source_symbol IS NOT NULL
+      AND TRIM(source_symbol) <> ''
+    GROUP BY UPPER(TRIM(source_symbol))
+)
+SELECT sm.symbol,
+       max(ibkr.ibkr_industry) AS ibkr_industry,
+       max(ibkr.ibkr_category) AS ibkr_category
+FROM stock_core_security_master_current sm
+LEFT JOIN ibkr ON ibkr.symbol = UPPER(TRIM(sm.symbol))
+WHERE upper(sm.quote_type) = 'EQUITY'
+GROUP BY sm.symbol
 """
 
 REGIME_SQL = """
@@ -103,12 +114,12 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
 
 
 def load_universe(conn, cfg: Config) -> pd.DataFrame:
-    """Equity universe with sector/industry attribution (symbol, sector, industry)."""
+    """Equity universe with IBKR taxonomy (symbol, ibkr_industry, ibkr_category)."""
 
     def _load():
         return db.read_df(conn, UNIVERSE_SQL)
 
-    return _cached(cfg, f"universe_v2_{effective_end(cfg)}", _load)
+    return _cached(cfg, f"universe_ibkr_v1_{effective_end(cfg)}", _load)
 
 
 def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:

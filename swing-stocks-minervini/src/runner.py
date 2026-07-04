@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from . import data_loader, db, fundamentals, market_filter, persistence, rs_rating, trend_template, vcp
+from . import data_loader, db, fundamentals, group_filter, market_filter, persistence, rs_rating, trend_template, vcp
 from .config import Config
 from .simulator import simulate
 
@@ -44,7 +44,10 @@ def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, 
     return pd.DataFrame(out)
 
 
-def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: np.ndarray) -> pd.DataFrame:
+def run_screen(
+    conn, cfg: Config, matrices: dict, market: pd.DataFrame,
+    universe: pd.DataFrame, window: np.ndarray,
+) -> pd.DataFrame:
     dates, symbols = matrices["dates"], matrices["symbols"]
     close_m, volume_m = matrices["close"], matrices["volume"]
 
@@ -60,7 +63,14 @@ def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: 
         filings, dates, symbols, cfg
     )
     fundamentals_pass = fundamentals.combine(eps_pass, revenue_pass, margin_pass, cfg)
-    screen_pass = template["template_pass"] & fundamentals_pass
+
+    log.info("computing IBKR group leadership filter")
+    leadership = group_filter.compute_leadership(rs["rs_raw"], universe, cfg)
+    screen_pass = (
+        template["template_pass"]
+        & fundamentals_pass
+        & leadership["group_filter_pass"]
+    )
 
     window_m = pd.DataFrame(
         np.broadcast_to(window[:, None], (len(dates), len(symbols))),
@@ -81,6 +91,15 @@ def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: 
         {
             "close": close_m.round(4),
             "rs_rating": rs["rs_rating"],
+            "ibkr_industry_rs_rating": leadership["ibkr_industry_rs_rating"],
+            "ibkr_category_rs_rating": leadership["ibkr_category_rs_rating"],
+            "stock_industry_rs_rating": leadership["stock_industry_rs_rating"],
+            "stock_category_rs_rating": leadership["stock_category_rs_rating"],
+            "ibkr_industry_pass": leadership["ibkr_industry_pass"],
+            "ibkr_category_pass": leadership["ibkr_category_pass"],
+            "stock_industry_pass": leadership["stock_industry_pass"],
+            "stock_category_pass": leadership["stock_category_pass"],
+            "group_filter_pass": leadership["group_filter_pass"],
             "crit_price_above_ma150_200": template["crit_price_above_ma150_200"],
             "crit_ma150_above_ma200": template["crit_ma150_above_ma200"],
             "crit_ma200_rising": template["crit_ma200_rising"],
@@ -99,7 +118,17 @@ def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: 
             "revenue_yoy": revenue_yoy.round(6),
         },
     )
-    screen_df["rs_rating"] = screen_df["rs_rating"].astype("Int16")
+    screen_df = screen_df.merge(
+        universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
+    )
+    for column in (
+        "rs_rating",
+        "ibkr_industry_rs_rating",
+        "ibkr_category_rs_rating",
+        "stock_industry_rs_rating",
+        "stock_category_rs_rating",
+    ):
+        screen_df[column] = screen_df[column].astype("Int16")
     persistence.write_screen(conn, screen_df, start, end)
 
     market_df = market.loc[window].reset_index(names="period_end_date")
@@ -107,8 +136,9 @@ def run_screen(conn, cfg: Config, matrices: dict, market: pd.DataFrame, window: 
     market_df["market_breadth_pct"] = (market_df["market_breadth"] * 100).round(4)
     persistence.write_market(conn, market_df, start, end)
     log.info(
-        "screen done: %d rs rows, %d screen rows (%d screen passes)",
+        "screen done: %d rs rows, %d screen rows (%d screen passes, %d group passes)",
         len(rs_df), len(screen_df), int(screen_df["screen_pass"].sum()),
+        int(screen_df["group_filter_pass"].sum()),
     )
     return _long_frame(screen_pass & window_m, dates, symbols, {})
 
@@ -154,7 +184,7 @@ def run_setup(
     setups_df = pd.DataFrame([vars(s) for s in all_setups])
     if not setups_df.empty:
         setups_df = setups_df.merge(
-            universe[["symbol", "sector", "industry"]], on="symbol", how="left"
+            universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
         )
     persistence.write_setups(conn, setups_df, start, end)
 
@@ -179,7 +209,7 @@ def run_sim(
     trades = result.trades
     if not trades.empty:
         trades = trades.merge(
-            universe[["symbol", "sector", "industry"]], on="symbol", how="left"
+            universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
         )
         regime = data_loader.load_regime_scores(conn, cfg)
         if not regime.empty:
@@ -205,7 +235,11 @@ def main() -> None:
     prices = data_loader.load_prices(conn, cfg)
     universe = data_loader.load_universe(conn, cfg)
     prices = prices[prices["symbol"].isin(set(universe["symbol"]))]
-    log.info("loaded %d daily bars for %d equity symbols", len(prices), prices["symbol"].nunique())
+    taxonomy_ok = universe["ibkr_industry"].notna() & universe["ibkr_category"].notna()
+    log.info(
+        "loaded %d daily bars for %d equity symbols, IBKR taxonomy for %d of %d symbols",
+        len(prices), prices["symbol"].nunique(), int(taxonomy_ok.sum()), len(universe),
+    )
 
     matrices = {"close": data_loader.pivot_field(prices, "close")}
     matrices["dates"] = matrices["close"].index
@@ -229,7 +263,7 @@ def main() -> None:
     stages = ("screen", "setup", "sim") if cfg.stage == "all" else (cfg.stage,)
     pass_days = None
     if "screen" in stages:
-        pass_days = run_screen(conn, cfg, matrices, market, window)
+        pass_days = run_screen(conn, cfg, matrices, market, universe, window)
     if "setup" in stages:
         if pass_days is None:
             pass_days = persistence.read_screen_pass_days(conn, start, end)

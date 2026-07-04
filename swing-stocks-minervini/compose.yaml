@@ -11,7 +11,7 @@ services:
       PGAPPNAME: "backtesting_minervini_init"
       # true = ALLE backtesting_minervini_*-Tabellen droppen und neu anlegen.
       # Achtung: loescht saemtliche bisherigen Runs/Trades/Screens unwiderruflich.
-      DROP_ALL_MINERVINI_TABLES_ON_START: "false"
+      DROP_ALL_MINERVINI_TABLES_ON_START: "true"
     command:
       - sh
       - -c
@@ -111,6 +111,24 @@ services:
       # Gate schaltet erst wieder AUS, wenn die Breadth darunter faellt (0.45 = 45 %).
       # Abstand zu ON = Hysterese gegen staendiges Hin- und Herschalten.
       BREADTH_OFF_THRESHOLD: "0.45"
+
+      # -- IBKR-Gruppenfuehrung (Industry -> Category -> staerkste Aktien) -------
+      # true = Screen verlangt starke IBKR Industry, starke IBKR Category und
+      # Fuehrung der Aktie innerhalb dieser Gruppen.
+      IBKR_GROUP_FILTER_ENABLE: "true"
+      # Mindest-RS-Rating der IBKR Industry-Gruppe (1-99), berechnet aus dem
+      # Median-RS der rankbaren Mitglieder.
+      IBKR_INDUSTRY_RS_MIN: "70"
+      # Mindest-RS-Rating der IBKR Category innerhalb ihrer Industry.
+      IBKR_CATEGORY_RS_MIN: "70"
+      # Mindest-RS-Rating der Aktie innerhalb ihrer IBKR Industry.
+      IBKR_STOCK_IN_INDUSTRY_RS_MIN: "70"
+      # Mindest-RS-Rating der Aktie innerhalb ihrer IBKR Category.
+      IBKR_STOCK_IN_CATEGORY_RS_MIN: "70"
+      # Mindestzahl rankbarer Mitglieder, damit eine Industry/Category pro Tag
+      # als vergleichbare Gruppe gewertet wird.
+      IBKR_INDUSTRY_MIN_SYMBOLS: "5"
+      IBKR_CATEGORY_MIN_SYMBOLS: "3"
 
       # -- Fundamentals (point-in-time aus SEC-Filings; Quartals-EPS wird aus
       #    Differenzen aufeinanderfolgender TTM-Nettogewinne / verwaesserte Aktien

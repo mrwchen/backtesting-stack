@@ -25,6 +25,7 @@ DROP TABLE IF EXISTS backtesting_minervini_trades CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_runs CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_setups CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_screen_daily CASCADE;
+DROP TABLE IF EXISTS backtesting_minervini_market_daily CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_rs_daily CASCADE;
 \endif
 
@@ -56,8 +57,19 @@ CREATE INDEX IF NOT EXISTS idx_bm_rs_period
 CREATE TABLE IF NOT EXISTS backtesting_minervini_screen_daily (
     period_end_date             DATE NOT NULL,
     symbol                      TEXT NOT NULL,
+    ibkr_industry               TEXT,
+    ibkr_category               TEXT,
     close                       NUMERIC(15,4),
     rs_rating                   SMALLINT,
+    ibkr_industry_rs_rating     SMALLINT,
+    ibkr_category_rs_rating     SMALLINT,
+    stock_industry_rs_rating    SMALLINT,
+    stock_category_rs_rating    SMALLINT,
+    ibkr_industry_pass          BOOLEAN,
+    ibkr_category_pass          BOOLEAN,
+    stock_industry_pass         BOOLEAN,
+    stock_category_pass         BOOLEAN,
+    group_filter_pass           BOOLEAN NOT NULL,
     crit_price_above_ma150_200  BOOLEAN,
     crit_ma150_above_ma200      BOOLEAN,
     crit_ma200_rising           BOOLEAN,
@@ -87,6 +99,11 @@ SELECT create_hypertable(
 CREATE INDEX IF NOT EXISTS idx_bm_screen_period_pass
     ON backtesting_minervini_screen_daily (period_end_date DESC, screen_pass);
 
+CREATE INDEX IF NOT EXISTS idx_bm_screen_group_filter
+    ON backtesting_minervini_screen_daily (
+        period_end_date DESC, ibkr_industry, ibkr_category, group_filter_pass
+    );
+
 -- ---------------------------------------------------------------------------
 -- Stage 1c: daily market regime (breadth of stocks above their 200d MA)
 -- ---------------------------------------------------------------------------
@@ -102,8 +119,8 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_market_daily (
 CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     setup_id            BIGSERIAL PRIMARY KEY,
     symbol              TEXT NOT NULL,
-    sector              TEXT,
-    industry            TEXT,
+    ibkr_industry       TEXT,
+    ibkr_category       TEXT,
     detect_date         DATE NOT NULL,
     pivot               NUMERIC(15,4) NOT NULL,
     last_low            NUMERIC(15,4) NOT NULL,
@@ -150,8 +167,8 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_trades (
     position_id         INTEGER NOT NULL,
     setup_id            BIGINT,
     symbol              TEXT NOT NULL,
-    sector              TEXT,
-    industry            TEXT,
+    ibkr_industry       TEXT,
+    ibkr_category       TEXT,
     leg                 TEXT NOT NULL,
     exit_reason         TEXT NOT NULL,
     entry_date          DATE NOT NULL,
@@ -181,17 +198,6 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_equity_daily (
     exposure_pct        NUMERIC(18,6) NOT NULL,
     PRIMARY KEY (run_id, period_end_date)
 );
-
--- ---------------------------------------------------------------------------
--- Idempotent migrations for tables created by earlier versions of this schema
--- ---------------------------------------------------------------------------
-ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS sector TEXT;
-ALTER TABLE backtesting_minervini_setups ADD COLUMN IF NOT EXISTS industry TEXT;
-ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS sector TEXT;
-ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS industry TEXT;
-ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS regime_composite NUMERIC(18,6);
-ALTER TABLE backtesting_minervini_trades ADD COLUMN IF NOT EXISTS regime_label TEXT;
-ALTER TABLE backtesting_minervini_equity_daily DROP COLUMN IF EXISTS cash;
 
 -- Ensure the runtime account can use everything created above (existing objects).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "market-data-account";

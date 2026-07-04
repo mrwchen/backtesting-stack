@@ -57,6 +57,15 @@ class Config:
     breadth_on_threshold: float
     breadth_off_threshold: float
 
+    # IBKR group leadership filter
+    ibkr_group_filter_enable: bool
+    ibkr_industry_rs_min: int
+    ibkr_category_rs_min: int
+    ibkr_stock_industry_rs_min: int
+    ibkr_stock_category_rs_min: int
+    ibkr_industry_min_symbols: int
+    ibkr_category_min_symbols: int
+
     # fundamentals
     eps_yoy_min: float
     revenue_yoy_min: float
@@ -112,6 +121,13 @@ class Config:
             market_filter_enable=_env_bool("MARKET_FILTER_ENABLE", True),
             breadth_on_threshold=float(_env("BREADTH_ON_THRESHOLD", "0.50")),
             breadth_off_threshold=float(_env("BREADTH_OFF_THRESHOLD", "0.45")),
+            ibkr_group_filter_enable=_env_bool("IBKR_GROUP_FILTER_ENABLE", True),
+            ibkr_industry_rs_min=int(_env("IBKR_INDUSTRY_RS_MIN", "70")),
+            ibkr_category_rs_min=int(_env("IBKR_CATEGORY_RS_MIN", "70")),
+            ibkr_stock_industry_rs_min=int(_env("IBKR_STOCK_IN_INDUSTRY_RS_MIN", "70")),
+            ibkr_stock_category_rs_min=int(_env("IBKR_STOCK_IN_CATEGORY_RS_MIN", "70")),
+            ibkr_industry_min_symbols=int(_env("IBKR_INDUSTRY_MIN_SYMBOLS", "5")),
+            ibkr_category_min_symbols=int(_env("IBKR_CATEGORY_MIN_SYMBOLS", "3")),
             eps_yoy_min=float(_env("EPS_YOY_MIN", "0.20")),
             revenue_yoy_min=float(_env("REVENUE_YOY_MIN", "0.10")),
             fundamentals_min_pass=int(_env("FUNDAMENTALS_MIN_PASS", "2")),
