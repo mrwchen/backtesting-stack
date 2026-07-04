@@ -3,11 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.group_filter import compute_industry_breadth
+from src.group_filter import compute_category_breadth
 from tests.util import make_config
 
 
-def test_industry_breadth_gate_uses_ma200_hysteresis():
+def test_category_breadth_gate_uses_ma200_hysteresis():
     dates = pd.bdate_range("2023-01-02", periods=220)
     close = pd.DataFrame(
         {
@@ -28,19 +28,19 @@ def test_industry_breadth_gate_uses_ma200_hysteresis():
         }
     )
     cfg = make_config(
-        ibkr_industry_breadth_filter_enable=True,
-        ibkr_industry_breadth_min_symbols=3,
+        ibkr_category_breadth_filter_enable=True,
+        ibkr_category_breadth_min_symbols=3,
     )
 
-    breadth = compute_industry_breadth(close, universe, cfg)
+    breadth = compute_category_breadth(close, universe, cfg)
 
-    assert abs(breadth["ibkr_industry_breadth"].iloc[-1]["AAA"] - (2 / 3)) < 1e-9
-    assert abs(breadth["ibkr_industry_breadth"].iloc[-1]["BBA"] - 0.0) < 1e-9
-    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["AAA"]) is True
-    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["BBA"]) is False
+    assert abs(breadth["ibkr_category_breadth"].iloc[-1]["AAA"] - (2 / 3)) < 1e-9
+    assert abs(breadth["ibkr_category_breadth"].iloc[-1]["BBA"] - 0.0) < 1e-9
+    assert bool(breadth["ibkr_category_breadth_pass"].iloc[-1]["AAA"]) is True
+    assert bool(breadth["ibkr_category_breadth_pass"].iloc[-1]["BBA"]) is False
 
 
-def test_industry_breadth_rejects_small_or_missing_industries():
+def test_category_breadth_rejects_small_or_missing_categories():
     dates = pd.bdate_range("2023-01-02", periods=220)
     close = pd.DataFrame(
         {
@@ -59,12 +59,12 @@ def test_industry_breadth_rejects_small_or_missing_industries():
         }
     )
     cfg = make_config(
-        ibkr_industry_breadth_filter_enable=True,
-        ibkr_industry_breadth_min_symbols=3,
+        ibkr_category_breadth_filter_enable=True,
+        ibkr_category_breadth_min_symbols=3,
     )
 
-    breadth = compute_industry_breadth(close, universe, cfg)
+    breadth = compute_category_breadth(close, universe, cfg)
 
-    assert np.isnan(breadth["ibkr_industry_breadth"].iloc[-1]["AAA"])
-    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["AAA"]) is False
-    assert bool(breadth["ibkr_industry_breadth_pass"].iloc[-1]["BBC"]) is False
+    assert np.isnan(breadth["ibkr_category_breadth"].iloc[-1]["AAA"])
+    assert bool(breadth["ibkr_category_breadth_pass"].iloc[-1]["AAA"]) is False
+    assert bool(breadth["ibkr_category_breadth_pass"].iloc[-1]["BBC"]) is False

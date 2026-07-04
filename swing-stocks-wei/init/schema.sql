@@ -56,9 +56,9 @@ CREATE TABLE IF NOT EXISTS backtest_wei_signals_daily (
     volume_sma50_pass           BOOLEAN NOT NULL,
     volume_feed_pass            BOOLEAN NOT NULL,
     volume_pass                 BOOLEAN NOT NULL,
-    ibkr_industry_breadth_pct   NUMERIC(8,4),
-    ibkr_industry_breadth_on    BOOLEAN NOT NULL,
-    ibkr_industry_breadth_pass  BOOLEAN NOT NULL,
+    ibkr_category_breadth_pct   NUMERIC(8,4),
+    ibkr_category_breadth_on    BOOLEAN NOT NULL,
+    ibkr_category_breadth_pass  BOOLEAN NOT NULL,
     entry_signal                BOOLEAN NOT NULL,
     planned_entry_date          DATE NOT NULL,
     planned_entry_open          NUMERIC(15,4) NOT NULL,
@@ -91,10 +91,10 @@ CREATE TABLE IF NOT EXISTS backtest_wei_runs (
     ema_slow_days               INTEGER NOT NULL,
     volume_sma_days             INTEGER NOT NULL,
     volume_filter_enable        BOOLEAN NOT NULL,
-    ibkr_industry_breadth_filter_enable BOOLEAN NOT NULL,
-    ibkr_industry_breadth_on_threshold NUMERIC(8,4) NOT NULL,
-    ibkr_industry_breadth_off_threshold NUMERIC(8,4) NOT NULL,
-    ibkr_industry_breadth_min_symbols INTEGER NOT NULL,
+    ibkr_category_breadth_filter_enable BOOLEAN NOT NULL,
+    ibkr_category_breadth_on_threshold NUMERIC(8,4) NOT NULL,
+    ibkr_category_breadth_off_threshold NUMERIC(8,4) NOT NULL,
+    ibkr_category_breadth_min_symbols INTEGER NOT NULL,
     position_size_usd           NUMERIC(18,2) NOT NULL,
     stop_loss_pct               NUMERIC(12,6) NOT NULL,
     trailing_activate_pct       NUMERIC(12,6) NOT NULL,
@@ -132,10 +132,27 @@ ALTER TABLE backtest_wei_runs
     ADD COLUMN IF NOT EXISTS volume_filter_enable BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE backtest_wei_runs
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_filter_enable BOOLEAN NOT NULL DEFAULT TRUE,
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_on_threshold NUMERIC(8,4) NOT NULL DEFAULT 0.55,
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_off_threshold NUMERIC(8,4) NOT NULL DEFAULT 0.45,
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_min_symbols INTEGER NOT NULL DEFAULT 5;
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_filter_enable BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_on_threshold NUMERIC(8,4) NOT NULL DEFAULT 0.65,
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_off_threshold NUMERIC(8,4) NOT NULL DEFAULT 0.55,
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_min_symbols INTEGER NOT NULL DEFAULT 5;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'backtest_wei_runs'
+          AND column_name = 'ibkr_industry_breadth_filter_enable'
+    ) THEN
+        ALTER TABLE backtest_wei_runs
+            ALTER COLUMN ibkr_industry_breadth_filter_enable SET DEFAULT TRUE,
+            ALTER COLUMN ibkr_industry_breadth_on_threshold SET DEFAULT 0.65,
+            ALTER COLUMN ibkr_industry_breadth_off_threshold SET DEFAULT 0.55,
+            ALTER COLUMN ibkr_industry_breadth_min_symbols SET DEFAULT 5;
+    END IF;
+END
+$$;
 
 ALTER TABLE backtest_wei_runs
     ADD COLUMN IF NOT EXISTS min_market_cap_usd NUMERIC(20,2) NOT NULL DEFAULT 2000000000;
@@ -145,9 +162,25 @@ ALTER TABLE backtest_wei_runs
     ADD COLUMN IF NOT EXISTS revenue_stale_trading_days INTEGER NOT NULL DEFAULT 280;
 
 ALTER TABLE backtest_wei_signals_daily
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_pct NUMERIC(8,4),
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_on BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS ibkr_industry_breadth_pass BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_pct NUMERIC(8,4),
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_on BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS ibkr_category_breadth_pass BOOLEAN NOT NULL DEFAULT FALSE;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'backtest_wei_signals_daily'
+          AND column_name = 'ibkr_industry_breadth_pct'
+    ) THEN
+        ALTER TABLE backtest_wei_signals_daily
+            ALTER COLUMN ibkr_industry_breadth_pct DROP NOT NULL,
+            ALTER COLUMN ibkr_industry_breadth_on SET DEFAULT FALSE,
+            ALTER COLUMN ibkr_industry_breadth_pass SET DEFAULT FALSE;
+    END IF;
+END
+$$;
 
 DO $$
 BEGIN

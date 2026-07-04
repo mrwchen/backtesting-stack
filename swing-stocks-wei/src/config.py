@@ -35,10 +35,10 @@ class Config:
     ema_slow_days: int
     volume_sma_days: int
     volume_filter_enable: bool
-    ibkr_industry_breadth_filter_enable: bool
-    ibkr_industry_breadth_on_threshold: float
-    ibkr_industry_breadth_off_threshold: float
-    ibkr_industry_breadth_min_symbols: int
+    ibkr_category_breadth_filter_enable: bool
+    ibkr_category_breadth_on_threshold: float
+    ibkr_category_breadth_off_threshold: float
+    ibkr_category_breadth_min_symbols: int
     initial_equity: float
     position_size_usd: float
     stop_loss_pct: float
@@ -66,10 +66,10 @@ class Config:
             ema_slow_days=int(_env("EMA_SLOW_DAYS", "21")),
             volume_sma_days=int(_env("VOLUME_SMA_DAYS", "50")),
             volume_filter_enable=_env_bool("VOLUME_FILTER_ENABLE", True),
-            ibkr_industry_breadth_filter_enable=_env_bool("IBKR_INDUSTRY_BREADTH_FILTER_ENABLE", True),
-            ibkr_industry_breadth_on_threshold=float(_env("IBKR_INDUSTRY_BREADTH_ON_THRESHOLD", "0.55")),
-            ibkr_industry_breadth_off_threshold=float(_env("IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD", "0.45")),
-            ibkr_industry_breadth_min_symbols=int(_env("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS", "5")),
+            ibkr_category_breadth_filter_enable=_env_bool("IBKR_CATEGORY_BREADTH_FILTER_ENABLE", True),
+            ibkr_category_breadth_on_threshold=float(_env("IBKR_CATEGORY_BREADTH_ON_THRESHOLD", "0.65")),
+            ibkr_category_breadth_off_threshold=float(_env("IBKR_CATEGORY_BREADTH_OFF_THRESHOLD", "0.55")),
+            ibkr_category_breadth_min_symbols=int(_env("IBKR_CATEGORY_BREADTH_MIN_SYMBOLS", "5")),
             initial_equity=float(_env("INITIAL_EQUITY", "100000")),
             position_size_usd=float(_env("POSITION_SIZE_USD", "1000")),
             stop_loss_pct=float(_env("STOP_LOSS_PCT", "0.05")),
@@ -101,13 +101,13 @@ class Config:
             raise ValueError("EMA_SLOW_DAYS must be greater than EMA_FAST_DAYS")
         if self.volume_sma_days < 1:
             raise ValueError("VOLUME_SMA_DAYS must be >= 1")
-        if not 0 <= self.ibkr_industry_breadth_off_threshold < self.ibkr_industry_breadth_on_threshold <= 1:
+        if not 0 <= self.ibkr_category_breadth_off_threshold < self.ibkr_category_breadth_on_threshold <= 1:
             raise ValueError(
-                "IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD must be >= 0 and lower than "
-                "IBKR_INDUSTRY_BREADTH_ON_THRESHOLD, which must be <= 1"
+                "IBKR_CATEGORY_BREADTH_OFF_THRESHOLD must be >= 0 and lower than "
+                "IBKR_CATEGORY_BREADTH_ON_THRESHOLD, which must be <= 1"
             )
-        if self.ibkr_industry_breadth_min_symbols < 1:
-            raise ValueError("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS must be >= 1")
+        if self.ibkr_category_breadth_min_symbols < 1:
+            raise ValueError("IBKR_CATEGORY_BREADTH_MIN_SYMBOLS must be >= 1")
         if self.initial_equity <= 0:
             raise ValueError("INITIAL_EQUITY must be > 0")
         if self.position_size_usd <= 0:

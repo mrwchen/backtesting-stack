@@ -41,9 +41,9 @@ SIGNAL_COLUMNS = [
     "volume_sma50_pass",
     "volume_feed_pass",
     "volume_pass",
-    "ibkr_industry_breadth_pct",
-    "ibkr_industry_breadth_on",
-    "ibkr_industry_breadth_pass",
+    "ibkr_category_breadth_pct",
+    "ibkr_category_breadth_on",
+    "ibkr_category_breadth_pass",
     "entry_signal",
     "planned_entry_date",
     "planned_entry_open",
@@ -67,7 +67,7 @@ def compute_signals(
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
 
     close_m = prices.pivot(index="date", columns="symbol", values="close").sort_index()
-    industry_breadth = group_filter.compute_industry_breadth(close_m, universe, cfg)
+    category_breadth = group_filter.compute_category_breadth(close_m, universe, cfg)
     revenue = fundamental_filter.compute_revenue_growth(
         fundamentals, close_m.index, close_m.columns, cfg
     )
@@ -129,18 +129,18 @@ def compute_signals(
             revenue_yoy = pd.Series(float("nan"), index=dates)
             revenue_ttm = pd.Series(float("nan"), index=dates)
             prev_revenue_ttm = pd.Series(float("nan"), index=dates)
-        if symbol in industry_breadth["ibkr_industry_breadth_pass"].columns:
-            industry_breadth_raw = industry_breadth["ibkr_industry_breadth"][symbol].reindex(dates)
-            industry_breadth_on = industry_breadth["ibkr_industry_breadth_on"][symbol].reindex(dates).fillna(False)
-            industry_breadth_pass = (
-                industry_breadth["ibkr_industry_breadth_pass"][symbol]
+        if symbol in category_breadth["ibkr_category_breadth_pass"].columns:
+            category_breadth_raw = category_breadth["ibkr_category_breadth"][symbol].reindex(dates)
+            category_breadth_on = category_breadth["ibkr_category_breadth_on"][symbol].reindex(dates).fillna(False)
+            category_breadth_pass = (
+                category_breadth["ibkr_category_breadth_pass"][symbol]
                 .reindex(dates)
                 .fillna(False)
             )
         else:
-            industry_breadth_raw = pd.Series(float("nan"), index=dates)
-            industry_breadth_on = pd.Series(False, index=dates)
-            industry_breadth_pass = pd.Series(not cfg.ibkr_industry_breadth_filter_enable, index=dates)
+            category_breadth_raw = pd.Series(float("nan"), index=dates)
+            category_breadth_on = pd.Series(False, index=dates)
+            category_breadth_pass = pd.Series(not cfg.ibkr_category_breadth_filter_enable, index=dates)
 
         sub["rolling_52w_high"] = rolling_high
         sub["is_52w_high"] = is_52w_high
@@ -156,10 +156,10 @@ def compute_signals(
         sub["volume_sma50_pass"] = volume_sma50_pass
         sub["volume_feed_pass"] = volume_feed_pass
         sub["volume_pass"] = volume_pass
-        sub["ibkr_industry_breadth_pct"] = (industry_breadth_raw.to_numpy(dtype=float) * 100).round(4)
-        sub["ibkr_industry_breadth_on"] = industry_breadth_on.to_numpy(dtype=bool)
-        sub["ibkr_industry_breadth_pass"] = industry_breadth_pass.to_numpy(dtype=bool)
-        sub["entry_signal"] = had_high_recent & ema_entry_pass & volume_pass & sub["ibkr_industry_breadth_pass"]
+        sub["ibkr_category_breadth_pct"] = (category_breadth_raw.to_numpy(dtype=float) * 100).round(4)
+        sub["ibkr_category_breadth_on"] = category_breadth_on.to_numpy(dtype=bool)
+        sub["ibkr_category_breadth_pass"] = category_breadth_pass.to_numpy(dtype=bool)
+        sub["entry_signal"] = had_high_recent & ema_entry_pass & volume_pass & sub["ibkr_category_breadth_pass"]
         sub["planned_entry_date"] = sub["date"].shift(-1)
         sub["planned_entry_open"] = sub["open"].shift(-1)
         sub["planned_entry_market_cap_usd"] = sub["market_cap_usd"].shift(-1)

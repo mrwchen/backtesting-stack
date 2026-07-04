@@ -48,7 +48,7 @@ def _prices(close_values, volume_values, feed="sip", market_cap_usd=3_000_000_00
     )
 
 
-def _multi_industry_prices():
+def _multi_category_prices():
     dates = pd.bdate_range("2023-01-02", periods=218)
     aaa_close = [100.0] * 210 + [99, 98, 97, 99, 102, 104, 106, 108]
     base = pd.DataFrame(
@@ -277,10 +277,10 @@ def test_signal_requires_revenue_growth_above_threshold():
     assert signals.empty
 
 
-def test_signal_requires_industry_breadth_gate_when_enabled():
+def test_signal_requires_category_breadth_gate_when_enabled():
     cfg = make_config(
-        ibkr_industry_breadth_filter_enable=True,
-        ibkr_industry_breadth_min_symbols=3,
+        ibkr_category_breadth_filter_enable=True,
+        ibkr_category_breadth_min_symbols=3,
     )
     universe = pd.DataFrame(
         {
@@ -291,9 +291,9 @@ def test_signal_requires_industry_breadth_gate_when_enabled():
     )
 
     signals = compute_signals(
-        _multi_industry_prices(),
+        _multi_category_prices(),
         universe,
-        _fundamentals(_multi_industry_prices()),
+        _fundamentals(_multi_category_prices()),
         cfg,
         pd.Timestamp("2023-01-02").date(),
         pd.Timestamp("2023-12-31").date(),

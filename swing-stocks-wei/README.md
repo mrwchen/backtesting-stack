@@ -29,8 +29,8 @@ For every IBKR-backed USD equity:
    Set `VOLUME_FILTER_ENABLE=false` to ignore only the SMA50 volume-size gate;
    the `sip` feed requirement still applies. Diagnostics are stored as
    `volume_sma50_pass`, `volume_feed_pass` and final `volume_pass`.
-5. IBKR industry breadth must be on: at least 55% of eligible industry members
-   above MA200 turns the gate on, and it stays on until breadth falls below 45%.
+5. IBKR category breadth must be on: at least 65% of eligible category members
+   above MA200 turns the gate on, and it stays on until breadth falls below 55%.
 6. Planned entry-day market cap must be at least USD 2,000,000,000 by default
    (`MIN_MARKET_CAP_USD=2000000000`).
 7. Latest known TTM revenue must be at least 20% higher than the comparable
