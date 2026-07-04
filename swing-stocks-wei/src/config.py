@@ -1,0 +1,108 @@
+"""Environment-driven configuration for the Wei swing backtester."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+def _env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return _env(name, str(default)).lower() in ("1", "true", "yes", "on")
+
+
+@dataclass(frozen=True)
+class Config:
+    start_date: str
+    end_date: str | None
+    warmup_calendar_days: int
+    run_label: str
+    cache_dir: str
+    force_refresh: bool
+    log_level: str
+    min_price: float
+    high_lookback_days: int
+    high_recent_days: int
+    ema_fast_days: int
+    ema_slow_days: int
+    volume_sma_days: int
+    volume_filter_enable: bool
+    ibkr_industry_breadth_filter_enable: bool
+    ibkr_industry_breadth_on_threshold: float
+    ibkr_industry_breadth_off_threshold: float
+    ibkr_industry_breadth_min_symbols: int
+    initial_equity: float
+    position_size_usd: float
+    stop_loss_pct: float
+    trailing_activate_pct: float
+    trailing_loss_pct: float
+    allow_fractional_shares: bool
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        cfg = cls(
+            start_date=_env("START_DATE", "2020-01-02"),
+            end_date=_env("END_DATE", "") or None,
+            warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
+            run_label=_env("RUN_LABEL", "wei_52w_pullback_v1"),
+            cache_dir=_env("CACHE_DIR", "/cache"),
+            force_refresh=_env_bool("FORCE_REFRESH", False),
+            log_level=_env("LOG_LEVEL", "INFO").upper(),
+            min_price=float(_env("MIN_PRICE", "0.01")),
+            high_lookback_days=int(_env("HIGH_LOOKBACK_DAYS", "252")),
+            high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
+            ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
+            ema_slow_days=int(_env("EMA_SLOW_DAYS", "21")),
+            volume_sma_days=int(_env("VOLUME_SMA_DAYS", "20")),
+            volume_filter_enable=_env_bool("VOLUME_FILTER_ENABLE", True),
+            ibkr_industry_breadth_filter_enable=_env_bool("IBKR_INDUSTRY_BREADTH_FILTER_ENABLE", True),
+            ibkr_industry_breadth_on_threshold=float(_env("IBKR_INDUSTRY_BREADTH_ON_THRESHOLD", "0.55")),
+            ibkr_industry_breadth_off_threshold=float(_env("IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD", "0.45")),
+            ibkr_industry_breadth_min_symbols=int(_env("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS", "5")),
+            initial_equity=float(_env("INITIAL_EQUITY", "100000")),
+            position_size_usd=float(_env("POSITION_SIZE_USD", "1000")),
+            stop_loss_pct=float(_env("STOP_LOSS_PCT", "0.05")),
+            trailing_activate_pct=float(_env("TRAILING_ACTIVATE_PCT", "0.10")),
+            trailing_loss_pct=float(_env("TRAILING_LOSS_PCT", "0.05")),
+            allow_fractional_shares=_env_bool("ALLOW_FRACTIONAL_SHARES", True),
+        )
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        if self.warmup_calendar_days < 365:
+            raise ValueError("WARMUP_CALENDAR_DAYS should cover at least one 52-week lookback")
+        if self.min_price <= 0:
+            raise ValueError("MIN_PRICE must be > 0")
+        if self.high_lookback_days < 2:
+            raise ValueError("HIGH_LOOKBACK_DAYS must be >= 2")
+        if self.high_recent_days < 1:
+            raise ValueError("HIGH_RECENT_DAYS must be >= 1")
+        if self.ema_fast_days < 1:
+            raise ValueError("EMA_FAST_DAYS must be >= 1")
+        if self.ema_slow_days <= self.ema_fast_days:
+            raise ValueError("EMA_SLOW_DAYS must be greater than EMA_FAST_DAYS")
+        if self.volume_sma_days < 1:
+            raise ValueError("VOLUME_SMA_DAYS must be >= 1")
+        if not 0 <= self.ibkr_industry_breadth_off_threshold < self.ibkr_industry_breadth_on_threshold <= 1:
+            raise ValueError(
+                "IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD must be >= 0 and lower than "
+                "IBKR_INDUSTRY_BREADTH_ON_THRESHOLD, which must be <= 1"
+            )
+        if self.ibkr_industry_breadth_min_symbols < 1:
+            raise ValueError("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS must be >= 1")
+        if self.initial_equity <= 0:
+            raise ValueError("INITIAL_EQUITY must be > 0")
+        if self.position_size_usd <= 0:
+            raise ValueError("POSITION_SIZE_USD must be > 0")
+        if not 0 < self.stop_loss_pct < 1:
+            raise ValueError("STOP_LOSS_PCT must be between 0 and 1")
+        if self.trailing_activate_pct <= 0:
+            raise ValueError("TRAILING_ACTIVATE_PCT must be > 0")
+        if not 0 < self.trailing_loss_pct < 1:
+            raise ValueError("TRAILING_LOSS_PCT must be between 0 and 1")

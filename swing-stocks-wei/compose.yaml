@@ -1,0 +1,78 @@
+services:
+  init-wei-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      # Root password of the TimescaleDB, only used for schema initialization.
+      PGPASSWORD: "postgres-ts-root-pw"
+      # Application name visible in pg_stat_activity.
+      PGAPPNAME: "backtest_wei_init"
+      # true = drop all backtest_wei_* result tables before recreating them.
+      DROP_ALL_WEI_TABLES_ON_START: "false"
+    command:
+      - sh
+      - -c
+      - >
+        psql -h timescaledb -p 5432 -U postgres-ts -d postgres
+        -v ON_ERROR_STOP=1
+        -v drop_all_wei_tables_on_start="$${DROP_ALL_WEI_TABLES_ON_START:-false}"
+        -f /init.sql
+    networks:
+      - shared_net
+
+  wei-backtester:
+    build: .
+    command: python -m src.runner
+    depends_on:
+      init-wei-schema:
+        condition: service_completed_successfully
+    restart: "no"
+    volumes:
+      - ./cache:/cache
+    environment:
+      # Database connection. Source and result tables live in this TimescaleDB.
+      PGHOST: "timescaledb"
+      PGPORT: "5432"
+      PGDATABASE: "postgres"
+      PGUSER: "market-data-account"
+      PGPASSWORD: "market-data-account-pw"
+      PGAPPNAME: "backtest_wei_runner"
+
+      # Run window. Empty END_DATE means today.
+      START_DATE: "2020-01-02"
+      END_DATE: ""
+      RUN_LABEL: "wei_52w_pullback_v1"
+      CACHE_DIR: "/cache"
+      FORCE_REFRESH: "false"
+      WARMUP_CALENDAR_DAYS: "550"
+      LOG_LEVEL: "INFO"
+
+      # Universe and indicator settings.
+      MIN_PRICE: "0.01"
+      HIGH_LOOKBACK_DAYS: "252"
+      HIGH_RECENT_DAYS: "10"
+      EMA_FAST_DAYS: "9"
+      EMA_SLOW_DAYS: "21"
+      VOLUME_SMA_DAYS: "20"
+      VOLUME_FILTER_ENABLE: "true"
+      IBKR_INDUSTRY_BREADTH_FILTER_ENABLE: "true"
+      IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
+      IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD: "0.45"
+      IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS: "5"
+
+      # Trade model. Position size is USD notional per trade.
+      INITIAL_EQUITY: "100000"
+      POSITION_SIZE_USD: "1000"
+      STOP_LOSS_PCT: "0.05"
+      TRAILING_ACTIVATE_PCT: "0.10"
+      TRAILING_LOSS_PCT: "0.05"
+      ALLOW_FRACTIONAL_SHARES: "true"
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+    name: shared_net
