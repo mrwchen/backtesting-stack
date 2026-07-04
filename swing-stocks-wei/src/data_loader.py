@@ -76,7 +76,7 @@ GROUP BY UPPER(TRIM(sm.symbol))
 
 FUNDAMENTALS_SQL = """
 SELECT UPPER(TRIM(symbol)) AS symbol,
-       period_end_date::date AS available_date,
+       COALESCE(sec_data_available_at::date, sec_latest_filing_date, period_end_date)::date AS available_date,
        sec_revenue_ttm::float8 AS revenue_ttm
 FROM stock_core_sec_fundamentals_asof_daily
 WHERE period_end_date <= %(end)s
@@ -140,7 +140,7 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
         )
         return df.drop(columns=["_feed_rank"]).reset_index(drop=True)
 
-    return _cached(cfg, f"wei_prices_v3_{start}_{end}", _load)
+    return _cached(cfg, f"wei_prices_v4_{start}_{end}", _load)
 
 
 def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:
@@ -155,7 +155,7 @@ def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:
         df["revenue_ttm"] = pd.to_numeric(df["revenue_ttm"], errors="coerce")
         return df.dropna(subset=["symbol", "available_date", "revenue_ttm"]).reset_index(drop=True)
 
-    return _cached(cfg, f"wei_fundamentals_revenue_v1_{end}", _load)
+    return _cached(cfg, f"wei_fundamentals_revenue_v2_{end}", _load)
 
 
 def pivot_prices(prices: pd.DataFrame, field: str) -> pd.DataFrame:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from hashlib import sha256
 
 
 def _env(name: str, default: str) -> str:
@@ -18,6 +19,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Config:
+    strategy_version: str
     start_date: str
     end_date: str | None
     warmup_calendar_days: int
@@ -31,9 +33,14 @@ class Config:
     revenue_stale_trading_days: int
     high_lookback_days: int
     high_recent_days: int
+    min_pullback_pct: float
     ema_fast_days: int
     ema_slow_days: int
     ema_cross_lookback_days: int
+    max_entry_gap_pct: float
+    atr_days: int
+    initial_stop_mode: str
+    atr_stop_multiple: float
     volume_sma_days: int
     volume_filter_enable: bool
     ibkr_category_breadth_filter_enable: bool
@@ -50,6 +57,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         cfg = cls(
+            strategy_version=_env("STRATEGY_VERSION", "wei_pullback_reclaim_v2"),
             start_date=_env("START_DATE", "2020-01-02"),
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
@@ -63,9 +71,14 @@ class Config:
             revenue_stale_trading_days=int(_env("REVENUE_STALE_TRADING_DAYS", "280")),
             high_lookback_days=int(_env("HIGH_LOOKBACK_DAYS", "252")),
             high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
+            min_pullback_pct=float(_env("MIN_PULLBACK_PCT", "0.03")),
             ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
             ema_slow_days=int(_env("EMA_SLOW_DAYS", "21")),
             ema_cross_lookback_days=int(_env("EMA_CROSS_LOOKBACK_DAYS", "8")),
+            max_entry_gap_pct=float(_env("MAX_ENTRY_GAP_PCT", "0.02")),
+            atr_days=int(_env("ATR_DAYS", "14")),
+            initial_stop_mode=_env("INITIAL_STOP_MODE", "fixed_pct").lower(),
+            atr_stop_multiple=float(_env("ATR_STOP_MULTIPLE", "2.0")),
             volume_sma_days=int(_env("VOLUME_SMA_DAYS", "50")),
             volume_filter_enable=_env_bool("VOLUME_FILTER_ENABLE", True),
             ibkr_category_breadth_filter_enable=_env_bool("IBKR_CATEGORY_BREADTH_FILTER_ENABLE", True),
@@ -83,6 +96,8 @@ class Config:
         return cfg
 
     def validate(self) -> None:
+        if not self.strategy_version:
+            raise ValueError("STRATEGY_VERSION must not be empty")
         if self.warmup_calendar_days < 365:
             raise ValueError("WARMUP_CALENDAR_DAYS should cover at least one 52-week lookback")
         if self.min_price <= 0:
@@ -97,12 +112,22 @@ class Config:
             raise ValueError("HIGH_LOOKBACK_DAYS must be >= 2")
         if self.high_recent_days < 1:
             raise ValueError("HIGH_RECENT_DAYS must be >= 1")
+        if self.min_pullback_pct < 0:
+            raise ValueError("MIN_PULLBACK_PCT must be >= 0")
         if self.ema_fast_days < 1:
             raise ValueError("EMA_FAST_DAYS must be >= 1")
         if self.ema_slow_days <= self.ema_fast_days:
             raise ValueError("EMA_SLOW_DAYS must be greater than EMA_FAST_DAYS")
         if self.ema_cross_lookback_days < 0:
             raise ValueError("EMA_CROSS_LOOKBACK_DAYS must be >= 0")
+        if self.max_entry_gap_pct < -1:
+            raise ValueError("MAX_ENTRY_GAP_PCT must be >= -1")
+        if self.atr_days < 1:
+            raise ValueError("ATR_DAYS must be >= 1")
+        if self.initial_stop_mode not in ("fixed_pct", "atr"):
+            raise ValueError("INITIAL_STOP_MODE must be fixed_pct or atr")
+        if self.atr_stop_multiple <= 0:
+            raise ValueError("ATR_STOP_MULTIPLE must be > 0")
         if self.volume_sma_days < 1:
             raise ValueError("VOLUME_SMA_DAYS must be >= 1")
         if not 0 <= self.ibkr_category_breadth_off_threshold < self.ibkr_category_breadth_on_threshold <= 1:
@@ -122,3 +147,12 @@ class Config:
             raise ValueError("TRAILING_ACTIVATE_PCT must be > 0")
         if not 0 < self.trailing_loss_pct < 1:
             raise ValueError("TRAILING_LOSS_PCT must be between 0 and 1")
+
+    def fingerprint(self) -> str:
+        ignored = {"cache_dir", "force_refresh", "log_level"}
+        payload = "|".join(
+            f"{name}={getattr(self, name)}"
+            for name in sorted(self.__dataclass_fields__)
+            if name not in ignored
+        )
+        return sha256(payload.encode("utf-8")).hexdigest()[:16]

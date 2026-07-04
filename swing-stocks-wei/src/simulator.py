@@ -31,8 +31,10 @@ TRADE_COLUMNS = [
     "exit_price",
     "shares",
     "notional_usd",
-    "entry_market_cap_usd",
-    "entry_market_cap_currency",
+    "entry_ref_market_cap_usd",
+    "entry_ref_market_cap_currency",
+    "planned_entry_atr",
+    "initial_stop_mode",
     "initial_stop_price",
     "exit_stop_price",
     "max_price",
@@ -157,7 +159,7 @@ def _run_trade(
     shares: float,
     cfg: Config,
 ) -> dict:
-    initial_stop = entry_price * (1.0 - cfg.stop_loss_pct)
+    initial_stop = _initial_stop_price(entry_price, signal, cfg)
     active_stop = initial_stop
     max_price = entry_price
     exit_idx = len(bars) - 1
@@ -206,8 +208,10 @@ def _run_trade(
         "exit_price": round(exit_price, 4),
         "shares": round(shares, 8),
         "notional_usd": round(notional, 2),
-        "entry_market_cap_usd": getattr(signal, "planned_entry_market_cap_usd", None),
-        "entry_market_cap_currency": getattr(signal, "planned_entry_market_cap_currency", None),
+        "entry_ref_market_cap_usd": getattr(signal, "entry_ref_market_cap_usd", None),
+        "entry_ref_market_cap_currency": getattr(signal, "entry_ref_market_cap_currency", None),
+        "planned_entry_atr": getattr(signal, "planned_entry_atr", None),
+        "initial_stop_mode": cfg.initial_stop_mode,
         "initial_stop_price": round(initial_stop, 4),
         "exit_stop_price": round(active_stop, 4),
         "max_price": round(max_price, 4),
@@ -216,6 +220,14 @@ def _run_trade(
         "r_multiple": round(pnl / initial_risk, 6),
         "holding_days": int(exit_idx - entry_idx + 1),
     }
+
+
+def _initial_stop_price(entry_price: float, signal, cfg: Config) -> float:
+    if cfg.initial_stop_mode == "atr":
+        atr = getattr(signal, "planned_entry_atr", None)
+        if _positive(atr):
+            return max(entry_price - float(atr) * cfg.atr_stop_multiple, 0.01)
+    return entry_price * (1.0 - cfg.stop_loss_pct)
 
 
 def _build_equity_curve(close_matrix: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> pd.DataFrame:

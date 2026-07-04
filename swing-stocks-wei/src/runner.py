@@ -50,17 +50,10 @@ def main() -> None:
         )
 
         signals = strategy.compute_signals(prices, universe, fundamentals, cfg, start, end)
-        persistence.write_signals(conn, signals, start, end)
+        run_id = persistence.create_run(conn, cfg, start, end, signal_count=len(signals))
+        persistence.write_signals(conn, run_id, signals)
         result = simulate(prices, signals, cfg, start, end)
-        run_id = persistence.create_run(
-            conn,
-            cfg,
-            result.metrics,
-            start,
-            end,
-            signal_count=len(signals),
-            trade_count=len(result.trades),
-        )
+        persistence.update_run_result(conn, run_id, result.metrics, trade_count=len(result.trades))
         persistence.write_trades(conn, run_id, result.trades)
         persistence.write_equity(conn, run_id, result.equity)
         log.info(

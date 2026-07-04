@@ -10,7 +10,7 @@ services:
       # Application name visible in pg_stat_activity.
       PGAPPNAME: "backtest_wei_init"
       # true = drop all backtest_wei_* result tables before recreating them.
-      DROP_ALL_WEI_TABLES_ON_START: "false"
+      DROP_ALL_WEI_TABLES_ON_START: "${DROP_ALL_WEI_TABLES_ON_START:-false}"
     command:
       - sh
       - -c
@@ -41,6 +41,7 @@ services:
       PGAPPNAME: "backtest_wei_runner"
 
       # Run window. Empty END_DATE means today.
+      STRATEGY_VERSION: "wei_pullback_reclaim_v2"
       START_DATE: "2020-01-02"
       END_DATE: ""
       RUN_LABEL: "wei_52w_pullback_v1"
@@ -55,21 +56,26 @@ services:
       REVENUE_YOY_MIN: "0.20"
       REVENUE_STALE_TRADING_DAYS: "280"
       HIGH_LOOKBACK_DAYS: "252"
-      HIGH_RECENT_DAYS: "50"
+      HIGH_RECENT_DAYS: "30"
+      MIN_PULLBACK_PCT: "0.03"
       EMA_FAST_DAYS: "9"
       EMA_SLOW_DAYS: "21"
       EMA_CROSS_LOOKBACK_DAYS: "8"
+      MAX_ENTRY_GAP_PCT: "0.02"
+      ATR_DAYS: "14"
       VOLUME_SMA_DAYS: "50"
       VOLUME_FILTER_ENABLE: "true"
       IBKR_CATEGORY_BREADTH_FILTER_ENABLE: "true"
-      IBKR_CATEGORY_BREADTH_ON_THRESHOLD: "0.70"
-      IBKR_CATEGORY_BREADTH_OFF_THRESHOLD: "0.60"
+      IBKR_CATEGORY_BREADTH_ON_THRESHOLD: "0.65"
+      IBKR_CATEGORY_BREADTH_OFF_THRESHOLD: "0.55"
       IBKR_CATEGORY_BREADTH_MIN_SYMBOLS: "5"
 
       # Trade model. Position size is USD notional per trade.
       INITIAL_EQUITY: "100000"
       POSITION_SIZE_USD: "1000"
+      INITIAL_STOP_MODE: "fixed_pct"
       STOP_LOSS_PCT: "0.05"
+      ATR_STOP_MULTIPLE: "2.0"
       TRAILING_ACTIVATE_PCT: "0.10"
       TRAILING_LOSS_PCT: "0.04"
       ALLOW_FRACTIONAL_SHARES: "true"

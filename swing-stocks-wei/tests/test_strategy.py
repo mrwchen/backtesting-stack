@@ -114,7 +114,7 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     close = [100.0] * 30 + [92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110]
     volume = [1000.0] * len(close)
     volume[35] = 5000.0
-    cfg = make_config()
+    cfg = make_config(max_entry_gap_pct=0.10)
     universe = pd.DataFrame(
         {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
     )
@@ -131,12 +131,16 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     assert len(signals) == 1
     signal = signals.iloc[0]
     assert signal["symbol"] == "AAA"
-    assert signal["had_52w_high_last_10d"]
+    assert signal["had_52w_high_recent"]
+    assert signal["pullback_pass"]
+    assert signal["ema_cross_up"]
+    assert not signal["ema_already_above_on_52w_high"]
     assert signal["volume_sma50_pass"]
     assert signal["volume_feed_pass"]
     assert signal["volume_pass"]
     assert signal["market_cap_pass"]
-    assert signal["planned_entry_market_cap_usd"] >= 2_000_000_000
+    assert signal["entry_ref_market_cap_usd"] >= 2_000_000_000
+    assert signal["entry_gap_pass"]
     assert signal["planned_entry_date"] > signal["period_end_date"]
 
 
@@ -169,7 +173,7 @@ def test_signal_delays_entry_after_recent_ema_cross():
     assert signal["planned_entry_date"] == prices.loc[44, "date"].date()
 
 
-def test_signal_allows_52w_high_when_ema_already_above():
+def test_signal_rejects_52w_high_when_ema_already_above_without_reclaim_cross():
     prices = _already_above_at_52w_high_prices()
     cfg = make_config()
     universe = pd.DataFrame(
@@ -186,14 +190,7 @@ def test_signal_allows_52w_high_when_ema_already_above():
         pd.Timestamp("2024-12-31").date(),
     )
 
-    assert len(signals) == 1
-    signal = signals.iloc[0]
-    assert signal["period_end_date"] == target_date
-    assert signal["is_52w_high"]
-    assert not signal["ema_cross_up"]
-    assert signal["ema_already_above_on_52w_high"]
-    assert signal["ema_entry_pass"]
-    assert signal["planned_entry_date"] > signal["period_end_date"]
+    assert signals.empty
 
 
 def test_signal_requires_volume_above_sma():
@@ -219,7 +216,7 @@ def test_signal_requires_volume_above_sma():
 def test_signal_can_ignore_volume_filter_when_disabled():
     close = [100.0] * 30 + [92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110]
     volume = [1000.0] * len(close)
-    cfg = make_config(volume_filter_enable=False)
+    cfg = make_config(volume_filter_enable=False, max_entry_gap_pct=0.10)
     universe = pd.DataFrame(
         {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
     )
@@ -266,8 +263,31 @@ def test_signal_requires_min_market_cap_on_planned_entry_date():
     volume[35] = 5000.0
     prices = _prices(close, volume)
     signal_idx = 35
-    prices.loc[signal_idx + 1, "market_cap_usd"] = 1_999_999_999.0
+    prices.loc[signal_idx, "market_cap_usd"] = 1_999_999_999.0
     cfg = make_config()
+    universe = pd.DataFrame(
+        {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
+    )
+
+    signals = compute_signals(
+        prices,
+        universe,
+        _fundamentals(prices),
+        cfg,
+        pd.Timestamp("2024-01-01").date(),
+        pd.Timestamp("2024-12-31").date(),
+    )
+
+    assert signals.empty
+
+
+def test_signal_rejects_large_entry_gap_up():
+    close = [100.0] * 30 + [92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110]
+    volume = [1000.0] * len(close)
+    volume[35] = 5000.0
+    prices = _prices(close, volume)
+    prices.loc[36, "open"] = prices.loc[35, "close"] * 1.05
+    cfg = make_config(max_entry_gap_pct=0.02)
     universe = pd.DataFrame(
         {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
     )

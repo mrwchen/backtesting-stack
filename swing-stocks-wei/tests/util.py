@@ -5,6 +5,7 @@ from src.config import Config
 
 def make_config(**overrides) -> Config:
     values = dict(
+        strategy_version="test_pullback_reclaim",
         start_date="2024-01-01",
         end_date="2024-12-31",
         warmup_calendar_days=550,
@@ -18,9 +19,14 @@ def make_config(**overrides) -> Config:
         revenue_stale_trading_days=280,
         high_lookback_days=30,
         high_recent_days=10,
+        min_pullback_pct=0.03,
         ema_fast_days=3,
         ema_slow_days=5,
         ema_cross_lookback_days=0,
+        max_entry_gap_pct=0.02,
+        atr_days=5,
+        initial_stop_mode="fixed_pct",
+        atr_stop_multiple=2.0,
         volume_sma_days=5,
         volume_filter_enable=True,
         ibkr_category_breadth_filter_enable=False,

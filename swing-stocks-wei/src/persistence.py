@@ -21,34 +21,39 @@ TRADES_TABLE = "backtest_wei_trades"
 EQUITY_TABLE = "backtest_wei_equity_daily"
 
 
-def write_signals(conn, signals: pd.DataFrame, start, end) -> None:
-    db.delete_date_range(conn, SIGNALS_TABLE, "period_end_date", start, end)
-    db.copy_df(conn, signals, SIGNALS_TABLE, SIGNAL_COLUMNS)
+def write_signals(conn, run_id: int, signals: pd.DataFrame) -> None:
+    if signals.empty:
+        return
+    out = signals.copy()
+    out["run_id"] = run_id
+    db.copy_df(conn, out, SIGNALS_TABLE, ["run_id", *SIGNAL_COLUMNS])
 
 
-def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, trade_count: int) -> int:
+def create_run(conn, cfg: Config, start, end, signal_count: int) -> int:
     with conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO {RUNS_TABLE}
-                (run_label, start_date, end_date, warmup_calendar_days,
+                (strategy_version, config_fingerprint, run_label, start_date, end_date, warmup_calendar_days,
                  high_lookback_days, high_recent_days, ema_fast_days, ema_slow_days,
-                 ema_cross_lookback_days, volume_sma_days, volume_filter_enable, position_size_usd, stop_loss_pct,
+                 ema_cross_lookback_days, min_pullback_pct, max_entry_gap_pct,
+                 atr_days, initial_stop_mode, atr_stop_multiple,
+                 volume_sma_days, volume_filter_enable, position_size_usd, stop_loss_pct,
                  trailing_activate_pct, trailing_loss_pct, initial_equity,
                  allow_fractional_shares, min_price, min_market_cap_usd,
                  revenue_yoy_min, revenue_stale_trading_days,
                  ibkr_category_breadth_filter_enable,
                  ibkr_category_breadth_on_threshold, ibkr_category_breadth_off_threshold,
-                 ibkr_category_breadth_min_symbols, signal_count, trade_count,
-                 final_equity, total_pnl, total_return, cagr, max_drawdown,
-                 win_rate, profit_factor, avg_r_multiple, avg_holding_days)
+                 ibkr_category_breadth_min_symbols, signal_count, trade_count)
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, %s, %s, %s)
+                 %s, %s, %s, %s, %s, %s)
             RETURNING run_id
             """,
             (
+                cfg.strategy_version,
+                cfg.fingerprint(),
                 cfg.run_label,
                 start,
                 end,
@@ -58,6 +63,11 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                 cfg.ema_fast_days,
                 cfg.ema_slow_days,
                 cfg.ema_cross_lookback_days,
+                cfg.min_pullback_pct,
+                cfg.max_entry_gap_pct,
+                cfg.atr_days,
+                cfg.initial_stop_mode,
+                cfg.atr_stop_multiple,
                 cfg.volume_sma_days,
                 cfg.volume_filter_enable,
                 cfg.position_size_usd,
@@ -75,6 +85,32 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                 cfg.ibkr_category_breadth_off_threshold,
                 cfg.ibkr_category_breadth_min_symbols,
                 signal_count,
+                0,
+            ),
+        )
+        run_id = int(cur.fetchone()[0])
+    conn.commit()
+    return run_id
+
+
+def update_run_result(conn, run_id: int, metrics: dict, trade_count: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {RUNS_TABLE}
+            SET trade_count = %s,
+                final_equity = %s,
+                total_pnl = %s,
+                total_return = %s,
+                cagr = %s,
+                max_drawdown = %s,
+                win_rate = %s,
+                profit_factor = %s,
+                avg_r_multiple = %s,
+                avg_holding_days = %s
+            WHERE run_id = %s
+            """,
+            (
                 trade_count,
                 metrics.get("final_equity"),
                 metrics.get("total_pnl"),
@@ -85,11 +121,10 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                 metrics.get("profit_factor"),
                 metrics.get("avg_r_multiple"),
                 metrics.get("avg_holding_days"),
+                run_id,
             ),
         )
-        run_id = int(cur.fetchone()[0])
     conn.commit()
-    return run_id
 
 
 def write_trades(conn, run_id: int, trades: pd.DataFrame) -> None:
