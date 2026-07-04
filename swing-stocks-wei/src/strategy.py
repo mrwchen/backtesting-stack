@@ -226,6 +226,8 @@ def compute_signals(
         selected["period_end_date"] = selected["date"].dt.date
         selected["planned_entry_date"] = pd.to_datetime(selected["planned_entry_date"]).dt.date
         selected["last_52w_high_date"] = pd.to_datetime(selected["last_52w_high_date"]).dt.date
+        selected["bars_since_52w_high"] = selected["bars_since_52w_high"].astype("int64")
+        selected["ema_cross_delay_days"] = selected["ema_cross_delay_days"].astype("int64")
         selected["symbol"] = symbol
         frames.append(selected)
 

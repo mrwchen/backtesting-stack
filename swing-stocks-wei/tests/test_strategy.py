@@ -142,6 +142,8 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     assert signal["entry_ref_market_cap_usd"] >= 2_000_000_000
     assert signal["entry_gap_pass"]
     assert signal["planned_entry_date"] > signal["period_end_date"]
+    assert signals["bars_since_52w_high"].dtype.kind in ("i", "u")
+    assert signals["ema_cross_delay_days"].dtype.kind in ("i", "u")
 
 
 def test_signal_delays_entry_after_recent_ema_cross():
