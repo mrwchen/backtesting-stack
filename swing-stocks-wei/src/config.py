@@ -33,6 +33,7 @@ class Config:
     high_recent_days: int
     ema_fast_days: int
     ema_slow_days: int
+    ema_cross_lookback_days: int
     volume_sma_days: int
     volume_filter_enable: bool
     ibkr_category_breadth_filter_enable: bool
@@ -64,6 +65,7 @@ class Config:
             high_recent_days=int(_env("HIGH_RECENT_DAYS", "10")),
             ema_fast_days=int(_env("EMA_FAST_DAYS", "9")),
             ema_slow_days=int(_env("EMA_SLOW_DAYS", "21")),
+            ema_cross_lookback_days=int(_env("EMA_CROSS_LOOKBACK_DAYS", "8")),
             volume_sma_days=int(_env("VOLUME_SMA_DAYS", "50")),
             volume_filter_enable=_env_bool("VOLUME_FILTER_ENABLE", True),
             ibkr_category_breadth_filter_enable=_env_bool("IBKR_CATEGORY_BREADTH_FILTER_ENABLE", True),
@@ -99,6 +101,8 @@ class Config:
             raise ValueError("EMA_FAST_DAYS must be >= 1")
         if self.ema_slow_days <= self.ema_fast_days:
             raise ValueError("EMA_SLOW_DAYS must be greater than EMA_FAST_DAYS")
+        if self.ema_cross_lookback_days < 0:
+            raise ValueError("EMA_CROSS_LOOKBACK_DAYS must be >= 0")
         if self.volume_sma_days < 1:
             raise ValueError("VOLUME_SMA_DAYS must be >= 1")
         if not 0 <= self.ibkr_category_breadth_off_threshold < self.ibkr_category_breadth_on_threshold <= 1:

@@ -33,7 +33,7 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
             INSERT INTO {RUNS_TABLE}
                 (run_label, start_date, end_date, warmup_calendar_days,
                  high_lookback_days, high_recent_days, ema_fast_days, ema_slow_days,
-                 volume_sma_days, volume_filter_enable, position_size_usd, stop_loss_pct,
+                 ema_cross_lookback_days, volume_sma_days, volume_filter_enable, position_size_usd, stop_loss_pct,
                  trailing_activate_pct, trailing_loss_pct, initial_equity,
                  allow_fractional_shares, min_price, min_market_cap_usd,
                  revenue_yoy_min, revenue_stale_trading_days,
@@ -45,7 +45,7 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, %s, %s)
+                 %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING run_id
             """,
             (
@@ -57,6 +57,7 @@ def create_run(conn, cfg: Config, metrics: dict, start, end, signal_count: int, 
                 cfg.high_recent_days,
                 cfg.ema_fast_days,
                 cfg.ema_slow_days,
+                cfg.ema_cross_lookback_days,
                 cfg.volume_sma_days,
                 cfg.volume_filter_enable,
                 cfg.position_size_usd,

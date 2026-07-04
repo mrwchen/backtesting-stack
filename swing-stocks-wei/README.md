@@ -35,7 +35,12 @@ For every IBKR-backed USD equity:
    (`MIN_MARKET_CAP_USD=2000000000`).
 7. Latest known TTM revenue must be at least 20% higher than the comparable
    TTM revenue known roughly one year earlier (`REVENUE_YOY_MIN=0.20`).
-8. The signal is known after the daily close, so the backtest enters at the next trading day's adjusted open.
+8. If EMA9 and EMA21 crossed in either direction during the last
+   `EMA_CROSS_LOOKBACK_DAYS` trading days (`8` by default), entry is delayed.
+   The backtest waits until the first later close where that recent-cross
+   window is clear, then enters at the next trading day's adjusted open.
+   Diagnostics are stored as `ema_cross_down`, `ema_cross_recent` and
+   `ema_cross_delay_days`.
 9. Each trade gets USD 1000 notional exposure.
 10. Initial stop is 5% below entry.
 11. Once price has reached +10% from entry, a 5% trailing stop below the highest observed high becomes active for subsequent bars.

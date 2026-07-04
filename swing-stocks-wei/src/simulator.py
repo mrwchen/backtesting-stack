@@ -82,7 +82,7 @@ def _simulate_trades(prices: pd.DataFrame, signals: pd.DataFrame, cfg: Config) -
         return pd.DataFrame(columns=TRADE_COLUMNS)
 
     signal_groups = {
-        symbol: sub.sort_values("period_end_date").reset_index(drop=True)
+        symbol: _sort_signals_for_execution(sub)
         for symbol, sub in signals.groupby("symbol", sort=True)
     }
     rows: list[dict] = []
@@ -100,8 +100,8 @@ def _simulate_trades(prices: pd.DataFrame, signals: pd.DataFrame, cfg: Config) -
             signal_idx = date_to_idx.get(signal_date)
             if signal_idx is None or signal_idx < next_available_idx:
                 continue
-            entry_idx = signal_idx + 1
-            if entry_idx >= len(bars):
+            entry_idx = _entry_idx(signal, date_to_idx, signal_idx)
+            if entry_idx is None or entry_idx >= len(bars) or entry_idx < next_available_idx:
                 continue
             entry_bar = bars.iloc[entry_idx]
             entry_price = float(entry_bar["open"])
@@ -128,6 +128,24 @@ def _simulate_trades(prices: pd.DataFrame, signals: pd.DataFrame, cfg: Config) -
         return pd.DataFrame(columns=TRADE_COLUMNS)
     trades = pd.DataFrame(rows).drop(columns=["_exit_idx"])
     return trades[TRADE_COLUMNS].reset_index(drop=True)
+
+
+def _sort_signals_for_execution(signals: pd.DataFrame) -> pd.DataFrame:
+    sort_columns = ["period_end_date"]
+    if "planned_entry_date" in signals.columns:
+        sort_columns = ["planned_entry_date", "period_end_date"]
+    return signals.sort_values(sort_columns).reset_index(drop=True)
+
+
+def _entry_idx(signal, date_to_idx: dict, signal_idx: int) -> int | None:
+    planned_entry_date = getattr(signal, "planned_entry_date", None)
+    if planned_entry_date is None or pd.isna(planned_entry_date):
+        return signal_idx + 1
+
+    entry_idx = date_to_idx.get(pd.Timestamp(planned_entry_date).date())
+    if entry_idx is None or entry_idx <= signal_idx:
+        return None
+    return entry_idx
 
 
 def _run_trade(

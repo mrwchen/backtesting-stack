@@ -140,6 +140,35 @@ def test_signal_uses_recent_52w_high_ema_cross_and_volume():
     assert signal["planned_entry_date"] > signal["period_end_date"]
 
 
+def test_signal_delays_entry_after_recent_ema_cross():
+    close = [100.0] * 30 + [
+        92, 90, 88, 89, 91, 94, 98, 103, 106, 108, 110, 112, 114, 116, 118, 120
+    ]
+    volume = [1000.0] * len(close)
+    volume[35] = 5000.0
+    prices = _prices(close, volume)
+    cfg = make_config(ema_cross_lookback_days=8)
+    universe = pd.DataFrame(
+        {"symbol": ["AAA"], "ibkr_industry": ["Software"], "ibkr_category": ["Application"]}
+    )
+
+    signals = compute_signals(
+        prices,
+        universe,
+        _fundamentals(prices),
+        cfg,
+        pd.Timestamp("2024-01-01").date(),
+        pd.Timestamp("2024-12-31").date(),
+    )
+
+    assert len(signals) == 1
+    signal = signals.iloc[0]
+    assert signal["ema_cross_up"]
+    assert signal["ema_cross_recent"]
+    assert signal["ema_cross_delay_days"] == 8
+    assert signal["planned_entry_date"] == prices.loc[44, "date"].date()
+
+
 def test_signal_allows_52w_high_when_ema_already_above():
     prices = _already_above_at_52w_high_prices()
     cfg = make_config()

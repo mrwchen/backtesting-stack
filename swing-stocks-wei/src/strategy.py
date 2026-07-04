@@ -35,6 +35,9 @@ SIGNAL_COLUMNS = [
     "prev_ema_fast",
     "prev_ema_slow",
     "ema_cross_up",
+    "ema_cross_down",
+    "ema_cross_recent",
+    "ema_cross_delay_days",
     "ema_already_above_on_52w_high",
     "ema_entry_pass",
     "volume_sma50",
@@ -61,7 +64,7 @@ def compute_signals(
     """Return one row per actionable signal.
 
     Indicators are computed through the signal close. The trade entry is planned
-    for the next available trading day's open to avoid same-day look-ahead.
+    for a later trading day's open using only information known at the prior close.
     """
     if prices.empty:
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
@@ -105,6 +108,17 @@ def compute_signals(
         prev_ema_fast = ema_fast.shift(1)
         prev_ema_slow = ema_slow.shift(1)
         crossed_up = (prev_ema_fast <= prev_ema_slow) & (ema_fast > ema_slow)
+        crossed_down = (prev_ema_fast >= prev_ema_slow) & (ema_fast < ema_slow)
+        crossed_any = crossed_up | crossed_down
+        if cfg.ema_cross_lookback_days > 0:
+            ema_cross_recent = (
+                crossed_any.rolling(cfg.ema_cross_lookback_days, min_periods=1)
+                .max()
+                .fillna(False)
+                .astype(bool)
+            )
+        else:
+            ema_cross_recent = pd.Series(False, index=sub.index)
         ema_already_above_on_52w_high = (
             is_52w_high
             & (ema_fast > ema_slow)
@@ -150,6 +164,8 @@ def compute_signals(
         sub["prev_ema_fast"] = prev_ema_fast
         sub["prev_ema_slow"] = prev_ema_slow
         sub["ema_cross_up"] = crossed_up
+        sub["ema_cross_down"] = crossed_down
+        sub["ema_cross_recent"] = ema_cross_recent
         sub["ema_already_above_on_52w_high"] = ema_already_above_on_52w_high
         sub["ema_entry_pass"] = ema_entry_pass
         sub["volume_sma50"] = volume_sma
@@ -160,10 +176,7 @@ def compute_signals(
         sub["ibkr_category_breadth_on"] = category_breadth_on.to_numpy(dtype=bool)
         sub["ibkr_category_breadth_pass"] = category_breadth_pass.to_numpy(dtype=bool)
         sub["entry_signal"] = had_high_recent & ema_entry_pass & volume_pass & sub["ibkr_category_breadth_pass"]
-        sub["planned_entry_date"] = sub["date"].shift(-1)
-        sub["planned_entry_open"] = sub["open"].shift(-1)
-        sub["planned_entry_market_cap_usd"] = sub["market_cap_usd"].shift(-1)
-        sub["planned_entry_market_cap_currency"] = sub["market_cap_currency"].shift(-1)
+        _apply_delayed_entry_plan(sub)
         sub["market_cap_pass"] = (
             sub["planned_entry_market_cap_usd"].notna()
             & (sub["planned_entry_market_cap_usd"] >= cfg.min_market_cap_usd)
@@ -174,11 +187,12 @@ def compute_signals(
         sub["revenue_yoy"] = revenue_yoy.to_numpy(dtype=float)
         sub["revenue_pass"] = revenue_pass.to_numpy(dtype=bool)
 
+        planned_entry_ts = pd.to_datetime(sub["planned_entry_date"])
         selected = sub[
             sub["entry_signal"]
             & (sub["date"].dt.date >= start)
             & (sub["date"].dt.date <= end)
-            & (pd.to_datetime(sub["planned_entry_date"]).dt.date <= end)
+            & (planned_entry_ts <= pd.Timestamp(end))
             & (sub["close"] >= cfg.min_price)
             & sub["planned_entry_open"].notna()
             & (sub["planned_entry_open"] >= cfg.min_price)
@@ -204,3 +218,35 @@ def compute_signals(
     signals = signals[SIGNAL_COLUMNS].sort_values(["period_end_date", "symbol"])
     log.info("computed %d entry signals across %d symbols", len(signals), signals["symbol"].nunique())
     return signals.reset_index(drop=True)
+
+
+def _apply_delayed_entry_plan(sub: pd.DataFrame) -> None:
+    """Plan entries after recent EMA crosses have fallen out of the lookback."""
+    signal_idx = sub.index[sub["entry_signal"].fillna(False)].tolist()
+    date_values = sub["date"].to_numpy()
+    open_values = sub["open"].to_numpy()
+    market_cap_values = sub["market_cap_usd"].to_numpy()
+    market_cap_currency_values = sub["market_cap_currency"].to_numpy()
+    recent_cross_values = sub["ema_cross_recent"].fillna(False).to_numpy(dtype=bool)
+
+    sub["planned_entry_date"] = pd.NaT
+    sub["planned_entry_open"] = pd.NA
+    sub["planned_entry_market_cap_usd"] = pd.NA
+    sub["planned_entry_market_cap_currency"] = pd.NA
+    sub["ema_cross_delay_days"] = pd.NA
+
+    index_to_position = {idx: pos for pos, idx in enumerate(sub.index)}
+    for idx in signal_idx:
+        signal_pos = index_to_position[idx]
+        eval_pos = signal_pos
+        while eval_pos < len(sub) - 1 and recent_cross_values[eval_pos]:
+            eval_pos += 1
+        if eval_pos >= len(sub) - 1 or recent_cross_values[eval_pos]:
+            continue
+
+        entry_pos = eval_pos + 1
+        sub.at[idx, "planned_entry_date"] = date_values[entry_pos]
+        sub.at[idx, "planned_entry_open"] = open_values[entry_pos]
+        sub.at[idx, "planned_entry_market_cap_usd"] = market_cap_values[entry_pos]
+        sub.at[idx, "planned_entry_market_cap_currency"] = market_cap_currency_values[entry_pos]
+        sub.at[idx, "ema_cross_delay_days"] = eval_pos - signal_pos

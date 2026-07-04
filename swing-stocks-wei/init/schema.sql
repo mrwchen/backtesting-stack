@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS backtest_wei_signals_daily (
     prev_ema_fast               NUMERIC(15,6) NOT NULL,
     prev_ema_slow               NUMERIC(15,6) NOT NULL,
     ema_cross_up                BOOLEAN NOT NULL,
+    ema_cross_down              BOOLEAN NOT NULL,
+    ema_cross_recent            BOOLEAN NOT NULL,
+    ema_cross_delay_days        INTEGER NOT NULL,
     ema_already_above_on_52w_high BOOLEAN NOT NULL,
     ema_entry_pass              BOOLEAN NOT NULL,
     volume_sma50                NUMERIC(20,4) NOT NULL,
@@ -89,6 +92,7 @@ CREATE TABLE IF NOT EXISTS backtest_wei_runs (
     high_recent_days            INTEGER NOT NULL,
     ema_fast_days               INTEGER NOT NULL,
     ema_slow_days               INTEGER NOT NULL,
+    ema_cross_lookback_days     INTEGER NOT NULL,
     volume_sma_days             INTEGER NOT NULL,
     volume_filter_enable        BOOLEAN NOT NULL,
     ibkr_category_breadth_filter_enable BOOLEAN NOT NULL,
@@ -130,6 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_backtest_wei_runs_run_id
 
 ALTER TABLE backtest_wei_runs
     ADD COLUMN IF NOT EXISTS volume_filter_enable BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE backtest_wei_runs
+    ADD COLUMN IF NOT EXISTS ema_cross_lookback_days INTEGER NOT NULL DEFAULT 8;
 
 ALTER TABLE backtest_wei_runs
     ADD COLUMN IF NOT EXISTS ibkr_category_breadth_filter_enable BOOLEAN NOT NULL DEFAULT TRUE,
@@ -226,6 +233,9 @@ ALTER TABLE backtest_wei_signals_daily
 ALTER TABLE backtest_wei_signals_daily
     ADD COLUMN IF NOT EXISTS is_52w_high BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS ema_cross_up BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS ema_cross_down BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS ema_cross_recent BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS ema_cross_delay_days INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS ema_already_above_on_52w_high BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS ema_entry_pass BOOLEAN NOT NULL DEFAULT FALSE;
 

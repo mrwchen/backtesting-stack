@@ -20,6 +20,7 @@ def make_config(**overrides) -> Config:
         high_recent_days=10,
         ema_fast_days=3,
         ema_slow_days=5,
+        ema_cross_lookback_days=0,
         volume_sma_days=5,
         volume_filter_enable=True,
         ibkr_category_breadth_filter_enable=False,
