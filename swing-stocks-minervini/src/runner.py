@@ -44,6 +44,54 @@ def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, 
     return pd.DataFrame(out)
 
 
+def _regime_entry_allowed(dates: pd.DatetimeIndex, regime: pd.DataFrame, cfg: Config) -> np.ndarray:
+    """Per trading day gate using the latest known regime label at or before the day."""
+    if regime.empty:
+        log.warning("regime entry filter enabled but no regime data is available - blocking all entries")
+        return np.zeros(len(dates), dtype=bool)
+
+    labels = (
+        regime[["day", "regime_label"]]
+        .dropna(subset=["day"])
+        .copy()
+    )
+    labels["day"] = pd.to_datetime(labels["day"])
+    labels["regime_label"] = labels["regime_label"].astype(str).str.upper()
+    labels = labels.sort_values("day").drop_duplicates("day", keep="last").set_index("day")
+    aligned = labels.reindex(dates, method="ffill")["regime_label"]
+    allowed = aligned.isin(cfg.regime_allowed_labels).fillna(False).to_numpy()
+    log.info(
+        "regime entry gate allows %d of %d days; allowed labels: %s",
+        int(allowed.sum()), len(allowed), ",".join(cfg.regime_allowed_labels),
+    )
+    return allowed
+
+
+def _attach_regime_attribution(trades: pd.DataFrame, regime: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty:
+        return trades
+    if regime.empty:
+        trades = trades.copy()
+        trades["regime_composite"] = None
+        trades["regime_label"] = None
+        return trades
+
+    trades = trades.copy()
+    trades["_order"] = np.arange(len(trades))
+    trades["_entry_ts"] = pd.to_datetime(trades["entry_date"])
+    regime = regime[["day", "regime_composite", "regime_label"]].dropna(subset=["day"]).copy()
+    regime["day"] = pd.to_datetime(regime["day"])
+    regime = regime.sort_values("day").drop_duplicates("day", keep="last")
+    trades = pd.merge_asof(
+        trades.sort_values("_entry_ts"),
+        regime.sort_values("day"),
+        left_on="_entry_ts",
+        right_on="day",
+        direction="backward",
+    )
+    return trades.sort_values("_order").drop(columns=["_order", "_entry_ts", "day"])
+
+
 def run_screen(
     conn, cfg: Config, matrices: dict, market: pd.DataFrame,
     universe: pd.DataFrame, window: np.ndarray,
@@ -209,10 +257,17 @@ def run_sim(
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
     market_on = market["market_on"].to_numpy() if cfg.market_filter_enable else None
+    regime = data_loader.load_regime_scores(conn, cfg)
+    regime_entry_allowed = (
+        _regime_entry_allowed(dates, regime, cfg)
+        if cfg.regime_entry_filter_enable
+        else None
+    )
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
         setups, cfg, sim_start_idx=sim_start_idx, market_on=market_on,
+        regime_entry_allowed=regime_entry_allowed,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
     trades = result.trades
@@ -220,16 +275,7 @@ def run_sim(
         trades = trades.merge(
             universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
         )
-        regime = data_loader.load_regime_scores(conn, cfg)
-        if not regime.empty:
-            regime = regime.copy()
-            regime["day"] = pd.to_datetime(regime["day"]).dt.date
-            trades = trades.merge(
-                regime.rename(columns={"day": "entry_date"}), on="entry_date", how="left"
-            )
-        else:
-            trades["regime_composite"] = None
-            trades["regime_label"] = None
+        trades = _attach_regime_attribution(trades, regime)
     persistence.write_trades(conn, run_id, trades)
     persistence.write_equity(conn, run_id, result.equity)
     log.info("run %d persisted: %s", run_id, result.metrics)

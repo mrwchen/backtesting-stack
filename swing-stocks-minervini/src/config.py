@@ -25,6 +25,10 @@ def _env_float_tuple(name: str, default: str) -> tuple[float, ...]:
     return tuple(float(x) for x in _env(name, default).split(","))
 
 
+def _env_str_tuple(name: str, default: str) -> tuple[str, ...]:
+    return tuple(x.strip().upper() for x in _env(name, default).split(",") if x.strip())
+
+
 @dataclass(frozen=True)
 class Config:
     # run control
@@ -37,6 +41,7 @@ class Config:
     force_refresh: bool
     screen_persist: str  # passed | universe
     log_level: str
+    simulation_mode: str  # independent | portfolio
 
     # universe filters
     min_price: float
@@ -56,6 +61,10 @@ class Config:
     market_filter_enable: bool
     breadth_on_threshold: float
     breadth_off_threshold: float
+
+    # world-regime entry gate
+    regime_entry_filter_enable: bool
+    regime_allowed_labels: tuple[str, ...]
 
     # IBKR group leadership filter
     ibkr_group_filter_enable: bool
@@ -102,9 +111,13 @@ class Config:
     breakeven_after_partial: bool
     trail_ma_days: int
 
+    # portfolio simulation constraints
+    portfolio_max_open_positions: int
+    portfolio_max_gross_exposure_pct: float
+
     @classmethod
     def from_env(cls) -> "Config":
-        return cls(
+        cfg = cls(
             stage=_env("STAGE", "all").lower(),
             start_date=_env("START_DATE", "2020-01-02"),
             end_date=_env("END_DATE", "") or None,
@@ -114,6 +127,7 @@ class Config:
             force_refresh=_env_bool("FORCE_REFRESH", False),
             screen_persist=_env("SCREEN_PERSIST", "passed").lower(),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
+            simulation_mode=_env("SIMULATION_MODE", "independent").lower(),
             min_price=float(_env("MIN_PRICE", "5.0")),
             min_dollar_volume=float(_env("MIN_DOLLAR_VOLUME", "2000000")),
             rs_lookbacks=_env_int_tuple("RS_LOOKBACKS", "63,126,189,252"),
@@ -125,6 +139,8 @@ class Config:
             market_filter_enable=_env_bool("MARKET_FILTER_ENABLE", True),
             breadth_on_threshold=float(_env("BREADTH_ON_THRESHOLD", "0.50")),
             breadth_off_threshold=float(_env("BREADTH_OFF_THRESHOLD", "0.45")),
+            regime_entry_filter_enable=_env_bool("REGIME_ENTRY_FILTER_ENABLE", False),
+            regime_allowed_labels=_env_str_tuple("REGIME_ALLOWED_LABELS", "CONSTRUCTIVE,NEUTRAL"),
             ibkr_group_filter_enable=_env_bool("IBKR_GROUP_FILTER_ENABLE", True),
             ibkr_industry_rs_min=int(_env("IBKR_INDUSTRY_RS_MIN", "70")),
             ibkr_category_rs_min=int(_env("IBKR_CATEGORY_RS_MIN", "70")),
@@ -162,7 +178,20 @@ class Config:
             partial_fraction=float(_env("PARTIAL_FRACTION", "0.5")),
             breakeven_after_partial=_env_bool("BREAKEVEN_AFTER_PARTIAL", True),
             trail_ma_days=int(_env("TRAIL_MA_DAYS", "50")),
+            portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
+            portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
         )
+        if cfg.stage not in ("screen", "setup", "sim", "all"):
+            raise ValueError(f"unsupported STAGE={cfg.stage!r}")
+        if cfg.screen_persist not in ("passed", "universe"):
+            raise ValueError(f"unsupported SCREEN_PERSIST={cfg.screen_persist!r}")
+        if cfg.simulation_mode not in ("independent", "portfolio"):
+            raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
+        if cfg.portfolio_max_open_positions < 1:
+            raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
+        if cfg.portfolio_max_gross_exposure_pct <= 0:
+            raise ValueError("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT must be > 0")
+        return cfg
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str, sort_keys=True)

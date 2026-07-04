@@ -48,17 +48,19 @@ screen : RS rating (cross-sectional percentile) + 8-point trend template
          / off < 45% hysteresis) -> market_daily
 setup  : VCP detection on screen-pass days -> setups
 sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
-         Every triggered setup is traded independently — there is NO portfolio
-         logic (no cash constraint, no position limit, no compounding), so the
-         results measure the strategy across the whole universe. Sizing is
-         fixed per trade (RISK_PCT of INITIAL_EQUITY, capped at
-         MAX_POSITION_PCT). Exits: stop (also checked on the entry bar itself),
-         partial at PARTIAL_AT_R, MA-trail, end-of-data.
-         equity_daily is an aggregate research curve (base + cumulative PnL),
-         not a cash-constrained account.
+         SIMULATION_MODE=independent trades every triggered setup independently
+         with no cash constraint, no position limit and no compounding. That
+         research mode measures the signal across the whole universe.
+         SIMULATION_MODE=portfolio applies cash, max gross exposure and max
+         open-position constraints. Portfolio sizing uses current marked-to-
+         market equity, while independent sizing uses INITIAL_EQUITY.
+         Exits: stop (also checked on the entry bar itself), partial at
+         PARTIAL_AT_R, MA-trail, end-of-data.
          New entries are blocked while the market breadth gate is off
          (MARKET_FILTER_ENABLE); open positions keep running into their exits.
-         Trades carry the world-regime composite score at entry as attribution.
+         Optional world-regime entry filtering blocks entries whose latest known
+         regime label is not in REGIME_ALLOWED_LABELS. Trades carry the latest
+         known world-regime composite score at entry as attribution.
 ```
 
 ## Run

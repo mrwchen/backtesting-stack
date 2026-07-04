@@ -140,6 +140,76 @@ def test_all_simultaneous_signals_are_taken():
     assert (result.trades["shares"] == 200).all()  # fixed sizing base, no competition
 
 
+def test_portfolio_mode_limits_simultaneous_positions():
+    n_symbols = 12
+    dates = pd.bdate_range("2024-01-01", periods=12)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.0)]
+        + [(100, 101, 99, 100.0)] * 6
+    )
+    frames = [
+        pd.DataFrame({f"S{i:02d}": bars[:, f] for i in range(n_symbols)}, index=dates)
+        for f in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+                symbol=f"S{i:02d}", setup_id=i, n_contractions=2, dryup_ratio=0.6
+            )
+            for i in range(n_symbols)
+        ],
+        ignore_index=True,
+    )
+    cfg = _clean_cfg()
+    cfg = make_cfg(
+        **{**cfg.__dict__, "simulation_mode": "portfolio", "portfolio_max_open_positions": 3}
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    assert result.metrics["num_positions"] == 3
+    assert result.trades["symbol"].nunique() == 3
+    assert result.equity["open_positions"].max() == 3
+
+
+def test_portfolio_mode_limits_gross_exposure():
+    n_symbols = 12
+    dates = pd.bdate_range("2024-01-01", periods=12)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.0)]
+        + [(100, 101, 99, 100.0)] * 6
+    )
+    frames = [
+        pd.DataFrame({f"S{i:02d}": bars[:, f] for i in range(n_symbols)}, index=dates)
+        for f in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+                symbol=f"S{i:02d}", setup_id=i, n_contractions=2, dryup_ratio=0.6
+            )
+            for i in range(n_symbols)
+        ],
+        ignore_index=True,
+    )
+    cfg = _clean_cfg()
+    cfg = make_cfg(
+        **{
+            **cfg.__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 10,
+            "portfolio_max_gross_exposure_pct": 0.4,
+        }
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    assert result.metrics["num_positions"] == 2
+    assert result.equity["exposure_pct"].max() <= 0.4
+
+
 def test_market_gate_blocks_entries_but_not_exits():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]   # breakout day 5 (gate on) -> entry at 100
@@ -165,6 +235,34 @@ def test_market_gate_blocks_entries_but_not_exits():
 
     assert len(trades) == 1  # only the first breakout traded
     assert trades.iloc[0]["exit_reason"] == "stop"  # exit executed despite gate off
+    assert trades.iloc[0]["entry_date"] == dates[5].date()
+
+
+def test_regime_gate_blocks_entries_but_not_exits():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.5)]   # breakout day 5 (gate on) -> entry at 100
+    bars += [(101, 102, 100, 101)]   # day 6: gate goes off, position keeps running
+    bars += [(96, 97, 94, 95)]       # day 7: stop 95 hit while gate off -> exit works
+    bars += [(99, 101, 98, 100.5)]   # day 8: second breakout, but gate off -> no entry
+    bars += [(99, 101, 98, 100.5)] * 8
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = pd.concat(
+        [
+            _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=6),
+            _setup_row(dates, detect_idx=6, pivot=100.0, stop=95.0, valid_idx=15).assign(setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    regime_entry_allowed = np.array([True] * 6 + [False] * (len(dates) - 6))
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups,
+        _clean_cfg(), regime_entry_allowed=regime_entry_allowed,
+    )
+    trades = result.trades
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_reason"] == "stop"
     assert trades.iloc[0]["entry_date"] == dates[5].date()
 
 

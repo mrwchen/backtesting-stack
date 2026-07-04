@@ -93,7 +93,8 @@ def read_screen_pass_days(conn, start, end) -> pd.DataFrame:
 def read_setups(conn, start, end) -> pd.DataFrame:
     return db.read_df(
         conn,
-        f"""SELECT setup_id, symbol, detect_date, pivot, last_low, stop_level, valid_until
+        f"""SELECT setup_id, symbol, detect_date, pivot, last_low, stop_level,
+                   base_days, n_contractions, dryup_ratio, close, valid_until
             FROM {SETUPS_TABLE}
             WHERE detect_date BETWEEN %s AND %s
             ORDER BY detect_date, symbol""",

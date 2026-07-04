@@ -1,10 +1,12 @@
-"""Event-driven daily simulation: every triggered setup is traded independently.
+"""Event-driven daily simulation for independent and portfolio research modes.
 
-There is deliberately NO portfolio logic — no cash constraint, no position
-limit, no exposure cap and no compounding. Every stock whose setup triggers is
-taken, so the results measure the strategy itself across the whole universe.
-The only per-symbol rule: while a trade in a symbol is open, no second trade
-is opened in the same symbol.
+In independent mode there is deliberately NO portfolio logic — no cash
+constraint, no position limit, no exposure cap and no compounding. Every stock
+whose setup triggers is taken, so the results measure the strategy itself
+across the whole universe. In portfolio mode entries compete for cash, gross
+exposure and a maximum number of simultaneous positions. Both modes keep the
+same per-symbol rule: while a trade in a symbol is open, no second trade is
+opened in the same symbol.
 
 Entry:  stop-buy over the pivot, from the day after detection while the setup
         is valid. Fill = max(open, pivot) plus slippage; days that gap more
@@ -16,8 +18,9 @@ Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         us), partial profit at PARTIAL_AT_R with optional break-even stop,
         trailing exit on a close below the TRAIL_MA_DAYS MA (executed next
         open), forced close at the end of the simulation.
-Sizing: fixed per trade — RISK_PCT of INITIAL_EQUITY per initial stop
-        distance, capped at MAX_POSITION_PCT of INITIAL_EQUITY.
+Sizing: independent mode uses fixed INITIAL_EQUITY as sizing base. Portfolio
+        mode sizes from current marked-to-market equity and caps entries by
+        cash, gross exposure and MAX_POSITION_PCT.
 """
 from __future__ import annotations
 
@@ -67,7 +70,9 @@ def simulate(
     cfg: Config,
     sim_start_idx: int = 0,
     market_on: np.ndarray | None = None,
+    regime_entry_allowed: np.ndarray | None = None,
 ) -> SimResult:
+    portfolio_mode = cfg.simulation_mode == "portfolio"
     o = open_m.to_numpy()
     h = high_m.to_numpy()
     lo = low_m.to_numpy()
@@ -85,6 +90,7 @@ def simulate(
     setup_rows = list(setups.itertuples(index=False))
 
     sizing_base = cfg.initial_equity
+    cash = cfg.initial_equity
     realized_pnl = 0.0
     positions: dict[str, Position] = {}
     active_setups: list = []
@@ -93,11 +99,48 @@ def simulate(
     next_setup = 0
     next_position_id = 1
 
+    def setup_priority(setup) -> tuple:
+        dryup = getattr(setup, "dryup_ratio", np.nan)
+        try:
+            dryup_value = float(dryup)
+        except (TypeError, ValueError):
+            dryup_value = np.inf
+        if np.isnan(dryup_value):
+            dryup_value = np.inf
+        return (
+            int(getattr(setup, "start_idx", 0)),
+            -int(getattr(setup, "n_contractions", 0) or 0),
+            dryup_value,
+            str(getattr(setup, "symbol", "")),
+        )
+
+    def open_notional(t: int) -> float:
+        total = 0.0
+        for p in positions.values():
+            price = c_ffill[t, p.col]
+            if np.isnan(price):
+                price = p.entry_price
+            total += p.shares * price
+        return total
+
+    def account_equity(t: int) -> float:
+        if not portfolio_mode:
+            unrealized = 0.0
+            for p in positions.values():
+                price = c_ffill[t, p.col]
+                if np.isnan(price):
+                    continue
+                unrealized += p.shares * (price - p.entry_price)
+            return sizing_base + realized_pnl + unrealized
+        return cash + open_notional(t)
+
     def record_trade(pos: Position, t: int, shares: int, price: float, leg: str, reason: str):
-        nonlocal realized_pnl
+        nonlocal cash, realized_pnl
         proceeds = shares * price * (1 - cfg.commission_pct)
         cost = shares * pos.entry_price * (1 + cfg.commission_pct)
         pnl = proceeds - cost
+        if portfolio_mode:
+            cash += proceeds
         realized_pnl += pnl
         r_unit = pos.entry_price - pos.initial_stop
         trades.append(
@@ -171,10 +214,16 @@ def simulate(
         # ---- entries: every triggering setup is taken (unless the market
         # breadth gate is off; setups stay active until they expire) ------------
         consumed = []
-        entries_allowed = market_on is None or bool(market_on[t])
-        for s in active_setups if entries_allowed else []:
+        entries_allowed = (
+            (market_on is None or bool(market_on[t]))
+            and (regime_entry_allowed is None or bool(regime_entry_allowed[t]))
+        )
+        candidates = sorted(active_setups, key=setup_priority) if portfolio_mode else active_setups
+        for s in candidates if entries_allowed else []:
             if s.symbol in positions:
                 continue
+            if portfolio_mode and len(positions) >= cfg.portfolio_max_open_positions:
+                break
             col = col_index[s.symbol]
             day_open, day_high = o[t, col], h[t, col]
             if np.isnan(day_open) or np.isnan(day_high):
@@ -192,12 +241,27 @@ def simulate(
                 consumed.append(s)
                 continue
 
-            shares = int(
-                min(
-                    sizing_base * cfg.risk_pct / risk_per_share,
-                    sizing_base * cfg.max_position_pct / fill,
+            if portfolio_mode:
+                equity = account_equity(t)
+                available_gross = max(
+                    0.0,
+                    equity * cfg.portfolio_max_gross_exposure_pct - open_notional(t),
                 )
-            )
+                shares = int(
+                    min(
+                        equity * cfg.risk_pct / risk_per_share,
+                        equity * cfg.max_position_pct / fill,
+                        available_gross / fill,
+                        cash / (fill * (1 + cfg.commission_pct)),
+                    )
+                )
+            else:
+                shares = int(
+                    min(
+                        sizing_base * cfg.risk_pct / risk_per_share,
+                        sizing_base * cfg.max_position_pct / fill,
+                    )
+                )
             if shares < 1:
                 continue
 
@@ -216,6 +280,8 @@ def simulate(
             )
             next_position_id += 1
             consumed.append(s)
+            if portfolio_mode:
+                cash -= shares * fill * (1 + cfg.commission_pct)
             # entry-day stop: if the bar's low also breaches the stop, assume
             # the breakout came first and we were stopped out the same day
             if lo[t, col] <= stop:
@@ -228,20 +294,15 @@ def simulate(
             active_setups.remove(s)
 
         # ---- daily aggregate (research curve, not a cash-constrained account) --
-        open_notional = 0.0
-        unrealized = 0.0
-        for p in positions.values():
-            price = c_ffill[t, p.col]
-            if np.isnan(price):
-                continue
-            open_notional += p.shares * price
-            unrealized += p.shares * (price - p.entry_price)
+        day_open_notional = open_notional(t)
+        day_equity = account_equity(t)
+        exposure_base = day_equity if portfolio_mode else sizing_base
         equity_rows.append(
             {
                 "period_end_date": dates[t].date(),
-                "equity": round(sizing_base + realized_pnl + unrealized, 2),
+                "equity": round(day_equity, 2),
                 "open_positions": len(positions),
-                "exposure_pct": round(open_notional / sizing_base, 6),
+                "exposure_pct": round(day_open_notional / exposure_base, 6) if exposure_base > 0 else 0.0,
             }
         )
 
