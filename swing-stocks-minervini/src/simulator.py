@@ -16,7 +16,8 @@ Entry:  stop-buy over the pivot, from the day after detection while the setup
 Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
         us), partial profit at PARTIAL_AT_R with optional break-even stop,
-        trailing exit on a close below the TRAIL_MA_DAYS MA (executed next
+        failed-breakout exit after FAILED_BREAKOUT_DAYS without progress,
+        trailing exit on a close below the TRAIL_MA_DAYS MA (both executed next
         open), forced close at the end of the simulation.
 Sizing: independent mode uses fixed INITIAL_EQUITY as sizing base. Portfolio
         mode sizes from current marked-to-market equity and caps entries by
@@ -49,7 +50,7 @@ class Position:
     initial_shares: int
     pivot: float
     partial_done: bool = False
-    exit_next_open: bool = False
+    exit_next_open_reason: str | None = None
 
 
 @dataclass
@@ -82,6 +83,20 @@ def simulate(
     col_index = {s: i for i, s in enumerate(symbols)}
 
     setups = setups[setups["symbol"].isin(col_index)].copy()
+    if cfg.bad_fundamentals_filter_enable and {"eps_yoy", "revenue_yoy"}.issubset(setups.columns):
+        eps_yoy = pd.to_numeric(setups["eps_yoy"], errors="coerce")
+        revenue_yoy = pd.to_numeric(setups["revenue_yoy"], errors="coerce")
+        bad_known_growth = (
+            eps_yoy.notna()
+            & revenue_yoy.notna()
+            & (eps_yoy < cfg.eps_yoy_min)
+            & (revenue_yoy < cfg.revenue_yoy_min)
+        )
+        setups = setups.loc[~bad_known_growth].copy()
+    if "dryup_ratio" in setups.columns:
+        dryup = pd.to_numeric(setups["dryup_ratio"], errors="coerce")
+        dryup_ok = dryup.isna() | dryup.between(cfg.dryup_ratio_min, cfg.dryup_ratio_max)
+        setups = setups.loc[dryup_ok].copy()
     setups["start_idx"] = dates.searchsorted(pd.to_datetime(setups["detect_date"])) + 1
     setups["end_idx"] = dates.searchsorted(
         pd.to_datetime(setups["valid_until"]), side="right"
@@ -107,18 +122,37 @@ def simulate(
             return default
         return default if np.isnan(out) else out
 
+    def _known_bad_growth(setup) -> bool:
+        eps_yoy = _num_attr(setup, "eps_yoy", np.nan)
+        revenue_yoy = _num_attr(setup, "revenue_yoy", np.nan)
+        return (
+            np.isfinite(eps_yoy)
+            and np.isfinite(revenue_yoy)
+            and eps_yoy < cfg.eps_yoy_min
+            and revenue_yoy < cfg.revenue_yoy_min
+        )
+
+    def _setup_stop_pct(setup) -> float:
+        pivot = _num_attr(setup, "pivot", np.nan)
+        stop = _num_attr(setup, "stop_level", np.nan)
+        if not np.isfinite(pivot) or pivot <= 0 or not np.isfinite(stop):
+            return cfg.stop_max_pct
+        return max(0.0, (pivot - stop) / pivot)
+
     def setup_priority(setup) -> tuple:
-        dryup_value = _num_attr(setup, "dryup_ratio", np.inf)
+        dryup_value = _num_attr(setup, "dryup_ratio", cfg.dryup_ratio_preferred)
         eps_yoy = min(_num_attr(setup, "eps_yoy", 0.0), 5.0)
         revenue_yoy = min(_num_attr(setup, "revenue_yoy", 0.0), 5.0)
         return (
+            1 if cfg.bad_fundamentals_filter_enable and _known_bad_growth(setup) else 0,
+            _setup_stop_pct(setup),
+            abs(dryup_value - cfg.dryup_ratio_preferred),
             -_num_attr(setup, "rs_rating", 0.0),
             -_num_attr(setup, "stock_industry_rs_rating", 0.0),
             -_num_attr(setup, "stock_category_rs_rating", 0.0),
             -_num_attr(setup, "ibkr_industry_rs_rating", 0.0),
             -_num_attr(setup, "ibkr_category_rs_rating", 0.0),
             -_num_attr(setup, "n_contractions", 0.0),
-            dryup_value,
             -eps_yoy,
             -revenue_yoy,
             int(getattr(setup, "start_idx", 0)),
@@ -183,8 +217,11 @@ def simulate(
             if np.isnan(day_open):
                 continue  # no bar today, hold
 
-            if pos.exit_next_open:
-                record_trade(pos, t, pos.shares, day_open * (1 - cfg.slippage_pct), "final", "trail_ma")
+            if pos.exit_next_open_reason is not None:
+                record_trade(
+                    pos, t, pos.shares, day_open * (1 - cfg.slippage_pct),
+                    "final", pos.exit_next_open_reason,
+                )
                 del positions[sym]
                 continue
 
@@ -212,9 +249,21 @@ def simulate(
                     del positions[sym]
                     continue
 
+            day_close = c[t, col]
+            if (
+                cfg.failed_breakout_exit_enable
+                and not pos.partial_done
+                and r_unit > 0
+                and t - pos.entry_idx >= cfg.failed_breakout_days
+                and not np.isnan(day_close)
+                and day_close <= pos.entry_price + cfg.failed_breakout_min_r * r_unit
+            ):
+                pos.exit_next_open_reason = "failed_breakout"
+                continue
+
             trail = ma_trail[t, col]
             if not np.isnan(trail) and c[t, col] < trail:
-                pos.exit_next_open = True
+                pos.exit_next_open_reason = "trail_ma"
 
         # ---- collect newly active setups ------------------------------------
         while next_setup < len(setup_rows) and setup_rows[next_setup].start_idx <= t:

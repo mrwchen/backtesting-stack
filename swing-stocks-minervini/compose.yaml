@@ -57,7 +57,7 @@ services:
       END_DATE: ""
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_v5_portfolio_priority_2m_regime_exposure075"
+      RUN_LABEL: "minervini_v6_dead_dryup_failed_breakout_2m_regime_portfolio"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -158,6 +158,9 @@ services:
       EPS_YOY_MIN: "0.20"
       # Mindest-Umsatzwachstum TTM vs. TTM vor einem Jahr (0.10 = +10 %).
       REVENUE_YOY_MIN: "0.10"
+      # true = Setups mit bekannt schwachem EPS- UND Umsatzwachstum werden in
+      # der Simulation nicht gehandelt. Fehlende EPS-Daten bleiben erlaubt.
+      BAD_FUNDAMENTALS_FILTER_ENABLE: "true"
       # Wie viele der drei Flags (EPS, Umsatz, Margentrend) mindestens
       # bestehen muessen, damit fundamentals_pass = true.
       FUNDAMENTALS_MIN_PASS: "2"
@@ -191,9 +194,12 @@ services:
       # Pivot (Hoch der letzten Kontraktion) darf hoechstens so weit unter dem
       # Basishoch liegen (0.05 = 5 %), sonst droht Overhead-Supply beim Ausbruch.
       PIVOT_BELOW_BASE_HIGH_MAX: "0.05"
-      # Volumen-Dry-up: Ø-Volumen der letzten 5 Tage geteilt durch 50d-Ø-Volumen
-      # muss <= diesem Wert sein (0.70 = mind. 30 % unter Normalvolumen).
+      # Volumen-Dry-up: Ø-Volumen der letzten 5 Tage geteilt durch 50d-Ø-Volumen.
+      # Unter 0.50 gilt als totes Tape; ueber 0.70 fehlt die Kontraktion.
+      DRYUP_RATIO_MIN: "0.50"
       DRYUP_RATIO_MAX: "0.70"
+      # Zielbereich fuer die Portfolio-Priorisierung bei konkurrierenden Setups.
+      DRYUP_RATIO_PREFERRED: "0.65"
       # Wie viele Handelstage ein erkanntes Setup fuer den Breakout gueltig bleibt;
       # danach verfaellt es (und kann bei fortbestehender Basis neu erkannt werden).
       SETUP_VALID_DAYS: "15"
@@ -229,6 +235,12 @@ services:
       # Trailing-Exit: schliesst die Position (naechstes Open), wenn der Schlusskurs
       # unter die MA dieser Laenge faellt (50 = 50-Tage-Linie).
       TRAIL_MA_DAYS: "50"
+      # Failed-Breakout-Exit: wenn ein Breakout nach N Handelstagen noch keinen
+      # Fortschritt zeigt, wird am naechsten Open geschlossen. 0.0 R bedeutet:
+      # Close muss weiterhin unter/auf Entry liegen.
+      FAILED_BREAKOUT_EXIT_ENABLE: "true"
+      FAILED_BREAKOUT_DAYS: "5"
+      FAILED_BREAKOUT_MIN_R: "0.0"
 
       # -- Portfolio-Constraints (nur SIMULATION_MODE=portfolio) -----------------
       # Maximal gleichzeitig offene Positionen. 8 ist bewusst konservativ, damit
@@ -236,7 +248,7 @@ services:
       PORTFOLIO_MAX_OPEN_POSITIONS: "8"
       # Maximaler Brutto-Exposure-Anteil am mark-to-market Portfolio-Equity.
       # 1.0 = kein Hebel; Cash darf nicht negativ werden.
-      PORTFOLIO_MAX_GROSS_EXPOSURE_PCT: "0.75"
+      PORTFOLIO_MAX_GROSS_EXPOSURE_PCT: "1.0"
     networks:
       - shared_net
 

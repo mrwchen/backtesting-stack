@@ -56,14 +56,18 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          market equity, while independent sizing uses INITIAL_EQUITY. When
          several entries compete for limited portfolio capacity, the portfolio
          mode prioritizes as-of setup quality: RS rating, stock/group RS,
-         contraction count, volume dry-up and growth fields from screen_daily.
+         contraction count, risk distance, volume dry-up quality and growth
+         fields from screen_daily. Very low dry-up is treated as dead tape
+         instead of automatically better.
          Exits: stop (also checked on the entry bar itself), partial at
-         PARTIAL_AT_R, MA-trail, end-of-data.
+         PARTIAL_AT_R, failed-breakout exit, MA-trail, end-of-data.
          New entries are blocked while the market breadth gate is off
          (MARKET_FILTER_ENABLE); open positions keep running into their exits.
          Optional world-regime entry filtering blocks entries whose latest known
          regime label is not in REGIME_ALLOWED_LABELS. Trades carry the latest
          known world-regime composite score at entry as attribution.
+         Known bad fundamentals (EPS and revenue growth both below threshold)
+         can block entries while missing EPS data remains tradable.
 ```
 
 ## Run
@@ -91,3 +95,6 @@ python -m pytest tests -q
   effective backtest window begins ~2021.
 - Fundamentals are TTM (SEC); quarterly EPS is reconstructed from TTM diffs
   and is therefore slightly noisier than reported quarterly EPS.
+- Breakout-volume confirmation is not used as a same-day hard filter because
+  daily volume is only known after the close; adding it to stop-buy entries
+  would introduce look-ahead unless the entry is delayed to the next session.

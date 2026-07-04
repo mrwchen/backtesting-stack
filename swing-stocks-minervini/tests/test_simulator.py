@@ -228,7 +228,7 @@ def test_portfolio_mode_prioritizes_quality_metrics():
         eps_yoy=0.2, revenue_yoy=0.1,
     )
     strong = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
-        symbol="ZZZ", setup_id=2, n_contractions=4, dryup_ratio=0.4,
+        symbol="ZZZ", setup_id=2, n_contractions=4, dryup_ratio=0.65,
         rs_rating=99, stock_industry_rs_rating=98, stock_category_rs_rating=97,
         ibkr_industry_rs_rating=96, ibkr_category_rs_rating=95,
         eps_yoy=1.5, revenue_yoy=0.5,
@@ -245,6 +245,72 @@ def test_portfolio_mode_prioritizes_quality_metrics():
 
     assert result.metrics["num_positions"] == 1
     assert result.trades.iloc[0]["symbol"] == "ZZZ"
+
+
+def test_dead_dryup_setup_is_skipped():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.5)]
+    bars += [(101, 102, 100.5, 101.5)] * 6
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+        dryup_ratio=0.4
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.empty
+    assert result.metrics["final_equity"] == 100000.0
+
+
+def test_known_bad_growth_setup_is_skipped():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.5)]
+    bars += [(101, 102, 100.5, 101.5)] * 6
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+        dryup_ratio=0.65, eps_yoy=0.1, revenue_yoy=0.05
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.empty
+    assert result.metrics["final_equity"] == 100000.0
+
+
+def test_failed_breakout_exits_next_open():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.0)]       # entry at 100
+    bars += [(100.2, 101, 98, 100.2)]    # day 1: still alive
+    bars += [(99.8, 100.5, 98, 99.8)]    # day 2
+    bars += [(99.7, 100.4, 98, 99.7)]    # day 3
+    bars += [(99.9, 100.4, 98, 99.9)]    # day 4
+    bars += [(99.8, 100.4, 98, 99.8)]    # day 5: failed, exit next open
+    bars += [(99.5, 100.0, 98, 99.6)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=11)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "failed_breakout_exit_enable": True,
+            "failed_breakout_days": 5,
+            "failed_breakout_min_r": 0.0,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+    trades = result.trades
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_reason"] == "failed_breakout"
+    assert trades.iloc[0]["exit_date"] == dates[11].date()
+    assert trades.iloc[0]["exit_price"] == 99.5
+    assert trades.iloc[0]["pnl"] == -100.0
 
 
 def test_market_gate_blocks_entries_but_not_exits():

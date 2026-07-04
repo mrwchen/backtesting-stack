@@ -21,7 +21,7 @@ def _base_series():
     )
     high = close * 1.005
     low = close * 0.995
-    volume = np.where(np.arange(len(close)) >= 88, 250_000.0, 1_000_000.0)
+    volume = np.where(np.arange(len(close)) >= 88, 600_000.0, 1_000_000.0)
     dates = pd.bdate_range("2023-01-02", periods=len(close))
     return dates, high, low, close, volume
 
@@ -46,7 +46,7 @@ def test_detects_three_contraction_base():
     assert abs(setup.pivot - 97 * 1.005) < 0.2
     depths = setup.contraction_depths
     assert depths[0] > depths[1] > depths[2]
-    assert setup.dryup_ratio < cfg.dryup_ratio_max
+    assert cfg.dryup_ratio_min <= setup.dryup_ratio <= cfg.dryup_ratio_max
     assert setup.last_low < setup.close < setup.pivot
     # final low @ 92 confirms at bar 95 (k=3): no detection before that
     assert dates.searchsorted(pd.Timestamp(setup.detect_date)) >= 95
@@ -55,6 +55,15 @@ def test_detects_three_contraction_base():
 def test_no_detection_without_volume_dryup():
     dates, high, low, close, volume = _base_series()
     volume[:] = 1_000_000.0  # no dry-up
+    setups = find_setups(
+        "TEST", dates, high, low, close, volume, np.arange(93, 101), make_cfg()
+    )
+    assert setups == []
+
+
+def test_no_detection_when_volume_is_too_dead():
+    dates, high, low, close, volume = _base_series()
+    volume[np.arange(len(close)) >= 88] = 250_000.0
     setups = find_setups(
         "TEST", dates, high, low, close, volume, np.arange(93, 101), make_cfg()
     )

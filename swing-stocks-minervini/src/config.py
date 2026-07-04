@@ -95,7 +95,9 @@ class Config:
     final_depth_max: float
     base_depth_max: float
     pivot_below_base_high_max: float
+    dryup_ratio_min: float
     dryup_ratio_max: float
+    dryup_ratio_preferred: float
     setup_valid_days: int
 
     # simulation (per-trade, no portfolio constraints)
@@ -110,6 +112,10 @@ class Config:
     partial_fraction: float
     breakeven_after_partial: bool
     trail_ma_days: int
+    failed_breakout_exit_enable: bool
+    failed_breakout_days: int
+    failed_breakout_min_r: float
+    bad_fundamentals_filter_enable: bool
 
     # portfolio simulation constraints
     portfolio_max_open_positions: int
@@ -165,7 +171,9 @@ class Config:
             final_depth_max=float(_env("FINAL_DEPTH_MAX", "0.10")),
             base_depth_max=float(_env("BASE_DEPTH_MAX", "0.35")),
             pivot_below_base_high_max=float(_env("PIVOT_BELOW_BASE_HIGH_MAX", "0.05")),
+            dryup_ratio_min=float(_env("DRYUP_RATIO_MIN", "0.50")),
             dryup_ratio_max=float(_env("DRYUP_RATIO_MAX", "0.70")),
+            dryup_ratio_preferred=float(_env("DRYUP_RATIO_PREFERRED", "0.65")),
             setup_valid_days=int(_env("SETUP_VALID_DAYS", "15")),
             initial_equity=float(_env("INITIAL_EQUITY", "100000")),
             risk_pct=float(_env("RISK_PCT", "0.01")),
@@ -178,6 +186,10 @@ class Config:
             partial_fraction=float(_env("PARTIAL_FRACTION", "0.5")),
             breakeven_after_partial=_env_bool("BREAKEVEN_AFTER_PARTIAL", True),
             trail_ma_days=int(_env("TRAIL_MA_DAYS", "50")),
+            failed_breakout_exit_enable=_env_bool("FAILED_BREAKOUT_EXIT_ENABLE", True),
+            failed_breakout_days=int(_env("FAILED_BREAKOUT_DAYS", "5")),
+            failed_breakout_min_r=float(_env("FAILED_BREAKOUT_MIN_R", "0.0")),
+            bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", True),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
         )
@@ -187,6 +199,14 @@ class Config:
             raise ValueError(f"unsupported SCREEN_PERSIST={cfg.screen_persist!r}")
         if cfg.simulation_mode not in ("independent", "portfolio"):
             raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
+        if cfg.dryup_ratio_min < 0:
+            raise ValueError("DRYUP_RATIO_MIN must be >= 0")
+        if cfg.dryup_ratio_max <= cfg.dryup_ratio_min:
+            raise ValueError("DRYUP_RATIO_MAX must be > DRYUP_RATIO_MIN")
+        if not (cfg.dryup_ratio_min <= cfg.dryup_ratio_preferred <= cfg.dryup_ratio_max):
+            raise ValueError("DRYUP_RATIO_PREFERRED must be between DRYUP_RATIO_MIN and DRYUP_RATIO_MAX")
+        if cfg.failed_breakout_days < 1:
+            raise ValueError("FAILED_BREAKOUT_DAYS must be >= 1")
         if cfg.portfolio_max_open_positions < 1:
             raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
         if cfg.portfolio_max_gross_exposure_pct <= 0:

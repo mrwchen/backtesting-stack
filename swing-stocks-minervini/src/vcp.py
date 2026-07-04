@@ -104,7 +104,11 @@ def _evaluate_day(
 
         recent_vol = np.nanmean(volume[max(0, t - 4) : t + 1])
         dryup = recent_vol / vol_ma[t]
-        if not np.isfinite(dryup) or dryup > cfg.dryup_ratio_max:
+        if (
+            not np.isfinite(dryup)
+            or dryup < cfg.dryup_ratio_min
+            or dryup > cfg.dryup_ratio_max
+        ):
             continue
 
         return {
