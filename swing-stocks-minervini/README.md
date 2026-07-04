@@ -53,7 +53,10 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          research mode measures the signal across the whole universe.
          SIMULATION_MODE=portfolio applies cash, max gross exposure and max
          open-position constraints. Portfolio sizing uses current marked-to-
-         market equity, while independent sizing uses INITIAL_EQUITY.
+         market equity, while independent sizing uses INITIAL_EQUITY. When
+         several entries compete for limited portfolio capacity, the portfolio
+         mode prioritizes as-of setup quality: RS rating, stock/group RS,
+         contraction count, volume dry-up and growth fields from screen_daily.
          Exits: stop (also checked on the entry bar itself), partial at
          PARTIAL_AT_R, MA-trail, end-of-data.
          New entries are blocked while the market breadth gate is off

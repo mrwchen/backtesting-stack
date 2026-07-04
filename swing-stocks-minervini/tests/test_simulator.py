@@ -210,6 +210,43 @@ def test_portfolio_mode_limits_gross_exposure():
     assert result.equity["exposure_pct"].max() <= 0.4
 
 
+def test_portfolio_mode_prioritizes_quality_metrics():
+    dates = pd.bdate_range("2024-01-01", periods=12)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.0)]
+        + [(100, 101, 99, 100.0)] * 6
+    )
+    frames = [
+        pd.DataFrame({"AAA": bars[:, f], "ZZZ": bars[:, f]}, index=dates)
+        for f in range(4)
+    ]
+    weak = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+        symbol="AAA", setup_id=1, n_contractions=2, dryup_ratio=0.6,
+        rs_rating=70, stock_industry_rs_rating=70, stock_category_rs_rating=70,
+        ibkr_industry_rs_rating=70, ibkr_category_rs_rating=70,
+        eps_yoy=0.2, revenue_yoy=0.1,
+    )
+    strong = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=10).assign(
+        symbol="ZZZ", setup_id=2, n_contractions=4, dryup_ratio=0.4,
+        rs_rating=99, stock_industry_rs_rating=98, stock_category_rs_rating=97,
+        ibkr_industry_rs_rating=96, ibkr_category_rs_rating=95,
+        eps_yoy=1.5, revenue_yoy=0.5,
+    )
+    cfg = _clean_cfg()
+    cfg = make_cfg(
+        **{**cfg.__dict__, "simulation_mode": "portfolio", "portfolio_max_open_positions": 1}
+    )
+
+    result = simulate(
+        dates, frames[0].columns, frames[0], frames[1], frames[2], frames[3],
+        pd.concat([weak, strong], ignore_index=True), cfg,
+    )
+
+    assert result.metrics["num_positions"] == 1
+    assert result.trades.iloc[0]["symbol"] == "ZZZ"
+
+
 def test_market_gate_blocks_entries_but_not_exits():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]   # breakout day 5 (gate on) -> entry at 100

@@ -99,18 +99,29 @@ def simulate(
     next_setup = 0
     next_position_id = 1
 
-    def setup_priority(setup) -> tuple:
-        dryup = getattr(setup, "dryup_ratio", np.nan)
+    def _num_attr(setup, name: str, default: float) -> float:
+        value = getattr(setup, name, default)
         try:
-            dryup_value = float(dryup)
+            out = float(value)
         except (TypeError, ValueError):
-            dryup_value = np.inf
-        if np.isnan(dryup_value):
-            dryup_value = np.inf
+            return default
+        return default if np.isnan(out) else out
+
+    def setup_priority(setup) -> tuple:
+        dryup_value = _num_attr(setup, "dryup_ratio", np.inf)
+        eps_yoy = min(_num_attr(setup, "eps_yoy", 0.0), 5.0)
+        revenue_yoy = min(_num_attr(setup, "revenue_yoy", 0.0), 5.0)
         return (
-            int(getattr(setup, "start_idx", 0)),
-            -int(getattr(setup, "n_contractions", 0) or 0),
+            -_num_attr(setup, "rs_rating", 0.0),
+            -_num_attr(setup, "stock_industry_rs_rating", 0.0),
+            -_num_attr(setup, "stock_category_rs_rating", 0.0),
+            -_num_attr(setup, "ibkr_industry_rs_rating", 0.0),
+            -_num_attr(setup, "ibkr_category_rs_rating", 0.0),
+            -_num_attr(setup, "n_contractions", 0.0),
             dryup_value,
+            -eps_yoy,
+            -revenue_yoy,
+            int(getattr(setup, "start_idx", 0)),
             str(getattr(setup, "symbol", "")),
         )
 
