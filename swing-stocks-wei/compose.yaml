@@ -58,7 +58,7 @@ services:
 
       # -- Strategie-Parameter ----------------------------------------------------
       # Gehandeltes Symbol (S&P-500-Proxy; muss in PRICES_TABLE vorhanden sein).
-      SYMBOL: "VOO"
+      SYMBOL: "QQQ"
       # Erster Tag des Auswertungsfensters (Equity startet hier bei 1.0).
       START_DATE: "2022-01-03"
       # Letzter Tag des Fensters. Leer = heute.
