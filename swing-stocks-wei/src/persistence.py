@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from psycopg2 import sql
 
 from .backtest import BacktestResult
 from .config import Config
@@ -14,15 +15,15 @@ log = logging.getLogger(__name__)
 def persist_run(conn, cfg: Config, result: BacktestResult, signals: dict, start_idx: int) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO backtest_wei_runs (
+            sql.SQL("""
+            INSERT INTO {} (
                 run_label, symbol, start_date, end_date,
                 ema_fast, ema_slow, stress_enter, stress_exit, cost_bps_per_side,
                 total_return_pct, bh_return_pct, max_drawdown_pct, bh_max_drawdown_pct,
                 cagr_pct, n_trades, n_winning_trades, days_invested_pct
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING run_id
-            """,
+            """).format(sql.Identifier(cfg.runs_table)),
             (
                 cfg.run_label, cfg.symbol, result.days[0], result.days[-1],
                 cfg.ema_fast, cfg.ema_slow, cfg.stress_enter, cfg.stress_exit,
@@ -37,12 +38,12 @@ def persist_run(conn, cfg: Config, result: BacktestResult, signals: dict, start_
         run_id = cur.fetchone()[0]
 
         cur.executemany(
-            """
-            INSERT INTO backtest_wei_trades (
+            sql.SQL("""
+            INSERT INTO {} (
                 run_id, trade_no, entry_date, exit_date, entry_price, exit_price,
                 gross_return_pct, holding_days, is_open
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
+            """).format(sql.Identifier(cfg.trades_table)),
             [
                 (run_id, t.trade_no, t.entry_date, t.exit_date,
                  round(t.entry_price, 6), round(t.exit_price, 6) if t.exit_price else None,
@@ -59,12 +60,12 @@ def persist_run(conn, cfg: Config, result: BacktestResult, signals: dict, start_
         scores = signals["lagged_score"][start_idx:]
         closes = signals["close"][start_idx:]
         cur.executemany(
-            """
-            INSERT INTO backtest_wei_equity_daily (
+            sql.SQL("""
+            INSERT INTO {} (
                 day, run_id, close, ema_fast_value, ema_slow_value,
                 composite_score, stress_on, position, equity, bh_equity
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
+            """).format(sql.Identifier(cfg.equity_table)),
             [
                 (result.days[i], run_id, round(float(closes[i]), 6),
                  round(float(ema_f[i]), 6), round(float(ema_s[i]), 6),

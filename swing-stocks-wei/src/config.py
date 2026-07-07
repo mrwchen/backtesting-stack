@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -23,7 +24,22 @@ class Config:
     cost_bps_per_side: float
     warmup_calendar_days: int
     run_label: str
+    table_prefix: str
+    prices_table: str
+    scores_table: str
     log_level: str
+
+    @property
+    def runs_table(self) -> str:
+        return f"{self.table_prefix}runs"
+
+    @property
+    def trades_table(self) -> str:
+        return f"{self.table_prefix}trades"
+
+    @property
+    def equity_table(self) -> str:
+        return f"{self.table_prefix}equity_daily"
 
     @staticmethod
     def from_env() -> "Config":
@@ -38,8 +54,17 @@ class Config:
             cost_bps_per_side=float(os.getenv("COST_BPS_PER_SIDE", "5")),
             warmup_calendar_days=int(os.getenv("WARMUP_CALENDAR_DAYS", "365")),
             run_label=os.getenv("RUN_LABEL", "wei_regime_ema"),
+            table_prefix=os.getenv("TABLE_PREFIX", "backtest_wei_"),
+            prices_table=os.getenv("PRICES_TABLE", "alpaca_market_data_1day"),
+            scores_table=os.getenv("SCORES_TABLE", "world_regime_daily_scores_mv"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
         )
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", cfg.table_prefix):
+            raise ValueError("TABLE_PREFIX must be a valid lowercase SQL identifier prefix")
+        for name, value in (("PRICES_TABLE", cfg.prices_table),
+                            ("SCORES_TABLE", cfg.scores_table)):
+            if not re.fullmatch(r"[a-z_][a-z0-9_]*", value):
+                raise ValueError(f"{name} must be a valid lowercase SQL identifier")
         if cfg.ema_fast >= cfg.ema_slow:
             raise ValueError("EMA_FAST must be smaller than EMA_SLOW")
         if cfg.stress_exit >= cfg.stress_enter:

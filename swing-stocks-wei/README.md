@@ -66,11 +66,14 @@ python -m pytest tests/
 
 ## Ergebnistabellen
 
+Der Tabellen-Praefix ist ueber `TABLE_PREFIX` konfigurierbar (default
+`backtest_wei_`; muss in beiden compose-Services identisch gesetzt sein):
+
 | Tabelle | Inhalt |
 |---|---|
-| `backtest_wei_runs` | ein Datensatz pro Run: Parameter + Kennzahlen (Total, CAGR, MaxDD, Trades, investierte Tage; jeweils inkl. Buy-&-Hold-Vergleich) |
-| `backtest_wei_trades` | alle Long-Trades eines Runs (Entry/Exit-Datum und -Kurs, Brutto-Rendite, Haltedauer, offen-Flag) |
-| `backtest_wei_equity_daily` | Tageszustand (Hypertable): Close, EMAs, gelaggter Score, Ampel, Position, Equity-Kurve + B&H-Kurve — direkt in Grafana plottbar |
+| `<TABLE_PREFIX>runs` | ein Datensatz pro Run: Parameter + Kennzahlen (Total, CAGR, MaxDD, Trades, investierte Tage; jeweils inkl. Buy-&-Hold-Vergleich) |
+| `<TABLE_PREFIX>trades` | alle Long-Trades eines Runs (Entry/Exit-Datum und -Kurs, Brutto-Rendite, Haltedauer, offen-Flag) |
+| `<TABLE_PREFIX>equity_daily` | Tageszustand (Hypertable): Close, EMAs, gelaggter Score, Ampel, Position, Equity-Kurve + B&H-Kurve — direkt in Grafana plottbar |
 
 Equity-Kurve ist **netto** (Kosten pro Positionswechsel), Trade-Renditen sind
 **brutto** (Kurs zu Kurs).
@@ -79,10 +82,13 @@ Equity-Kurve ist **netto** (Kosten pro Positionswechsel), Trade-Renditen sind
 
 | Env | Default | Bedeutung |
 |---|---|---|
-| `SYMBOL` | `VOO` | gehandeltes Symbol aus `alpaca_market_data_1day` |
+| `PRICES_TABLE` | `alpaca_market_data_1day` | Kurstabelle (braucht Spalten `symbol`, `ts`, `close`; split-adjusted) |
+| `SCORES_TABLE` | `world_regime_daily_scores_mv` | Score-Quelle (braucht Spalten `day`, `composite_score`) |
+| `SYMBOL` | `VOO` | gehandeltes Symbol aus `PRICES_TABLE` |
 | `START_DATE` / `END_DATE` | `2022-01-03` / heute | Auswertungsfenster |
 | `EMA_FAST` / `EMA_SLOW` | `9` / `21` | Trendfilter-Spannen |
 | `STRESS_ENTER` / `STRESS_EXIT` | `57` / `52` | Hysterese-Schwellen der Stress-Ampel |
 | `COST_BPS_PER_SIDE` | `5` | Transaktionskosten je Kauf/Verkauf |
 | `WARMUP_CALENDAR_DAYS` | `365` | Preishistorie vor START_DATE fuer EMA-Warmup |
 | `RUN_LABEL` | `wei_regime_ema_9_21_57_52` | Freitext-Label des Runs |
+| `TABLE_PREFIX` | `backtest_wei_` | Praefix der Ergebnistabellen (Init-Container **und** Runner; nur Kleinbuchstaben, Ziffern, Unterstriche) |

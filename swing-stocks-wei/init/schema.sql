@@ -1,6 +1,12 @@
 -- Idempotent schema for the regime-gated EMA index backtester.
--- All tables are prefixed backtest_wei_.
+-- The table prefix comes from the psql variable :table_prefix (compose env
+-- TABLE_PREFIX, default backtest_wei_).
 -- Safe to re-run: statements use IF NOT EXISTS or equivalent guards.
+
+\set runs_table   :table_prefix runs
+\set trades_table :table_prefix trades
+\set equity_table :table_prefix equity_daily
+\set equity_index :table_prefix equity_run_day_idx
 
 DO $$
 BEGIN
@@ -20,15 +26,15 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO "market-data-account";
 
 \if :drop_all_wei_tables_on_start
-DROP TABLE IF EXISTS backtest_wei_equity_daily CASCADE;
-DROP TABLE IF EXISTS backtest_wei_trades CASCADE;
-DROP TABLE IF EXISTS backtest_wei_runs CASCADE;
+DROP TABLE IF EXISTS :equity_table CASCADE;
+DROP TABLE IF EXISTS :trades_table CASCADE;
+DROP TABLE IF EXISTS :runs_table CASCADE;
 \endif
 
 -- ---------------------------------------------------------------------------
 -- One row per backtest run: parameters and summary metrics.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS backtest_wei_runs (
+CREATE TABLE IF NOT EXISTS :runs_table (
     run_id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     run_label               TEXT NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -53,8 +59,8 @@ CREATE TABLE IF NOT EXISTS backtest_wei_runs (
 -- ---------------------------------------------------------------------------
 -- One row per completed (or still open) long trade of a run.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS backtest_wei_trades (
-    run_id                  BIGINT NOT NULL REFERENCES backtest_wei_runs (run_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS :trades_table (
+    run_id                  BIGINT NOT NULL REFERENCES :runs_table (run_id) ON DELETE CASCADE,
     trade_no                INTEGER NOT NULL,
     entry_date              DATE NOT NULL,
     exit_date               DATE,
@@ -69,7 +75,7 @@ CREATE TABLE IF NOT EXISTS backtest_wei_trades (
 -- ---------------------------------------------------------------------------
 -- Daily state of a run: signals, position and equity curves (for Grafana).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS backtest_wei_equity_daily (
+CREATE TABLE IF NOT EXISTS :equity_table (
     day                     DATE NOT NULL,
     run_id                  BIGINT NOT NULL,
     close                   NUMERIC(18,6) NOT NULL,
@@ -84,15 +90,15 @@ CREATE TABLE IF NOT EXISTS backtest_wei_equity_daily (
 );
 
 SELECT create_hypertable(
-    'backtest_wei_equity_daily',
+    :'equity_table',
     'day',
     chunk_time_interval => INTERVAL '365 days',
     if_not_exists => TRUE
 );
 
-CREATE INDEX IF NOT EXISTS idx_bw_equity_run_day
-    ON backtest_wei_equity_daily (run_id, day DESC);
+CREATE INDEX IF NOT EXISTS :equity_index
+    ON :equity_table (run_id, day DESC);
 
 GRANT SELECT, INSERT, UPDATE, DELETE
-    ON backtest_wei_runs, backtest_wei_trades, backtest_wei_equity_daily
+    ON :runs_table, :trades_table, :equity_table
     TO "market-data-account";

@@ -5,6 +5,7 @@ import os
 
 import pandas as pd
 import psycopg2
+from psycopg2 import sql
 
 
 def get_conn():
@@ -19,9 +20,9 @@ def get_conn():
     )
 
 
-def read_df(conn, sql: str, params: dict | tuple | None = None) -> pd.DataFrame:
+def read_df(conn, query: str | sql.Composable, params: dict | tuple | None = None) -> pd.DataFrame:
     with conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(query, params)
         columns = [d[0] for d in cur.description]
         rows = cur.fetchall()
     return pd.DataFrame(rows, columns=columns)

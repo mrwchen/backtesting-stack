@@ -5,6 +5,7 @@ import logging
 from datetime import date, timedelta
 
 import pandas as pd
+from psycopg2 import sql
 
 from .config import Config
 from .db import read_df
@@ -20,16 +21,16 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
     warmup_start = cfg.start_date - timedelta(days=cfg.warmup_calendar_days)
     df = read_df(
         conn,
-        """
+        sql.SQL("""
         SELECT ts::date AS day, close::float8 AS close
-        FROM alpaca_market_data_1day
+        FROM {}
         WHERE symbol = %(symbol)s AND ts::date BETWEEN %(from)s AND %(to)s
         ORDER BY ts
-        """,
+        """).format(sql.Identifier(cfg.prices_table)),
         {"symbol": cfg.symbol, "from": warmup_start, "to": cfg.end_date},
     )
     if df.empty:
-        raise RuntimeError(f"no price rows for {cfg.symbol} in alpaca_market_data_1day")
+        raise RuntimeError(f"no price rows for {cfg.symbol} in {cfg.prices_table}")
     first_eval = df[df["day"] >= cfg.start_date]
     if first_eval.empty:
         raise RuntimeError(f"no price rows on/after START_DATE {cfg.start_date}")
@@ -46,16 +47,16 @@ def load_composite_scores(conn, cfg: Config) -> pd.DataFrame:
     warmup_start = cfg.start_date - timedelta(days=cfg.warmup_calendar_days)
     df = read_df(
         conn,
-        """
+        sql.SQL("""
         SELECT day, composite_score::float8 AS composite_score
-        FROM world_regime_daily_scores_mv
+        FROM {}
         WHERE day BETWEEN %(from)s AND %(to)s
         ORDER BY day
-        """,
+        """).format(sql.Identifier(cfg.scores_table)),
         {"from": warmup_start, "to": cfg.end_date},
     )
     if df.empty:
-        raise RuntimeError("no rows in world_regime_daily_scores_mv for the requested window")
+        raise RuntimeError(f"no rows in {cfg.scores_table} for the requested window")
     return df
 
 
