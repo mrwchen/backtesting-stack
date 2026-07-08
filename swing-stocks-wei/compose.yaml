@@ -15,7 +15,7 @@ services:
       TABLE_PREFIX: "backtest_wei_stocks_"
       # true = ALLE Tabellen mit diesem Praefix droppen und neu anlegen.
       # Achtung: loescht saemtliche bisherigen Runs/Trades/Equity-Kurven unwiderruflich.
-      DROP_ALL_WEI_STOCKS_TABLES_ON_START: "true"
+      DROP_ALL_WEI_STOCKS_TABLES_ON_START: "false"
     command:
       - sh
       - -c
