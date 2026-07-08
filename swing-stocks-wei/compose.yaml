@@ -112,7 +112,7 @@ services:
       # independent = jedes gueltige Aktiensignal als hypothetischer Einzeltrade,
       # ohne Cash-/Slot-/Kategorie-Limits. portfolio = echte Portfolio-Simulation
       # mit Cash, Positionslimits und Kategoriecaps.
-      SIMULATION_MODE: "independent"
+      SIMULATION_MODE: "portfolio"
       # Maximale Anzahl gleichzeitiger Positionen.
       # Wird nur im portfolio-Modus verwendet.
       MAX_POSITIONS: "25"
