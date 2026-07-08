@@ -35,6 +35,9 @@ class Config:
     weight_mild_pct: float
     weight_pos_pct: float
     entry_confirm_days: int
+    sl_pct: float
+    time_stop_days: int
+    time_stop_min_ret_pct: float
     max_positions: int
     max_per_category: int
     trim_above_pct: float
@@ -80,6 +83,9 @@ class Config:
             weight_mild_pct=float(os.getenv("WEIGHT_MILD_PCT", "3")),
             weight_pos_pct=float(os.getenv("WEIGHT_POS_PCT", "2")),
             entry_confirm_days=int(os.getenv("ENTRY_CONFIRM_DAYS", "0")),
+            sl_pct=float(os.getenv("SL_PCT", "0")),
+            time_stop_days=int(os.getenv("TIME_STOP_DAYS", "0")),
+            time_stop_min_ret_pct=float(os.getenv("TIME_STOP_MIN_RET_PCT", "0")),
             max_positions=int(os.getenv("MAX_POSITIONS", "25")),
             max_per_category=int(os.getenv("MAX_PER_CATEGORY", "2")),
             trim_above_pct=float(os.getenv("TRIM_ABOVE_PCT", "0")),
@@ -115,6 +121,11 @@ class Config:
             raise ValueError("MAX_POSITIONS and MAX_PER_CATEGORY must be >= 1")
         if cfg.entry_confirm_days < 0:
             raise ValueError("ENTRY_CONFIRM_DAYS must be >= 0")
+        if cfg.sl_pct < 0 or cfg.time_stop_days < 0:
+            raise ValueError("SL_PCT and TIME_STOP_DAYS must be >= 0")
+        if cfg.time_stop_min_ret_pct > 0:
+            raise ValueError("TIME_STOP_MIN_RET_PCT must be <= 0 "
+                             "(a time stop must not cut winning trades)")
         if cfg.trim_above_pct < 0 or cfg.trim_target_pct < 0:
             raise ValueError("TRIM_ABOVE_PCT and TRIM_TARGET_PCT must be >= 0")
         if cfg.trim_above_pct > 0 and not 0 < cfg.trim_target_pct < cfg.trim_above_pct:

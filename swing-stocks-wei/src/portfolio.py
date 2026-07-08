@@ -89,7 +89,9 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                   max_positions: int, max_per_category: int,
                   cost_bps_per_side: float, stock_mom: np.ndarray | None = None,
                   entry_confirm_days: int = 0, trim_above_pct: float = 0.0,
-                  trim_target_pct: float = 0.0) -> PortfolioResult:
+                  trim_target_pct: float = 0.0, sl_pct: float = 0.0,
+                  time_stop_days: int = 0,
+                  time_stop_min_ret_pct: float = 0.0) -> PortfolioResult:
     """Simulate the portfolio over the evaluation window.
 
     Array shapes: closes/fresh/positions are (n_days, n_symbols); closes are
@@ -97,12 +99,21 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     stock actually traded. stress_on is (n_days,). cat_momentum maps category
     to a (n_days,) array (NaN where unknown). stock_mom is the per-stock
     momentum matrix used as entry tie-breaker (None = alphabetical fallback).
+
+    Stop overlays (both evaluated on the close, 0 = disabled): sl_pct exits a
+    position sl_pct% below entry (catastrophe stop, not a timing stop);
+    time_stop_days exits a position that is still at or below
+    time_stop_min_ret_pct% after that many trading days (dead-money recycling).
+    A stopped symbol is locked until its signal resets to flat, so the
+    still-long signal cannot re-enter immediately.
     """
     n_days, n_sym = closes.shape
     cost = cost_bps_per_side / 1e4
     cand = entry_candidates(positions, entry_confirm_days)
     cash = 1.0
     held: dict[int, _Holding] = {}
+    entry_row: dict[int, int] = {}
+    locked = np.zeros(n_sym, dtype=bool)
     trades: list[StockTrade] = []
     equity = np.empty(n_days)
     n_pos = np.empty(n_days, dtype=int)
@@ -111,18 +122,39 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     def mark_to_market(t: int) -> float:
         return cash + sum(h.shares * closes[t, s] for s, h in held.items())
 
+    def sell_position(s: int, t: int) -> None:
+        nonlocal cash
+        h = held.pop(s)
+        entry_row.pop(s, None)
+        price = closes[t, s]
+        cash += h.shares * price * (1.0 - cost)
+        tr = h.trade
+        tr.exit_date = days[t]
+        tr.exit_price = float(price)
+        tr.gross_return_pct = float((price / tr.entry_price - 1.0) * 100)
+        tr.holding_days = (days[t] - tr.entry_date).days
+
     for t in range(n_days):
-        # 1) exits at today's close
+        # a stopped symbol stays blocked until its signal has reset to flat
+        locked &= positions[t] != 0
+
+        # 1) signal exits at today's close
         for s in [s for s, h in held.items()
                   if fresh[t, s] and positions[t, s] == 0]:
-            h = held.pop(s)
-            price = closes[t, s]
-            cash += h.shares * price * (1.0 - cost)
-            tr = h.trade
-            tr.exit_date = days[t]
-            tr.exit_price = float(price)
-            tr.gross_return_pct = float((price / tr.entry_price - 1.0) * 100)
-            tr.holding_days = (days[t] - tr.entry_date).days
+            sell_position(s, t)
+
+        # 1b) stop overlays
+        if sl_pct > 0 or time_stop_days > 0:
+            for s in list(held):
+                if not fresh[t, s]:
+                    continue
+                ret = closes[t, s] / held[s].trade.entry_price - 1.0
+                if (sl_pct > 0 and ret <= -sl_pct / 100.0) or (
+                        time_stop_days > 0
+                        and t - entry_row[s] >= time_stop_days
+                        and ret <= time_stop_min_ret_pct / 100.0):
+                    sell_position(s, t)
+                    locked[s] = True
 
         # 2) trim positions that outgrew their risk budget
         if trim_above_pct > 0:
@@ -140,7 +172,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         if not stress_on[t]:
             flipped = [
                 s for s in range(n_sym)
-                if s not in held and fresh[t, s] and cand[t, s]
+                if s not in held and not locked[s] and fresh[t, s] and cand[t, s]
             ]
             mom = {s: float(cat_momentum[categories[symbols[s]]][t])
                    for s in flipped}
@@ -179,6 +211,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                 )
                 trades.append(trade)
                 held[s] = _Holding(shares=shares, trade=trade)
+                entry_row[s] = t
                 cat_count[cat] = cat_count.get(cat, 0) + 1
 
         equity[t] = mark_to_market(t)

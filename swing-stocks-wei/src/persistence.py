@@ -63,7 +63,8 @@ def _insert_run(conn, cfg: Config, universe_size: int, days,
                 cat_mom_window, cat_mom_deep_threshold,
                 weight_deep_pct, weight_mild_pct, weight_pos_pct,
                 max_positions, max_per_category, entry_confirm_days,
-                trim_above_pct, trim_target_pct, cost_bps_per_side,
+                trim_above_pct, trim_target_pct,
+                sl_pct, time_stop_days, time_stop_min_ret_pct, cost_bps_per_side,
                 total_return_pct, bh_return_pct, max_drawdown_pct,
                 bh_max_drawdown_pct, cagr_pct,
                 n_trades, n_winning_trades, n_open_trades, win_rate_pct,
@@ -71,7 +72,7 @@ def _insert_run(conn, cfg: Config, universe_size: int, days,
                 avg_gross_exposure_pct
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                      %s,%s,%s,%s,%s,%s,%s,%s,%s)
+                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING run_id
             """).format(sql.Identifier(cfg.runs_table)),
             (
@@ -81,7 +82,9 @@ def _insert_run(conn, cfg: Config, universe_size: int, days,
                 cfg.cat_mom_window, cfg.cat_mom_deep_threshold,
                 cfg.weight_deep_pct, cfg.weight_mild_pct, cfg.weight_pos_pct,
                 cfg.max_positions, cfg.max_per_category, cfg.entry_confirm_days,
-                cfg.trim_above_pct, cfg.trim_target_pct, cfg.cost_bps_per_side,
+                cfg.trim_above_pct, cfg.trim_target_pct,
+                cfg.sl_pct, cfg.time_stop_days, cfg.time_stop_min_ret_pct,
+                cfg.cost_bps_per_side,
                 _rounded(portfolio_result.total_return_pct, 2)
                 if portfolio_result else None,
                 _rounded(portfolio_result.bh_return_pct, 2)

@@ -34,6 +34,15 @@ The strategy is driven by three ideas that survived both research windows
    time. This skips the whipsaw cohort right after the stress gate opens
    (10-40 day holds: ~25% win rate in research); 10 days roughly halved the
    max drawdown penalty vs. entering on the flip day.
+5. **Catastrophe stop + time stop (`SL_PCT`, `TIME_STOP_DAYS`,
+   `TIME_STOP_MIN_RET_PCT`):** exit on the close SL_PCT% below entry (wide by
+   design - it fires on ~5-9% of trades and only amputates the left tail;
+   tight stops destroyed returns), and exit trades still at/below
+   TIME_STOP_MIN_RET_PCT% after TIME_STOP_DAYS trading days (dead-money
+   recycling, never touches winners). A stopped symbol is locked until its
+   signal resets to flat. Close-based stops do not protect against overnight
+   gaps. Deliberately **no take-profit**: every tested TP cut the return by a
+   third to half - the edge lives in the right tail.
 
 Portfolio-mode rules: max 25 positions, max 2 per IBKR category, fills at the
 close of the signal day, costs in bps per side, no leverage, no shorts, cash

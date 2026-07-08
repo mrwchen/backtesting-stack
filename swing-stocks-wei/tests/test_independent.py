@@ -13,7 +13,8 @@ def _days(n):
 
 
 def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
-         entry_confirm_days=0):
+         entry_confirm_days=0, sl_pct=0.0, time_stop_days=0,
+         time_stop_min_ret_pct=0.0):
     n_days, n_sym = closes.shape
     symbols = [f"S{i}" for i in range(n_sym)]
     cats = cats or {s: "CatA" for s in symbols}
@@ -26,6 +27,8 @@ def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
         stress_on=stress if stress is not None else np.zeros(n_days, dtype=bool),
         cat_momentum=mom_days, weight_pct_by_tier=WEIGHTS,
         deep_threshold=-0.10, entry_confirm_days=entry_confirm_days,
+        sl_pct=sl_pct, time_stop_days=time_stop_days,
+        time_stop_min_ret_pct=time_stop_min_ret_pct,
     )
 
 
@@ -68,6 +71,23 @@ def test_independent_mode_applies_entry_confirmation():
     res = _run(closes, positions, entry_confirm_days=2)
     assert len(res.trades) == 1
     assert res.trades[0].entry_date == _days(5)[3]
+
+
+def test_independent_mode_applies_stop_loss_with_lock():
+    closes = np.array([[100.0], [70.0], [70.0], [70.0]])
+    positions = np.ones((4, 1), dtype=np.int8)  # signal never resets
+    res = _run(closes, positions, sl_pct=20.0)
+    assert len(res.trades) == 1  # stopped once, locked afterwards
+    assert res.trades[0].gross_return_pct == pytest.approx(-30.0)
+    assert not res.trades[0].is_open
+
+
+def test_independent_mode_applies_time_stop():
+    closes = np.array([[100.0], [99.0], [99.0], [99.0], [99.0]])
+    positions = np.ones((5, 1), dtype=np.int8)
+    res = _run(closes, positions, time_stop_days=3)
+    assert res.trades[0].exit_date == _days(5)[3]
+    assert not res.trades[0].is_open
 
 
 def test_independent_mode_keeps_sizing_tiers():

@@ -82,6 +82,9 @@ def main() -> None:
                 entry_confirm_days=cfg.entry_confirm_days,
                 trim_above_pct=cfg.trim_above_pct,
                 trim_target_pct=cfg.trim_target_pct,
+                sl_pct=cfg.sl_pct,
+                time_stop_days=cfg.time_stop_days,
+                time_stop_min_ret_pct=cfg.time_stop_min_ret_pct,
             )
             run_id = persist_portfolio_run(conn, cfg, result, len(symbols),
                                            lagged[start:], stress[start:])
@@ -100,6 +103,9 @@ def main() -> None:
                 cat_momentum=cat_mom_eval, weight_pct_by_tier=weights,
                 deep_threshold=cfg.cat_mom_deep_threshold,
                 entry_confirm_days=cfg.entry_confirm_days,
+                sl_pct=cfg.sl_pct,
+                time_stop_days=cfg.time_stop_days,
+                time_stop_min_ret_pct=cfg.time_stop_min_ret_pct,
             )
             run_id = persist_independent_run(conn, cfg, result, len(symbols))
             log.info("Run %d independent window %s..%s universe %d",

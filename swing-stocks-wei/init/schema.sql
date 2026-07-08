@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS :runs_table (
     entry_confirm_days      INTEGER NOT NULL DEFAULT 0,
     trim_above_pct          NUMERIC(5,2) NOT NULL DEFAULT 0,
     trim_target_pct         NUMERIC(5,2) NOT NULL DEFAULT 0,
+    sl_pct                  NUMERIC(5,2) NOT NULL DEFAULT 0,
+    time_stop_days          INTEGER NOT NULL DEFAULT 0,
+    time_stop_min_ret_pct   NUMERIC(6,2) NOT NULL DEFAULT 0,
     cost_bps_per_side       NUMERIC(6,2) NOT NULL,
     total_return_pct        NUMERIC(10,2),
     bh_return_pct           NUMERIC(10,2),
@@ -76,9 +79,12 @@ CREATE TABLE IF NOT EXISTS :runs_table (
 
 -- Columns added after the first release (no-ops on fresh tables).
 ALTER TABLE :runs_table
-    ADD COLUMN IF NOT EXISTS entry_confirm_days INTEGER NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS trim_above_pct     NUMERIC(5,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS trim_target_pct    NUMERIC(5,2) NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS entry_confirm_days    INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS trim_above_pct        NUMERIC(5,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS trim_target_pct       NUMERIC(5,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS sl_pct                NUMERIC(5,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS time_stop_days        INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS time_stop_min_ret_pct NUMERIC(6,2) NOT NULL DEFAULT 0;
 
 -- ---------------------------------------------------------------------------
 -- One row per completed (or still open) long trade of a run.
