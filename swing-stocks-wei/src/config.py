@@ -38,6 +38,7 @@ class Config:
     max_per_category: int
     cost_bps_per_side: float
     warmup_calendar_days: int
+    simulation_mode: str
     run_label: str
     table_prefix: str
     metrics_table: str
@@ -79,6 +80,7 @@ class Config:
             max_per_category=int(os.getenv("MAX_PER_CATEGORY", "2")),
             cost_bps_per_side=float(os.getenv("COST_BPS_PER_SIDE", "5")),
             warmup_calendar_days=int(os.getenv("WARMUP_CALENDAR_DAYS", "365")),
+            simulation_mode=os.getenv("SIMULATION_MODE", "portfolio").strip().lower(),
             run_label=os.getenv("RUN_LABEL", "wei_stocks_regime_ema"),
             table_prefix=os.getenv("TABLE_PREFIX", "backtest_wei_stocks_"),
             metrics_table=os.getenv("METRICS_TABLE", "stock_core_market_metrics_daily"),
@@ -99,6 +101,8 @@ class Config:
             raise ValueError("STRESS_EXIT must be below STRESS_ENTER (hysteresis)")
         if cfg.start_date >= cfg.end_date:
             raise ValueError("START_DATE must be before END_DATE")
+        if cfg.top_n_per_category < 0:
+            raise ValueError("TOP_N_PER_CATEGORY must be >= 0")
         if cfg.cat_mom_deep_threshold >= 0:
             raise ValueError("CAT_MOM_DEEP_THRESHOLD must be negative (a drawdown)")
         if cfg.max_per_category < 1 or cfg.max_positions < 1:
@@ -107,4 +111,6 @@ class Config:
             raise ValueError("all WEIGHT_*_PCT must be positive")
         if not 0 < cfg.min_coverage_pct <= 100:
             raise ValueError("MIN_COVERAGE_PCT must be in (0, 100]")
+        if cfg.simulation_mode not in {"portfolio", "independent"}:
+            raise ValueError("SIMULATION_MODE must be 'portfolio' or 'independent'")
         return cfg

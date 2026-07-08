@@ -65,10 +65,10 @@ def load_universe(conn, cfg: Config) -> pd.DataFrame:
     max_rows = int(df["n_rows"].max())
     df = df[(df["n_rows"] >= max_rows * cfg.min_coverage_pct / 100.0)
             & (df["first_day"] <= cfg.start_date)]
-    df = (df.sort_values(["ibkr_category", "market_cap"], ascending=[True, False])
-            .groupby("ibkr_category", sort=False)
-            .head(cfg.top_n_per_category)
-            .reset_index(drop=True))
+    df = df.sort_values(["ibkr_category", "market_cap"], ascending=[True, False])
+    if cfg.top_n_per_category > 0:
+        df = df.groupby("ibkr_category", sort=False).head(cfg.top_n_per_category)
+    df = df.reset_index(drop=True)
     if df.empty:
         raise RuntimeError("universe empty after coverage/market-cap filters")
     log.info("universe: %d stocks across %d categories",

@@ -36,6 +36,7 @@ DROP TABLE IF EXISTS :runs_table CASCADE;
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS :runs_table (
     run_id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    simulation_mode         TEXT NOT NULL CHECK (simulation_mode IN ('portfolio', 'independent')),
     run_label               TEXT NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     start_date              DATE NOT NULL,
@@ -62,6 +63,11 @@ CREATE TABLE IF NOT EXISTS :runs_table (
     cagr_pct                NUMERIC(10,2),
     n_trades                INTEGER,
     n_winning_trades        INTEGER,
+    n_open_trades           INTEGER,
+    win_rate_pct            NUMERIC(5,1),
+    avg_trade_return_pct    NUMERIC(10,2),
+    median_trade_return_pct NUMERIC(10,2),
+    avg_holding_days        NUMERIC(10,1),
     avg_gross_exposure_pct  NUMERIC(5,1)
 );
 
@@ -79,7 +85,8 @@ CREATE TABLE IF NOT EXISTS :trades_table (
     exit_price              NUMERIC(18,6),
     gross_return_pct        NUMERIC(10,2),
     holding_days            INTEGER,
-    weight_pct              NUMERIC(5,2) NOT NULL,
+    target_weight_pct       NUMERIC(5,2) NOT NULL,
+    effective_weight_pct    NUMERIC(5,2) NOT NULL,
     sizing_tier             TEXT NOT NULL,       -- deep | mild | pos
     cat_mom_at_entry_pct    NUMERIC(8,2),        -- category momentum at entry, NULL if unknown
     is_open                 BOOLEAN NOT NULL DEFAULT FALSE,

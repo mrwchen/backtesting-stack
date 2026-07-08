@@ -47,7 +47,8 @@ def test_deep_tier_gets_full_weight():
     res = _run(closes, positions,
                cat_mom={"CatA": np.array([-0.20, -0.20])})
     assert res.trades[0].tier == "deep"
-    assert res.trades[0].weight_pct == 5.0
+    assert res.trades[0].target_weight_pct == 5.0
+    assert res.trades[0].effective_weight_pct == 5.0
     assert res.total_return_pct == pytest.approx(1.0, abs=1e-6)  # 5% * +20%
 
 

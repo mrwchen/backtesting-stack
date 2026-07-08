@@ -33,7 +33,8 @@ class StockTrade:
     exit_price: float | None
     gross_return_pct: float | None
     holding_days: int | None
-    weight_pct: float
+    target_weight_pct: float
+    effective_weight_pct: float
     tier: str
     cat_mom_at_entry: float | None
     is_open: bool
@@ -145,7 +146,9 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                     entry_date=days[t], exit_date=None,
                     entry_price=float(price), exit_price=None,
                     gross_return_pct=None, holding_days=None,
-                    weight_pct=weight * 100.0, tier=tier,
+                    target_weight_pct=weight * 100.0,
+                    effective_weight_pct=budget / equity_now * 100.0 if equity_now > 0 else 0.0,
+                    tier=tier,
                     cat_mom_at_entry=None if np.isnan(mom[s]) else mom[s],
                     is_open=False,
                 )
