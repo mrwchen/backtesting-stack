@@ -34,8 +34,11 @@ class Config:
     weight_deep_pct: float
     weight_mild_pct: float
     weight_pos_pct: float
+    entry_confirm_days: int
     max_positions: int
     max_per_category: int
+    trim_above_pct: float
+    trim_target_pct: float
     cost_bps_per_side: float
     warmup_calendar_days: int
     simulation_mode: str
@@ -76,8 +79,11 @@ class Config:
             weight_deep_pct=float(os.getenv("WEIGHT_DEEP_PCT", "5")),
             weight_mild_pct=float(os.getenv("WEIGHT_MILD_PCT", "3")),
             weight_pos_pct=float(os.getenv("WEIGHT_POS_PCT", "2")),
+            entry_confirm_days=int(os.getenv("ENTRY_CONFIRM_DAYS", "0")),
             max_positions=int(os.getenv("MAX_POSITIONS", "25")),
             max_per_category=int(os.getenv("MAX_PER_CATEGORY", "2")),
+            trim_above_pct=float(os.getenv("TRIM_ABOVE_PCT", "0")),
+            trim_target_pct=float(os.getenv("TRIM_TARGET_PCT", "0")),
             cost_bps_per_side=float(os.getenv("COST_BPS_PER_SIDE", "5")),
             warmup_calendar_days=int(os.getenv("WARMUP_CALENDAR_DAYS", "365")),
             simulation_mode=os.getenv("SIMULATION_MODE", "portfolio").strip().lower(),
@@ -107,6 +113,12 @@ class Config:
             raise ValueError("CAT_MOM_DEEP_THRESHOLD must be negative (a drawdown)")
         if cfg.max_per_category < 1 or cfg.max_positions < 1:
             raise ValueError("MAX_POSITIONS and MAX_PER_CATEGORY must be >= 1")
+        if cfg.entry_confirm_days < 0:
+            raise ValueError("ENTRY_CONFIRM_DAYS must be >= 0")
+        if cfg.trim_above_pct < 0 or cfg.trim_target_pct < 0:
+            raise ValueError("TRIM_ABOVE_PCT and TRIM_TARGET_PCT must be >= 0")
+        if cfg.trim_above_pct > 0 and not 0 < cfg.trim_target_pct < cfg.trim_above_pct:
+            raise ValueError("TRIM_TARGET_PCT must be in (0, TRIM_ABOVE_PCT)")
         if min(cfg.weight_deep_pct, cfg.weight_mild_pct, cfg.weight_pos_pct) <= 0:
             raise ValueError("all WEIGHT_*_PCT must be positive")
         if not 0 < cfg.min_coverage_pct <= 100:

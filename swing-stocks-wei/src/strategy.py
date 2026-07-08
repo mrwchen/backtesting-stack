@@ -70,6 +70,44 @@ def stock_positions(closes: np.ndarray, stress_on: np.ndarray,
     return pos
 
 
+def stock_momentum(closes: np.ndarray, window: int) -> np.ndarray:
+    """Trailing per-stock momentum: (n_days, n_symbols) change over `window` rows.
+
+    Rows before the window has data are NaN. Used as the deterministic
+    tie-breaker for entry ranking (ties in category momentum are common on
+    mass-entry days when the stress gate opens).
+    """
+    out = np.full_like(closes, np.nan, dtype=float)
+    if closes.shape[0] > window:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[window:] = closes[window:] / closes[:-window] - 1.0
+    return out
+
+
+def entry_candidates(positions: np.ndarray, confirm_days: int) -> np.ndarray:
+    """(n_days, n_symbols) bool: stock is an entry candidate on day t.
+
+    confirm_days=0: candidate on the flat->long flip day (original behaviour,
+    day 0 counts as a flip for stocks that start long).
+    confirm_days=N: candidate N trading days after the flip, and only if the
+    signal stayed long the entire time. This skips the whipsaw cohort that
+    flips right back after the stress gate opens.
+    """
+    n_days, n_sym = positions.shape
+    flip = np.zeros((n_days, n_sym), dtype=bool)
+    flip[0] = positions[0] == 1
+    flip[1:] = (positions[1:] == 1) & (positions[:-1] == 0)
+    if confirm_days <= 0:
+        return flip
+    cand = np.zeros_like(flip)
+    if n_days > confirm_days:
+        stayed = np.ones((n_days - confirm_days, n_sym), dtype=bool)
+        for k in range(confirm_days + 1):
+            stayed &= positions[k:n_days - confirm_days + k] == 1
+        cand[confirm_days:] = flip[:n_days - confirm_days] & stayed
+    return cand
+
+
 def sizing_tier(cat_momentum: float, deep_threshold: float) -> str:
     """Map category momentum at entry to a sizing tier: deep | mild | pos."""
     if np.isnan(cat_momentum):

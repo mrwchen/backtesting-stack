@@ -13,7 +13,8 @@ def _days(n):
 
 
 def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
-         max_positions=25, max_per_category=2, cost=0.0):
+         max_positions=25, max_per_category=2, cost=0.0, stock_mom=None,
+         entry_confirm_days=0, trim_above_pct=0.0, trim_target_pct=0.0):
     n_days, n_sym = closes.shape
     symbols = [f"S{i}" for i in range(n_sym)]
     cats = cats or {s: "CatA" for s in symbols}
@@ -26,7 +27,9 @@ def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
         stress_on=stress if stress is not None else np.zeros(n_days, dtype=bool),
         cat_momentum=mom_days, weight_pct_by_tier=WEIGHTS, deep_threshold=-0.10,
         max_positions=max_positions, max_per_category=max_per_category,
-        cost_bps_per_side=cost,
+        cost_bps_per_side=cost, stock_mom=stock_mom,
+        entry_confirm_days=entry_confirm_days,
+        trim_above_pct=trim_above_pct, trim_target_pct=trim_target_pct,
     )
 
 
@@ -106,6 +109,39 @@ def test_open_trade_is_marked_open_and_valued():
     assert res.trades[0].is_open
     assert res.trades[0].gross_return_pct == pytest.approx(50.0)
     assert res.total_return_pct == pytest.approx(1.5, abs=1e-6)  # 3% * +50%
+
+
+def test_entry_confirmation_delays_and_filters_whipsaws():
+    closes = np.full((6, 2), 100.0)
+    # S0 flips long on day 1 and stays long; S1 whipsaws back to flat on day 2
+    positions = np.array([[0, 0], [1, 1], [1, 0], [1, 1], [1, 1], [1, 1]],
+                         dtype=np.int8)
+    res = _run(closes, positions, entry_confirm_days=2)
+    entries = {t.symbol: t.entry_date for t in res.trades}
+    # S0 enters 2 trading days after its flip; S1's day-1 flip died, its day-3
+    # flip confirms on day 5
+    assert entries == {"S0": _days(6)[3], "S1": _days(6)[5]}
+
+
+def test_stock_momentum_breaks_category_momentum_ties():
+    closes = np.full((2, 2), 100.0)
+    positions = np.ones((2, 2), dtype=np.int8)
+    # both stocks share the category (same cat momentum); S1 is more beaten down
+    stock_mom = np.array([[0.10, -0.30], [0.10, -0.30]])
+    res = _run(closes, positions, max_positions=1, stock_mom=stock_mom)
+    assert len(res.trades) == 1
+    assert res.trades[0].symbol == "S1"
+
+
+def test_trimming_sells_position_down_to_target():
+    closes = np.array([[100.0], [1000.0], [1000.0]])
+    positions = np.ones((3, 1), dtype=np.int8)
+    res = _run(closes, positions, trim_above_pct=10.0, trim_target_pct=7.5)
+    # 3% entry grows 10x -> ~23.6% of equity on day 1, trimmed back to 7.5%
+    value_share = res.gross_exposure_pct[1]
+    assert value_share == pytest.approx(7.5, abs=1e-6)
+    # equity keeps the full gain (trim only converts stock into cash)
+    assert res.equity[1] == pytest.approx(1.27, abs=1e-6)
 
 
 def test_benchmark_is_equal_weight_of_universe():

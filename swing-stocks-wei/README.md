@@ -29,17 +29,35 @@ The strategy is driven by three ideas that survived both research windows
    | `mild` | −10 % … 0 % (or unknown) | 3 % |
    | `pos`  | > 0 % | 2 % — down-weighted, not banned (a hard ban failed out-of-sample 2021) |
 
+4. **Entry confirmation (`ENTRY_CONFIRM_DAYS`):** entries fire N trading days
+   after the flat->long flip, and only if the signal stayed long the whole
+   time. This skips the whipsaw cohort right after the stress gate opens
+   (10-40 day holds: ~25% win rate in research); 10 days roughly halved the
+   max drawdown penalty vs. entering on the flip day.
+
 Portfolio-mode rules: max 25 positions, max 2 per IBKR category, fills at the
 close of the signal day, costs in bps per side, no leverage, no shorts, cash
-earns nothing. Benchmark is the equal-weight daily-rebalanced index of the same
-universe.
+earns nothing. Entry candidates are ranked by category momentum ascending with
+per-stock momentum as tie-breaker (ties are common on mass-entry days when the
+gate opens; before this tie-breaker admission degenerated to alphabetical
+order, which alone swung the backtest between +83% and +665%). Positions that
+grow past `TRIM_ABOVE_PCT` of equity are trimmed back to `TRIM_TARGET_PCT`
+(single positions compounding into dominant clumps drove most of the drawdown).
+Benchmark is the equal-weight daily-rebalanced index of the same universe.
 
 ## Known limitations (read before trusting numbers)
 
-- **Survivorship bias:** the universe uses the *latest* market cap and the IBKR
-  category mapping is a current snapshot. Recovery-style entries look better
-  than they were in real time. A point-in-time universe from
+- **Survivorship bias, part 1 (selection):** the universe uses the *latest*
+  market cap and the IBKR category mapping is a current snapshot. Recovery-style
+  entries look better than they were in real time. Re-selecting the universe by
+  the market cap as of the window start dropped the baseline from +464% to
+  roughly benchmark level in local research. A point-in-time universe from
   `stock_core_security_master_history` is the planned next step.
+- **Survivorship bias, part 2 (data):** `stock_core_market_metrics_daily`
+  contains almost no delisted stocks (2 of ~4500 symbols stop updating), so
+  bankruptcies/delistings are missing from the price data itself. Absolute
+  returns are overstated even with a point-in-time selection; variant
+  comparisons remain meaningful.
 - **Hindsight risk in the regime scores:** `world_regime_daily_scores_mv` is
   recomputed retroactively with today's methodology. The day-lag prevents
   data look-ahead, but not methodology look-ahead.

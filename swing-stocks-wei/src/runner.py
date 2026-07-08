@@ -13,7 +13,7 @@ from .db import get_conn
 from .independent import run_independent_trades
 from .persistence import persist_independent_run, persist_portfolio_run
 from .portfolio import run_portfolio
-from .strategy import stock_positions, stress_gate
+from .strategy import stock_momentum, stock_positions, stress_gate
 
 
 def main() -> None:
@@ -50,6 +50,7 @@ def main() -> None:
 
         fresh = prices.notna().to_numpy()
         closes = prices.ffill().to_numpy(dtype=float)
+        stock_mom = stock_momentum(closes, cfg.cat_mom_window)
         positions = np.column_stack([
             stock_positions(closes[:, i], stress, cfg.ema_fast, cfg.ema_slow)
             for i in range(len(symbols))
@@ -77,6 +78,10 @@ def main() -> None:
                 max_positions=cfg.max_positions,
                 max_per_category=cfg.max_per_category,
                 cost_bps_per_side=cfg.cost_bps_per_side,
+                stock_mom=stock_mom[start:],
+                entry_confirm_days=cfg.entry_confirm_days,
+                trim_above_pct=cfg.trim_above_pct,
+                trim_target_pct=cfg.trim_target_pct,
             )
             run_id = persist_portfolio_run(conn, cfg, result, len(symbols),
                                            lagged[start:], stress[start:])
@@ -94,6 +99,7 @@ def main() -> None:
                 positions=positions[start:], stress_on=stress[start:],
                 cat_momentum=cat_mom_eval, weight_pct_by_tier=weights,
                 deep_threshold=cfg.cat_mom_deep_threshold,
+                entry_confirm_days=cfg.entry_confirm_days,
             )
             run_id = persist_independent_run(conn, cfg, result, len(symbols))
             log.info("Run %d independent window %s..%s universe %d",

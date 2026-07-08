@@ -12,7 +12,8 @@ def _days(n):
     return [date(2024, 1, 2) + timedelta(days=i) for i in range(n)]
 
 
-def _run(closes, positions, *, stress=None, cats=None, cat_mom=None):
+def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
+         entry_confirm_days=0):
     n_days, n_sym = closes.shape
     symbols = [f"S{i}" for i in range(n_sym)]
     cats = cats or {s: "CatA" for s in symbols}
@@ -24,7 +25,7 @@ def _run(closes, positions, *, stress=None, cats=None, cat_mom=None):
         positions=positions,
         stress_on=stress if stress is not None else np.zeros(n_days, dtype=bool),
         cat_momentum=mom_days, weight_pct_by_tier=WEIGHTS,
-        deep_threshold=-0.10,
+        deep_threshold=-0.10, entry_confirm_days=entry_confirm_days,
     )
 
 
@@ -59,6 +60,14 @@ def test_independent_mode_enters_on_flip_after_stress_clears():
     res = _run(closes, positions, stress=stress)
     assert len(res.trades) == 1
     assert res.trades[0].entry_date == _days(4)[2]
+
+
+def test_independent_mode_applies_entry_confirmation():
+    closes = np.full((5, 1), 100.0)
+    positions = np.array([[0], [1], [1], [1], [1]], dtype=np.int8)
+    res = _run(closes, positions, entry_confirm_days=2)
+    assert len(res.trades) == 1
+    assert res.trades[0].entry_date == _days(5)[3]
 
 
 def test_independent_mode_keeps_sizing_tiers():

@@ -3,13 +3,20 @@
 Mechanics (all fills at the close of the signal day):
 - Exits first: a held stock whose signal flipped to flat is sold at today's
   close (only on days the stock actually traded).
-- Entries second: signal flips flat->long AND the stress gate is OFF (no new
+- Trimming second: a position that grew past trim_above_pct of equity is sold
+  down to trim_target_pct (0 = disabled). Without it a single 5% entry can
+  compound into a position that dominates equity and drawdown.
+- Entries third: the per-stock signal flipped flat->long confirm_days trading
+  days ago, stayed long since, AND the stress gate is OFF today (no new
   entries while the market stress light is red). Candidates are ranked by
-  category momentum ascending (most beaten-down first) and admitted while the
-  total and per-category position limits allow.
+  category momentum ascending (most beaten-down first), ties broken by
+  per-stock momentum ascending; on mass-entry days after the gate opens whole
+  categories share one momentum value, so without this tie-breaker admission
+  degenerated to alphabetical order. Admitted while the total and per-category
+  position limits allow.
 - Position size: WEIGHT_<tier>_PCT of current portfolio equity at entry,
   capped by available cash. No rebalancing afterwards, no leverage, no shorts.
-- Costs: cost_bps_per_side on every buy and sell notional.
+- Costs: cost_bps_per_side on every buy and sell notional (also on trims).
 - Benchmark: equal-weight daily-rebalanced index of the same universe.
 """
 from __future__ import annotations
@@ -19,7 +26,7 @@ from datetime import date
 
 import numpy as np
 
-from .strategy import sizing_tier
+from .strategy import entry_candidates, sizing_tier
 
 
 @dataclass
@@ -80,16 +87,20 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                   stress_on: np.ndarray, cat_momentum: dict[str, np.ndarray],
                   weight_pct_by_tier: dict[str, float], deep_threshold: float,
                   max_positions: int, max_per_category: int,
-                  cost_bps_per_side: float) -> PortfolioResult:
+                  cost_bps_per_side: float, stock_mom: np.ndarray | None = None,
+                  entry_confirm_days: int = 0, trim_above_pct: float = 0.0,
+                  trim_target_pct: float = 0.0) -> PortfolioResult:
     """Simulate the portfolio over the evaluation window.
 
     Array shapes: closes/fresh/positions are (n_days, n_symbols); closes are
     forward-filled (NaN only before a stock's first bar); fresh marks days the
     stock actually traded. stress_on is (n_days,). cat_momentum maps category
-    to a (n_days,) array (NaN where unknown).
+    to a (n_days,) array (NaN where unknown). stock_mom is the per-stock
+    momentum matrix used as entry tie-breaker (None = alphabetical fallback).
     """
     n_days, n_sym = closes.shape
     cost = cost_bps_per_side / 1e4
+    cand = entry_candidates(positions, entry_confirm_days)
     cash = 1.0
     held: dict[int, _Holding] = {}
     trades: list[StockTrade] = []
@@ -113,16 +124,30 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
             tr.gross_return_pct = float((price / tr.entry_price - 1.0) * 100)
             tr.holding_days = (days[t] - tr.entry_date).days
 
-        # 2) entries at today's close (blocked while the stress light is red)
+        # 2) trim positions that outgrew their risk budget
+        if trim_above_pct > 0:
+            equity_now = mark_to_market(t)
+            for s, h in held.items():
+                if not fresh[t, s]:
+                    continue
+                value = h.shares * closes[t, s]
+                if value > trim_above_pct / 100.0 * equity_now:
+                    sell_value = value - trim_target_pct / 100.0 * equity_now
+                    h.shares -= sell_value / closes[t, s]
+                    cash += sell_value * (1.0 - cost)
+
+        # 3) entries at today's close (blocked while the stress light is red)
         if not stress_on[t]:
             flipped = [
                 s for s in range(n_sym)
-                if s not in held and fresh[t, s] and positions[t, s] == 1
-                and (t == 0 or positions[t - 1, s] == 0)
+                if s not in held and fresh[t, s] and cand[t, s]
             ]
             mom = {s: float(cat_momentum[categories[symbols[s]]][t])
                    for s in flipped}
-            flipped.sort(key=lambda s: (np.nan_to_num(mom[s], nan=0.0), symbols[s]))
+            flipped.sort(key=lambda s: (
+                np.nan_to_num(mom[s], nan=0.0),
+                np.nan_to_num(stock_mom[t, s], nan=0.0) if stock_mom is not None else 0.0,
+                symbols[s]))
             cat_count: dict[str, int] = {}
             for h in held.values():
                 cat_count[h.trade.category] = cat_count.get(h.trade.category, 0) + 1
