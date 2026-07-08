@@ -144,6 +144,20 @@ def test_trimming_sells_position_down_to_target():
     assert res.equity[1] == pytest.approx(1.27, abs=1e-6)
 
 
+def test_trade_fields_are_plain_python_floats():
+    # psycopg2 cannot adapt np.float64; equity flows through numpy closes, so
+    # every persisted trade field must be converted to a plain float
+    # S1 enters on day 1 while S0 is already held, so equity at entry is an
+    # np.float64 (cash + shares * closes) — the case that broke persistence
+    closes = np.array([[100.0, 50.0], [110.0, 55.0], [121.0, 60.0]])
+    positions = np.array([[1, 0], [1, 1], [0, 0]], dtype=np.int8)
+    res = _run(closes, positions)
+    for t in res.trades:
+        for value in (t.entry_price, t.exit_price, t.gross_return_pct,
+                      t.target_weight_pct, t.effective_weight_pct):
+            assert type(value) is float
+
+
 def test_benchmark_is_equal_weight_of_universe():
     closes = np.array([[100.0, 200.0], [110.0, 180.0]])  # +10% and -10%
     positions = np.zeros((2, 2), dtype=np.int8)
