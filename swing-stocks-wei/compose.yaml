@@ -75,7 +75,7 @@ services:
 
       # -- Signal-Engine (je Aktie) -------------------------------------------------
       # Erster Tag des Auswertungsfensters (Portfolio-Equity startet hier bei 1.0).
-      START_DATE: "2022-01-03"
+      START_DATE: "2020-01-03"
       # Letzter Tag des Fensters. Leer = heute.
       END_DATE: ""
       # Schneller EMA (Tage) des Trendfilters.
