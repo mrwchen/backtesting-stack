@@ -83,10 +83,12 @@ services:
       # Langsamer EMA (Tage) des Trendfilters.
       EMA_SLOW: "21"
       # Stress-Ampel AN, wenn der composite_score (Vortag) diese Schwelle erreicht.
-      STRESS_ENTER: "57"
+      # Fuer Vergleichslaeufe per Shell ueberschreibbar, z. B.
+      # STRESS_ENTER=55 STRESS_EXIT=50 RUN_LABEL=... docker compose up --build
+      STRESS_ENTER: "${STRESS_ENTER:-57}"
       # Stress-Ampel wieder AUS, wenn der Score auf diese Schwelle faellt (Hysterese,
       # muss unter STRESS_ENTER liegen).
-      STRESS_EXIT: "52"
+      STRESS_EXIT: "${STRESS_EXIT:-52}"
       # Entry erst N Handelstage nach dem flat->long-Flip, wenn das Signal die
       # ganze Zeit long geblieben ist (Bestaetigung). 0 = Entry am Flip-Tag.
       # Lokale Tests: 10 Tage eliminieren die Whipsaw-Kohorte nach Gate-Oeffnung
@@ -112,7 +114,7 @@ services:
       # independent = jedes gueltige Aktiensignal als hypothetischer Einzeltrade,
       # ohne Cash-/Slot-/Kategorie-Limits. portfolio = echte Portfolio-Simulation
       # mit Cash, Positionslimits und Kategoriecaps.
-      SIMULATION_MODE: "portfolio"
+      SIMULATION_MODE: "${SIMULATION_MODE:-portfolio}"
       # Maximale Anzahl gleichzeitiger Positionen.
       # Wird nur im portfolio-Modus verwendet.
       MAX_POSITIONS: "25"
@@ -134,7 +136,7 @@ services:
 
       # -- Sonstiges ----------------------------------------------------------------
       # Freitext-Label des Runs; landet in <TABLE_PREFIX>runs.run_label.
-      RUN_LABEL: "wei_stocks_regime_ema_9_21_57_52_confirm10_trim10_w631"
+      RUN_LABEL: "${RUN_LABEL:-wei_stocks_regime_ema_9_21_57_52_confirm10_trim10_w631}"
       # Praefix der Ergebnistabellen; muss zum TABLE_PREFIX des Init-Containers passen.
       TABLE_PREFIX: "backtest_wei_stocks_"
       # Log-Detailgrad: DEBUG, INFO, WARNING, ERROR.
