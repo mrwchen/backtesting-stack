@@ -45,6 +45,7 @@ class StockTrade:
     tier: str
     cat_mom_at_entry: float | None
     is_open: bool
+    exit_reason: str | None = None  # signal | sl | ts | open
 
 
 @dataclass
@@ -138,7 +139,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     def mark_to_market(t: int) -> float:
         return cash + sum(h.shares * closes[t, s] for s, h in held.items())
 
-    def sell_position(s: int, t: int) -> None:
+    def sell_position(s: int, t: int, reason: str) -> None:
         nonlocal cash
         h = held.pop(s)
         entry_row.pop(s, None)
@@ -149,6 +150,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         tr.exit_price = float(price)
         tr.gross_return_pct = float((price / tr.entry_price - 1.0) * 100)
         tr.holding_days = (days[t] - tr.entry_date).days
+        tr.exit_reason = reason
 
     for t in range(n_days):
         # a stopped symbol stays blocked until its signal has reset to flat
@@ -158,7 +160,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         # 1) signal exits at today's close
         for s in [s for s, h in held.items()
                   if fresh[t, s] and positions[t, s] == 0]:
-            sell_position(s, t)
+            sell_position(s, t, "signal")
 
         # 1b) stop overlays
         if sl_pct > 0 or time_stop_days > 0:
@@ -167,12 +169,12 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                     continue
                 ret = closes[t, s] / held[s].trade.entry_price - 1.0
                 if sl_pct > 0 and ret <= -sl_pct / 100.0:
-                    sell_position(s, t)
+                    sell_position(s, t, "sl")
                     locked[s] = True
                 elif (time_stop_days > 0
                         and t - entry_row[s] >= time_stop_days
                         and ret <= time_stop_min_ret_pct / 100.0):
-                    sell_position(s, t)
+                    sell_position(s, t, "ts")
                     if reentry_cooldown_days > 0:
                         cooldown[s] = t + reentry_cooldown_days
                     else:
@@ -251,6 +253,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         tr.gross_return_pct = float((price / tr.entry_price - 1.0) * 100)
         tr.holding_days = (days[-1] - tr.entry_date).days
         tr.is_open = True
+        tr.exit_reason = "open"
 
     bh_equity = _benchmark(closes, symbols, days)
     years = max((days[-1] - days[0]).days / 365.25, 1e-9)

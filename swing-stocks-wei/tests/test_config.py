@@ -9,7 +9,7 @@ def _clean_env(monkeypatch):
                 "STRESS_ENTER", "STRESS_EXIT", "CAT_MOM_DEEP_THRESHOLD",
                 "TABLE_PREFIX", "METRICS_TABLE", "MAX_POSITIONS",
                 "MAX_PER_CATEGORY", "WEIGHT_DEEP_PCT", "MIN_COVERAGE_PCT",
-                "SIMULATION_MODE", "TOP_N_PER_CATEGORY"):
+                "SIMULATION_MODE", "TOP_N_PER_CATEGORY", "UNIVERSE_MCAP_ASOF"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -79,6 +79,21 @@ def test_accepts_independent_mode(monkeypatch):
 def test_rejects_unknown_simulation_mode(monkeypatch):
     monkeypatch.setenv("SIMULATION_MODE", "cash_machine")
     with pytest.raises(ValueError, match="SIMULATION_MODE"):
+        Config.from_env()
+
+
+def test_universe_mcap_asof_defaults_to_point_in_time():
+    assert Config.from_env().universe_mcap_asof == "start"
+
+
+def test_accepts_biased_mcap_anchor_for_legacy_comparisons(monkeypatch):
+    monkeypatch.setenv("UNIVERSE_MCAP_ASOF", "End")
+    assert Config.from_env().universe_mcap_asof == "end"
+
+
+def test_rejects_unknown_mcap_anchor(monkeypatch):
+    monkeypatch.setenv("UNIVERSE_MCAP_ASOF", "middle")
+    with pytest.raises(ValueError, match="UNIVERSE_MCAP_ASOF"):
         Config.from_env()
 
 

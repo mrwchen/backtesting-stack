@@ -58,7 +58,7 @@ def _insert_run(conn, cfg: Config, universe_size: int, days,
             sql.SQL("""
             INSERT INTO {} (
                 simulation_mode, run_label, start_date, end_date, universe_size,
-                top_n_per_category, min_market_cap_usd,
+                top_n_per_category, min_market_cap_usd, universe_mcap_asof,
                 ema_fast, ema_slow, stress_enter, stress_exit,
                 cat_mom_window, cat_mom_deep_threshold,
                 weight_deep_pct, weight_mild_pct, weight_pos_pct,
@@ -73,12 +73,12 @@ def _insert_run(conn, cfg: Config, universe_size: int, days,
                 avg_gross_exposure_pct
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING run_id
             """).format(sql.Identifier(cfg.runs_table)),
             (
                 cfg.simulation_mode, cfg.run_label, days[0], days[-1], universe_size,
-                cfg.top_n_per_category, cfg.min_market_cap_usd,
+                cfg.top_n_per_category, cfg.min_market_cap_usd, cfg.universe_mcap_asof,
                 cfg.ema_fast, cfg.ema_slow, cfg.stress_enter, cfg.stress_exit,
                 cfg.cat_mom_window, cfg.cat_mom_deep_threshold,
                 cfg.weight_deep_pct, cfg.weight_mild_pct, cfg.weight_pos_pct,
@@ -121,8 +121,8 @@ def _insert_trades(conn, cfg: Config, run_id: int,
                 run_id, trade_no, symbol, ibkr_category, entry_date, exit_date,
                 entry_price, exit_price, gross_return_pct, holding_days,
                 target_weight_pct, effective_weight_pct, sizing_tier,
-                cat_mom_at_entry_pct, is_open
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                cat_mom_at_entry_pct, is_open, exit_reason
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """).format(sql.Identifier(cfg.trades_table)),
             [
                 (run_id, t.trade_no, t.symbol, t.category, t.entry_date, t.exit_date,
@@ -132,7 +132,7 @@ def _insert_trades(conn, cfg: Config, run_id: int,
                  t.holding_days, round(t.target_weight_pct, 2),
                  round(t.effective_weight_pct, 2), t.tier,
                  round(t.cat_mom_at_entry * 100, 2) if t.cat_mom_at_entry is not None else None,
-                 t.is_open)
+                 t.is_open, t.exit_reason)
                 for t in trades
             ],
         )

@@ -47,6 +47,7 @@ def test_single_trade_pnl_matches_weight_times_move():
     assert res.trades[0].gross_return_pct == pytest.approx(21.0)
     assert res.total_return_pct == pytest.approx(0.63, abs=1e-6)
     assert not res.trades[0].is_open
+    assert res.trades[0].exit_reason == "signal"
 
 
 def test_deep_tier_gets_full_weight():
@@ -113,6 +114,7 @@ def test_open_trade_is_marked_open_and_valued():
     res = _run(closes, positions)
     assert res.trades[0].is_open
     assert res.trades[0].gross_return_pct == pytest.approx(50.0)
+    assert res.trades[0].exit_reason == "open"
     assert res.total_return_pct == pytest.approx(1.5, abs=1e-6)  # 3% * +50%
 
 
@@ -157,6 +159,7 @@ def test_stop_loss_exits_and_locks_until_signal_reset():
     assert len(res.trades) == 2
     assert res.trades[0].exit_date == _days(6)[1]  # stopped at -25%
     assert res.trades[0].gross_return_pct == pytest.approx(-25.0)
+    assert res.trades[0].exit_reason == "sl"
     # locked on days 1-2 despite long signal; re-entry only after the reset
     assert res.trades[1].entry_date == _days(6)[4]
 
@@ -169,7 +172,9 @@ def test_time_stop_exits_losers_but_not_winners():
     by_symbol = {t.symbol: t for t in res.trades}
     assert by_symbol["S0"].exit_date == _days(5)[3]
     assert not by_symbol["S0"].is_open
+    assert by_symbol["S0"].exit_reason == "ts"
     assert by_symbol["S1"].is_open  # winner is never time-stopped
+    assert by_symbol["S1"].exit_reason == "open"
 
 
 def test_time_stop_reentry_after_cooldown():

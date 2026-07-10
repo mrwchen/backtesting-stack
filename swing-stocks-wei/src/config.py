@@ -24,6 +24,7 @@ class Config:
     categories: tuple[str, ...]
     top_n_per_category: int
     min_market_cap_usd: int
+    universe_mcap_asof: str
     min_coverage_pct: float
     ema_fast: int
     ema_slow: int
@@ -73,6 +74,7 @@ class Config:
             categories=_env_categories("CATEGORIES"),
             top_n_per_category=int(os.getenv("TOP_N_PER_CATEGORY", "8")),
             min_market_cap_usd=int(os.getenv("MIN_MARKET_CAP_USD", "2000000000")),
+            universe_mcap_asof=os.getenv("UNIVERSE_MCAP_ASOF", "start").strip().lower(),
             min_coverage_pct=float(os.getenv("MIN_COVERAGE_PCT", "90")),
             ema_fast=int(os.getenv("EMA_FAST", "9")),
             ema_slow=int(os.getenv("EMA_SLOW", "21")),
@@ -140,4 +142,6 @@ class Config:
             raise ValueError("MIN_COVERAGE_PCT must be in (0, 100]")
         if cfg.simulation_mode not in {"portfolio", "independent"}:
             raise ValueError("SIMULATION_MODE must be 'portfolio' or 'independent'")
+        if cfg.universe_mcap_asof not in {"start", "end"}:
+            raise ValueError("UNIVERSE_MCAP_ASOF must be 'start' or 'end'")
         return cfg

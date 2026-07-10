@@ -25,9 +25,10 @@ def main() -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     log = logging.getLogger("runner")
-    log.info("%s run %s window %s..%s EMA%d/%d stress %s/%s "
+    log.info("%s run %s window %s..%s (universe mcap asof %s) EMA%d/%d stress %s/%s "
              "weights deep/mild/pos %s/%s/%s%% max %d pos (%d/cat) cost %sbps",
              cfg.simulation_mode, cfg.run_label, cfg.start_date, cfg.end_date,
+             cfg.universe_mcap_asof,
              cfg.ema_fast, cfg.ema_slow, cfg.stress_enter, cfg.stress_exit,
              cfg.weight_deep_pct, cfg.weight_mild_pct, cfg.weight_pos_pct,
              cfg.max_positions, cfg.max_per_category, cfg.cost_bps_per_side)
@@ -128,6 +129,12 @@ def main() -> None:
             log.info("Tier %-4s count %3d avg %+6.2f%% win %4.1f%%", tier, len(rets),
                      float(np.mean(rets)),
                      100.0 * sum(1 for r in rets if r > 0) / len(rets))
+        by_reason: dict[str, list[float]] = {}
+        for t in result.trades:
+            by_reason.setdefault(t.exit_reason or "?", []).append(t.gross_return_pct or 0.0)
+        for reason, rets in sorted(by_reason.items()):
+            log.info("Exit %-6s count %3d avg %+6.2f%%", reason, len(rets),
+                     float(np.mean(rets)))
     finally:
         conn.close()
 

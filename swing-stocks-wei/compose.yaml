@@ -62,13 +62,19 @@ services:
       # -- Universum ---------------------------------------------------------------
       # Kommagetrennte IBKR-Kategorien; leer = alle Kategorien mit Mitgliedern.
       CATEGORIES: "Semiconductors,Software,Internet,Computers,Banks,Biotechnology,Pharmaceuticals,Retail,Oil&Gas,Aerospace/Defense,Insurance,Electric,Mining,Transportation"
-      # Je Kategorie die N groessten Aktien (Market Cap zum Ende des Fensters).
+      # Je Kategorie die N groessten Aktien (Market Cap gemaess UNIVERSE_MCAP_ASOF).
       # 0 = alle Aktien je Kategorie nach den sonstigen Filtern testen.
-      # ACHTUNG Survivorship-Bias: die Auswahl nutzt die HEUTIGE Market Cap;
-      # ein point-in-time-Universum ist bewusst noch nicht implementiert.
       TOP_N_PER_CATEGORY: "0"
       # Mindest-Market-Cap in USD fuer die Universumsauswahl.
       MIN_MARKET_CAP_USD: "2000000000"
+      # Stichtag der Market Cap fuer die Universumsauswahl:
+      #   start = Market Cap zum Fensterstart (point-in-time, ohne Blick in die
+      #           Zukunft; Quelle ist die Tages-Market-Cap in METRICS_TABLE)
+      #   end   = Market Cap zum Fensterende (ACHTUNG Survivorship-Bias: die
+      #           Auswahl kennt die Gewinner von morgen; nur fuer Vergleiche
+      #           mit alten Runs)
+      # Die IBKR-Kategorie bleibt in beiden Modi der heutige Snapshot.
+      UNIVERSE_MCAP_ASOF: "start"
       # Mindestanteil an Handelstagen mit Kursdaten im Fenster (0-100). Aktien
       # mit weniger Abdeckung (spaete IPOs, Delistings) fliegen aus dem Universum.
       MIN_COVERAGE_PCT: "90"
@@ -143,8 +149,11 @@ services:
       # Wird nur im portfolio-Modus verwendet.
       MAX_POSITIONS: "10"
       # Maximale Anzahl gleichzeitiger Positionen je IBKR-Kategorie.
-      # Wird nur im portfolio-Modus verwendet.
-      MAX_PER_CATEGORY: "5"
+      # Wird nur im portfolio-Modus verwendet. Lokale Tests 2026-07 (Run-11-
+      # Drawdown-Analyse): 5 erlaubt 3-4 Positionen derselben Kategorie vom
+      # selben Entry-Tag (Biotech/Mining-Cluster = Hauptquelle der Drawdowns);
+      # 3 verbessert Return/DD in beiden Testfenstern.
+      MAX_PER_CATEGORY: "3"
       # Position auf TRIM_TARGET_PCT der Equity zurueckschneiden, sobald sie
       # ueber TRIM_ABOVE_PCT waechst (0 = kein Trimming). Ohne Trimming kann
       # eine einzelne 5%-Position die Equity und den Drawdown dominieren.

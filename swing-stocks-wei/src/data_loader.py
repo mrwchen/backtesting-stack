@@ -15,15 +15,23 @@ log = logging.getLogger(__name__)
 
 
 def load_universe(conn, cfg: Config) -> pd.DataFrame:
-    """Top-N stocks per IBKR category by latest market cap, with enough history.
+    """Top-N stocks per IBKR category by market cap, with enough history.
 
     Returns columns: symbol, ibkr_category, market_cap.
 
-    Survivorship caveat: category mapping and market cap are the CURRENT
-    snapshot, so the universe is biased towards today's winners. A
-    point-in-time universe (stock_core_security_master_history) is future work.
+    UNIVERSE_MCAP_ASOF picks the market-cap anchor: 'start' selects by the
+    market cap as of the window start (point-in-time, no peeking at future
+    winners; source is the daily market cap in METRICS_TABLE), 'end' keeps the
+    old biased behaviour (latest market cap up to the window end) for
+    comparisons with legacy runs.
+
+    Remaining survivorship caveats even with 'start': the IBKR category
+    mapping is the current snapshot (ibkr_symbols has no history), the
+    coverage filter looks at the whole run window, and delisted stocks are
+    largely missing from the price data itself.
     """
     warmup_start = cfg.start_date - timedelta(days=cfg.warmup_calendar_days)
+    mcap_asof = cfg.start_date if cfg.universe_mcap_asof == "start" else cfg.end_date
     df = read_df(
         conn,
         sql.SQL("""
@@ -44,7 +52,7 @@ def load_universe(conn, cfg: Config) -> pd.DataFrame:
         mc AS (
             SELECT DISTINCT ON (symbol) symbol, market_cap
             FROM {metrics}
-            WHERE market_cap IS NOT NULL AND period_end_date <= %(end)s
+            WHERE market_cap IS NOT NULL AND period_end_date <= %(mcap_asof)s
             ORDER BY symbol, period_end_date DESC
         )
         SELECT ib.symbol, ib.ibkr_category, mc.market_cap, cov.n_rows, cov.first_day
@@ -55,7 +63,7 @@ def load_universe(conn, cfg: Config) -> pd.DataFrame:
         """).format(metrics=sql.Identifier(cfg.metrics_table),
                     symbols=sql.Identifier(cfg.symbols_table)),
         {"warmup_start": warmup_start, "end": cfg.end_date,
-         "min_mcap": cfg.min_market_cap_usd},
+         "mcap_asof": mcap_asof, "min_mcap": cfg.min_market_cap_usd},
     )
     if df.empty:
         raise RuntimeError("universe query returned no rows")

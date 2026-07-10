@@ -27,12 +27,13 @@ class IndependentResult:
 
 
 def _close_trade(trade: StockTrade, exit_date: date, exit_price: float,
-                 is_open: bool) -> None:
+                 is_open: bool, reason: str) -> None:
     trade.exit_date = exit_date
     trade.exit_price = float(exit_price)
     trade.gross_return_pct = float((exit_price / trade.entry_price - 1.0) * 100)
     trade.holding_days = (exit_date - trade.entry_date).days
     trade.is_open = is_open
+    trade.exit_reason = reason
 
 
 def _summarize(days: list[date], trades: list[StockTrade]) -> IndependentResult:
@@ -94,7 +95,8 @@ def run_independent_trades(days: list[date], symbols: list[str],
                   if fresh[t, s] and positions[t, s] == 0]:
             trade = held.pop(s)
             entry_row.pop(s, None)
-            _close_trade(trade, days[t], closes[t, s], is_open=False)
+            _close_trade(trade, days[t], closes[t, s], is_open=False,
+                         reason="signal")
 
         if sl_pct > 0 or time_stop_days > 0:
             for s in list(held):
@@ -104,14 +106,16 @@ def run_independent_trades(days: list[date], symbols: list[str],
                 if sl_pct > 0 and ret <= -sl_pct / 100.0:
                     trade = held.pop(s)
                     entry_row.pop(s, None)
-                    _close_trade(trade, days[t], closes[t, s], is_open=False)
+                    _close_trade(trade, days[t], closes[t, s], is_open=False,
+                                 reason="sl")
                     locked[s] = True
                 elif (time_stop_days > 0
                         and t - entry_row[s] >= time_stop_days
                         and ret <= time_stop_min_ret_pct / 100.0):
                     trade = held.pop(s)
                     entry_row.pop(s, None)
-                    _close_trade(trade, days[t], closes[t, s], is_open=False)
+                    _close_trade(trade, days[t], closes[t, s], is_open=False,
+                                 reason="ts")
                     if reentry_cooldown_days > 0:
                         cooldown[s] = t + reentry_cooldown_days
                     else:
@@ -152,6 +156,7 @@ def run_independent_trades(days: list[date], symbols: list[str],
             cooldown[s] = -1
 
     for s, trade in held.items():
-        _close_trade(trade, days[-1], closes[n_days - 1, s], is_open=True)
+        _close_trade(trade, days[-1], closes[n_days - 1, s], is_open=True,
+                     reason="open")
 
     return _summarize(days, trades)

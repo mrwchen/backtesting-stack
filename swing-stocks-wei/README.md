@@ -73,12 +73,16 @@ silently contaminating it.
 
 ## Known limitations (read before trusting numbers)
 
-- **Survivorship bias, part 1 (selection):** the universe uses the *latest*
-  market cap and the IBKR category mapping is a current snapshot. Recovery-style
-  entries look better than they were in real time. Re-selecting the universe by
-  the market cap as of the window start dropped the baseline from +464% to
-  roughly benchmark level in local research. A point-in-time universe from
-  `stock_core_security_master_history` is the planned next step.
+- **Survivorship bias, part 1 (selection):** mostly addressed since
+  `UNIVERSE_MCAP_ASOF=start` (the default): the universe is selected by the
+  market cap as of the *window start* from the daily market caps in
+  `stock_core_market_metrics_daily`, so the selection no longer knows the
+  winners of the future. `end` restores the old biased behaviour for
+  comparisons with legacy runs (in early local research the biased selection
+  inflated the baseline from roughly benchmark level to +464%). Still not
+  point-in-time: the IBKR category mapping (current snapshot — `ibkr_symbols`
+  has no history; `stock_core_security_master_history` tracks master data but
+  no market cap) and the coverage filter (looks at the whole run window).
 - **Survivorship bias, part 2 (data):** `stock_core_market_metrics_daily`
   contains almost no delisted stocks (2 of ~4500 symbols stop updating), so
   bankruptcies/delistings are missing from the price data itself. Absolute
@@ -112,7 +116,7 @@ intended workflow for comparisons in Grafana.
 | table | content |
 |---|---|
 | `backtest_wei_stocks_runs` | one row per run: mode, all parameters, portfolio metrics where applicable, and trade-distribution metrics |
-| `backtest_wei_stocks_trades` | one row per trade: symbol, category, entry/exit, gross return, target/effective weight, sizing tier, category momentum at entry, open flag |
+| `backtest_wei_stocks_trades` | one row per trade: symbol, category, entry/exit, gross return, target/effective weight, sizing tier, category momentum at entry, open flag, exit reason (`signal`/`sl`/`ts`/`open`, NULL for runs before the column existed) |
 | `backtest_wei_stocks_equity_daily` | portfolio-mode hypertable, one row per day per run: equity vs benchmark, position count, gross exposure, composite score, stress state |
 
 ## Data sources (read-only)

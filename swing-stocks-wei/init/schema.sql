@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS :runs_table (
     universe_size           INTEGER NOT NULL,
     top_n_per_category      INTEGER NOT NULL,
     min_market_cap_usd      BIGINT NOT NULL,
+    universe_mcap_asof      TEXT NOT NULL DEFAULT 'end',  -- start | end (Market-Cap-Stichtag der Universumsauswahl)
     ema_fast                INTEGER NOT NULL,
     ema_slow                INTEGER NOT NULL,
     stress_enter            NUMERIC(5,1) NOT NULL,
@@ -86,7 +87,8 @@ ALTER TABLE :runs_table
     ADD COLUMN IF NOT EXISTS sl_pct                NUMERIC(5,2) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS time_stop_days        INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS time_stop_min_ret_pct NUMERIC(6,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS reentry_cooldown_days INTEGER NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS reentry_cooldown_days INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS universe_mcap_asof    TEXT NOT NULL DEFAULT 'end';
 
 -- ---------------------------------------------------------------------------
 -- One row per completed (or still open) long trade of a run.
@@ -107,8 +109,13 @@ CREATE TABLE IF NOT EXISTS :trades_table (
     sizing_tier             TEXT NOT NULL,       -- deep | mild | pos
     cat_mom_at_entry_pct    NUMERIC(8,2),        -- category momentum at entry, NULL if unknown
     is_open                 BOOLEAN NOT NULL DEFAULT FALSE,
+    exit_reason             TEXT,                -- signal | sl | ts | open; NULL for legacy runs
     PRIMARY KEY (run_id, trade_no)
 );
+
+-- Columns added after the first release (no-ops on fresh tables).
+ALTER TABLE :trades_table
+    ADD COLUMN IF NOT EXISTS exit_reason TEXT;
 
 -- ---------------------------------------------------------------------------
 -- Daily portfolio state of a run: equity curves and exposure (for Grafana).

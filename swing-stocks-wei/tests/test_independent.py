@@ -81,6 +81,7 @@ def test_independent_mode_applies_stop_loss_with_lock():
     assert len(res.trades) == 1  # stopped once, locked afterwards
     assert res.trades[0].gross_return_pct == pytest.approx(-30.0)
     assert not res.trades[0].is_open
+    assert res.trades[0].exit_reason == "sl"
 
 
 def test_independent_mode_applies_time_stop():
@@ -89,6 +90,7 @@ def test_independent_mode_applies_time_stop():
     res = _run(closes, positions, time_stop_days=3)
     assert res.trades[0].exit_date == _days(5)[3]
     assert not res.trades[0].is_open
+    assert res.trades[0].exit_reason == "ts"
 
 
 def test_independent_mode_reenters_after_time_stop_cooldown():
