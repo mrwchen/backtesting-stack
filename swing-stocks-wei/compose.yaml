@@ -75,7 +75,7 @@ services:
 
       # -- Signal-Engine (je Aktie) -------------------------------------------------
       # Erster Tag des Auswertungsfensters (Portfolio-Equity startet hier bei 1.0).
-      START_DATE: "2020-01-03"
+      START_DATE: "2022-01-03"
       # Letzter Tag des Fensters. Leer = heute.
       END_DATE: ""
       # Schneller EMA (Tage) des Trendfilters.
@@ -127,7 +127,7 @@ services:
       # independent = jedes gueltige Aktiensignal als hypothetischer Einzeltrade,
       # ohne Cash-/Slot-/Kategorie-Limits. portfolio = echte Portfolio-Simulation
       # mit Cash, Positionslimits und Kategoriecaps.
-      SIMULATION_MODE: "${SIMULATION_MODE:-portfolio}"
+      SIMULATION_MODE: "${SIMULATION_MODE:-independent}"
       # Maximale Anzahl gleichzeitiger Positionen.
       # Wird nur im portfolio-Modus verwendet.
       MAX_POSITIONS: "25"
