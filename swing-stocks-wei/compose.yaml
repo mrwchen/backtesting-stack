@@ -157,7 +157,7 @@ services:
       # Drawdown-Analyse): 5 erlaubt 3-4 Positionen derselben Kategorie vom
       # selben Entry-Tag (Biotech/Mining-Cluster = Hauptquelle der Drawdowns);
       # 3 verbessert Return/DD in beiden Testfenstern.
-      MAX_PER_CATEGORY: "3"
+      MAX_PER_CATEGORY: "5"
       # Position auf TRIM_TARGET_PCT der Equity zurueckschneiden, sobald sie
       # ueber TRIM_ABOVE_PCT waechst (0 = kein Trimming). Ohne Trimming kann
       # eine einzelne 5%-Position die Equity und den Drawdown dominieren.
