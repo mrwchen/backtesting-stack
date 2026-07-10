@@ -138,13 +138,13 @@ services:
       # independent = jedes gueltige Aktiensignal als hypothetischer Einzeltrade,
       # ohne Cash-/Slot-/Kategorie-Limits. portfolio = echte Portfolio-Simulation
       # mit Cash, Positionslimits und Kategoriecaps.
-      SIMULATION_MODE: "${SIMULATION_MODE:-independent}"
+      SIMULATION_MODE: "${SIMULATION_MODE:-portfolio}"
       # Maximale Anzahl gleichzeitiger Positionen.
       # Wird nur im portfolio-Modus verwendet.
-      MAX_POSITIONS: "25"
+      MAX_POSITIONS: "10"
       # Maximale Anzahl gleichzeitiger Positionen je IBKR-Kategorie.
       # Wird nur im portfolio-Modus verwendet.
-      MAX_PER_CATEGORY: "2"
+      MAX_PER_CATEGORY: "5"
       # Position auf TRIM_TARGET_PCT der Equity zurueckschneiden, sobald sie
       # ueber TRIM_ABOVE_PCT waechst (0 = kein Trimming). Ohne Trimming kann
       # eine einzelne 5%-Position die Equity und den Drawdown dominieren.
