@@ -146,8 +146,12 @@ services:
       # mit Cash, Positionslimits und Kategoriecaps.
       SIMULATION_MODE: "${SIMULATION_MODE:-portfolio}"
       # Maximale Anzahl gleichzeitiger Positionen.
-      # Wird nur im portfolio-Modus verwendet.
-      MAX_POSITIONS: "10"
+      # Wird nur im portfolio-Modus verwendet. Lokale Tests 2026-07 (PIT-
+      # Universum): bei 10 Slots prallen ~5.900-7.300 gueltige Flip-Kandidaten
+      # an vollem Buch ab und die Rendite bleibt unter der Benchmark; 15/3 ist
+      # der Kompromiss (2022: +60% statt +43%, 2020: +155% statt +95% bei
+      # moderat mehr Drawdown), 25/2 hat das beste Return/DD-Verhaeltnis.
+      MAX_POSITIONS: "15"
       # Maximale Anzahl gleichzeitiger Positionen je IBKR-Kategorie.
       # Wird nur im portfolio-Modus verwendet. Lokale Tests 2026-07 (Run-11-
       # Drawdown-Analyse): 5 erlaubt 3-4 Positionen derselben Kategorie vom
