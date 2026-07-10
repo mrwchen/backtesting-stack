@@ -85,7 +85,8 @@ def load_prices(conn, cfg: Config, symbols: list[str]) -> pd.DataFrame:
     df = read_df(
         conn,
         sql.SQL("""
-        SELECT symbol, period_end_date AS day, adjusted_close::float8 AS close
+        SELECT symbol, period_end_date AS day, adjusted_close::float8 AS close,
+               price_continuity_segment
         FROM {}
         WHERE symbol = ANY(%(symbols)s)
           AND period_end_date BETWEEN %(from)s AND %(to)s
@@ -96,6 +97,22 @@ def load_prices(conn, cfg: Config, symbols: list[str]) -> pd.DataFrame:
     )
     if df.empty:
         raise RuntimeError("no price rows for the selected universe")
+    if df["price_continuity_segment"].isna().any():
+        missing = sorted(df.loc[df["price_continuity_segment"].isna(), "symbol"].unique())
+        raise RuntimeError(
+            "market data lacks price continuity segments for: "
+            + ", ".join(missing[:20])
+        )
+    segment_counts = df.groupby("symbol")["price_continuity_segment"].nunique()
+    broken_symbols = sorted(segment_counts[segment_counts > 1].index.tolist())
+    if broken_symbols:
+        log.warning(
+            "Excluded %d symbols with price continuity breaks in the loaded window: %s",
+            len(broken_symbols), ", ".join(broken_symbols[:20]),
+        )
+        df = df[~df["symbol"].isin(broken_symbols)]
+    if df.empty:
+        raise RuntimeError("no continuous price series remain after continuity validation")
     wide = df.pivot(index="day", columns="symbol", values="close").sort_index()
     log.info("loaded %d trading days x %d symbols", len(wide), wide.shape[1])
     return wide
@@ -124,11 +141,13 @@ def load_category_momentum(conn, cfg: Config) -> pd.DataFrame:
             SELECT ib.ibkr_category, m.period_end_date AS day,
                    m.adjusted_close::float8
                    / NULLIF(lag(m.adjusted_close::float8) OVER (
-                         PARTITION BY m.symbol ORDER BY m.period_end_date), 0) - 1 AS r
+                         PARTITION BY m.symbol, m.price_continuity_segment
+                         ORDER BY m.period_end_date), 0) - 1 AS r
             FROM {metrics} m
             JOIN ib ON ib.symbol = m.symbol
             WHERE m.period_end_date BETWEEN %(from)s AND %(to)s
               AND m.adjusted_close > 0
+              AND m.price_continuity_segment IS NOT NULL
               {cat_filter}
         )
         SELECT ibkr_category, day,

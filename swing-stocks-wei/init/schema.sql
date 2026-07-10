@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS :runs_table (
     sl_pct                  NUMERIC(5,2) NOT NULL DEFAULT 0,
     time_stop_days          INTEGER NOT NULL DEFAULT 0,
     time_stop_min_ret_pct   NUMERIC(6,2) NOT NULL DEFAULT 0,
+    reentry_cooldown_days   INTEGER NOT NULL DEFAULT 0,
     cost_bps_per_side       NUMERIC(6,2) NOT NULL,
     total_return_pct        NUMERIC(10,2),
     bh_return_pct           NUMERIC(10,2),
@@ -84,7 +85,8 @@ ALTER TABLE :runs_table
     ADD COLUMN IF NOT EXISTS trim_target_pct       NUMERIC(5,2) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS sl_pct                NUMERIC(5,2) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS time_stop_days        INTEGER NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS time_stop_min_ret_pct NUMERIC(6,2) NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS time_stop_min_ret_pct NUMERIC(6,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS reentry_cooldown_days INTEGER NOT NULL DEFAULT 0;
 
 -- ---------------------------------------------------------------------------
 -- One row per completed (or still open) long trade of a run.

@@ -15,7 +15,8 @@ def _days(n):
 def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
          max_positions=25, max_per_category=2, cost=0.0, stock_mom=None,
          entry_confirm_days=0, trim_above_pct=0.0, trim_target_pct=0.0,
-         sl_pct=0.0, time_stop_days=0, time_stop_min_ret_pct=0.0):
+         sl_pct=0.0, time_stop_days=0, time_stop_min_ret_pct=0.0,
+         reentry_cooldown_days=0):
     n_days, n_sym = closes.shape
     symbols = [f"S{i}" for i in range(n_sym)]
     cats = cats or {s: "CatA" for s in symbols}
@@ -33,6 +34,7 @@ def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
         trim_above_pct=trim_above_pct, trim_target_pct=trim_target_pct,
         sl_pct=sl_pct, time_stop_days=time_stop_days,
         time_stop_min_ret_pct=time_stop_min_ret_pct,
+        reentry_cooldown_days=reentry_cooldown_days,
     )
 
 
@@ -170,6 +172,35 @@ def test_time_stop_exits_losers_but_not_winners():
     assert by_symbol["S1"].is_open  # winner is never time-stopped
 
 
+def test_time_stop_reentry_after_cooldown():
+    closes = np.full((7, 1), 100.0)
+    positions = np.ones((7, 1), dtype=np.int8)  # signal stays long throughout
+    res = _run(closes, positions, time_stop_days=2, reentry_cooldown_days=2)
+    # entry day 0, time-stopped on day 2, candidate again from day 4 on
+    assert [t.entry_date for t in res.trades] == [_days(7)[0], _days(7)[4]]
+    # without a cooldown the symbol stays locked until a signal reset
+    res_locked = _run(closes, positions, time_stop_days=2)
+    assert len(res_locked.trades) == 1
+
+
+def test_catastrophe_stop_ignores_reentry_cooldown():
+    closes = np.array([[100.0], [75.0], [75.0], [75.0], [75.0]])
+    positions = np.ones((5, 1), dtype=np.int8)
+    res = _run(closes, positions, sl_pct=20.0, reentry_cooldown_days=1)
+    assert len(res.trades) == 1  # SL lock survives until the signal resets
+
+
+def test_signal_reset_clears_cooldown_and_requires_confirmation():
+    closes = np.full((8, 1), 100.0)
+    # long, time-stopped on day 3, real signal reset on day 4, new flip day 5
+    positions = np.array([[1], [1], [1], [1], [0], [1], [1], [1]], dtype=np.int8)
+    res = _run(closes, positions, time_stop_days=2, reentry_cooldown_days=2,
+               entry_confirm_days=1)
+    # the day-4 reset voids the pending cooldown, so the re-entry waits for
+    # the confirmed flip on day 6 instead of firing via cooldown on day 5
+    assert [t.entry_date for t in res.trades] == [_days(8)[1], _days(8)[6]]
+
+
 def test_trade_fields_are_plain_python_floats():
     # psycopg2 cannot adapt np.float64; equity flows through numpy closes, so
     # every persisted trade field must be converted to a plain float
@@ -190,3 +221,11 @@ def test_benchmark_is_equal_weight_of_universe():
     res = _run(closes, positions)
     assert res.bh_equity[-1] == pytest.approx(1.0)
     assert res.total_return_pct == pytest.approx(0.0)
+
+
+def test_benchmark_rejects_unsegmented_extreme_price_jump():
+    closes = np.array([[0.1383, 100.0], [72.95, 101.0]])
+    positions = np.zeros((2, 2), dtype=np.int8)
+
+    with pytest.raises(RuntimeError, match=r"S0.*implausible|implausible.*S0"):
+        _run(closes, positions)

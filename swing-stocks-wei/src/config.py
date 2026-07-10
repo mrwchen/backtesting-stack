@@ -38,6 +38,7 @@ class Config:
     sl_pct: float
     time_stop_days: int
     time_stop_min_ret_pct: float
+    reentry_cooldown_days: int
     max_positions: int
     max_per_category: int
     trim_above_pct: float
@@ -86,6 +87,7 @@ class Config:
             sl_pct=float(os.getenv("SL_PCT", "0")),
             time_stop_days=int(os.getenv("TIME_STOP_DAYS", "0")),
             time_stop_min_ret_pct=float(os.getenv("TIME_STOP_MIN_RET_PCT", "0")),
+            reentry_cooldown_days=int(os.getenv("REENTRY_COOLDOWN_DAYS", "0")),
             max_positions=int(os.getenv("MAX_POSITIONS", "25")),
             max_per_category=int(os.getenv("MAX_PER_CATEGORY", "2")),
             trim_above_pct=float(os.getenv("TRIM_ABOVE_PCT", "0")),
@@ -126,6 +128,8 @@ class Config:
         if cfg.time_stop_min_ret_pct > 0:
             raise ValueError("TIME_STOP_MIN_RET_PCT must be <= 0 "
                              "(a time stop must not cut winning trades)")
+        if cfg.reentry_cooldown_days < 0:
+            raise ValueError("REENTRY_COOLDOWN_DAYS must be >= 0")
         if cfg.trim_above_pct < 0 or cfg.trim_target_pct < 0:
             raise ValueError("TRIM_ABOVE_PCT and TRIM_TARGET_PCT must be >= 0")
         if cfg.trim_above_pct > 0 and not 0 < cfg.trim_target_pct < cfg.trim_above_pct:

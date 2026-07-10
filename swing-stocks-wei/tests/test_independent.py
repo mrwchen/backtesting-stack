@@ -14,7 +14,7 @@ def _days(n):
 
 def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
          entry_confirm_days=0, sl_pct=0.0, time_stop_days=0,
-         time_stop_min_ret_pct=0.0):
+         time_stop_min_ret_pct=0.0, reentry_cooldown_days=0):
     n_days, n_sym = closes.shape
     symbols = [f"S{i}" for i in range(n_sym)]
     cats = cats or {s: "CatA" for s in symbols}
@@ -29,6 +29,7 @@ def _run(closes, positions, *, stress=None, cats=None, cat_mom=None,
         deep_threshold=-0.10, entry_confirm_days=entry_confirm_days,
         sl_pct=sl_pct, time_stop_days=time_stop_days,
         time_stop_min_ret_pct=time_stop_min_ret_pct,
+        reentry_cooldown_days=reentry_cooldown_days,
     )
 
 
@@ -88,6 +89,13 @@ def test_independent_mode_applies_time_stop():
     res = _run(closes, positions, time_stop_days=3)
     assert res.trades[0].exit_date == _days(5)[3]
     assert not res.trades[0].is_open
+
+
+def test_independent_mode_reenters_after_time_stop_cooldown():
+    closes = np.full((7, 1), 100.0)
+    positions = np.ones((7, 1), dtype=np.int8)  # signal stays long throughout
+    res = _run(closes, positions, time_stop_days=2, reentry_cooldown_days=2)
+    assert [t.entry_date for t in res.trades] == [_days(7)[0], _days(7)[4]]
 
 
 def test_independent_mode_keeps_sizing_tiers():

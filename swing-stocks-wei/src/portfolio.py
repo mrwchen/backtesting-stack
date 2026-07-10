@@ -73,10 +73,18 @@ def _max_drawdown(equity: np.ndarray) -> float:
     return float((equity / np.maximum.accumulate(equity) - 1.0).min())
 
 
-def _benchmark(closes: np.ndarray) -> np.ndarray:
+def _benchmark(closes: np.ndarray, symbols: list[str], days: list[date]) -> np.ndarray:
     """Equal-weight daily-rebalanced index over the (ffilled) universe closes."""
     with np.errstate(invalid="ignore", divide="ignore"):
         rets = closes[1:] / closes[:-1] - 1.0
+    invalid = np.argwhere((rets > 9.0) | (rets < -0.9))
+    if invalid.size:
+        day_index, symbol_index = invalid[0]
+        raise RuntimeError(
+            "implausible benchmark return after continuity validation: "
+            f"{symbols[int(symbol_index)]} {days[int(day_index) + 1]} "
+            f"{rets[int(day_index), int(symbol_index)] * 100:+.2f}%"
+        )
     mean_rets = np.nanmean(rets, axis=1)
     mean_rets = np.nan_to_num(mean_rets, nan=0.0)
     return np.concatenate([[1.0], np.cumprod(1.0 + mean_rets)])
@@ -91,7 +99,8 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                   entry_confirm_days: int = 0, trim_above_pct: float = 0.0,
                   trim_target_pct: float = 0.0, sl_pct: float = 0.0,
                   time_stop_days: int = 0,
-                  time_stop_min_ret_pct: float = 0.0) -> PortfolioResult:
+                  time_stop_min_ret_pct: float = 0.0,
+                  reentry_cooldown_days: int = 0) -> PortfolioResult:
     """Simulate the portfolio over the evaluation window.
 
     Array shapes: closes/fresh/positions are (n_days, n_symbols); closes are
@@ -104,8 +113,14 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     position sl_pct% below entry (catastrophe stop, not a timing stop);
     time_stop_days exits a position that is still at or below
     time_stop_min_ret_pct% after that many trading days (dead-money recycling).
-    A stopped symbol is locked until its signal resets to flat, so the
-    still-long signal cannot re-enter immediately.
+    A symbol stopped by the catastrophe stop is locked until its signal resets
+    to flat, so the still-long signal cannot re-enter immediately. Time-stopped
+    symbols behave the same by default; with reentry_cooldown_days > 0 they are
+    only blocked for that many trading days and become entry candidates again
+    while their signal is still long (recycled capital goes back to work
+    instead of waiting for the next flat->long flip). A signal reset clears the
+    cooldown, so re-entries after a reset go through the normal
+    flip-plus-confirmation path.
     """
     n_days, n_sym = closes.shape
     cost = cost_bps_per_side / 1e4
@@ -114,6 +129,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     held: dict[int, _Holding] = {}
     entry_row: dict[int, int] = {}
     locked = np.zeros(n_sym, dtype=bool)
+    cooldown = np.full(n_sym, -1, dtype=int)  # re-eligible from this row on; -1 = none
     trades: list[StockTrade] = []
     equity = np.empty(n_days)
     n_pos = np.empty(n_days, dtype=int)
@@ -137,6 +153,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
     for t in range(n_days):
         # a stopped symbol stays blocked until its signal has reset to flat
         locked &= positions[t] != 0
+        cooldown[positions[t] == 0] = -1
 
         # 1) signal exits at today's close
         for s in [s for s, h in held.items()
@@ -149,12 +166,17 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                 if not fresh[t, s]:
                     continue
                 ret = closes[t, s] / held[s].trade.entry_price - 1.0
-                if (sl_pct > 0 and ret <= -sl_pct / 100.0) or (
-                        time_stop_days > 0
+                if sl_pct > 0 and ret <= -sl_pct / 100.0:
+                    sell_position(s, t)
+                    locked[s] = True
+                elif (time_stop_days > 0
                         and t - entry_row[s] >= time_stop_days
                         and ret <= time_stop_min_ret_pct / 100.0):
                     sell_position(s, t)
-                    locked[s] = True
+                    if reentry_cooldown_days > 0:
+                        cooldown[s] = t + reentry_cooldown_days
+                    else:
+                        locked[s] = True
 
         # 2) trim positions that outgrew their risk budget
         if trim_above_pct > 0:
@@ -172,7 +194,8 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         if not stress_on[t]:
             flipped = [
                 s for s in range(n_sym)
-                if s not in held and not locked[s] and fresh[t, s] and cand[t, s]
+                if s not in held and not locked[s] and fresh[t, s]
+                and (cand[t, s] or 0 <= cooldown[s] <= t)
             ]
             mom = {s: float(cat_momentum[categories[symbols[s]]][t])
                    for s in flipped}
@@ -212,6 +235,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
                 trades.append(trade)
                 held[s] = _Holding(shares=shares, trade=trade)
                 entry_row[s] = t
+                cooldown[s] = -1
                 cat_count[cat] = cat_count.get(cat, 0) + 1
 
         equity[t] = mark_to_market(t)
@@ -228,7 +252,7 @@ def run_portfolio(days: list[date], symbols: list[str], categories: dict[str, st
         tr.holding_days = (days[-1] - tr.entry_date).days
         tr.is_open = True
 
-    bh_equity = _benchmark(closes)
+    bh_equity = _benchmark(closes, symbols, days)
     years = max((days[-1] - days[0]).days / 365.25, 1e-9)
     return PortfolioResult(
         days=days,

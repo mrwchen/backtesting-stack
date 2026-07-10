@@ -85,6 +85,7 @@ def main() -> None:
                 sl_pct=cfg.sl_pct,
                 time_stop_days=cfg.time_stop_days,
                 time_stop_min_ret_pct=cfg.time_stop_min_ret_pct,
+                reentry_cooldown_days=cfg.reentry_cooldown_days,
             )
             run_id = persist_portfolio_run(conn, cfg, result, len(symbols),
                                            lagged[start:], stress[start:])
@@ -106,6 +107,7 @@ def main() -> None:
                 sl_pct=cfg.sl_pct,
                 time_stop_days=cfg.time_stop_days,
                 time_stop_min_ret_pct=cfg.time_stop_min_ret_pct,
+                reentry_cooldown_days=cfg.reentry_cooldown_days,
             )
             run_id = persist_independent_run(conn, cfg, result, len(symbols))
             log.info("Run %d independent window %s..%s universe %d",

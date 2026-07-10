@@ -39,10 +39,22 @@ The strategy is driven by three ideas that survived both research windows
    design - it fires on ~5-9% of trades and only amputates the left tail;
    tight stops destroyed returns), and exit trades still at/below
    TIME_STOP_MIN_RET_PCT% after TIME_STOP_DAYS trading days (dead-money
-   recycling, never touches winners). A stopped symbol is locked until its
-   signal resets to flat. Close-based stops do not protect against overnight
-   gaps. Deliberately **no take-profit**: every tested TP cut the return by a
-   third to half - the edge lives in the right tail.
+   recycling, never touches winners). A catastrophe-stopped symbol is locked
+   until its signal resets to flat. Close-based stops do not protect against
+   overnight gaps. Deliberately **no take-profit**: every tested TP cut the
+   return by a third to half - the edge lives in the right tail.
+6. **Re-entry cooldown after a time stop (`REENTRY_COOLDOWN_DAYS`):** a
+   time-stopped symbol becomes an entry candidate again after this many
+   trading days while its signal is still long, instead of staying locked
+   until the next signal reset (0 = old behaviour). This recycles dead money
+   ~4 weeks earlier at a cost of 11-16% total return vs. TIME_STOP_DAYS=60
+   without re-entry (robust across the 2022-2026 and 2020-2026 windows).
+   Holding-time research context: >100% of the strategy P&L sits in trades
+   held longer than 70 calendar days (the <=70d cohort is net negative), so
+   every stronger holding-time reduction that was tested - take-profits,
+   plain and age-conditional trailing stops, hard 25-50-day caps with
+   re-entry rolls, EMA-cross exits - cut returns by 30-60%. The average
+   holding time (~10-11 weeks) is the edge, not an inefficiency.
 
 Portfolio-mode rules: max 25 positions, max 2 per IBKR category, fills at the
 close of the signal day, costs in bps per side, no leverage, no shorts, cash
@@ -53,6 +65,11 @@ order, which alone swung the backtest between +83% and +665%). Positions that
 grow past `TRIM_ABOVE_PCT` of equity are trimmed back to `TRIM_TARGET_PCT`
 (single positions compounding into dominant clumps drove most of the drawdown).
 Benchmark is the equal-weight daily-rebalanced index of the same universe.
+It is not QQQ or another ETF. Price returns are never calculated across
+`stock_core_market_metrics_daily.price_continuity_segment` boundaries. A symbol
+with more than one segment in the loaded run window is excluded from that run;
+any remaining >10x or <0.1x daily price factor aborts the benchmark instead of
+silently contaminating it.
 
 ## Known limitations (read before trusting numbers)
 
@@ -72,7 +89,8 @@ Benchmark is the equal-weight daily-rebalanced index of the same universe.
   data look-ahead, but not methodology look-ahead.
 - Entries happen only on flat→long flips (plus the first evaluation day), so a
   stock whose signal has been long for months does not enter when a slot
-  frees up later.
+  frees up later. Exception: a time-stopped symbol re-enters after the
+  re-entry cooldown while its signal is still long.
 
 ## Run
 

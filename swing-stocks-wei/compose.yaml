@@ -102,10 +102,21 @@ services:
       SL_PCT: "20"
       # Time-Stop: Exit, wenn der Trade nach TIME_STOP_DAYS Handelstagen noch
       # <= TIME_STOP_MIN_RET_PCT % steht (0 = aus). Recycelt totes Kapital;
-      # feuert nie bei Gewinnern.
-      TIME_STOP_DAYS: "60"
+      # feuert nie bei Gewinnern. 40 ist nur zusammen mit dem Re-Entry-Cooldown
+      # sinnvoll: ohne ihn sperrt jeder Time-Stop das Symbol bis zum naechsten
+      # Signal-Reset und die Rendite faellt deutlich (lokale Tests: -23%).
+      TIME_STOP_DAYS: "40"
       # Schwelle des Time-Stops in % (<= 0; 0 = "unter Entry", -5 = erst ab -5%).
       TIME_STOP_MIN_RET_PCT: "0"
+      # Re-Entry-Cooldown nach einem Time-Stop-Exit: das Symbol ist nach N
+      # Handelstagen wieder Entry-Kandidat, solange sein Signal noch long ist
+      # (0 = altes Verhalten, Sperre bis zum Signal-Reset). Der Katastrophen-
+      # Stop sperrt unveraendert bis zum Reset. Lokale Tests 2026-07:
+      # TS40+Cooldown5 kostet 11-16% Rendite vs. TS60 ohne Re-Entry, recycelt
+      # totes Kapital aber ~4 Wochen frueher; jede staerkere Verkuerzung der
+      # Haltedauer (TP, Trailing, harte Caps) zerstoerte die Rendite, weil
+      # >100% des Gewinns in Trades mit >70 Tagen Haltedauer sitzen.
+      REENTRY_COOLDOWN_DAYS: "5"
       # KEIN Take-Profit: jede getestete Gewinnmitnahme (25%/50%) hat die
       # Rendite drastisch reduziert - der Edge sitzt im rechten Tail.
 
@@ -149,7 +160,7 @@ services:
 
       # -- Sonstiges ----------------------------------------------------------------
       # Freitext-Label des Runs; landet in <TABLE_PREFIX>runs.run_label.
-      RUN_LABEL: "${RUN_LABEL:-wei_stocks_regime_ema_9_21_57_52_confirm10_trim10_w631_sl20_ts60}"
+      RUN_LABEL: "${RUN_LABEL:-wei_stocks_regime_ema_9_21_57_52_confirm10_trim10_w631_sl20_ts40_re5}"
       # Praefix der Ergebnistabellen; muss zum TABLE_PREFIX des Init-Containers passen.
       TABLE_PREFIX: "backtest_wei_stocks_"
       # Log-Detailgrad: DEBUG, INFO, WARNING, ERROR.
