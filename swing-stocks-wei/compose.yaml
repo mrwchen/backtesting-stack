@@ -66,7 +66,7 @@ services:
       # 0 = alle Aktien je Kategorie nach den sonstigen Filtern testen.
       TOP_N_PER_CATEGORY: "0"
       # Mindest-Market-Cap in USD fuer die Universumsauswahl.
-      MIN_MARKET_CAP_USD: "2000000000"
+      MIN_MARKET_CAP_USD: "20000000000"
       # Stichtag der Market Cap fuer die Universumsauswahl:
       #   start = Market Cap zum Fensterstart (point-in-time, ohne Blick in die
       #           Zukunft; Quelle ist die Tages-Market-Cap in METRICS_TABLE)
