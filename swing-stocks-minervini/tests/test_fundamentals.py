@@ -11,62 +11,92 @@ def _grid():
     return dates, symbols
 
 
-def _quarterly_filings(n: int, quarterly_growth: float = 0.25) -> pd.DataFrame:
-    """TTM net income built so consecutive diffs give quarterly NI 100*(1+g)^i."""
-    quarterly_ni = 100.0 * (1 + quarterly_growth) ** np.arange(n)
-    ttm = 400.0 + np.cumsum(quarterly_ni)
+def _fundamental_filings(n: int) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "symbol": "AAA",
             "available_date": pd.date_range("2022-02-01", periods=n, freq="91D"),
-            "net_income_ttm": ttm,
-            "shares_diluted": 100.0,
             "revenue_ttm": 1000.0 * 1.05 ** np.arange(n),
             "net_margin_ttm": 0.10 + 0.005 * np.arange(n),
         }
     )
 
 
-def test_eps_yoy_pass_needs_five_quarterly_diffs():
+def _eps_events(rows: list[tuple[str, float | None, float | None]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "symbol": "AAA",
+            "available_date": pd.to_datetime([row[0] for row in rows]),
+            "diluted_eps": [row[1] for row in rows],
+            "prior_year_diluted_eps": [row[2] for row in rows],
+        }
+    )
+
+
+def test_eps_yoy_uses_reported_current_and_prior_quarter():
     dates, symbols = _grid()
-    filings = _quarterly_filings(10)
+    events = _eps_events([("2022-02-01", 1.25, 1.00)])
     cfg = make_cfg(eps_yoy_min=0.20)
 
-    eps_pass, eps_yoy = eps_flags(filings, dates, symbols, cfg)
+    eps_pass, eps_yoy = eps_flags(events, dates, symbols, cfg)
 
-    avail = filings["available_date"]
-    # quarterly EPS exists from filing 2; YoY needs 4 more -> first pass at filing 6
-    assert not eps_pass.loc[: avail[4], "AAA"].any()
-    after = avail[5] + pd.Timedelta(days=3)
-    assert bool(eps_pass.loc[after:, "AAA"].iloc[0]) is True
-    # 25% quarterly growth -> YoY = 1.25^4 - 1 ~ 144%
-    assert eps_yoy.loc[after:, "AAA"].iloc[0] > 1.4
+    assert not eps_pass.loc[: "2022-01-31", "AAA"].any()
+    assert bool(eps_pass.loc["2022-02-01", "AAA"]) is True
+    assert abs(eps_yoy.loc["2022-02-01", "AAA"] - 0.25) < 1e-12
 
 
-def test_annual_filers_never_qualify():
+def test_eps_growth_below_threshold_fails():
     dates, symbols = _grid()
-    filings = _quarterly_filings(10)
-    filings["available_date"] = pd.date_range("2022-02-01", periods=10, freq="365D")
+    events = _eps_events([("2022-02-01", 1.19, 1.00)])
 
-    eps_pass, _ = eps_flags(filings, dates, symbols, make_cfg())
-    assert not eps_pass.to_numpy().any()  # gap > 130 days -> no quarterly diff
+    eps_pass, eps_yoy = eps_flags(events, dates, symbols, make_cfg(eps_yoy_min=0.20))
+
+    assert bool(eps_pass.loc["2022-02-01", "AAA"]) is False
+    assert abs(eps_yoy.loc["2022-02-01", "AAA"] - 0.19) < 1e-12
+
+
+def test_positive_eps_turnaround_passes_without_ratio():
+    dates, symbols = _grid()
+    events = _eps_events([("2022-02-01", 0.10, -0.25)])
+
+    eps_pass, eps_yoy = eps_flags(events, dates, symbols, make_cfg())
+
+    assert bool(eps_pass.loc["2022-02-01", "AAA"]) is True
+    assert pd.isna(eps_yoy.loc["2022-02-01", "AAA"])
+
+
+def test_missing_eps_event_clears_previous_state():
+    dates, symbols = _grid()
+    events = _eps_events(
+        [
+            ("2022-02-01", 1.25, 1.00),
+            ("2022-05-02", None, 1.00),
+        ]
+    )
+
+    eps_pass, eps_yoy = eps_flags(events, dates, symbols, make_cfg())
+
+    assert bool(eps_pass.loc["2022-04-29", "AAA"]) is True
+    assert bool(eps_pass.loc["2022-05-02", "AAA"]) is False
+    assert pd.isna(eps_yoy.loc["2022-05-02", "AAA"])
+    assert pd.isna(eps_yoy.loc["2022-06-01", "AAA"])
 
 
 def test_eps_flag_goes_stale():
     dates, symbols = _grid()
-    filings = _quarterly_filings(6)  # reporting stops after filing 6
+    events = _eps_events([("2022-02-01", 1.25, 1.00)])
     cfg = make_cfg(eps_stale_trading_days=130)
 
-    eps_pass, _ = eps_flags(filings, dates, symbols, cfg)
+    eps_pass, _ = eps_flags(events, dates, symbols, cfg)
 
-    last_avail = filings["available_date"].iloc[-1]
-    assert bool(eps_pass.loc[last_avail + pd.Timedelta(days=3):, "AAA"].iloc[0]) is True
-    assert not eps_pass.loc[last_avail + pd.Timedelta(days=280):, "AAA"].any()
+    event_idx = dates.get_loc(pd.Timestamp("2022-02-01"))
+    assert bool(eps_pass.iloc[event_idx + 130]["AAA"]) is True
+    assert bool(eps_pass.iloc[event_idx + 131]["AAA"]) is False
 
 
 def test_revenue_and_margin_flags():
     dates, symbols = _grid()
-    filings = _quarterly_filings(9)
+    filings = _fundamental_filings(9)
     cfg = make_cfg(revenue_yoy_min=0.10)
 
     revenue_pass, revenue_yoy, margin_pass = revenue_margin_flags(filings, dates, symbols, cfg)

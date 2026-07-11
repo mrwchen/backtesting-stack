@@ -8,14 +8,27 @@ other backtesting services.
 
 | Table | Used for |
 |---|---|
+| `stock_core_market_metrics_current` | canonical current `(symbol, exchange, cik)` identity selection |
 | `stock_core_market_metrics_daily` | adjusted daily OHLCV (2020+) |
 | `stock_core_security_master_current` | universe filter (`quote_type = EQUITY`) |
 | `ibkr_symbols` | IBKR `industry` / `category` taxonomy for group leadership |
-| `stock_core_sec_fundamentals_asof_daily` | SEC TTM revenue/margins/net income (point-in-time: `period_end_date` is the filing availability date) |
+| `stock_core_sec_fundamentals_asof_daily` | SEC TTM revenue/margins (point-in-time: `period_end_date` is the filing availability date) |
+| `stock_core_sec_quarterly_eps_events` | accession-keyed SEC diluted quarterly EPS and point-in-time prior-year comparator |
 
-Quarterly EPS is derived from consecutive quarterly TTM net-income diffs
-divided by diluted shares (the earnings calendar carries no reported EPS in
-practice). Annual-only filers never qualify for the EPS flag.
+All stock inputs are joined to one canonical current `(symbol, exchange, cik)`
+identity before caching. This prevents a reused ticker or parallel exchange
+identity from mixing another issuer's prices and SEC history into the test.
+
+Quarterly EPS uses discrete SEC diluted-EPS facts where available. Strict,
+context-matched net-income and diluted-share derivation covers filings such as
+10-Ks that do not publish a discrete fourth-quarter EPS fact. Missing or
+incomparable data remains unknown; annual-only filers never qualify for the EPS
+flag.
+
+The market-data service's schema initialization and startup SEC history
+backfill must run before this backtester. An absent quarterly-EPS table fails at
+the SQL boundary; an empty table also fails explicitly instead of silently
+disabling the EPS leg of the fundamental screen.
 
 **Result tables (all prefixed `backtesting_minervini_`):**
 
@@ -46,27 +59,37 @@ screen : RS rating (cross-sectional percentile) + 8-point trend template
            below 45% -> rs_daily, screen_daily
          + market breadth gate (share of stocks above their 200d MA, on >= 50%
          / off < 45% hysteresis) -> market_daily
-setup  : VCP detection on screen-pass days -> setups
+setup  : VCP detection on screen-pass days; a missing global session resets
+         that symbol's swing/volume structure, and validity expires in global
+         market sessions even while the symbol is halted -> setups
 sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          SIMULATION_MODE=independent trades every triggered setup independently
          with no cash constraint, no position limit and no compounding. That
          research mode measures the signal across the whole universe.
-         SIMULATION_MODE=portfolio applies cash, max gross exposure and max
-         open-position constraints. Portfolio sizing uses current marked-to-
-         market equity, while independent sizing uses INITIAL_EQUITY. When
-         several entries compete for limited portfolio capacity, the portfolio
-         mode prioritizes as-of setup quality: RS rating, stock/group RS,
+         Before each session, SIMULATION_MODE=portfolio builds a deterministic,
+         fully funded stop-buy slate from previous-close equity, cash, gross
+         exposure and available position slots. Quantity is fixed using the
+         worst permitted gap fill. Same-day exits never fund replacement orders,
+         and unused reservations are not reassigned after observing daily highs.
+         Portfolio priority uses as-of setup quality: RS rating, stock/group RS,
          contraction count, risk distance, volume dry-up quality and growth
-         fields from screen_daily. Very low dry-up is treated as dead tape
-         instead of automatically better.
+         fields from screen_daily. Independent mode uses the same pre-session
+         sizing discipline with INITIAL_EQUITY but no portfolio constraints.
          Exits: stop (also checked on the entry bar itself), partial at
          PARTIAL_AT_R, failed-breakout exit after a configurable wait when the
-         close falls back below pivot/R threshold, MA-trail, end-of-data.
-         New entries are blocked while the market breadth gate is off
-         (MARKET_FILTER_ENABLE); open positions keep running into their exits.
+         close falls back below pivot/R threshold, MA-trail, end-of-data when
+         the symbol has an executable final-session bar. Otherwise the position
+         remains open and is only marked at its last known close.
+         A market-breadth state computed at close t controls entries from session
+         t+1 (MARKET_FILTER_ENABLE); open positions keep running into their exits.
+         A base is invalidated by a stop-level breach. Its first pivot breakout
+         consumes the setup even when the trade is skipped because of a gate,
+         excessive gap or unavailable portfolio capacity.
          Optional world-regime entry filtering blocks entries whose latest known
-         regime label is not in REGIME_ALLOWED_LABELS. Trades carry the latest
-         known world-regime composite score at entry as attribution.
+         regime label is not in REGIME_ALLOWED_LABELS. A score for day d is only
+         usable from d+1 (its 01:00 America/New_York cutoff); weekend rows remain
+         usable for the next session. Trades carry that same causally available
+         world-regime composite score at entry as attribution.
          Known bad fundamentals (EPS and revenue growth both below threshold)
          can block entries while missing EPS data remains tradable.
 ```
@@ -94,8 +117,13 @@ python -m pytest tests -q
   are biased optimistic — read them conservatively.
 - Price history starts 2020-01-02; with ~1 year of indicator warmup the
   effective backtest window begins ~2021.
-- Fundamentals are TTM (SEC); quarterly EPS is reconstructed from TTM diffs
-  and is therefore slightly noisier than reported quarterly EPS.
+- Revenue and margins are SEC TTM values. Quarterly EPS is available only when
+  the filing contains comparable diluted-EPS facts or strict component contexts;
+  missing values are deliberately not estimated.
 - Breakout-volume confirmation is not used as a same-day hard filter because
   daily volume is only known after the close; adding it to stop-buy entries
   would introduce look-ahead unless the entry is delayed to the next session.
+- The global session grid is the union of available stock bars. A gap in one
+  symbol is detected, but a complete provider outage affecting every symbol on
+  the same exchange session is not distinguishable without a separate exchange
+  calendar source.

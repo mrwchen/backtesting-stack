@@ -1,18 +1,9 @@
 """Point-in-time fundamental flags on the daily grid.
 
-All inputs come from stock_core_sec_fundamentals_asof_daily, whose
-period_end_date (loaded as available_date) is the date from which a filing is
-usable — i.e. genuine point-in-time, no look-ahead.
-
-EPS:      the earnings calendar carries no reported EPS in practice, so
-          quarterly net income is reconstructed as the difference between
-          consecutive quarterly TTM filings (gap 60-130 days), divided by
-          diluted shares; YoY compares against 4 quarters earlier.
-Revenue:  SEC TTM revenue YoY.
-Margin:   SEC TTM net margin vs. one year earlier.
-
-All values are forward-filled with a staleness limit so that a company that
-stops reporting loses its flags after roughly two missed quarters.
+Diluted quarterly EPS comes from accession-keyed SEC filing events. Revenue
+and margin come from the SEC as-of snapshot table. Effective dates are the
+first UTC calendar dates on which the filing is usable, so no later filing is
+visible to an earlier screen.
 """
 from __future__ import annotations
 
@@ -48,39 +39,66 @@ def _event_matrix(
     return pd.DataFrame(arr, index=dates, columns=symbols).ffill(limit=stale_limit)
 
 
+def _event_matrix_with_null_resets(
+    events: pd.DataFrame,
+    value_col: str,
+    dates: pd.DatetimeIndex,
+    symbols: pd.Index,
+    stale_limit: int,
+) -> pd.DataFrame:
+    """Forward-fill events while treating an explicit NULL as a state reset."""
+    col_index = {s: i for i, s in enumerate(symbols)}
+    values = np.full((len(dates), len(symbols)), np.nan)
+    event_pos = np.full((len(dates), len(symbols)), -1, dtype=np.int64)
+
+    ev = events.dropna(subset=["available_date"])
+    ev = ev[ev["symbol"].isin(col_index)].sort_values("available_date", kind="stable")
+    pos = dates.searchsorted(ev["available_date"].to_numpy())
+    keep = pos < len(dates)
+    for p, sym, val in zip(
+        pos[keep],
+        ev["symbol"].to_numpy()[keep],
+        ev[value_col].to_numpy()[keep],
+    ):
+        col = col_index[sym]
+        event_pos[p, col] = p
+        values[p, col] = val
+
+    last_event = np.maximum.accumulate(event_pos, axis=0)
+    out = np.full_like(values, np.nan)
+    rows, cols = np.where(last_event >= 0)
+    source_rows = last_event[rows, cols]
+    fresh = rows - source_rows <= stale_limit
+    out[rows[fresh], cols[fresh]] = values[source_rows[fresh], cols[fresh]]
+    return pd.DataFrame(out, index=dates, columns=symbols)
+
+
 def eps_flags(
-    filings: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, cfg: Config
+    events: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, cfg: Config
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Returns (eps_pass bool matrix, eps_yoy float matrix).
+    """Return diluted-EPS growth pass and YoY matrices from SEC events."""
+    f = events.copy()
+    eps = pd.to_numeric(f["diluted_eps"], errors="coerce")
+    prev = pd.to_numeric(f["prior_year_diluted_eps"], errors="coerce")
+    comparable = eps.notna() & prev.notna()
+    positive_growth_base = comparable & (prev > 0)
+    turnaround = comparable & (eps > 0) & (prev <= 0)
 
-    Quarterly EPS = (TTM net income diff between consecutive quarterly filings)
-    / diluted shares. Annual-only filers (gap > 130 days) never qualify."""
-    f = filings.dropna(subset=["net_income_ttm", "available_date"]).copy()
-    f = f.sort_values(["symbol", "available_date"]).drop_duplicates(
-        ["symbol", "available_date"], keep="last"
-    )
-
-    grouped = f.groupby("symbol")
-    filing_gap = grouped["available_date"].diff().dt.days
-    quarterly_ni = grouped["net_income_ttm"].diff()
-    quarterly_ni[~filing_gap.between(60, 130)] = np.nan
-    f["eps_q"] = np.where(f["shares_diluted"] > 0, quarterly_ni / f["shares_diluted"], np.nan)
-
-    f["prev_eps_q"] = grouped["eps_q"].shift(4)
-    f["prev_available"] = grouped["available_date"].shift(4)
-    yoy_gap = (f["available_date"] - f["prev_available"]).dt.days
-    valid_prev = yoy_gap.between(300, 430) & f["prev_eps_q"].notna()
-
-    eps, prev = f["eps_q"], f["prev_eps_q"]
-    f["eps_yoy"] = np.where((prev > 0) & eps.notna(), eps / prev - 1.0, np.nan)
-    f["eps_pass"] = np.where(
-        (eps > 0) & valid_prev,
-        np.where(prev > 0, f["eps_yoy"] >= cfg.eps_yoy_min, True),  # turnaround counts
-        False,
+    f["eps_yoy"] = np.where(positive_growth_base, eps / prev - 1.0, np.nan)
+    f["eps_pass"] = (
+        (eps > 0)
+        & (
+            turnaround
+            | (positive_growth_base & (f["eps_yoy"] >= cfg.eps_yoy_min))
+        )
     ).astype(float)
 
-    pass_matrix = _event_matrix(f, "eps_pass", dates, symbols, cfg.eps_stale_trading_days)
-    yoy_matrix = _event_matrix(f, "eps_yoy", dates, symbols, cfg.eps_stale_trading_days)
+    pass_matrix = _event_matrix_with_null_resets(
+        f, "eps_pass", dates, symbols, cfg.eps_stale_trading_days
+    )
+    yoy_matrix = _event_matrix_with_null_resets(
+        f, "eps_yoy", dates, symbols, cfg.eps_stale_trading_days
+    )
     return pass_matrix == 1.0, yoy_matrix
 
 

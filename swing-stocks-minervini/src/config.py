@@ -100,7 +100,7 @@ class Config:
     dryup_ratio_preferred: float
     setup_valid_days: int
 
-    # simulation (per-trade, no portfolio constraints)
+    # simulation and pre-session order sizing
     initial_equity: float
     risk_pct: float
     stop_max_pct: float
@@ -146,7 +146,9 @@ class Config:
             breadth_on_threshold=float(_env("BREADTH_ON_THRESHOLD", "0.50")),
             breadth_off_threshold=float(_env("BREADTH_OFF_THRESHOLD", "0.45")),
             regime_entry_filter_enable=_env_bool("REGIME_ENTRY_FILTER_ENABLE", False),
-            regime_allowed_labels=_env_str_tuple("REGIME_ALLOWED_LABELS", "CONSTRUCTIVE,NEUTRAL"),
+            regime_allowed_labels=_env_str_tuple(
+                "REGIME_ALLOWED_LABELS", "RISK-ON,CONSTRUCTIVE,NEUTRAL"
+            ),
             ibkr_group_filter_enable=_env_bool("IBKR_GROUP_FILTER_ENABLE", True),
             ibkr_industry_rs_min=int(_env("IBKR_INDUSTRY_RS_MIN", "70")),
             ibkr_category_rs_min=int(_env("IBKR_CATEGORY_RS_MIN", "70")),

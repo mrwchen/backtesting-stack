@@ -44,22 +44,43 @@ def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, 
     return pd.DataFrame(out)
 
 
+def _effective_regime(regime: pd.DataFrame) -> pd.DataFrame:
+    """Map each score day to the first calendar day on which it is knowable.
+
+    The source materialized view closes ``day=d`` at 01:00 America/New_York on
+    ``d+1``.  US cash-session decisions can therefore use the row from the next
+    calendar date onward.  Calendar dates deliberately preserve weekend rows:
+    Sunday's score is available before Monday's session.
+    """
+    effective = regime.copy()
+    effective["day"] = pd.to_datetime(effective["day"])
+    effective["effective_date"] = effective["day"].dt.normalize() + pd.Timedelta(days=1)
+    return (
+        effective.sort_values(["effective_date", "day"], kind="stable")
+        .drop_duplicates("effective_date", keep="last")
+        .reset_index(drop=True)
+    )
+
+
 def _regime_entry_allowed(dates: pd.DatetimeIndex, regime: pd.DataFrame, cfg: Config) -> np.ndarray:
-    """Per trading day gate using the latest known regime label at or before the day."""
+    """Per-session gate using only regime rows finalized before that session."""
     if regime.empty:
         log.warning("regime entry filter enabled but no regime data is available - blocking all entries")
         return np.zeros(len(dates), dtype=bool)
 
-    labels = (
-        regime[["day", "regime_label"]]
-        .dropna(subset=["day"])
-        .copy()
+    labels = _effective_regime(
+        regime[["day", "regime_label"]].dropna(subset=["day"])
     )
-    labels["day"] = pd.to_datetime(labels["day"])
     labels["regime_label"] = labels["regime_label"].astype(str).str.upper()
-    labels = labels.sort_values("day").drop_duplicates("day", keep="last").set_index("day")
-    aligned = labels.reindex(dates, method="ffill")["regime_label"]
-    allowed = aligned.isin(cfg.regime_allowed_labels).fillna(False).to_numpy()
+    sessions = pd.DataFrame({"session_date": pd.DatetimeIndex(dates).normalize()})
+    aligned = pd.merge_asof(
+        sessions.sort_values("session_date"),
+        labels[["effective_date", "regime_label"]].sort_values("effective_date"),
+        left_on="session_date",
+        right_on="effective_date",
+        direction="backward",
+    )["regime_label"]
+    allowed = aligned.isin(cfg.regime_allowed_labels).fillna(False).to_numpy(dtype=bool)
     log.info(
         "regime entry gate allows %d of %d days; allowed labels: %s",
         int(allowed.sum()), len(allowed), ",".join(cfg.regime_allowed_labels),
@@ -79,17 +100,19 @@ def _attach_regime_attribution(trades: pd.DataFrame, regime: pd.DataFrame) -> pd
     trades = trades.copy()
     trades["_order"] = np.arange(len(trades))
     trades["_entry_ts"] = pd.to_datetime(trades["entry_date"])
-    regime = regime[["day", "regime_composite", "regime_label"]].dropna(subset=["day"]).copy()
-    regime["day"] = pd.to_datetime(regime["day"])
-    regime = regime.sort_values("day").drop_duplicates("day", keep="last")
+    regime = _effective_regime(
+        regime[["day", "regime_composite", "regime_label"]].dropna(subset=["day"])
+    )
     trades = pd.merge_asof(
         trades.sort_values("_entry_ts"),
-        regime.sort_values("day"),
+        regime.sort_values("effective_date"),
         left_on="_entry_ts",
-        right_on="day",
+        right_on="effective_date",
         direction="backward",
     )
-    return trades.sort_values("_order").drop(columns=["_order", "_entry_ts", "day"])
+    return trades.sort_values("_order").drop(
+        columns=["_order", "_entry_ts", "day", "effective_date"]
+    )
 
 
 def run_screen(
@@ -106,7 +129,8 @@ def run_screen(
 
     log.info("computing point-in-time fundamentals")
     filings = data_loader.load_fundamentals(conn, cfg)
-    eps_pass, eps_yoy = fundamentals.eps_flags(filings, dates, symbols, cfg)
+    quarterly_eps = data_loader.load_quarterly_eps(conn, cfg)
+    eps_pass, eps_yoy = fundamentals.eps_flags(quarterly_eps, dates, symbols, cfg)
     revenue_pass, revenue_yoy, margin_pass = fundamentals.revenue_margin_flags(
         filings, dates, symbols, cfg
     )
@@ -202,7 +226,7 @@ def run_screen(
 
 def run_setup(
     conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame,
-    universe: pd.DataFrame, start, end,
+    universe: pd.DataFrame, trading_dates: pd.DatetimeIndex, start, end,
 ) -> None:
     if pass_days.empty:
         log.warning("no screen passes -> no setup detection")
@@ -235,6 +259,7 @@ def run_setup(
                 sub["volume"].to_numpy(dtype=float),
                 np.asarray(local_idx),
                 cfg,
+                trading_dates=trading_dates,
             )
         )
     log.info("detected %d VCP setups across %d symbols", len(all_setups), len(pass_by_symbol))
@@ -322,7 +347,9 @@ def main() -> None:
     if "setup" in stages:
         if pass_days is None:
             pass_days = persistence.read_screen_pass_days(conn, start, end)
-        run_setup(conn, cfg, prices, pass_days, universe, start, end)
+        run_setup(
+            conn, cfg, prices, pass_days, universe, matrices["dates"], start, end
+        )
     if "sim" in stages:
         run_sim(conn, cfg, matrices, universe, market, start, end)
     conn.close()
