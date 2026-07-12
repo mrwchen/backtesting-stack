@@ -83,8 +83,14 @@ class Config:
     eps_yoy_min: float
     revenue_yoy_min: float
     fundamentals_min_pass: int
-    eps_stale_trading_days: int
-    filing_stale_trading_days: int
+    margin_expansion_min: float
+    acceleration_min: float
+    quarterly_growth_streak_min: int
+    quarterly_fundamental_stale_trading_days: int
+    institutional_sponsorship_filter_enable: bool
+    institutional_min_managers: int
+    institutional_net_activity_min: float
+    institutional_activity_lookback_sessions: int
 
     # VCP detection
     swing_window: int
@@ -99,13 +105,13 @@ class Config:
     dryup_ratio_max: float
     dryup_ratio_preferred: float
     setup_valid_days: int
+    vcp_score_min: float
 
     # simulation and pre-session order sizing
     initial_equity: float
     risk_pct: float
     stop_max_pct: float
     max_position_pct: float
-    max_gap_pct: float
     slippage_pct: float
     commission_pct: float
     partial_at_r: float
@@ -116,10 +122,20 @@ class Config:
     failed_breakout_days: int
     failed_breakout_min_r: float
     bad_fundamentals_filter_enable: bool
+    pivot_buffer_pct: float
+    max_buy_zone_pct: float
+    time_stop_sessions: int
+    time_stop_min_r: float
+    profit_protection_trigger_r: float
+    profit_protection_lock_r: float
 
     # portfolio simulation constraints
     portfolio_max_open_positions: int
     portfolio_max_gross_exposure_pct: float
+    exposure_levels: tuple[float, ...]
+    exposure_winners_to_step_up: int
+    exposure_losses_to_reset: int
+    exposure_drawdown_reset_pct: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -162,9 +178,21 @@ class Config:
             ibkr_industry_breadth_min_symbols=int(_env("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS", "5")),
             eps_yoy_min=float(_env("EPS_YOY_MIN", "0.20")),
             revenue_yoy_min=float(_env("REVENUE_YOY_MIN", "0.10")),
-            fundamentals_min_pass=int(_env("FUNDAMENTALS_MIN_PASS", "2")),
-            eps_stale_trading_days=int(_env("EPS_STALE_TRADING_DAYS", "130")),
-            filing_stale_trading_days=int(_env("FILING_STALE_TRADING_DAYS", "280")),
+            fundamentals_min_pass=int(_env("FUNDAMENTALS_MIN_PASS", "4")),
+            margin_expansion_min=float(_env("MARGIN_EXPANSION_MIN", "0.0")),
+            acceleration_min=float(_env("ACCELERATION_MIN", "0.0")),
+            quarterly_growth_streak_min=int(_env("QUARTERLY_GROWTH_STREAK_MIN", "2")),
+            quarterly_fundamental_stale_trading_days=int(
+                _env("QUARTERLY_FUNDAMENTAL_STALE_TRADING_DAYS", "130")
+            ),
+            institutional_sponsorship_filter_enable=_env_bool(
+                "INSTITUTIONAL_SPONSORSHIP_FILTER_ENABLE", True
+            ),
+            institutional_min_managers=int(_env("INSTITUTIONAL_MIN_MANAGERS", "10")),
+            institutional_net_activity_min=float(_env("INSTITUTIONAL_NET_ACTIVITY_MIN", "0")),
+            institutional_activity_lookback_sessions=int(
+                _env("INSTITUTIONAL_ACTIVITY_LOOKBACK_SESSIONS", "130")
+            ),
             swing_window=int(_env("SWING_WINDOW", "3")),
             base_min_days=int(_env("BASE_MIN_DAYS", "15")),
             base_max_days=int(_env("BASE_MAX_DAYS", "75")),
@@ -177,23 +205,33 @@ class Config:
             dryup_ratio_max=float(_env("DRYUP_RATIO_MAX", "0.70")),
             dryup_ratio_preferred=float(_env("DRYUP_RATIO_PREFERRED", "0.65")),
             setup_valid_days=int(_env("SETUP_VALID_DAYS", "15")),
+            vcp_score_min=float(_env("VCP_SCORE_MIN", "65")),
             initial_equity=float(_env("INITIAL_EQUITY", "100000")),
             risk_pct=float(_env("RISK_PCT", "0.01")),
             stop_max_pct=float(_env("STOP_MAX_PCT", "0.08")),
             max_position_pct=float(_env("MAX_POSITION_PCT", "0.25")),
-            max_gap_pct=float(_env("MAX_GAP_PCT", "0.05")),
             slippage_pct=float(_env("SLIPPAGE_PCT", "0.001")),
             commission_pct=float(_env("COMMISSION_PCT", "0.0005")),
             partial_at_r=float(_env("PARTIAL_AT_R", "2.0")),
-            partial_fraction=float(_env("PARTIAL_FRACTION", "0.5")),
-            breakeven_after_partial=_env_bool("BREAKEVEN_AFTER_PARTIAL", True),
+            partial_fraction=float(_env("PARTIAL_FRACTION", "0.0")),
+            breakeven_after_partial=_env_bool("BREAKEVEN_AFTER_PARTIAL", False),
             trail_ma_days=int(_env("TRAIL_MA_DAYS", "50")),
             failed_breakout_exit_enable=_env_bool("FAILED_BREAKOUT_EXIT_ENABLE", True),
             failed_breakout_days=int(_env("FAILED_BREAKOUT_DAYS", "10")),
             failed_breakout_min_r=float(_env("FAILED_BREAKOUT_MIN_R", "-0.5")),
             bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", True),
+            pivot_buffer_pct=float(_env("PIVOT_BUFFER_PCT", "0.001")),
+            max_buy_zone_pct=float(_env("MAX_BUY_ZONE_PCT", "0.02")),
+            time_stop_sessions=int(_env("TIME_STOP_SESSIONS", "10")),
+            time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
+            profit_protection_trigger_r=float(_env("PROFIT_PROTECTION_TRIGGER_R", "2.0")),
+            profit_protection_lock_r=float(_env("PROFIT_PROTECTION_LOCK_R", "0.5")),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
+            exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
+            exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "2")),
+            exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
+            exposure_drawdown_reset_pct=float(_env("EXPOSURE_DRAWDOWN_RESET_PCT", "0.04")),
         )
         if cfg.stage not in ("screen", "setup", "sim", "all"):
             raise ValueError(f"unsupported STAGE={cfg.stage!r}")
@@ -213,6 +251,12 @@ class Config:
             raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
         if cfg.portfolio_max_gross_exposure_pct <= 0:
             raise ValueError("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT must be > 0")
+        if not cfg.exposure_levels or any(level <= 0 or level > 1 for level in cfg.exposure_levels):
+            raise ValueError("EXPOSURE_LEVELS must contain values in (0, 1]")
+        if tuple(sorted(cfg.exposure_levels)) != cfg.exposure_levels:
+            raise ValueError("EXPOSURE_LEVELS must be sorted ascending")
+        if not 0 <= cfg.vcp_score_min <= 100:
+            raise ValueError("VCP_SCORE_MIN must be between 0 and 100")
         return cfg
 
     def to_json(self) -> str:

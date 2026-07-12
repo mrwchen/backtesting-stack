@@ -2,12 +2,15 @@ import pandas as pd
 import pytest
 
 from src import data_loader
-from src.data_loader import _normalize_quarterly_eps_events, _require_quarterly_eps_events
+from src.data_loader import (
+    _normalize_quarterly_fundamental_events,
+    _require_quarterly_fundamental_events,
+)
 
 from .util import make_cfg
 
 
-def test_quarterly_eps_events_keep_latest_economic_period_point_in_time():
+def test_quarterly_fundamental_events_keep_latest_economic_period_point_in_time():
     events = pd.DataFrame(
         [
             ("AAA", "2024-05-01", "2024-04-30T20:00:00Z", "q1", "2024-03-31", 1.20),
@@ -30,7 +33,7 @@ def test_quarterly_eps_events_keep_latest_economic_period_point_in_time():
     )
     events["prior_year_diluted_eps"] = 1.0
 
-    normalized = _normalize_quarterly_eps_events(events)
+    normalized = _normalize_quarterly_fundamental_events(events)
 
     assert normalized["accession_number"].tolist() == ["q1", "q2", "q2b"]
     assert normalized["diluted_eps"].tolist() == [1.20, 1.50, 1.70]
@@ -60,23 +63,23 @@ def test_unknown_acceptance_cannot_override_known_same_day_filing():
     )
     events["prior_year_diluted_eps"] = 1.0
 
-    normalized = _normalize_quarterly_eps_events(events)
+    normalized = _normalize_quarterly_fundamental_events(events)
 
     assert normalized["accession_number"].tolist() == ["aaa-known"]
     assert normalized["diluted_eps"].tolist() == [1.5]
 
 
-def test_empty_quarterly_eps_source_is_an_integration_error():
+def test_empty_quarterly_fundamental_source_is_an_integration_error():
     with pytest.raises(RuntimeError, match="schema init and startup historical backfill"):
-        _require_quarterly_eps_events(pd.DataFrame())
+        _require_quarterly_fundamental_events(pd.DataFrame())
 
 
 def test_all_stock_inputs_use_the_same_full_security_identity():
     for query in (
         data_loader.PRICES_SQL,
         data_loader.UNIVERSE_SQL,
-        data_loader.FUNDAMENTALS_SQL,
-        data_loader.QUARTERLY_EPS_SQL,
+        data_loader.QUARTERLY_FUNDAMENTALS_SQL,
+        data_loader.SPONSORSHIP_SQL,
     ):
         assert "canonical_identity" in query
         assert ".symbol" in query

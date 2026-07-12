@@ -48,7 +48,86 @@ def _clean_cfg():
     return make_cfg(
         slippage_pct=0.0, commission_pct=0.0, risk_pct=0.01,
         partial_at_r=2.0, partial_fraction=0.5, breakeven_after_partial=True,
+        pivot_buffer_pct=0.0, max_buy_zone_pct=0.05,
+        time_stop_sessions=999, profit_protection_trigger_r=999.0,
+        exposure_levels=(1.0,),
     )
+
+
+def test_new_default_rule_rejects_entry_above_two_percent_buy_zone():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(103.0, 104.0, 102.0, 103.0)]
+    bars += [(103.0, 104.0, 102.0, 103.0)] * 3
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 8)
+    cfg = make_cfg(
+        slippage_pct=0.0, commission_pct=0.0, partial_fraction=0.0,
+        pivot_buffer_pct=0.001, max_buy_zone_pct=0.02,
+    )
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+    assert result.trades.empty
+
+
+def test_time_stop_exits_next_open_after_no_one_r_progress():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.2)]
+    bars += [(100.2, 102, 99, 100.5)] * 3
+    bars += [(100.0, 101, 99, 100.0)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 9)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__, "partial_fraction": 0.0,
+            "time_stop_sessions": 2, "time_stop_min_r": 1.0,
+        }
+    )
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+    assert result.trades.iloc[0]["exit_reason"] == "time_stop"
+    assert result.trades.iloc[0]["exit_date"] == dates[8].date()
+
+
+def test_progressive_exposure_steps_up_only_after_two_closed_winners():
+    dates = pd.bdate_range("2024-01-01", periods=14)
+    symbols = ["AAA", "BBB", "CCC"]
+    fields = {
+        symbol: np.array([(98.0, 99.0, 97.0, 98.0)] * len(dates))
+        for symbol in symbols
+    }
+    for symbol, entry in (("AAA", 5), ("BBB", 8), ("CCC", 11)):
+        fields[symbol][entry] = (99.0, 101.0, 98.0, 100.2)
+        fields[symbol][entry + 1] = (101.0, 111.0, 100.0, 108.0)
+        fields[symbol][entry + 2] = (102.0, 103.0, 101.0, 102.0)
+    frames = [
+        pd.DataFrame({symbol: fields[symbol][:, field] for symbol in symbols}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, detect, 100.0, 95.0, 13).assign(symbol=symbol, setup_id=index)
+            for index, (symbol, detect) in enumerate((("AAA", 4), ("BBB", 7), ("CCC", 10)), 1)
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__, "simulation_mode": "portfolio",
+            "partial_fraction": 0.0, "pivot_buffer_pct": 0.0,
+            "max_buy_zone_pct": 0.02, "profit_protection_trigger_r": 2.0,
+            "profit_protection_lock_r": 0.5,
+            "exposure_levels": (0.25, 0.5, 0.75, 1.0),
+            "portfolio_max_open_positions": 8,
+        }
+    )
+    result = simulate(dates, pd.Index(symbols), *frames, setups, cfg)
+    final_legs = result.trades[result.trades["leg"] == "final"].set_index("symbol")
+    assert final_legs.loc["AAA", "pnl"] > 0
+    assert final_legs.loc["BBB", "pnl"] > 0
+    assert final_legs.loc["CCC", "shares"] > final_legs.loc["BBB", "shares"]
+    assert result.equity.loc[result.equity["period_end_date"] == dates[11].date(), "exposure_level"].iloc[0] == 0.5
 
 
 def test_breakout_partial_and_breakeven_stop():

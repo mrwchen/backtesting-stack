@@ -128,13 +128,10 @@ def run_screen(
     template = trend_template.compute_template(close_m, rs["rs_rating"], cfg)
 
     log.info("computing point-in-time fundamentals")
-    filings = data_loader.load_fundamentals(conn, cfg)
-    quarterly_eps = data_loader.load_quarterly_eps(conn, cfg)
-    eps_pass, eps_yoy = fundamentals.eps_flags(quarterly_eps, dates, symbols, cfg)
-    revenue_pass, revenue_yoy, margin_pass = fundamentals.revenue_margin_flags(
-        filings, dates, symbols, cfg
-    )
-    fundamentals_pass = fundamentals.combine(eps_pass, revenue_pass, margin_pass, cfg)
+    quarterly = data_loader.load_quarterly_fundamentals(conn, cfg)
+    fundamental = fundamentals.quarterly_flags(quarterly, dates, symbols, cfg)
+    sponsorship_events = data_loader.load_sponsorship_events(conn, cfg)
+    sponsorship = fundamentals.sponsorship_flags(sponsorship_events, dates, symbols, cfg)
 
     log.info("computing IBKR group leadership filter")
     leadership = group_filter.compute_leadership(rs["rs_raw"], universe, cfg)
@@ -142,7 +139,8 @@ def run_screen(
     industry_breadth = group_filter.compute_industry_breadth(close_m, universe, cfg)
     screen_pass = (
         template["template_pass"]
-        & fundamentals_pass
+        & fundamental["fundamentals_pass"]
+        & sponsorship["institutional_sponsorship_pass"]
         & leadership["group_filter_pass"]
         & industry_breadth["ibkr_industry_breadth_pass"]
     )
@@ -189,13 +187,24 @@ def run_screen(
             "crit_near_52w_high": template["crit_near_52w_high"],
             "crit_rs_rating": template["crit_rs_rating"],
             "trend_template_pass": template["template_pass"],
-            "eps_pass": eps_pass,
-            "revenue_pass": revenue_pass,
-            "margin_pass": margin_pass,
-            "fundamentals_pass": fundamentals_pass,
+            "eps_pass": fundamental["eps_pass"],
+            "revenue_pass": fundamental["revenue_pass"],
+            "margin_pass": fundamental["margin_pass"],
+            "acceleration_pass": fundamental["acceleration_pass"],
+            "streak_pass": fundamental["streak_pass"],
+            "stability_pass": fundamental["stability_pass"],
+            "fundamental_score": fundamental["fundamental_score"],
+            "fundamentals_pass": fundamental["fundamentals_pass"],
+            "institutional_manager_count": sponsorship["institutional_manager_count"],
+            "institutional_net_activity": sponsorship["institutional_net_activity"],
+            "institutional_sponsorship_pass": sponsorship["institutional_sponsorship_pass"],
             "screen_pass": screen_pass,
-            "eps_yoy": eps_yoy.round(6),
-            "revenue_yoy": revenue_yoy.round(6),
+            "eps_yoy": fundamental["eps_yoy"].round(6),
+            "revenue_yoy": fundamental["revenue_yoy"].round(6),
+            "eps_acceleration": fundamental["eps_acceleration"].round(6),
+            "revenue_acceleration": fundamental["revenue_acceleration"].round(6),
+            "margin_delta": fundamental["margin_delta"].round(6),
+            "growth_streak": fundamental["growth_streak"],
         },
     )
     screen_df = screen_df.merge(
@@ -207,8 +216,13 @@ def run_screen(
         "ibkr_category_rs_rating",
         "stock_industry_rs_rating",
         "stock_category_rs_rating",
+        "fundamental_score",
+        "growth_streak",
+        "institutional_manager_count",
     ):
-        screen_df[column] = screen_df[column].astype("Int16")
+        screen_df[column] = screen_df[column].round().astype(
+            "Int32" if column == "institutional_manager_count" else "Int16"
+        )
     persistence.write_screen(conn, screen_df, start, end)
 
     market_df = market.loc[window].reset_index(names="period_end_date")

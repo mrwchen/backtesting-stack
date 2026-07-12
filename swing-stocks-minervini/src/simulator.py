@@ -10,14 +10,13 @@ opened in the same symbol.
 
 Entry:  before each session a deterministic, fully funded stop-buy slate is
         built from information known at the previous close. Quantity and
-        portfolio capacity are reserved at the worst permitted gap fill. Only
+        portfolio capacity are reserved at the worst permitted buy-zone fill. Only
         orders on that slate may fill; unused reservations are not reassigned
         after observing the day's highs. The market-breadth state produced at
         close t becomes effective for entries in session t+1.
 Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
-        us), partial profit at PARTIAL_AT_R with optional break-even stop,
-        failed-breakout exit after FAILED_BREAKOUT_DAYS without progress,
+        us), failed-breakout and time-stop exits, delayed profit protection,
         trailing exit on a close below the TRAIL_MA_DAYS MA (both executed next
         open), forced close at the end of the simulation only when that symbol
         has an executable final-session bar.
@@ -51,6 +50,9 @@ class Position:
     shares: int
     initial_shares: int
     pivot: float
+    max_high: float
+    next_stop: float | None = None
+    realized_position_pnl: float = 0.0
     partial_done: bool = False
     exit_next_open_reason: str | None = None
 
@@ -129,6 +131,11 @@ def simulate(
     equity_rows: list[dict] = []
     next_setup = 0
     next_position_id = 1
+    exposure_index = 0 if portfolio_mode else len(cfg.exposure_levels) - 1
+    consecutive_winners = 0
+    consecutive_losses = 0
+    peak_equity = cfg.initial_equity
+    closed_outcomes: list[float] = []
 
     def _num_attr(setup, name: str, default: float) -> float:
         value = getattr(setup, name, default)
@@ -161,6 +168,7 @@ def simulate(
         revenue_yoy = min(_num_attr(setup, "revenue_yoy", 0.0), 5.0)
         return (
             1 if cfg.bad_fundamentals_filter_enable and _known_bad_growth(setup) else 0,
+            -_num_attr(setup, "vcp_score", 0.0),
             _setup_stop_pct(setup),
             abs(dryup_value - cfg.dryup_ratio_preferred),
             -_num_attr(setup, "rs_rating", 0.0),
@@ -217,6 +225,7 @@ def simulate(
         if portfolio_mode:
             cash += proceeds
         realized_pnl += pnl
+        pos.realized_position_pnl += pnl
         r_unit = pos.entry_price - pos.initial_stop
         trades.append(
             {
@@ -237,6 +246,8 @@ def simulate(
                 "holding_days": int(t - pos.entry_idx),
             }
         )
+        if leg == "final":
+            closed_outcomes.append(pos.realized_position_pnl)
 
     def take_partial(pos: Position, t: int, day_open: float, target: float) -> bool:
         """Execute a real partial fill; a rounded zero-share leg changes nothing."""
@@ -277,10 +288,17 @@ def simulate(
             remaining_cash = max(0.0, cash)
             remaining_gross = max(
                 0.0,
-                sizing_equity * cfg.portfolio_max_gross_exposure_pct - start_gross,
+                sizing_equity * cfg.portfolio_max_gross_exposure_pct
+                * cfg.exposure_levels[exposure_index] - start_gross,
+            )
+            scaled_slots = max(
+                1,
+                int(np.floor(
+                    cfg.portfolio_max_open_positions * cfg.exposure_levels[exposure_index]
+                )),
             )
             remaining_slots = max(
-                0, cfg.portfolio_max_open_positions - len(start_symbols)
+                0, scaled_slots - len(start_symbols)
             )
         else:
             sizing_equity = sizing_base
@@ -306,7 +324,8 @@ def simulate(
 
                 pivot = _num_attr(setup, "pivot", np.nan)
                 stop = _num_attr(setup, "stop_level", np.nan)
-                worst_fill = pivot * (1 + cfg.max_gap_pct) * (1 + cfg.slippage_pct)
+                trigger = pivot * (1 + cfg.pivot_buffer_pct)
+                worst_fill = trigger * (1 + cfg.max_buy_zone_pct) * (1 + cfg.slippage_pct)
                 risk_per_share = worst_fill - stop
                 setup_key = int(setup.sim_setup_key)
                 if (
@@ -320,8 +339,12 @@ def simulate(
                     continue
 
                 limits = [
-                    sizing_equity * cfg.risk_pct / risk_per_share,
-                    sizing_equity * cfg.max_position_pct / worst_fill,
+                    sizing_equity * cfg.risk_pct
+                    * (cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0)
+                    / risk_per_share,
+                    sizing_equity * cfg.max_position_pct
+                    * (cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0)
+                    / worst_fill,
                 ]
                 if portfolio_mode:
                     limits.extend(
@@ -366,6 +389,10 @@ def simulate(
                 )
                 del positions[sym]
                 continue
+
+            if pos.next_stop is not None:
+                pos.stop = max(pos.stop, pos.next_stop)
+                pos.next_stop = None
 
             if day_open <= pos.stop:
                 record_trade(pos, t, pos.shares, day_open * (1 - cfg.slippage_pct), "final", "stop_gap")
@@ -437,6 +464,20 @@ def simulate(
                         continue
 
             day_close = c[t, col]
+            if np.isfinite(day_high):
+                pos.max_high = max(pos.max_high, float(day_high))
+            if (
+                r_unit > 0
+                and pos.max_high >= pos.entry_price + cfg.profit_protection_trigger_r * r_unit
+            ):
+                pos.next_stop = pos.entry_price + cfg.profit_protection_lock_r * r_unit
+            if (
+                r_unit > 0
+                and t - pos.entry_idx >= cfg.time_stop_sessions
+                and pos.max_high < pos.entry_price + cfg.time_stop_min_r * r_unit
+            ):
+                pos.exit_next_open_reason = "time_stop"
+                continue
             failed_breakout_level = max(
                 pos.pivot,
                 pos.entry_price + cfg.failed_breakout_min_r * r_unit,
@@ -469,6 +510,7 @@ def simulate(
                 consumed_setup_keys.add(order.setup_key)
                 continue
             pivot = float(setup.pivot)
+            trigger = pivot * (1 + cfg.pivot_buffer_pct)
             invalidation_level = max(
                 _num_attr(setup, "last_low", -np.inf),
                 _num_attr(setup, "stop_level", -np.inf),
@@ -478,12 +520,12 @@ def simulate(
             if np.isfinite(invalidation_level) and day_open <= invalidation_level:
                 consumed_setup_keys.add(order.setup_key)
                 continue
-            if day_high <= pivot:
+            if day_high <= trigger:
                 continue
-            if day_open > pivot * (1 + cfg.max_gap_pct):
+            if day_open > trigger * (1 + cfg.max_buy_zone_pct):
                 continue
 
-            fill = max(day_open, pivot) * (1 + cfg.slippage_pct)
+            fill = max(day_open, trigger) * (1 + cfg.slippage_pct)
             stop = float(setup.stop_level)
             shares = order.shares
 
@@ -499,6 +541,7 @@ def simulate(
                 shares=shares,
                 initial_shares=shares,
                 pivot=pivot,
+                max_high=fill,
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
@@ -549,7 +592,8 @@ def simulate(
             ).all()
             day_high = h[t, col]
             day_low = lo[t, col]
-            missed_breakout = np.isfinite(day_high) and day_high > float(setup.pivot)
+            trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
+            missed_breakout = np.isfinite(day_high) and day_high > trigger
             invalidation_level = max(
                 _num_attr(setup, "last_low", -np.inf),
                 _num_attr(setup, "stop_level", -np.inf),
@@ -577,8 +621,31 @@ def simulate(
                 "equity": round(day_equity, 2),
                 "open_positions": len(positions),
                 "exposure_pct": round(day_open_notional / exposure_base, 6) if exposure_base > 0 else 0.0,
+                "exposure_level": cfg.exposure_levels[exposure_index],
             }
         )
+
+        if portfolio_mode:
+            for outcome in closed_outcomes:
+                if outcome > 0:
+                    consecutive_winners += 1
+                    consecutive_losses = 0
+                    if consecutive_winners >= cfg.exposure_winners_to_step_up:
+                        exposure_index = min(exposure_index + 1, len(cfg.exposure_levels) - 1)
+                        consecutive_winners = 0
+                else:
+                    consecutive_losses += 1
+                    consecutive_winners = 0
+                    exposure_index = max(0, exposure_index - 1)
+                    if consecutive_losses >= cfg.exposure_losses_to_reset:
+                        exposure_index = 0
+                        consecutive_losses = 0
+            closed_outcomes.clear()
+            peak_equity = max(peak_equity, day_equity)
+            if peak_equity > 0 and day_equity / peak_equity - 1.0 <= -cfg.exposure_drawdown_reset_pct:
+                exposure_index = 0
+                consecutive_winners = 0
+                consecutive_losses = 0
 
     # ---- close remaining positions only when the final session is tradable ----
     last = len(dates) - 1
@@ -612,6 +679,7 @@ def simulate(
                 "exposure_pct": round(final_notional / exposure_base, 6)
                 if exposure_base > 0
                 else 0.0,
+                "exposure_level": cfg.exposure_levels[exposure_index],
             }
         )
 

@@ -5,10 +5,10 @@ Sources (all produced by market-data-stack/stock_core_and_fundamental_data_fetch
   - stock_core_market_metrics_daily        adjusted daily OHLCV
   - stock_core_security_master_current     universe / quote_type filter
   - ibkr_symbols                           IBKR industry/category taxonomy
-  - stock_core_sec_fundamentals_asof_daily SEC TTM fundamentals; period_end_date is
-    the point-in-time availability date (filing acceptance), see column comment.
-  - stock_core_sec_quarterly_eps_events     SEC diluted quarterly EPS events with
-    point-in-time current and prior-year values per filing accession.
+  - stock_core_sec_quarterly_fundamental_events SEC quarterly reported values,
+    prior-year comparables and margins per filing accession.
+  - stock_core_13f_sponsorship_events       SEC institutional holding changes,
+    usable only from each filing's effective date.
 """
 from __future__ import annotations
 
@@ -94,23 +94,7 @@ FROM world_regime_daily_scores_mv
 WHERE day <= %(end)s
 """
 
-FUNDAMENTALS_SQL = f"""
-WITH canonical_identity AS (
-    {CANONICAL_IDENTITY_SQL}
-)
-SELECT f.symbol,
-       f.period_end_date::date                        AS available_date,
-       f.sec_revenue_ttm::float8                      AS revenue_ttm,
-       f.sec_net_margin_ttm::float8                   AS net_margin_ttm
-FROM stock_core_sec_fundamentals_asof_daily f
-JOIN canonical_identity i
-  ON i.symbol = f.symbol
- AND i.exchange = f.exchange
- AND i.cik = f.cik
-WHERE f.period_end_date <= %(end)s
-"""
-
-QUARTERLY_EPS_SQL = f"""
+QUARTERLY_FUNDAMENTALS_SQL = f"""
 WITH canonical_identity AS (
     {CANONICAL_IDENTITY_SQL}
 )
@@ -120,13 +104,37 @@ SELECT e.symbol,
        e.accession_number,
        e.fiscal_period_end_date::date                 AS fiscal_period_end_date,
        e.diluted_eps::float8                          AS diluted_eps,
-       e.prior_year_diluted_eps::float8               AS prior_year_diluted_eps
-FROM stock_core_sec_quarterly_eps_events e
+       e.prior_year_diluted_eps::float8               AS prior_year_diluted_eps,
+       e.quarterly_revenue::float8                    AS quarterly_revenue,
+       e.prior_year_quarterly_revenue::float8         AS prior_year_quarterly_revenue,
+       e.quarterly_operating_margin::float8           AS quarterly_operating_margin,
+       e.prior_year_quarterly_operating_margin::float8 AS prior_year_quarterly_operating_margin,
+       e.quarterly_net_margin::float8                 AS quarterly_net_margin,
+       e.prior_year_quarterly_net_margin::float8      AS prior_year_quarterly_net_margin
+FROM stock_core_sec_quarterly_fundamental_events e
 JOIN canonical_identity i
   ON i.symbol = e.symbol
  AND i.exchange = e.exchange
  AND i.cik = e.cik
 WHERE e.effective_date <= %(end)s
+"""
+
+SPONSORSHIP_SQL = f"""
+WITH canonical_identity AS (
+    {CANONICAL_IDENTITY_SQL}
+)
+SELECT e.symbol,
+       e.effective_date::date AS available_date,
+       SUM(e.manager_count_delta)::float8 AS manager_count_delta,
+       SUM(e.new_position_count + e.increased_count
+           - e.decreased_count - e.exited_count)::float8 AS net_activity_delta
+FROM stock_core_13f_sponsorship_events e
+JOIN canonical_identity i
+  ON i.symbol = e.symbol
+ AND i.exchange = e.exchange
+ AND i.cik = e.cik
+WHERE e.effective_date <= %(end)s
+GROUP BY e.symbol, e.effective_date
 """
 
 
@@ -176,18 +184,7 @@ def load_universe(conn, cfg: Config) -> pd.DataFrame:
     return _cached(cfg, f"universe_identity_ibkr_v2_{effective_end(cfg)}", _load)
 
 
-def load_fundamentals(conn, cfg: Config) -> pd.DataFrame:
-    end = effective_end(cfg)
-
-    def _load():
-        df = db.read_df(conn, FUNDAMENTALS_SQL, {"end": end})
-        df["available_date"] = pd.to_datetime(df["available_date"])
-        return df
-
-    return _cached(cfg, f"fundamentals_identity_ttm_v4_{end}", _load)
-
-
-def _normalize_quarterly_eps_events(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_quarterly_fundamental_events(df: pd.DataFrame) -> pd.DataFrame:
     """Select the latest economic quarter after each accession becomes usable."""
     df = df.copy()
     df["available_date"] = pd.to_datetime(df["available_date"])
@@ -224,30 +221,47 @@ def _normalize_quarterly_eps_events(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _require_quarterly_eps_events(df: pd.DataFrame) -> pd.DataFrame:
+def _require_quarterly_fundamental_events(df: pd.DataFrame) -> pd.DataFrame:
     """Fail loudly when the upstream schema exists but was not backfilled."""
     if df.empty:
         raise RuntimeError(
-            "stock_core_sec_quarterly_eps_events is empty; run the "
+            "stock_core_sec_quarterly_fundamental_events is empty; run the "
             "stock_core_and_fundamental_data_fetcher schema init and startup "
             "historical backfill before the Minervini backtest"
         )
     return df
 
 
-def load_quarterly_eps(conn, cfg: Config) -> pd.DataFrame:
-    """Load accession-keyed SEC diluted-EPS events in deterministic PIT order."""
+def load_quarterly_fundamentals(conn, cfg: Config) -> pd.DataFrame:
+    """Load accession-keyed SEC quarterly events in deterministic PIT order."""
     end = effective_end(cfg)
 
     def _load():
-        df = db.read_df(conn, QUARTERLY_EPS_SQL, {"end": end})
-        return _normalize_quarterly_eps_events(_require_quarterly_eps_events(df))
+        df = db.read_df(conn, QUARTERLY_FUNDAMENTALS_SQL, {"end": end})
+        return _normalize_quarterly_fundamental_events(_require_quarterly_fundamental_events(df))
 
     # Validate after the cache read as well so an accidentally cached empty
     # source cannot silently turn the EPS leg of the 2-of-3 screen off.
-    return _require_quarterly_eps_events(
-        _cached(cfg, f"quarterly_eps_identity_v2_{end}", _load)
+    return _require_quarterly_fundamental_events(
+        _cached(cfg, f"quarterly_fundamentals_identity_v1_{end}", _load)
     )
+
+
+def load_sponsorship_events(conn, cfg: Config) -> pd.DataFrame:
+    end = effective_end(cfg)
+
+    def _load():
+        df = db.read_df(conn, SPONSORSHIP_SQL, {"end": end})
+        if not df.empty:
+            df["available_date"] = pd.to_datetime(df["available_date"])
+        return df
+
+    events = _cached(cfg, f"sponsorship_identity_v1_{end}", _load, cache_empty=False)
+    if cfg.institutional_sponsorship_filter_enable and events.empty:
+        raise RuntimeError(
+            "stock_core_13f_sponsorship_events is empty while the institutional sponsorship filter is enabled"
+        )
+    return events
 
 
 def load_regime_scores(conn, cfg: Config) -> pd.DataFrame:

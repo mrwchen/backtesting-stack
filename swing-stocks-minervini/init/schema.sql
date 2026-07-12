@@ -85,10 +85,21 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_screen_daily (
     eps_pass                    BOOLEAN,
     revenue_pass                BOOLEAN,
     margin_pass                 BOOLEAN,
+    acceleration_pass           BOOLEAN,
+    streak_pass                 BOOLEAN,
+    stability_pass              BOOLEAN,
+    fundamental_score           SMALLINT,
     fundamentals_pass           BOOLEAN NOT NULL,
+    institutional_manager_count INTEGER,
+    institutional_net_activity  NUMERIC(18,4),
+    institutional_sponsorship_pass BOOLEAN NOT NULL,
     screen_pass                 BOOLEAN NOT NULL,
     eps_yoy                     NUMERIC(18,6),
     revenue_yoy                 NUMERIC(18,6),
+    eps_acceleration            NUMERIC(18,6),
+    revenue_acceleration        NUMERIC(18,6),
+    margin_delta                NUMERIC(18,6),
+    growth_streak               SMALLINT,
     PRIMARY KEY (symbol, period_end_date)
 );
 
@@ -136,8 +147,20 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     base_start_date     DATE NOT NULL,
     base_days           INTEGER NOT NULL,
     n_contractions      INTEGER NOT NULL,
-    contraction_depths  JSONB NOT NULL,
+    base_count          INTEGER NOT NULL,
     dryup_ratio         NUMERIC(10,4),
+    vcp_score           NUMERIC(8,4) NOT NULL,
+    depth_quality_score NUMERIC(8,4) NOT NULL,
+    final_tightness_score NUMERIC(8,4) NOT NULL,
+    contraction_smoothness_score NUMERIC(8,4) NOT NULL,
+    volume_dryup_score  NUMERIC(8,4) NOT NULL,
+    volume_slope_score  NUMERIC(8,4) NOT NULL,
+    tight_closes_score  NUMERIC(8,4) NOT NULL,
+    base_duration_score NUMERIC(8,4) NOT NULL,
+    pivot_proximity_score NUMERIC(8,4) NOT NULL,
+    overhead_supply_score NUMERIC(8,4) NOT NULL,
+    prior_advance_score NUMERIC(8,4) NOT NULL,
+    weekly_structure_score NUMERIC(8,4) NOT NULL,
     close               NUMERIC(15,4),
     valid_until         DATE NOT NULL,
     created_ts          TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -204,6 +227,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_equity_daily (
     equity              NUMERIC(18,2) NOT NULL,
     open_positions      INTEGER NOT NULL,
     exposure_pct        NUMERIC(18,6) NOT NULL,
+    exposure_level      NUMERIC(8,4) NOT NULL,
     PRIMARY KEY (run_id, period_end_date)
 );
 

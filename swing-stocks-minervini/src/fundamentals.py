@@ -1,42 +1,10 @@
-"""Point-in-time fundamental flags on the daily grid.
-
-Diluted quarterly EPS comes from accession-keyed SEC filing events. Revenue
-and margin come from the SEC as-of snapshot table. Effective dates are the
-first UTC calendar dates on which the filing is usable, so no later filing is
-visible to an earlier screen.
-"""
+"""Causal quarterly growth, acceleration, margin and 13F sponsorship flags."""
 from __future__ import annotations
-
-import logging
 
 import numpy as np
 import pandas as pd
 
 from .config import Config
-
-log = logging.getLogger(__name__)
-
-
-def _event_matrix(
-    events: pd.DataFrame,
-    value_col: str,
-    dates: pd.DatetimeIndex,
-    symbols: pd.Index,
-    stale_limit: int,
-) -> pd.DataFrame:
-    """Scatter (symbol, available_date, value) events onto the daily grid and
-    forward-fill each column up to stale_limit trading days."""
-    col_index = {s: i for i, s in enumerate(symbols)}
-    arr = np.full((len(dates), len(symbols)), np.nan)
-
-    ev = events.dropna(subset=[value_col, "available_date"])
-    ev = ev[ev["symbol"].isin(col_index)].sort_values("available_date")
-    pos = dates.searchsorted(ev["available_date"].to_numpy())
-    keep = pos < len(dates)
-    for p, sym, val in zip(pos[keep], ev["symbol"].to_numpy()[keep], ev[value_col].to_numpy()[keep]):
-        arr[p, col_index[sym]] = val  # sorted by date: later events win
-
-    return pd.DataFrame(arr, index=dates, columns=symbols).ffill(limit=stale_limit)
 
 
 def _event_matrix_with_null_resets(
@@ -46,86 +14,179 @@ def _event_matrix_with_null_resets(
     symbols: pd.Index,
     stale_limit: int,
 ) -> pd.DataFrame:
-    """Forward-fill events while treating an explicit NULL as a state reset."""
-    col_index = {s: i for i, s in enumerate(symbols)}
+    col_index = {symbol: index for index, symbol in enumerate(symbols)}
     values = np.full((len(dates), len(symbols)), np.nan)
     event_pos = np.full((len(dates), len(symbols)), -1, dtype=np.int64)
-
-    ev = events.dropna(subset=["available_date"])
-    ev = ev[ev["symbol"].isin(col_index)].sort_values("available_date", kind="stable")
-    pos = dates.searchsorted(ev["available_date"].to_numpy())
-    keep = pos < len(dates)
-    for p, sym, val in zip(
-        pos[keep],
-        ev["symbol"].to_numpy()[keep],
-        ev[value_col].to_numpy()[keep],
+    selected = events.dropna(subset=["available_date"])
+    selected = selected[selected["symbol"].isin(col_index)].sort_values(
+        "available_date", kind="stable"
+    )
+    positions = dates.searchsorted(selected["available_date"].to_numpy())
+    keep = positions < len(dates)
+    for position, symbol, value in zip(
+        positions[keep], selected["symbol"].to_numpy()[keep],
+        selected[value_col].to_numpy()[keep],
     ):
-        col = col_index[sym]
-        event_pos[p, col] = p
-        values[p, col] = val
-
+        column = col_index[symbol]
+        event_pos[position, column] = position
+        values[position, column] = value
     last_event = np.maximum.accumulate(event_pos, axis=0)
-    out = np.full_like(values, np.nan)
-    rows, cols = np.where(last_event >= 0)
-    source_rows = last_event[rows, cols]
+    output = np.full_like(values, np.nan)
+    rows, columns = np.where(last_event >= 0)
+    source_rows = last_event[rows, columns]
     fresh = rows - source_rows <= stale_limit
-    out[rows[fresh], cols[fresh]] = values[source_rows[fresh], cols[fresh]]
-    return pd.DataFrame(out, index=dates, columns=symbols)
+    output[rows[fresh], columns[fresh]] = values[source_rows[fresh], columns[fresh]]
+    return pd.DataFrame(output, index=dates, columns=symbols)
 
 
-def eps_flags(
+def _safe_yoy(current: pd.Series, prior: pd.Series) -> pd.Series:
+    result = pd.Series(np.nan, index=current.index, dtype=float)
+    positive = current.notna() & prior.notna() & (prior > 0)
+    result.loc[positive] = current.loc[positive] / prior.loc[positive] - 1.0
+    return result
+
+
+def quarterly_flags(
     events: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, cfg: Config
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return diluted-EPS growth pass and YoY matrices from SEC events."""
-    f = events.copy()
-    eps = pd.to_numeric(f["diluted_eps"], errors="coerce")
-    prev = pd.to_numeric(f["prior_year_diluted_eps"], errors="coerce")
-    comparable = eps.notna() & prev.notna()
-    positive_growth_base = comparable & (prev > 0)
-    turnaround = comparable & (eps > 0) & (prev <= 0)
-
-    f["eps_yoy"] = np.where(positive_growth_base, eps / prev - 1.0, np.nan)
-    f["eps_pass"] = (
+) -> dict[str, pd.DataFrame]:
+    frame = events.copy().sort_values(
+        ["symbol", "available_date", "fiscal_period_end_date"], kind="stable"
+    )
+    eps = pd.to_numeric(frame["diluted_eps"], errors="coerce")
+    prior_eps = pd.to_numeric(frame["prior_year_diluted_eps"], errors="coerce")
+    revenue = pd.to_numeric(frame["quarterly_revenue"], errors="coerce")
+    prior_revenue = pd.to_numeric(frame["prior_year_quarterly_revenue"], errors="coerce")
+    frame["diluted_eps"] = eps
+    frame["eps_yoy"] = _safe_yoy(eps, prior_eps)
+    frame["revenue_yoy"] = _safe_yoy(revenue, prior_revenue)
+    frame["eps_pass"] = (
         (eps > 0)
-        & (
-            turnaround
-            | (positive_growth_base & (f["eps_yoy"] >= cfg.eps_yoy_min))
-        )
+        & (((prior_eps <= 0) & prior_eps.notna()) | (frame["eps_yoy"] >= cfg.eps_yoy_min - 1e-12))
+    ).astype(float)
+    frame["revenue_pass"] = (
+        (revenue > 0) & (frame["revenue_yoy"] >= cfg.revenue_yoy_min - 1e-12)
     ).astype(float)
 
-    pass_matrix = _event_matrix_with_null_resets(
-        f, "eps_pass", dates, symbols, cfg.eps_stale_trading_days
+    operating_margin = pd.to_numeric(frame["quarterly_operating_margin"], errors="coerce")
+    prior_operating_margin = pd.to_numeric(
+        frame["prior_year_quarterly_operating_margin"], errors="coerce"
     )
-    yoy_matrix = _event_matrix_with_null_resets(
-        f, "eps_yoy", dates, symbols, cfg.eps_stale_trading_days
+    net_margin = pd.to_numeric(frame["quarterly_net_margin"], errors="coerce")
+    prior_net_margin = pd.to_numeric(frame["prior_year_quarterly_net_margin"], errors="coerce")
+    frame["margin_delta"] = (operating_margin - prior_operating_margin).combine_first(
+        net_margin - prior_net_margin
     )
-    return pass_matrix == 1.0, yoy_matrix
+    frame["margin_pass"] = (frame["margin_delta"] >= cfg.margin_expansion_min).astype(float)
 
+    eps_acceleration = pd.Series(np.nan, index=frame.index, dtype=float)
+    revenue_acceleration = pd.Series(np.nan, index=frame.index, dtype=float)
+    streaks = pd.Series(0.0, index=frame.index, dtype=float)
+    stability = pd.Series(np.nan, index=frame.index, dtype=float)
+    for _symbol, indexes in frame.groupby("symbol", sort=False).groups.items():
+        period_state: dict[pd.Timestamp, dict[str, float | bool]] = {}
+        for index in indexes:
+            period = pd.Timestamp(frame.at[index, "fiscal_period_end_date"])
+            prior_periods = sorted(candidate for candidate in period_state if candidate < period)
+            if prior_periods:
+                prior = period_state[prior_periods[-1]]
+                current_eps_yoy = frame.at[index, "eps_yoy"]
+                current_revenue_yoy = frame.at[index, "revenue_yoy"]
+                if pd.notna(current_eps_yoy) and pd.notna(prior["eps_yoy"]):
+                    eps_acceleration.at[index] = float(current_eps_yoy) - float(prior["eps_yoy"])
+                if pd.notna(current_revenue_yoy) and pd.notna(prior["revenue_yoy"]):
+                    revenue_acceleration.at[index] = (
+                        float(current_revenue_yoy) - float(prior["revenue_yoy"])
+                    )
+            period_state[period] = {
+                "eps_yoy": frame.at[index, "eps_yoy"],
+                "revenue_yoy": frame.at[index, "revenue_yoy"],
+                "growth_pass": bool(
+                    frame.at[index, "eps_pass"] == 1.0
+                    and frame.at[index, "revenue_pass"] == 1.0
+                ),
+                "eps": frame.at[index, "diluted_eps"],
+            }
+            streak = 0
+            for candidate in sorted(
+                (candidate for candidate in period_state if candidate <= period), reverse=True
+            ):
+                if not period_state[candidate]["growth_pass"]:
+                    break
+                streak += 1
+            streaks.at[index] = streak
+            last_four = [
+                period_state[candidate]["eps"]
+                for candidate in sorted(
+                    (candidate for candidate in period_state if candidate <= period), reverse=True
+                )[:4]
+            ]
+            if len(last_four) == 4:
+                stability.at[index] = float(
+                    np.count_nonzero(np.asarray(last_four, dtype=float) > 0) >= 3
+                )
+    frame["eps_acceleration"] = eps_acceleration
+    frame["revenue_acceleration"] = revenue_acceleration
+    frame["acceleration_pass"] = (
+        (eps_acceleration >= cfg.acceleration_min)
+        | (revenue_acceleration >= cfg.acceleration_min)
+    ).astype(float)
+    frame["growth_streak"] = streaks
+    frame["streak_pass"] = (streaks >= cfg.quarterly_growth_streak_min).astype(float)
+    frame["stability_pass"] = stability
 
-def revenue_margin_flags(
-    fundamentals: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, cfg: Config
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Returns (revenue_pass, revenue_yoy, margin_pass) matrices."""
-    revenue = _event_matrix(
-        fundamentals, "revenue_ttm", dates, symbols, cfg.filing_stale_trading_days
+    matrix_columns = (
+        "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
+        "streak_pass", "stability_pass", "eps_yoy", "revenue_yoy",
+        "eps_acceleration", "revenue_acceleration", "margin_delta", "growth_streak",
     )
-    margin = _event_matrix(
-        fundamentals, "net_margin_ttm", dates, symbols, cfg.filing_stale_trading_days
+    result = {
+        column: _event_matrix_with_null_resets(
+            frame, column, dates, symbols, cfg.quarterly_fundamental_stale_trading_days
+        )
+        for column in matrix_columns
+    }
+    for column in (
+        "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
+        "streak_pass", "stability_pass",
+    ):
+        result[column] = result[column] == 1.0
+    score = sum(
+        result[column].astype(int)
+        for column in (
+            "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
+            "streak_pass", "stability_pass",
+        )
     )
-
-    prev_revenue = revenue.shift(252)
-    revenue_yoy = revenue.div(prev_revenue.where(prev_revenue > 0)).sub(1.0)
-    revenue_yoy = revenue_yoy.where(np.isfinite(revenue_yoy))
-    revenue_pass = (revenue > 0) & (prev_revenue > 0) & (revenue_yoy >= cfg.revenue_yoy_min)
-    margin_pass = margin > margin.shift(252)
-    return revenue_pass, revenue_yoy, margin_pass
+    result["fundamental_score"] = score
+    result["fundamentals_pass"] = score >= cfg.fundamentals_min_pass
+    return result
 
 
-def combine(
-    eps_pass: pd.DataFrame,
-    revenue_pass: pd.DataFrame,
-    margin_pass: pd.DataFrame,
-    cfg: Config,
-) -> pd.DataFrame:
-    count = eps_pass.astype(int) + revenue_pass.astype(int) + margin_pass.astype(int)
-    return count >= cfg.fundamentals_min_pass
+def sponsorship_flags(
+    events: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, cfg: Config
+) -> dict[str, pd.DataFrame]:
+    manager_delta = pd.DataFrame(0.0, index=dates, columns=symbols)
+    activity_delta = pd.DataFrame(0.0, index=dates, columns=symbols)
+    if not events.empty:
+        symbol_pos = {symbol: index for index, symbol in enumerate(symbols)}
+        positions = dates.searchsorted(events["available_date"].to_numpy())
+        for position, row in zip(positions, events.itertuples(index=False)):
+            if position >= len(dates) or row.symbol not in symbol_pos:
+                continue
+            manager_delta.iat[position, symbol_pos[row.symbol]] += float(row.manager_count_delta)
+            activity_delta.iat[position, symbol_pos[row.symbol]] += float(row.net_activity_delta)
+    manager_count = manager_delta.cumsum().clip(lower=0)
+    net_activity = activity_delta.rolling(
+        cfg.institutional_activity_lookback_sessions, min_periods=1
+    ).sum()
+    passed = (
+        (manager_count >= cfg.institutional_min_managers)
+        & (net_activity >= cfg.institutional_net_activity_min)
+    )
+    if not cfg.institutional_sponsorship_filter_enable:
+        passed.loc[:, :] = True
+    return {
+        "institutional_manager_count": manager_count,
+        "institutional_net_activity": net_activity,
+        "institutional_sponsorship_pass": passed,
+    }

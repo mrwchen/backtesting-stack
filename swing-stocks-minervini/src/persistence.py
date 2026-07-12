@@ -1,7 +1,6 @@
 """Read/write helpers for the backtesting_minervini_* result tables."""
 from __future__ import annotations
 
-import json
 import logging
 
 import pandas as pd
@@ -33,14 +32,21 @@ SCREEN_COLUMNS = [
     "crit_price_above_ma150_200", "crit_ma150_above_ma200", "crit_ma200_rising",
     "crit_ma50_above_ma150_200", "crit_price_above_ma50", "crit_above_52w_low",
     "crit_near_52w_high", "crit_rs_rating", "trend_template_pass",
-    "eps_pass", "revenue_pass", "margin_pass", "fundamentals_pass",
-    "screen_pass", "eps_yoy", "revenue_yoy",
+    "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
+    "streak_pass", "stability_pass", "fundamental_score", "fundamentals_pass",
+    "institutional_manager_count", "institutional_net_activity",
+    "institutional_sponsorship_pass", "screen_pass", "eps_yoy", "revenue_yoy",
+    "eps_acceleration", "revenue_acceleration", "margin_delta", "growth_streak",
 ]
 
 SETUP_COLUMNS = [
     "symbol", "ibkr_industry", "ibkr_category", "detect_date", "pivot", "last_low", "stop_level",
-    "base_start_date", "base_days", "n_contractions", "contraction_depths",
-    "dryup_ratio", "close", "valid_until",
+    "base_start_date", "base_days", "n_contractions", "base_count",
+    "dryup_ratio", "vcp_score", "depth_quality_score", "final_tightness_score",
+    "contraction_smoothness_score", "volume_dryup_score", "volume_slope_score",
+    "tight_closes_score", "base_duration_score", "pivot_proximity_score",
+    "overhead_supply_score", "prior_advance_score", "weekly_structure_score",
+    "close", "valid_until",
 ]
 
 TRADE_COLUMNS = [
@@ -53,7 +59,10 @@ TRADE_COLUMNS = [
 
 MARKET_COLUMNS = ["period_end_date", "market_breadth_pct", "market_on"]
 
-EQUITY_COLUMNS = ["run_id", "period_end_date", "equity", "open_positions", "exposure_pct"]
+EQUITY_COLUMNS = [
+    "run_id", "period_end_date", "equity", "open_positions", "exposure_pct",
+    "exposure_level",
+]
 
 
 def write_rs(conn, df: pd.DataFrame, start, end) -> None:
@@ -76,8 +85,6 @@ def write_setups(conn, df: pd.DataFrame, start, end) -> None:
     if df.empty:
         log.warning("no setups detected in %s..%s", start, end)
         return
-    df = df.copy()
-    df["contraction_depths"] = df["contraction_depths"].map(json.dumps)
     db.copy_df(conn, df, SETUPS_TABLE, SETUP_COLUMNS)
 
 
@@ -95,7 +102,7 @@ def read_setups(conn, start, end) -> pd.DataFrame:
         conn,
         f"""SELECT st.setup_id, st.symbol, st.detect_date, st.pivot, st.last_low,
                    st.stop_level, st.base_days, st.n_contractions,
-                   st.dryup_ratio, st.close, st.valid_until,
+                   st.dryup_ratio, st.vcp_score, st.close, st.valid_until,
                    sc.rs_rating, sc.ibkr_industry_rs_rating,
                    sc.ibkr_category_rs_rating, sc.stock_industry_rs_rating,
                    sc.stock_category_rs_rating, sc.eps_yoy, sc.revenue_yoy

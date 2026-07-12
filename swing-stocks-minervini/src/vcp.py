@@ -36,7 +36,20 @@ class Setup:
     base_days: int
     n_contractions: int
     contraction_depths: list[float]
+    base_count: int
     dryup_ratio: float
+    vcp_score: float
+    depth_quality_score: float
+    final_tightness_score: float
+    contraction_smoothness_score: float
+    volume_dryup_score: float
+    volume_slope_score: float
+    tight_closes_score: float
+    base_duration_score: float
+    pivot_proximity_score: float
+    overhead_supply_score: float
+    prior_advance_score: float
+    weekly_structure_score: float
     close: float
     valid_until: date
 
@@ -127,6 +140,7 @@ def _evaluate_day(
     vol_ma: np.ndarray,
     session_positions: np.ndarray,
     segment_ids: np.ndarray,
+    dates: pd.DatetimeIndex,
     cfg: Config,
 ) -> dict | None:
     close_t = close[t]
@@ -182,6 +196,81 @@ def _evaluate_day(
         ):
             continue
 
+        depth_quality = np.clip(
+            (depths[0] - depths[-1]) / max(depths[0], 1e-9), 0.0, 1.0
+        )
+        final_tightness = np.clip(1.0 - depths[-1] / cfg.final_depth_max, 0.0, 1.0)
+        depth_steps = np.diff(depths)
+        contraction_smoothness = np.clip(
+            1.0 - (np.std(depth_steps) / max(abs(np.mean(depth_steps)), 0.02)), 0.0, 1.0
+        ) if len(depth_steps) > 1 else depth_quality
+        dryup_span = max(
+            cfg.dryup_ratio_preferred - cfg.dryup_ratio_min,
+            cfg.dryup_ratio_max - cfg.dryup_ratio_preferred,
+            1e-9,
+        )
+        volume_dryup = np.clip(
+            1.0 - abs(dryup - cfg.dryup_ratio_preferred) / dryup_span, 0.0, 1.0
+        )
+        volume_window = volume[max(first_high_idx, t - 19) : t + 1]
+        if len(volume_window) >= 5 and np.all(volume_window > 0):
+            slope = np.polyfit(np.arange(len(volume_window)), np.log(volume_window), 1)[0]
+            volume_slope = np.clip(-slope / 0.03, 0.0, 1.0)
+        else:
+            volume_slope = 0.0
+        close_window = close[max(first_high_idx, t - 4) : t + 1]
+        close_range = (np.max(close_window) - np.min(close_window)) / max(close_t, 1e-9)
+        tight_closes = np.clip(1.0 - close_range / cfg.final_depth_max, 0.0, 1.0)
+        base_duration = np.clip(1.0 - abs(base_days - 40) / 35, 0.0, 1.0)
+        pivot_proximity = np.clip(
+            1.0 - ((pivot - close_t) / pivot) / cfg.final_depth_max, 0.0, 1.0
+        )
+        supply_start = max(0, first_high_idx - 126)
+        supply_close = close[supply_start:first_high_idx]
+        supply_volume = volume[supply_start:first_high_idx]
+        total_supply_volume = np.nansum(supply_volume)
+        overhead_fraction = (
+            np.nansum(supply_volume[supply_close >= pivot]) / total_supply_volume
+            if total_supply_volume > 0 else 1.0
+        )
+        overhead_supply = np.clip(1.0 - overhead_fraction, 0.0, 1.0)
+        prior_start = max(0, first_high_idx - 126)
+        prior_low = np.nanmin(low[prior_start:first_high_idx + 1])
+        prior_advance_value = sel[0][0][1] / prior_low - 1.0 if prior_low > 0 else 0.0
+        prior_advance = np.clip(prior_advance_value / 0.30, 0.0, 1.0)
+
+        history = pd.DataFrame({"date": dates[: t + 1], "close": close[: t + 1]})
+        history["week"] = history["date"].dt.to_period("W-FRI")
+        current_week = history["week"].iloc[-1]
+        weekly = history.groupby("week", sort=True)["close"].last()
+        if dates[t].weekday() != 4:
+            weekly = weekly.loc[weekly.index < current_week]
+        weekly_structure = 0.0
+        if len(weekly) >= 10:
+            weekly_ma4 = weekly.rolling(4).mean()
+            weekly_ma10 = weekly.rolling(10).mean()
+            weekly_structure = float(
+                weekly.iloc[-1] > weekly_ma4.iloc[-1] > weekly_ma10.iloc[-1]
+                and weekly_ma4.iloc[-1] > weekly_ma4.iloc[-2]
+            )
+
+        components = {
+            "depth_quality_score": 15.0 * depth_quality,
+            "final_tightness_score": 15.0 * final_tightness,
+            "contraction_smoothness_score": 10.0 * contraction_smoothness,
+            "volume_dryup_score": 10.0 * volume_dryup,
+            "volume_slope_score": 5.0 * volume_slope,
+            "tight_closes_score": 10.0 * tight_closes,
+            "base_duration_score": 5.0 * base_duration,
+            "pivot_proximity_score": 10.0 * pivot_proximity,
+            "overhead_supply_score": 10.0 * overhead_supply,
+            "prior_advance_score": 5.0 * prior_advance,
+            "weekly_structure_score": 5.0 * weekly_structure,
+        }
+        vcp_score = float(sum(components.values()))
+        if vcp_score < cfg.vcp_score_min:
+            continue
+
         return {
             "pivot": pivot,
             "last_low": last_low,
@@ -190,6 +279,8 @@ def _evaluate_day(
             "base_days": int(base_days),
             "depths": [round(d, 4) for d in depths],
             "dryup": float(dryup),
+            "vcp_score": vcp_score,
+            **components,
         }
     return None
 
@@ -252,6 +343,8 @@ def find_setups(
     # As the base ages, _evaluate_day may drop an older leading contraction;
     # that must not resurrect the unchanged final pivot/low as a new setup.
     emitted_terminal_pairs: set[tuple[int, int]] = set()
+    causal_base_count = 0
+    previous_base_pivot: float | None = None
     confirmed: list[Swing] = []
     pass_days = {int(t) for t in pass_idx if 0 <= int(t) < n}
     if not pass_days:
@@ -314,6 +407,7 @@ def find_setups(
             vol_ma,
             session_positions,
             segment_ids,
+            dates,
             cfg,
         )
         if found is None:
@@ -332,6 +426,11 @@ def find_setups(
             len(trading_dates) - 1,
         )
         stop_level = max(found["last_low"], found["pivot"] * (1 - cfg.stop_max_pct))
+        if previous_base_pivot is None or found["pivot"] >= previous_base_pivot * 1.25:
+            causal_base_count = 1
+        else:
+            causal_base_count += 1
+        previous_base_pivot = found["pivot"]
         setups.append(
             Setup(
                 symbol=symbol,
@@ -343,7 +442,20 @@ def find_setups(
                 base_days=found["base_days"],
                 n_contractions=len(found["depths"]),
                 contraction_depths=found["depths"],
+                base_count=causal_base_count,
                 dryup_ratio=round(found["dryup"], 4),
+                vcp_score=round(found["vcp_score"], 4),
+                depth_quality_score=round(found["depth_quality_score"], 4),
+                final_tightness_score=round(found["final_tightness_score"], 4),
+                contraction_smoothness_score=round(found["contraction_smoothness_score"], 4),
+                volume_dryup_score=round(found["volume_dryup_score"], 4),
+                volume_slope_score=round(found["volume_slope_score"], 4),
+                tight_closes_score=round(found["tight_closes_score"], 4),
+                base_duration_score=round(found["base_duration_score"], 4),
+                pivot_proximity_score=round(found["pivot_proximity_score"], 4),
+                overhead_supply_score=round(found["overhead_supply_score"], 4),
+                prior_advance_score=round(found["prior_advance_score"], 4),
+                weekly_structure_score=round(found["weekly_structure_score"], 4),
                 close=float(close[t]),
                 valid_until=trading_dates[valid_idx].date(),
             )

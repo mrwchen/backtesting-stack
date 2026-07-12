@@ -155,20 +155,23 @@ services:
       #    mit strengem SEC-Komponenten-/Q4-Fallback) ------------------------------
       # Mindest-EPS-Wachstum Quartal vs. Vorjahresquartal (0.20 = +20 %).
       EPS_YOY_MIN: "0.20"
-      # Mindest-Umsatzwachstum TTM vs. TTM vor einem Jahr (0.10 = +10 %).
+      # Mindest-Umsatzwachstum Quartal vs. Vorjahresquartal (0.10 = +10 %).
       REVENUE_YOY_MIN: "0.10"
       # true = Setups mit bekannt schwachem EPS- UND Umsatzwachstum werden in
       # der Simulation nicht gehandelt. Fehlende EPS-Daten bleiben erlaubt.
       BAD_FUNDAMENTALS_FILTER_ENABLE: "true"
-      # Wie viele der drei Flags (EPS, Umsatz, Margentrend) mindestens
+      # Wie viele der sechs Flags (EPS, Umsatz, Margen, Beschleunigung,
+      # Wachstumsserie, Jahresstabilitaet) mindestens
       # bestehen muessen, damit fundamentals_pass = true.
-      FUNDAMENTALS_MIN_PASS: "2"
-      # Nach wie vielen Handelstagen ohne neues Quartals-Filing das EPS-Flag
-      # verfaellt (130 ~ 2 verpasste Quartale).
-      EPS_STALE_TRADING_DAYS: "130"
-      # Nach wie vielen Handelstagen ohne neues Filing Umsatz-/Margen-Werte
-      # verfallen (280 laesst Jahresfiler wie 20-F gerade noch durch).
-      FILING_STALE_TRADING_DAYS: "280"
+      FUNDAMENTALS_MIN_PASS: "4"
+      MARGIN_EXPANSION_MIN: "0.0"
+      ACCELERATION_MIN: "0.0"
+      QUARTERLY_GROWTH_STREAK_MIN: "2"
+      QUARTERLY_FUNDAMENTAL_STALE_TRADING_DAYS: "130"
+      INSTITUTIONAL_SPONSORSHIP_FILTER_ENABLE: "true"
+      INSTITUTIONAL_MIN_MANAGERS: "10"
+      INSTITUTIONAL_NET_ACTIVITY_MIN: "0"
+      INSTITUTIONAL_ACTIVITY_LOOKBACK_SESSIONS: "130"
 
       # -- VCP-Erkennung (Volatility Contraction Pattern) --------------------------
       # Swing-Fenster k: ein Hoch/Tief gilt als Swingpunkt, wenn es Extremum ueber
@@ -203,15 +206,16 @@ services:
       # gueltig bleibt; Symbol-Halts pausieren die Frist nicht. Danach kann nur
       # eine neue Swing-Struktur wieder ein Setup bilden.
       SETUP_VALID_DAYS: "15"
+      VCP_SCORE_MIN: "65"
 
       # -- Simulation --------------------------------------------------------------
       # Independent nutzt INITIAL_EQUITY ohne Cash-/Positionslimits. Portfolio
       # reserviert Cash, Gross Exposure und Slots vor der Session. In beiden Modi
-      # wird die Stueckzahl am maximal erlaubten Gap-Fill vorab festgelegt.
+      # wird die Stueckzahl am oberen Rand der Buy Zone vorab festgelegt.
       # Fixe Startbasis in USD fuer Positionsgroesse und Research-Equity-Kurve.
       INITIAL_EQUITY: "100000"
       # Risiko pro Trade als Anteil der Basis (0.01 = 1 % = 1000 USD):
-      # Stueckzahl = Risiko / (Worst-Case-Gap-Fill - Stop).
+      # Stueckzahl = Risiko / (oberer Buy-Zone-Fill - Stop).
       RISK_PCT: "0.01"
       # Maximaler Stop-Abstand unter dem Pivot (0.08 = 8 %); liegt das letzte
       # Kontraktionstief tiefer, wird der Stop auf diesen Abstand begrenzt.
@@ -219,20 +223,10 @@ services:
       # Obergrenze der Positionsgroesse als Anteil der Basis (0.25 = max. 25.000 USD
       # Notional); begrenzt Trades mit sehr engem Stop.
       MAX_POSITION_PCT: "0.25"
-      # Kein Entry, wenn das Open mehr als diesen Anteil UEBER dem Pivot eroeffnet
-      # (0.05 = 5 % Gap). Jeder Pivot-Breakout konsumiert das Setup trotzdem.
-      MAX_GAP_PCT: "0.05"
       # Slippage pro Fill als Kursanteil (0.001 = 0,1 %): Kauf teurer, Verkauf billiger.
       SLIPPAGE_PCT: "0.001"
       # Kommission pro Seite als Anteil des Handelswerts (0.0005 = 5 Basispunkte).
       COMMISSION_PCT: "0.0005"
-      # Teilverkauf bei diesem R-Vielfachen (2.0 = beim 2-fachen des initialen Risikos).
-      PARTIAL_AT_R: "2.0"
-      # Anteil der Position, der beim Teilverkauf abgegeben wird (0.5 = die Haelfte).
-      PARTIAL_FRACTION: "0.5"
-      # true = nach dem Teilverkauf Stop auf Einstandskurs nachziehen (Breakeven);
-      # der Rest der Position kann nicht mehr ins Minus drehen.
-      BREAKEVEN_AFTER_PARTIAL: "true"
       # Trailing-Exit: schliesst die Position (naechstes Open), wenn der Schlusskurs
       # unter die MA dieser Laenge faellt (50 = 50-Tage-Linie).
       TRAIL_MA_DAYS: "50"
@@ -242,6 +236,12 @@ services:
       FAILED_BREAKOUT_EXIT_ENABLE: "true"
       FAILED_BREAKOUT_DAYS: "12"
       FAILED_BREAKOUT_MIN_R: "-0.5"
+      PIVOT_BUFFER_PCT: "0.001"
+      MAX_BUY_ZONE_PCT: "0.02"
+      TIME_STOP_SESSIONS: "10"
+      TIME_STOP_MIN_R: "1.0"
+      PROFIT_PROTECTION_TRIGGER_R: "2.0"
+      PROFIT_PROTECTION_LOCK_R: "0.5"
 
       # -- Portfolio-Constraints (nur SIMULATION_MODE=portfolio) -----------------
       # Maximal gleichzeitig offene Positionen. 8 ist bewusst konservativ, damit
@@ -250,6 +250,10 @@ services:
       # Maximaler Brutto-Exposure-Anteil am mark-to-market Portfolio-Equity.
       # 1.0 = kein Hebel; Cash darf nicht negativ werden.
       PORTFOLIO_MAX_GROSS_EXPOSURE_PCT: "1.0"
+      EXPOSURE_LEVELS: "0.25,0.50,0.75,1.00"
+      EXPOSURE_WINNERS_TO_STEP_UP: "2"
+      EXPOSURE_LOSSES_TO_RESET: "2"
+      EXPOSURE_DRAWDOWN_RESET_PCT: "0.04"
     networks:
       - shared_net
 

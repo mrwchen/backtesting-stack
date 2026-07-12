@@ -12,23 +12,23 @@ other backtesting services.
 | `stock_core_market_metrics_daily` | adjusted daily OHLCV (2020+) |
 | `stock_core_security_master_current` | universe filter (`quote_type = EQUITY`) |
 | `ibkr_symbols` | IBKR `industry` / `category` taxonomy for group leadership |
-| `stock_core_sec_fundamentals_asof_daily` | SEC TTM revenue/margins (point-in-time: `period_end_date` is the filing availability date) |
-| `stock_core_sec_quarterly_eps_events` | accession-keyed SEC diluted quarterly EPS and point-in-time prior-year comparator |
+| `stock_core_sec_quarterly_fundamental_events` | accession-keyed quarterly EPS, revenue, income and margins with prior-year comparators |
+| `stock_core_13f_sponsorship_events` | bitemporal institutional sponsorship changes from official SEC 13F filings |
 
 All stock inputs are joined to one canonical current `(symbol, exchange, cik)`
 identity before caching. This prevents a reused ticker or parallel exchange
 identity from mixing another issuer's prices and SEC history into the test.
 
-Quarterly EPS uses discrete SEC diluted-EPS facts where available. Strict,
-context-matched net-income and diluted-share derivation covers filings such as
-10-Ks that do not publish a discrete fourth-quarter EPS fact. Missing or
-incomparable data remains unknown; annual-only filers never qualify for the EPS
-flag.
+Quarterly fundamentals use discrete SEC facts where available. Strict,
+context-matched YTD/FY subtraction covers Q2-Q4 values that are not reported as
+discrete quarters. Currency-inconsistent or unavailable comparisons remain
+unknown. Growth, acceleration, margins, streaks and annual stability become
+visible only on the filing's `effective_date`.
 
 The market-data service's schema initialization and startup SEC history
-backfill must run before this backtester. An absent quarterly-EPS table fails at
+backfill and the separate official-SEC 13F service must run before this backtester. An absent quarterly-fundamental table fails at
 the SQL boundary; an empty table also fails explicitly instead of silently
-disabling the EPS leg of the fundamental screen.
+disabling the fundamental screen.
 
 **Result tables (all prefixed `backtesting_minervini_`):**
 
@@ -37,7 +37,7 @@ disabling the EPS leg of the fundamental screen.
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
 | `backtesting_minervini_screen_daily` | trend-template + fundamental + IBKR group-leadership + industry-breadth flags per symbol/day |
 | `backtesting_minervini_market_daily` | daily market breadth (% above 200d MA) + hysteresis gate |
-| `backtesting_minervini_setups` | detected VCP bases (pivot, stop, contraction chain) + IBKR industry/category |
+| `backtesting_minervini_setups` | VCP bases with transparent 0-100 component scores + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
 | `backtesting_minervini_trades` | trade legs per run + IBKR industry/category + world-regime attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
@@ -50,7 +50,9 @@ independently; source data is cached locally as parquet in `./cache`.
 
 ```
 screen : RS rating (cross-sectional percentile) + 8-point trend template
-         + point-in-time fundamentals
+         + point-in-time quarterly growth, acceleration, margins, streak and
+           annual stability
+         + point-in-time 13F manager count and net institutional activity
          + IBKR group leadership:
            strong industry, strong category, strongest stocks inside both
            groups
@@ -59,7 +61,10 @@ screen : RS rating (cross-sectional percentile) + 8-point trend template
            below 45% -> rs_daily, screen_daily
          + market breadth gate (share of stocks above their 200d MA, on >= 50%
          / off < 45% hysteresis) -> market_daily
-setup  : VCP detection on screen-pass days; a missing global session resets
+setup  : causal daily/complete-week VCP detection and transparent scoring for
+         contraction quality, final tightness, volume dry-up/slope, tight
+         closes, duration, pivot proximity, overhead supply and prior advance.
+         A missing global session resets
          that symbol's swing/volume structure, and validity expires in global
          market sessions even while the symbol is halted -> setups
 sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
@@ -69,15 +74,16 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          Before each session, SIMULATION_MODE=portfolio builds a deterministic,
          fully funded stop-buy slate from previous-close equity, cash, gross
          exposure and available position slots. Quantity is fixed using the
-         worst permitted gap fill. Same-day exits never fund replacement orders,
+         worst permitted buy-zone fill. Same-day exits never fund replacement orders,
          and unused reservations are not reassigned after observing daily highs.
          Portfolio priority uses as-of setup quality: RS rating, stock/group RS,
          contraction count, risk distance, volume dry-up quality and growth
          fields from screen_daily. Independent mode uses the same pre-session
          sizing discipline with INITIAL_EQUITY but no portfolio constraints.
-         Exits: stop (also checked on the entry bar itself), partial at
-         PARTIAL_AT_R, failed-breakout exit after a configurable wait when the
-         close falls back below pivot/R threshold, MA-trail, end-of-data when
+         Entries require a buffered pivot break and remain inside the 2% buy
+         zone. Exits: structural stop (maximum 8%, also checked on the entry
+         bar), failed-breakout exit, ten-session no-progress time stop,
+         delayed profit protection, MA-trail, end-of-data when
          the symbol has an executable final-session bar. Otherwise the position
          remains open and is only marked at its last known close.
          A market-breadth state computed at close t controls entries from session
@@ -90,8 +96,10 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          usable from d+1 (its 01:00 America/New_York cutoff); weekend rows remain
          usable for the next session. Trades carry that same causally available
          world-regime composite score at entry as attribution.
-         Known bad fundamentals (EPS and revenue growth both below threshold)
-         can block entries while missing EPS data remains tradable.
+         Portfolio exposure starts at 25%, steps up through 50/75/100% only
+         after two consecutive closed winners, steps down after a loss, and
+         resets after two losses or a 4% drawdown. Unrealized PnL never raises
+         the exposure level.
 ```
 
 ## Run
@@ -117,9 +125,14 @@ python -m pytest tests -q
   are biased optimistic — read them conservatively.
 - Price history starts 2020-01-02; with ~1 year of indicator warmup the
   effective backtest window begins ~2021.
-- Revenue and margins are SEC TTM values. Quarterly EPS is available only when
-  the filing contains comparable diluted-EPS facts or strict component contexts;
-  missing values are deliberately not estimated.
+- Quarterly SEC values are GAAP/IFRS facts or strict context-matched
+  derivations; non-GAAP values and missing comparators are not estimated.
+- 13F is intrinsically delayed. `period_of_report` is the economic date,
+  `accepted_at` is the knowledge timestamp when available, and the backtester
+  uses only `effective_date` (the next UTC calendar day). Amendments form new
+  knowledge states and never rewrite earlier backtest dates.
+- This is a deterministic SEPA-inspired research proxy, not a claim to reproduce
+  Mark Minervini's complete proprietary discretionary process.
 - Breakout-volume confirmation is not used as a same-day hard filter because
   daily volume is only known after the close; adding it to stop-buy entries
   would introduce look-ahead unless the entry is delayed to the next session.
