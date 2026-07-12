@@ -48,17 +48,17 @@ services:
       # -- Ablaufsteuerung --------------------------------------------------------
       # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + Fundamentals),
       # setup (VCP-Erkennung), sim (Trade-Simulation), all (alle drei nacheinander)
-      # oder sensitivity (feste Strictness-Matrix, Dev 2020-2023/OOS ab 2024).
+      # oder sensitivity (eingefrorene Moderate-Marktfilter-Ablation nur 2020-2023).
       # Stufen lesen ihre Eingaben aus der DB und sind einzeln wiederholbar.
       STAGE: "sensitivity"
       # Erster Tag des Auswertungsfensters (Screens/Setups/Trades werden ab hier geschrieben).
       # Indikatoren brauchen davor ~1 Jahr Warmup; Preishistorie beginnt 2020-01-02.
       START_DATE: "2020-01-02"
-      # Letzter Tag des Fensters. Leer = heute.
-      END_DATE: ""
+      # Das Ablationsfenster endet fest vor dem bereits betrachteten OOS-Zeitraum.
+      END_DATE: "2023-12-31"
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_daily_pivot_sensitivity_v2"
+      RUN_LABEL: "minervini_daily_pivot_dev_market_ablation_v1"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -76,9 +76,9 @@ services:
       # Simulationsmodus:
       # independent = jedes getriggerte Setup unabhaengig handeln (Research-Modus).
       # portfolio   = echte Cash-, Exposure- und Positionslimits anwenden.
-      # Fuer die Signal-Sensitivitaet werden Cash- und Slot-Effekte ausgeblendet;
-      # Der Marktfilter wird fuer diesen isolierten Entry-Test bewusst nicht
-      # angewendet; das Marktmodell wird weiterhin berechnet und persistiert.
+      # Fuer die Signal-Ablation werden Cash- und Slot-Effekte ausgeblendet.
+      # Die zwei festen Arme unterscheiden sich ausschliesslich darin, ob der
+      # am Vortag bekannte QQQ/VOO-Marktstatus neue Entries blockieren darf.
       SIMULATION_MODE: "independent"
 
       # -- Universumsfilter (werden pro Tag, also as-of-date angewendet) ----------
@@ -114,7 +114,9 @@ services:
       # Distribution Days bei. Alle Close-/Volumensignale von t gelten erst t+1.
       # true = Marktstatus begrenzt neue Entries und Portfolio-Exposure.
       # Offene Positionen laufen weiterhin in ihre regulaeren Exits.
-      MARKET_FILTER_ENABLE: "false"
+      # true erzwingt bereits beim Laden die Vollstaendigkeitspruefung fuer QQQ
+      # und VOO. Der sensitivity-Workflow setzt den Wert je Arm auf off/on.
+      MARKET_FILTER_ENABLE: "true"
       MARKET_INDEX_SYMBOLS: "QQQ,VOO"
       MARKET_PRIMARY_INDEX: "QQQ"
       # Follow-Through Day ab Rally-Tag 4: mindestens +1,25 % und mehr Volumen
@@ -219,16 +221,16 @@ services:
       # Basishoch liegen (0.05 = 5 %), sonst droht Overhead-Supply beim Ausbruch.
       PIVOT_BELOW_BASE_HIGH_MAX: "0.05"
       # Volumen-Dry-up: Ø-Volumen der letzten 5 Tage geteilt durch 50d-Ø-Volumen.
-      # Unter 0.50 gilt als totes Tape; ueber 0.70 fehlt die Kontraktion.
-      DRYUP_RATIO_MIN: "0.50"
-      DRYUP_RATIO_MAX: "0.70"
+      # Fuer die Ablation ist das Moderate-Band 0.20-0.85 eingefroren.
+      DRYUP_RATIO_MIN: "0.20"
+      DRYUP_RATIO_MAX: "0.85"
       # Zielbereich fuer die Portfolio-Priorisierung bei konkurrierenden Setups.
       DRYUP_RATIO_PREFERRED: "0.65"
       # Wie viele globale Handelssessions ein erkanntes Setup fuer den Breakout
       # gueltig bleibt; Symbol-Halts pausieren die Frist nicht. Danach kann nur
       # eine neue Swing-Struktur wieder ein Setup bilden.
       SETUP_VALID_DAYS: "15"
-      VCP_SCORE_MIN: "65"
+      VCP_SCORE_MIN: "60"
 
       # -- Simulation --------------------------------------------------------------
       # Independent nutzt INITIAL_EQUITY ohne Cash-/Positionslimits. Portfolio

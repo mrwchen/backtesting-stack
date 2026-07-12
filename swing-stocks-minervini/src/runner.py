@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import date
 
 import numpy as np
@@ -52,6 +52,15 @@ def _configure_logging(level: str) -> None:
         )
     )
     logging.basicConfig(level=level, handlers=[handler], force=True)
+
+
+def _market_data_config(cfg: Config) -> Config:
+    """Require complete index inputs when any sensitivity arm uses the gate."""
+    if cfg.stage == "sensitivity" and any(
+        variant.market_filter_enable for variant in sensitivity.VARIANTS
+    ):
+        return replace(cfg, market_filter_enable=True)
+    return cfg
 
 
 def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, columns: dict) -> pd.DataFrame:
@@ -486,10 +495,10 @@ def run_sensitivity(
     detection_cache: dict[tuple[float, float, float], pd.DataFrame] = {}
 
     log.info(
-        "sensitivity start variants %d periods %d split %s screen-pass-days %d symbols %d",
+        "sensitivity start development-only market-filter ablation variants %d periods %d end-limit %s screen-pass-days %d symbols %d",
         len(sensitivity.VARIANTS),
         len(periods),
-        sensitivity.SENSITIVITY_SPLIT_DATE,
+        sensitivity.DEVELOPMENT_END_DATE,
         len(screen_passes),
         screen_passes["symbol"].nunique(),
     )
@@ -518,7 +527,7 @@ def run_sensitivity(
             phase_matrices = _slice_matrices(matrices, phase_end)
 
             log.info(
-                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f setups %d",
+                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f market-filter %s setups %d",
                 variant.name,
                 phase,
                 phase_start,
@@ -526,6 +535,7 @@ def run_sensitivity(
                 variant.vcp_score_min,
                 variant.dryup_ratio_min,
                 variant.dryup_ratio_max,
+                "on" if variant.market_filter_enable else "off",
                 len(phase_setups),
             )
             _run_simulation(
@@ -553,6 +563,15 @@ def main() -> None:
     _configure_logging(cfg.log_level)
     log.info("Stage %s start %s end %s label %s", cfg.stage, cfg.start_date, cfg.end_date, cfg.run_label)
 
+    if cfg.stage == "sensitivity":
+        if cfg.end_date is None:
+            raise ValueError(
+                "development-only market-filter ablation requires END_DATE=2023-12-31"
+            )
+        sensitivity.validate_configured_window(
+            date.fromisoformat(cfg.start_date), date.fromisoformat(cfg.end_date)
+        )
+
     conn = db.get_conn()
     prices = data_loader.load_prices(conn, cfg)
     universe = data_loader.load_universe(conn, cfg)
@@ -575,7 +594,7 @@ def main() -> None:
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
 
-    index_bars = data_loader.load_market_indexes(conn, cfg)
+    index_bars = data_loader.load_market_indexes(conn, _market_data_config(cfg))
     market = market_filter.compute_market_model(matrices["close"], index_bars, cfg)
     log.info(
         "Market model latest %s breadth %.1f%% entry cap %.0f%% active %d %d days",

@@ -118,37 +118,36 @@ sim    : causal same-session pivot stop-buy entries -> breakout_events, runs,
          uptrend depending on breadth, and 25-50% under pressure. Unrealized
          PnL never raises the exposure level.
 sensitivity:
-         computes screen and market state once, then runs a fixed strictness
-         matrix. Development is 2020-01-02..2023-12-31; 2024-01-01..END_DATE
-         is reported separately and is never used to select a winner. The
-         market filter is disabled for this isolated entry test. Same-session
-         execution and all exit/risk rules stay fixed.
-         Each variant/period produces its own runs, breakout_events, trades and
-         equity_daily rows. VCP setups remain in memory because the shared
-         setups table is not run-scoped. Negative setup IDs in sensitivity
+         computes screen and market state once, detects one frozen Moderate
+         setup population (VCP score 60, dry-up 0.20-0.85), then simulates it
+         twice on 2020-01-02..2023-12-31: market gate off and market gate on.
+         Configuration outside that development window is rejected before DB
+         access, so no 2024+ data enters this experiment. Same-session execution
+         and all other entry, exit and risk rules stay fixed. In independent
+         mode the on arm is a binary index-state gate: correction, rally attempt
+         and unavailable states block entries; positive exposure caps do not
+         scale positions. Each arm produces its own runs, breakout_events,
+         trades and equity_daily rows. VCP setups remain in memory because the
+         shared setups table is not run-scoped. Negative setup IDs in sensitivity
          events are therefore run-local identifiers, not setup-table keys.
 ```
 
-The fixed sensitivity variants are:
+The fixed market-filter ablation arms are:
 
-| Variant | Minimum VCP score | Dry-up band |
-|---|---:|---:|
-| `baseline` | 65 | 0.50-0.70 |
-| `score60` | 60 | 0.50-0.70 |
-| `score55` | 55 | 0.50-0.70 |
-| `dryup_low20` | 65 | 0.20-0.70 |
-| `dryup_high85` | 65 | 0.50-0.85 |
-| `moderate` | 60 | 0.20-0.85 |
+| Variant | Minimum VCP score | Dry-up band | Market gate |
+|---|---:|---:|---:|
+| `market_off` | 60 | 0.20-0.85 | off |
+| `market_on` | 60 | 0.20-0.85 | on |
 
 ## Run
 
 ```bash
-DROP_ALL_MINERVINI_TABLES_ON_START=true docker compose up --build
+docker compose up --build
 ```
 
-The explicit override drops all previous Minervini result tables once before
-the matrix. The compose default remains `false`; subsequent runs therefore do
-not silently delete earlier results.
+No schema change or table drop is required for the ablation. The compose drop
+switch remains `false`, so the prior Daily-Pivot results stay available under
+their existing run labels.
 
 All parameters (thresholds, VCP geometry, risk settings) are env vars in
 `compose.yaml`. `SCREEN_PERSIST=universe` persists every rankable symbol/day
@@ -176,8 +175,13 @@ python -m pytest tests -q
 - This is a deterministic SEPA-inspired research proxy, not a claim to reproduce
   Mark Minervini's complete proprietary discretionary process.
 - The 2024+ results have already been inspected during model diagnosis and are
-  therefore only a reporting split, not a pristine holdout. A clean forward
+  excluded from the development-only market-filter ablation. A clean forward
   holdout starts after the latest date already examined.
+- Historical stock breadth uses the currently canonical stock universe and is
+  therefore not a true point-in-time membership series. In independent-mode
+  sensitivity runs breadth only changes positive exposure-cap magnitudes, which
+  do not affect the binary on/off entry decision; the ablation is consequently
+  interpreted as an index-state gate test, not as a point-in-time breadth test.
 - The QQQ/VOO state machine is a transparent IBD-inspired approximation, not
   IBD/MarketSurge's proprietary market-status service. QQQ starts rally attempts
   and follow-through days; either configured proxy can add one distribution

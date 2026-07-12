@@ -1,4 +1,4 @@
-"""Causal IBD-inspired market-state and exposure model.
+"""Causal IBD-inspired index-state and exposure model.
 
 The primary ETF proxy starts rally attempts and confirms them with a
 price-and-volume follow-through day. All configured ETF proxies contribute
@@ -7,6 +7,10 @@ confirmation, not the primary regime switch.
 
 Every row is calculated with information known only after that session's
 close. The simulator therefore applies row t to entries in session t+1.
+Stock breadth is causal within the loaded columns, but those columns come from
+the currently canonical universe and are not historical point-in-time
+membership. Independent-mode ablations use only the binary index-state gate;
+breadth changes positive cap magnitudes without changing that binary decision.
 """
 from __future__ import annotations
 
@@ -38,7 +42,7 @@ def _hysteresis(values: np.ndarray, on_threshold: float, off_threshold: float) -
 
 
 def compute_breadth(close: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    """Return point-in-time stock breadth and its confirmation hysteresis."""
+    """Return causal breadth within the supplied stock columns."""
     ma200 = close.rolling(200, min_periods=200).mean()
     eligible = (close >= cfg.min_price) & ma200.notna()
     above = (close > ma200) & eligible

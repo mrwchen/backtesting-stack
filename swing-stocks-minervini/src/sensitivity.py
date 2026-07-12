@@ -1,13 +1,14 @@
-"""Fixed, bounded strictness sensitivity design for the Minervini model."""
+"""Fixed development-only market-filter ablation for the Minervini model."""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date
 
 from .config import Config
 
 
-SENSITIVITY_SPLIT_DATE = date(2024, 1, 1)
+DEVELOPMENT_START_DATE = date(2020, 1, 2)
+DEVELOPMENT_END_DATE = date(2023, 12, 31)
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class SensitivityVariant:
     vcp_score_min: float
     dryup_ratio_min: float
     dryup_ratio_max: float
+    market_filter_enable: bool
 
     @property
     def detection_key(self) -> tuple[float, float, float]:
@@ -34,27 +36,30 @@ class SensitivityVariant:
             vcp_score_min=self.vcp_score_min,
             dryup_ratio_min=self.dryup_ratio_min,
             dryup_ratio_max=self.dryup_ratio_max,
-            market_filter_enable=False,
+            market_filter_enable=self.market_filter_enable,
         )
 
 
 VARIANTS = (
-    SensitivityVariant("baseline", 65.0, 0.50, 0.70),
-    SensitivityVariant("score60", 60.0, 0.50, 0.70),
-    SensitivityVariant("score55", 55.0, 0.50, 0.70),
-    SensitivityVariant("dryup_low20", 65.0, 0.20, 0.70),
-    SensitivityVariant("dryup_high85", 65.0, 0.50, 0.85),
-    SensitivityVariant("moderate", 60.0, 0.20, 0.85),
+    SensitivityVariant("market_off", 60.0, 0.20, 0.85, False),
+    SensitivityVariant("market_on", 60.0, 0.20, 0.85, True),
 )
 
 
-def phases(start: date, end: date) -> tuple[tuple[str, date, date], ...]:
-    """Return fixed development and held-out reporting periods."""
-    if not start < SENSITIVITY_SPLIT_DATE <= end:
+def validate_configured_window(start: date, end: date) -> None:
+    """Require the frozen development window before any source data is loaded."""
+    if start != DEVELOPMENT_START_DATE or end != DEVELOPMENT_END_DATE:
         raise ValueError(
-            "sensitivity data must span both sides of 2024-01-01"
+            "market-filter ablation requires 2020-01-02 through 2023-12-31"
         )
-    return (
-        ("dev", start, SENSITIVITY_SPLIT_DATE - timedelta(days=1)),
-        ("oos", SENSITIVITY_SPLIT_DATE, end),
-    )
+
+
+def phases(start: date, end: date) -> tuple[tuple[str, date, date], ...]:
+    """Return the development period and reject any already-inspected OOS data."""
+    if start > end:
+        raise ValueError("sensitivity start date must not be after end date")
+    if end > DEVELOPMENT_END_DATE:
+        raise ValueError(
+            "market-filter ablation is development-only through 2023-12-31"
+        )
+    return (("dev", start, end),)
