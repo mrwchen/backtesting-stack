@@ -11,7 +11,7 @@ services:
       PGAPPNAME: "backtesting_minervini_init"
       # true = ALLE backtesting_minervini_*-Tabellen droppen und neu anlegen.
       # Achtung: loescht saemtliche bisherigen Runs/Trades/Screens unwiderruflich.
-      DROP_ALL_MINERVINI_TABLES_ON_START: "true"
+      DROP_ALL_MINERVINI_TABLES_ON_START: "${DROP_ALL_MINERVINI_TABLES_ON_START:-false}"
     command:
       - sh
       - -c
@@ -47,9 +47,10 @@ services:
 
       # -- Ablaufsteuerung --------------------------------------------------------
       # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + Fundamentals),
-      # setup (VCP-Erkennung), sim (Trade-Simulation) oder all (alle drei nacheinander).
+      # setup (VCP-Erkennung), sim (Trade-Simulation), all (alle drei nacheinander)
+      # oder sensitivity (feste Strictness-Matrix, Dev 2020-2023/OOS ab 2024).
       # Stufen lesen ihre Eingaben aus der DB und sind einzeln wiederholbar.
-      STAGE: "all"
+      STAGE: "sensitivity"
       # Erster Tag des Auswertungsfensters (Screens/Setups/Trades werden ab hier geschrieben).
       # Indikatoren brauchen davor ~1 Jahr Warmup; Preishistorie beginnt 2020-01-02.
       START_DATE: "2020-01-02"
@@ -57,7 +58,7 @@ services:
       END_DATE: ""
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_v11_volume_confirmed_d1_portfolio"
+      RUN_LABEL: "minervini_strictness_sensitivity_v1"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -75,7 +76,9 @@ services:
       # Simulationsmodus:
       # independent = jedes getriggerte Setup unabhaengig handeln (Research-Modus).
       # portfolio   = echte Cash-, Exposure- und Positionslimits anwenden.
-      SIMULATION_MODE: "portfolio"
+      # Fuer die Signal-Sensitivitaet werden Cash- und Slot-Effekte ausgeblendet;
+      # Marktstatus und dessen Entry-Cap bleiben trotzdem aktiv.
+      SIMULATION_MODE: "independent"
 
       # -- Universumsfilter (werden pro Tag, also as-of-date angewendet) ----------
       # Mindest-Schlusskurs in USD; Aktien darunter sind nicht rankbar (Penny-Stock-Filter).

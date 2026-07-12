@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import fields
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -16,6 +18,7 @@ from . import (
     market_filter,
     persistence,
     rs_rating,
+    sensitivity,
     trend_template,
     vcp,
 )
@@ -23,6 +26,18 @@ from .config import Config
 from .simulator import simulate
 
 log = logging.getLogger("runner")
+
+SETUP_CONTEXT_COLUMNS = [
+    "symbol",
+    "period_end_date",
+    "rs_rating",
+    "ibkr_industry_rs_rating",
+    "ibkr_category_rs_rating",
+    "stock_industry_rs_rating",
+    "stock_category_rs_rating",
+    "eps_yoy",
+    "revenue_yoy",
+]
 
 
 class _UtcFormatter(logging.Formatter):
@@ -246,17 +261,21 @@ def run_screen(
         int(screen_df["group_filter_pass"].sum()),
         int(screen_df["ibkr_industry_breadth_pass"].sum()),
     )
-    return _long_frame(screen_pass & window_m, dates, symbols, {})
+    return screen_df.loc[screen_df["screen_pass"]].reset_index(drop=True)
 
 
-def run_setup(
-    conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame,
-    universe: pd.DataFrame, trading_dates: pd.DatetimeIndex, start, end,
-) -> None:
+def detect_setups(
+    cfg: Config,
+    prices: pd.DataFrame,
+    pass_days: pd.DataFrame,
+    universe: pd.DataFrame,
+    trading_dates: pd.DatetimeIndex,
+) -> pd.DataFrame:
     if pass_days.empty:
-        log.warning("no screen passes -> no setup detection")
-        persistence.write_setups(conn, pd.DataFrame(), start, end)
-        return
+        return pd.DataFrame(
+            columns=[field.name for field in fields(vcp.Setup)]
+            + ["ibkr_industry", "ibkr_category"]
+        )
 
     pass_days = pass_days.copy()
     pass_days["period_end_date"] = pd.to_datetime(pass_days["period_end_date"])
@@ -289,23 +308,85 @@ def run_setup(
         )
     log.info("detected %d VCP setups across %d symbols", len(all_setups), len(pass_by_symbol))
     setups_df = pd.DataFrame([vars(s) for s in all_setups])
-    if not setups_df.empty:
-        setups_df = setups_df.merge(
-            universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
+    if setups_df.empty:
+        return pd.DataFrame(
+            columns=[field.name for field in fields(vcp.Setup)]
+            + ["ibkr_industry", "ibkr_category"]
         )
+    setups_df = setups_df.merge(
+        universe[["symbol", "ibkr_industry", "ibkr_category"]],
+        on="symbol",
+        how="left",
+    )
+    return setups_df
+
+
+def run_setup(
+    conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame,
+    universe: pd.DataFrame, trading_dates: pd.DatetimeIndex, start, end,
+) -> pd.DataFrame:
+    setups_df = detect_setups(cfg, prices, pass_days, universe, trading_dates)
     persistence.write_setups(conn, setups_df, start, end)
+    return setups_df
 
 
-def run_sim(
-    conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
-    market: pd.DataFrame, start, end,
-) -> None:
-    setups = persistence.read_setups(conn, start, end)
-    if setups.empty:
-        log.warning("no setups in %s..%s -> nothing to simulate", start, end)
-        return
+def _prepare_simulation_setups(
+    setups: pd.DataFrame,
+    screen_passes: pd.DataFrame,
+) -> pd.DataFrame:
+    prepared = setups.copy()
+    if "setup_id" not in prepared:
+        # Sensitivity setups stay in memory because the shared setup table is
+        # not run-scoped. Negative identifiers cannot be mistaken for its
+        # positive BIGSERIAL values when events are inspected later.
+        prepared["setup_id"] = -np.arange(1, len(prepared) + 1, dtype=np.int64)
+    available_context = [
+        column for column in SETUP_CONTEXT_COLUMNS if column in screen_passes.columns
+    ]
+    if len(available_context) == len(SETUP_CONTEXT_COLUMNS):
+        context = screen_passes[SETUP_CONTEXT_COLUMNS].rename(
+            columns={"period_end_date": "detect_date"}
+        )
+        context = context.copy()
+        context["detect_date"] = pd.to_datetime(context["detect_date"]).dt.date
+        prepared = prepared.merge(
+            context,
+            on=["symbol", "detect_date"],
+            how="left",
+            validate="many_to_one",
+        )
+    return prepared
+
+
+def _slice_matrices(matrices: dict, end: date) -> dict:
+    mask = matrices["dates"] <= pd.Timestamp(end)
+    sliced = {
+        "dates": matrices["dates"][mask],
+        "symbols": matrices["symbols"],
+    }
+    for field in ("open", "high", "low", "close", "volume"):
+        sliced[field] = matrices[field].loc[mask]
+    return sliced
+
+
+def _run_simulation(
+    conn,
+    cfg: Config,
+    matrices: dict,
+    universe: pd.DataFrame,
+    market: pd.DataFrame,
+    setups: pd.DataFrame,
+    regime: pd.DataFrame,
+    start: date,
+    end: date,
+    *,
+    confirmation_start: date | None = None,
+) -> tuple[int, dict]:
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
+    confirmation_start_idx = int(
+        dates.searchsorted(pd.Timestamp(confirmation_start or start))
+    )
     confirmed_setups, breakout_events = breakout_confirmation.confirm_daily_breakouts(
         dates,
         matrices["symbols"],
@@ -316,17 +397,19 @@ def run_sim(
         matrices["volume"],
         setups,
         cfg,
-        start_idx=sim_start_idx,
+        start_idx=confirmation_start_idx,
     )
     log.info(
         "Breakout confirmation events %d confirmed %d",
         len(breakout_events),
         int(breakout_events["confirmation_pass"].sum()) if not breakout_events.empty else 0,
     )
+    market_for_dates = market.reindex(dates)
     market_exposure_cap = (
-        market["entry_exposure_cap"].to_numpy() if cfg.market_filter_enable else None
+        market_for_dates["entry_exposure_cap"].to_numpy()
+        if cfg.market_filter_enable
+        else None
     )
-    regime = data_loader.load_regime_scores(conn, cfg)
     regime_entry_allowed = (
         _regime_entry_allowed(dates, regime, cfg)
         if cfg.regime_entry_filter_enable
@@ -344,6 +427,14 @@ def run_sim(
     breakout_events = breakout_confirmation.attach_fills(
         breakout_events, trades, result.entry_decisions
     )
+    if not breakout_events.empty:
+        breakout_date = pd.to_datetime(breakout_events["breakout_date"]).dt.date
+        planned_entry_date = pd.to_datetime(
+            breakout_events["planned_entry_date"], errors="coerce"
+        ).dt.date
+        breakout_events = breakout_events.loc[
+            (breakout_date >= start) | (planned_entry_date >= start)
+        ].reset_index(drop=True)
     if not trades.empty:
         trades = trades.merge(
             universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
@@ -352,7 +443,125 @@ def run_sim(
     persistence.write_trades(conn, run_id, trades)
     persistence.write_breakout_events(conn, run_id, breakout_events)
     persistence.write_equity(conn, run_id, result.equity)
-    log.info("run %d persisted: %s", run_id, result.metrics)
+    decisions = (
+        " ".join(
+            f"{decision} {count}"
+            for decision, count in breakout_events["decision"]
+            .value_counts()
+            .sort_index()
+            .items()
+        )
+        if not breakout_events.empty
+        else "none 0"
+    )
+    log.info(
+        "run %d %s %s setups %d breakout-events %d confirmed %d filled %d positions %s return %s decisions %s",
+        run_id,
+        cfg.run_label,
+        cfg.simulation_mode,
+        len(setups),
+        len(breakout_events),
+        int(breakout_events["confirmation_pass"].sum())
+        if not breakout_events.empty else 0,
+        int(breakout_events["entry_filled"].sum())
+        if not breakout_events.empty else 0,
+        result.metrics.get("num_positions", 0),
+        result.metrics.get("total_return", 0.0),
+        decisions,
+    )
+    return run_id, result.metrics
+
+
+def run_sim(
+    conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
+    market: pd.DataFrame, start, end,
+) -> tuple[int, dict]:
+    setups = persistence.read_setups(conn, start, end)
+    if setups.empty:
+        log.warning("no setups in %s..%s -> persisting zero-signal run", start, end)
+    regime = data_loader.load_regime_scores(conn, cfg)
+    return _run_simulation(
+        conn, cfg, matrices, universe, market, setups, regime, start, end
+    )
+
+
+def run_sensitivity(
+    conn,
+    cfg: Config,
+    prices: pd.DataFrame,
+    screen_passes: pd.DataFrame,
+    matrices: dict,
+    universe: pd.DataFrame,
+    market: pd.DataFrame,
+    start: date,
+    end: date,
+) -> None:
+    periods = sensitivity.phases(start, end)
+    regime = data_loader.load_regime_scores(conn, cfg)
+    detection_cache: dict[tuple[float, float, float], pd.DataFrame] = {}
+
+    log.info(
+        "sensitivity start variants %d periods %d split %s screen-pass-days %d symbols %d",
+        len(sensitivity.VARIANTS),
+        len(periods),
+        sensitivity.SENSITIVITY_SPLIT_DATE,
+        len(screen_passes),
+        screen_passes["symbol"].nunique(),
+    )
+    for variant in sensitivity.VARIANTS:
+        if variant.detection_key not in detection_cache:
+            detection_cfg = variant.apply(cfg, "full", start, end)
+            detection_cache[variant.detection_key] = detect_setups(
+                detection_cfg,
+                prices,
+                screen_passes,
+                universe,
+                matrices["dates"],
+            )
+        all_setups = detection_cache[variant.detection_key]
+
+        for phase, phase_start, phase_end in periods:
+            phase_cfg = variant.apply(cfg, phase, phase_start, phase_end)
+            detect_date = pd.to_datetime(all_setups["detect_date"]).dt.date
+            valid_until = pd.to_datetime(all_setups["valid_until"]).dt.date
+            phase_setups = all_setups.loc[
+                (detect_date <= phase_end) & (valid_until >= phase_start)
+            ].reset_index(drop=True)
+            phase_setups = _prepare_simulation_setups(
+                phase_setups, screen_passes
+            )
+            phase_matrices = _slice_matrices(matrices, phase_end)
+
+            log.info(
+                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f breakout-volume %.2f setups %d",
+                variant.name,
+                phase,
+                phase_start,
+                phase_end,
+                variant.vcp_score_min,
+                variant.dryup_ratio_min,
+                variant.dryup_ratio_max,
+                variant.breakout_volume_min_ratio,
+                len(phase_setups),
+            )
+            _run_simulation(
+                conn,
+                phase_cfg,
+                phase_matrices,
+                universe,
+                market,
+                phase_setups,
+                regime,
+                phase_start,
+                phase_end,
+                confirmation_start=start,
+            )
+
+    log.info(
+        "sensitivity done detection-configurations %d runs %d",
+        len(detection_cache),
+        len(sensitivity.VARIANTS) * len(periods),
+    )
 
 
 def main() -> None:
@@ -392,7 +601,12 @@ def main() -> None:
         int(market.loc[window, "market_on"].sum()), int(window.sum()),
     )
 
-    stages = ("screen", "setup", "sim") if cfg.stage == "all" else (cfg.stage,)
+    if cfg.stage == "all":
+        stages = ("screen", "setup", "sim")
+    elif cfg.stage == "sensitivity":
+        stages = ("screen", "sensitivity")
+    else:
+        stages = (cfg.stage,)
     pass_days = None
     if "screen" in stages:
         pass_days = run_screen(conn, cfg, matrices, market, universe, window)
@@ -404,6 +618,19 @@ def main() -> None:
         )
     if "sim" in stages:
         run_sim(conn, cfg, matrices, universe, market, start, end)
+    if "sensitivity" in stages:
+        assert pass_days is not None
+        run_sensitivity(
+            conn,
+            cfg,
+            prices,
+            pass_days,
+            matrices,
+            universe,
+            market,
+            start,
+            end,
+        )
     conn.close()
     log.info("done")
 

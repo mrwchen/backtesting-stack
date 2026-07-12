@@ -283,7 +283,7 @@ class Config:
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
             exposure_drawdown_reset_pct=float(_env("EXPOSURE_DRAWDOWN_RESET_PCT", "0.04")),
         )
-        if cfg.stage not in ("screen", "setup", "sim", "all"):
+        if cfg.stage not in ("screen", "setup", "sim", "all", "sensitivity"):
             raise ValueError(f"unsupported STAGE={cfg.stage!r}")
         if cfg.screen_persist not in ("passed", "universe"):
             raise ValueError(f"unsupported SCREEN_PERSIST={cfg.screen_persist!r}")

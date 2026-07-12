@@ -46,7 +46,8 @@ disabling the fundamental screen.
 
 ## Pipeline
 
-Three decoupled stages, selected via `STAGE` (`screen`, `setup`, `sim`, `all`).
+Three decoupled stages, selected via `STAGE` (`screen`, `setup`, `sim`, `all`),
+plus the bounded `sensitivity` research workflow.
 Each stage reads its input from the DB, so stages can be re-run and tuned
 independently; source data is cached locally as parquet in `./cache`.
 
@@ -115,13 +116,39 @@ sim    : volume-confirmed D+1 stop-buy entries -> breakout_events, runs, trades,
          the market cap: 0% in correction/rally attempt, 25-100% in a confirmed
          uptrend depending on breadth, and 25-50% under pressure. Unrealized
          PnL never raises the exposure level.
+sensitivity:
+         computes screen and market state once, then runs a fixed strictness
+         matrix. Development is 2020-01-02..2023-12-31; 2024-01-01..END_DATE
+         is reported separately and is never used to select a winner. The
+         market filter, close-above-pivot rule and D+1 execution stay fixed.
+         Each variant/period produces its own runs, breakout_events, trades and
+         equity_daily rows. VCP setups remain in memory because the shared
+         setups table is not run-scoped. Negative setup IDs in sensitivity
+         events are therefore run-local identifiers, not setup-table keys.
 ```
+
+The fixed sensitivity variants are:
+
+| Variant | Minimum VCP score | Dry-up band | Breakout volume ratio |
+|---|---:|---:|---:|
+| `baseline` | 65 | 0.50-0.70 | 1.40 |
+| `score60` | 60 | 0.50-0.70 | 1.40 |
+| `score55` | 55 | 0.50-0.70 | 1.40 |
+| `dryup_low20` | 65 | 0.20-0.70 | 1.40 |
+| `dryup_high85` | 65 | 0.50-0.85 | 1.40 |
+| `volume120` | 65 | 0.50-0.70 | 1.20 |
+| `volume100` | 65 | 0.50-0.70 | 1.00 |
+| `moderate` | 60 | 0.20-0.85 | 1.20 |
 
 ## Run
 
 ```bash
-docker compose up --build        # runs STAGE=all over START_DATE..END_DATE
+DROP_ALL_MINERVINI_TABLES_ON_START=true docker compose up --build
 ```
+
+The explicit override drops all previous Minervini result tables once before
+the matrix. The compose default remains `false`; subsequent runs therefore do
+not silently delete earlier results.
 
 All parameters (thresholds, VCP geometry, risk settings) are env vars in
 `compose.yaml`. `SCREEN_PERSIST=universe` persists every rankable symbol/day
@@ -148,6 +175,9 @@ python -m pytest tests -q
   knowledge states and never rewrite earlier backtest dates.
 - This is a deterministic SEPA-inspired research proxy, not a claim to reproduce
   Mark Minervini's complete proprietary discretionary process.
+- The 2024+ results have already been inspected during model diagnosis and are
+  therefore only a reporting split, not a pristine holdout. A clean forward
+  holdout starts after the latest date already examined.
 - The QQQ/VOO state machine is a transparent IBD-inspired approximation, not
   IBD/MarketSurge's proprietary market-status service. QQQ starts rally attempts
   and follow-through days; either configured proxy can add one distribution
