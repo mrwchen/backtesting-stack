@@ -30,8 +30,8 @@ def test_sensitivity_stage_is_valid_configuration(monkeypatch) -> None:
 
 
 def test_fixed_matrix_and_periods_are_deterministic() -> None:
-    assert len(sensitivity.VARIANTS) == 8
-    assert len({variant.name for variant in sensitivity.VARIANTS}) == 8
+    assert len(sensitivity.VARIANTS) == 6
+    assert len({variant.name for variant in sensitivity.VARIANTS}) == 6
     assert len({variant.detection_key for variant in sensitivity.VARIANTS}) == 6
     assert sensitivity.phases(date(2020, 1, 2), date(2026, 7, 10)) == (
         ("dev", date(2020, 1, 2), date(2023, 12, 31)),
@@ -40,7 +40,11 @@ def test_fixed_matrix_and_periods_are_deterministic() -> None:
 
 
 def test_variant_replaces_only_strictness_and_run_identity() -> None:
-    cfg = make_cfg(run_label="matrix", simulation_mode="independent")
+    cfg = make_cfg(
+        run_label="matrix",
+        simulation_mode="independent",
+        market_filter_enable=True,
+    )
     variant = next(v for v in sensitivity.VARIANTS if v.name == "moderate")
 
     actual = variant.apply(
@@ -53,9 +57,7 @@ def test_variant_replaces_only_strictness_and_run_identity() -> None:
     assert actual.vcp_score_min == 60.0
     assert actual.dryup_ratio_min == 0.20
     assert actual.dryup_ratio_max == 0.85
-    assert actual.breakout_volume_min_ratio == 1.20
-    assert actual.market_filter_enable == cfg.market_filter_enable
-    assert actual.breakout_require_close_above_pivot
+    assert not actual.market_filter_enable
 
 
 def test_in_memory_setups_use_non_database_ids_and_asof_screen_context() -> None:
@@ -120,7 +122,9 @@ def test_sensitivity_reuses_vcp_detection_and_runs_every_phase(monkeypatch) -> N
         return setups.copy()
 
     def fake_simulation(conn, cfg, *args, **kwargs):
-        simulation_calls.append((cfg.run_label, cfg.start_date, cfg.end_date))
+        simulation_calls.append(
+            (cfg.run_label, cfg.start_date, cfg.end_date, kwargs.get("state_start"))
+        )
         return len(simulation_calls), {}
 
     monkeypatch.setattr(runner, "detect_setups", fake_detect)
@@ -145,8 +149,9 @@ def test_sensitivity_reuses_vcp_detection_and_runs_every_phase(monkeypatch) -> N
 
     assert len(detection_calls) == 6
     assert len(set(detection_calls)) == 6
-    assert len(simulation_calls) == 16
+    assert len(simulation_calls) == 12
     assert {call[1] for call in simulation_calls} == {"2023-12-20", "2024-01-01"}
+    assert {call[3] for call in simulation_calls} == {date(2023, 12, 20)}
 
 
 def test_zero_setup_simulation_still_persists_a_run(monkeypatch) -> None:
@@ -156,24 +161,21 @@ def test_zero_setup_simulation_still_persists_a_run(monkeypatch) -> None:
         columns=["setup_id", "symbol", "detect_date", "valid_until"]
     )
     created = []
+    simulated = {}
 
-    monkeypatch.setattr(
-        runner.breakout_confirmation,
-        "confirm_daily_breakouts",
-        lambda *args, **kwargs: (empty_setups.copy(), pd.DataFrame()),
-    )
-    monkeypatch.setattr(
-        runner,
-        "simulate",
-        lambda *args, **kwargs: SimResult(
+    def fake_simulate(*args, **kwargs):
+        simulated["setups"] = args[6]
+        simulated["market_exposure_cap"] = kwargs["market_exposure_cap"]
+        return SimResult(
             metrics={
                 "initial_equity": 100000.0,
                 "final_equity": 100000.0,
                 "total_return": 0.0,
                 "num_positions": 0,
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(runner, "simulate", fake_simulate)
     monkeypatch.setattr(
         runner.persistence,
         "create_run",
@@ -202,3 +204,65 @@ def test_zero_setup_simulation_still_persists_a_run(monkeypatch) -> None:
     assert run_id == 7
     assert metrics["num_positions"] == 0
     assert created == [(dates[0].date(), dates[-1].date())]
+    assert simulated["setups"] is empty_setups
+    assert simulated["market_exposure_cap"] is None
+
+
+def test_runner_persists_same_day_breakout_event_without_confirmation(monkeypatch) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=3)
+    matrices = _matrices(dates)
+    setups = pd.DataFrame(
+        {
+            "setup_id": [1],
+            "symbol": ["AAA"],
+            "detect_date": [dates[0].date()],
+            "valid_until": [dates[-1].date()],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "setup_id": [1],
+            "symbol": ["AAA"],
+            "setup_detect_date": [dates[0].date()],
+            "breakout_date": [dates[1].date()],
+            "pivot": [100.0],
+            "trigger_price": [100.1],
+            "entry_filled": [True],
+            "entry_date": [dates[1].date()],
+            "entry_price": [100.1],
+            "decision": ["filled"],
+        }
+    )
+    written = []
+
+    monkeypatch.setattr(
+        runner,
+        "simulate",
+        lambda *args, **kwargs: SimResult(
+            breakout_events=events.copy(),
+            metrics={"initial_equity": 100000.0, "final_equity": 100000.0},
+        ),
+    )
+    monkeypatch.setattr(runner.persistence, "create_run", lambda *args: 9)
+    monkeypatch.setattr(runner.persistence, "write_trades", lambda *args: None)
+    monkeypatch.setattr(
+        runner.persistence,
+        "write_breakout_events",
+        lambda conn, run_id, frame: written.append((run_id, frame.copy())),
+    )
+    monkeypatch.setattr(runner.persistence, "write_equity", lambda *args: None)
+
+    runner._run_simulation(
+        object(),
+        make_cfg(market_filter_enable=False, regime_entry_filter_enable=False),
+        matrices,
+        pd.DataFrame(columns=["symbol", "ibkr_industry", "ibkr_category"]),
+        pd.DataFrame(index=dates),
+        setups,
+        pd.DataFrame(),
+        dates[0].date(),
+        dates[-1].date(),
+    )
+
+    assert written[0][0] == 9
+    assert written[0][1].to_dict("records") == events.to_dict("records")

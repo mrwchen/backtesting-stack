@@ -69,7 +69,7 @@ class PlannedOrder:
 class SimResult:
     trades: pd.DataFrame = field(default_factory=pd.DataFrame)
     equity: pd.DataFrame = field(default_factory=pd.DataFrame)
-    entry_decisions: pd.DataFrame = field(default_factory=pd.DataFrame)
+    breakout_events: pd.DataFrame = field(default_factory=pd.DataFrame)
     metrics: dict = field(default_factory=dict)
 
 
@@ -83,9 +83,13 @@ def simulate(
     setups: pd.DataFrame,
     cfg: Config,
     sim_start_idx: int = 0,
+    state_start_idx: int | None = None,
     market_exposure_cap: np.ndarray | None = None,
     regime_entry_allowed: np.ndarray | None = None,
 ) -> SimResult:
+    state_start_idx = sim_start_idx if state_start_idx is None else state_start_idx
+    if not 0 <= state_start_idx <= sim_start_idx < len(dates):
+        raise ValueError("state_start_idx and sim_start_idx are outside the date range")
     portfolio_mode = cfg.simulation_mode == "portfolio"
     o = open_m.to_numpy()
     h = high_m.to_numpy()
@@ -129,6 +133,7 @@ def simulate(
     # an older base before the next session's slate is built.
     active_setups: dict[str, object] = {}
     trades: list[dict] = []
+    breakout_events: list[dict] = []
     equity_rows: list[dict] = []
     entry_decisions: dict[int, dict] = {}
     next_setup = 0
@@ -202,6 +207,30 @@ def simulate(
             "entry_date": entry_date,
             "entry_price": entry_price,
         }
+
+    def record_breakout_event(setup, t: int, trigger: float) -> None:
+        setup_id = getattr(setup, "setup_id", None)
+        if setup_id is None or pd.isna(setup_id):
+            raise RuntimeError("breakout setup has no setup_id")
+        decision_row = entry_decisions.get(int(setup_id))
+        if decision_row is None:
+            raise RuntimeError("breakout setup has no pre-session entry decision")
+        decision = decision_row["entry_decision"]
+        filled = decision == "filled"
+        breakout_events.append(
+            {
+                "setup_id": setup_id,
+                "symbol": setup.symbol,
+                "setup_detect_date": pd.Timestamp(setup.detect_date).date(),
+                "breakout_date": dates[t].date(),
+                "pivot": round(float(setup.pivot), 4),
+                "trigger_price": round(trigger, 4),
+                "entry_filled": filled,
+                "entry_date": decision_row["entry_date"] if filled else None,
+                "entry_price": decision_row["entry_price"] if filled else None,
+                "decision": decision,
+            }
+        )
 
     def open_notional(t: int) -> float:
         total = 0.0
@@ -291,7 +320,7 @@ def simulate(
             pos.stop = max(pos.stop, pos.entry_price)
         return True
 
-    for t in range(sim_start_idx, len(dates)):
+    for t in range(state_start_idx, len(dates)):
         # ---- make newly known setups active; newest setup wins -------------
         while next_setup < len(setup_rows) and setup_rows[next_setup].start_idx <= t:
             setup = setup_rows[next_setup]
@@ -302,6 +331,29 @@ def simulate(
             for symbol, setup in active_setups.items()
             if setup.end_idx >= t
         }
+
+        # Replay setup lifecycle before the measured period without opening
+        # positions. This prevents an already broken or invalidated setup from
+        # being resurrected at an OOS boundary.
+        if t < sim_start_idx:
+            for symbol, setup in list(active_setups.items()):
+                col = col_index[symbol]
+                day_high, day_low = h[t, col], lo[t, col]
+                trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
+                invalidation_level = max(
+                    _num_attr(setup, "last_low", -np.inf),
+                    _num_attr(setup, "stop_level", -np.inf),
+                )
+                incomplete_range = not np.isfinite([day_high, day_low]).all()
+                broke_out = np.isfinite(day_high) and day_high >= trigger
+                damaged_base = (
+                    np.isfinite(day_low)
+                    and np.isfinite(invalidation_level)
+                    and day_low <= invalidation_level
+                )
+                if incomplete_range or broke_out or damaged_base:
+                    del active_setups[symbol]
+            continue
 
         # ---- pre-session order slate ---------------------------------------
         # Capture budgets before processing any event from session t. Exits at
@@ -376,8 +428,12 @@ def simulate(
                     continue
                 if portfolio_mode and remaining_slots <= 0:
                     for skipped in prioritized_setups[position:]:
-                        if skipped.symbol not in start_symbols:
-                            set_entry_decision(skipped, "portfolio_capacity")
+                        set_entry_decision(
+                            skipped,
+                            "existing_position"
+                            if skipped.symbol in start_symbols
+                            else "portfolio_capacity",
+                        )
                     break
 
                 pivot = _num_attr(setup, "pivot", np.nan)
@@ -563,9 +619,9 @@ def simulate(
             setup = order.setup
             col = col_index[setup.symbol]
             day_open, day_high = o[t, col], h[t, col]
-            if not np.isfinite([day_open, day_high, lo[t, col], c[t, col]]).all():
+            if not np.isfinite([day_open, day_high, lo[t, col]]).all():
                 # Stop-buy execution cannot be simulated safely without the
-                # complete session range and close. The setup continuity is
+                # complete session range. The setup continuity is
                 # broken and the order is consumed.
                 consumed_setup_keys.add(order.setup_key)
                 set_entry_decision(setup, "incomplete_entry_bar")
@@ -582,8 +638,8 @@ def simulate(
                 consumed_setup_keys.add(order.setup_key)
                 set_entry_decision(setup, "opened_below_invalidation")
                 continue
-            if day_high <= trigger:
-                set_entry_decision(setup, "no_retrigger")
+            if day_high < trigger:
+                set_entry_decision(setup, "not_triggered")
                 continue
             if day_open > trigger * (1 + cfg.max_buy_zone_pct):
                 set_entry_decision(setup, "excessive_gap")
@@ -648,6 +704,17 @@ def simulate(
                         )
                         new_position.shares = 0
                 if new_position.shares > 0:
+                    new_position.max_high = max(fill, float(day_high))
+                    if (
+                        r_unit > 0
+                        and new_position.max_high
+                        >= new_position.entry_price
+                        + cfg.profit_protection_trigger_r * r_unit
+                    ):
+                        new_position.next_stop = (
+                            new_position.entry_price
+                            + cfg.profit_protection_lock_r * r_unit
+                        )
                     positions[setup.symbol] = new_position
 
         # ---- setup lifecycle ----------------------------------------------
@@ -657,13 +724,11 @@ def simulate(
         for symbol, setup in list(active_setups.items()):
             setup_key = int(setup.sim_setup_key)
             col = col_index[symbol]
-            incomplete_bar = not np.isfinite(
-                [o[t, col], h[t, col], lo[t, col], c[t, col]]
-            ).all()
+            incomplete_bar = not np.isfinite([o[t, col], h[t, col], lo[t, col]]).all()
             day_high = h[t, col]
             day_low = lo[t, col]
             trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
-            missed_breakout = np.isfinite(day_high) and day_high > trigger
+            missed_breakout = np.isfinite(day_high) and day_high >= trigger
             invalidation_level = max(
                 _num_attr(setup, "last_low", -np.inf),
                 _num_attr(setup, "stop_level", -np.inf),
@@ -673,6 +738,8 @@ def simulate(
                 and np.isfinite(invalidation_level)
                 and day_low <= invalidation_level
             )
+            if missed_breakout:
+                record_breakout_event(setup, t, trigger)
             if (
                 setup_key in consumed_setup_keys
                 or incomplete_bar
@@ -766,13 +833,18 @@ def simulate(
     # Opened positions without an executable final bar have no exit leg, but
     # they still count as strategy positions in the run summary.
     metrics["num_positions"] = next_position_id - 1
-    decisions_df = pd.DataFrame(
-        [entry_decisions[setup_id] for setup_id in sorted(entry_decisions)]
+    breakout_events_df = pd.DataFrame(
+        breakout_events,
+        columns=[
+            "setup_id", "symbol", "setup_detect_date", "breakout_date",
+            "pivot", "trigger_price", "entry_filled", "entry_date",
+            "entry_price", "decision",
+        ],
     )
     return SimResult(
         trades=trades_df,
         equity=equity_df,
-        entry_decisions=decisions_df,
+        breakout_events=breakout_events_df,
         metrics=metrics,
     )
 

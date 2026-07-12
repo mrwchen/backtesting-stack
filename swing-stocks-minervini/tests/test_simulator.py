@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.simulator import simulate
 from tests.util import make_cfg
@@ -176,6 +177,8 @@ def test_no_entry_on_excessive_gap():
     )
     assert result.trades.empty
     assert result.metrics["final_equity"] == 100000.0
+    assert len(result.breakout_events) == 1
+    assert result.breakout_events.iloc[0]["decision"] == "excessive_gap"
 
 
 def test_stop_hit_on_entry_day_exits_same_day():
@@ -195,6 +198,273 @@ def test_stop_hit_on_entry_day_exits_same_day():
     assert trades.iloc[0]["holding_days"] == 0
     assert trades.iloc[0]["pnl"] == 100 * (95.0 - 100.0)
     assert result.metrics["final_equity"] == 99500.0
+    event = result.breakout_events.iloc[0]
+    assert event["decision"] == "filled"
+    assert event["entry_date"] == event["breakout_date"] == dates[5].date()
+
+
+def test_setup_cannot_fill_on_its_detection_session() -> None:
+    bars = [(98, 99, 97, 98)] * 4
+    bars += [(99, 101, 98, 100.5)]  # pivot touched on detection day
+    bars += [(99, 99.5, 98, 99)] * 3
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.empty
+    assert result.breakout_events.empty
+
+
+def test_stop_buy_fills_when_high_exactly_touches_trigger() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 100, 98, 99.5)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.iloc[0]["entry_date"] == dates[5].date()
+    assert result.trades.iloc[0]["entry_price"] == 100.0
+    event = result.breakout_events.iloc[0]
+    assert event["breakout_date"] == dates[5].date()
+    assert event["entry_date"] == dates[5].date()
+    assert event["decision"] == "filled"
+
+
+def test_breakout_without_setup_id_fails_instead_of_hiding_event() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(
+        dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=6
+    ).drop(columns="setup_id")
+
+    with pytest.raises(RuntimeError, match="no setup_id"):
+        simulate(
+            dates,
+            close_m.columns,
+            open_m,
+            high_m,
+            low_m,
+            close_m,
+            setups,
+            _clean_cfg(),
+        )
+
+
+def test_same_day_fill_does_not_depend_on_breakout_close() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, np.nan)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.iloc[0]["entry_date"] == dates[5].date()
+    assert result.breakout_events.iloc[0]["entry_filled"]
+
+
+def test_entry_day_high_arms_profit_protection_for_next_session() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 111, 98, 108)]  # entry 100, reaches 2R on entry day
+    bars += [(103, 104, 102, 103)]  # next stop is 102.5 and is hit
+    bars += [(103, 104, 102, 103)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "partial_fraction": 0.0,
+            "profit_protection_trigger_r": 2.0,
+            "profit_protection_lock_r": 0.5,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    assert result.trades.iloc[0]["exit_reason"] == "stop"
+    assert result.trades.iloc[0]["exit_price"] == 102.5
+
+
+def test_market_blocked_breakout_is_recorded_once_and_consumed() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(99, 102, 98, 101)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+    market_cap = np.array([1.0] * 4 + [0.0, 1.0, 1.0, 1.0])
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        _clean_cfg(),
+        market_exposure_cap=market_cap,
+    )
+
+    assert result.trades.empty
+    assert len(result.breakout_events) == 1
+    assert result.breakout_events.iloc[0]["decision"] == "market_gate_blocked"
+
+
+def test_state_preroll_does_not_resurrect_preperiod_breakout() -> None:
+    bars = [(98, 99, 97, 98)] * 3
+    bars += [(99, 101, 98, 100)]  # breakout before measured period
+    bars += [(99, 99, 98, 99)]
+    bars += [(99, 102, 98, 101)] * 3
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=1, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        _clean_cfg(),
+        sim_start_idx=5,
+        state_start_idx=0,
+    )
+
+    assert result.trades.empty
+    assert result.breakout_events.empty
+
+
+def test_state_preroll_survivor_fills_first_oos_day_using_previous_cap() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=1, pivot=100.0, stop=95.0, valid_idx=7)
+    market_cap = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        _clean_cfg(),
+        sim_start_idx=5,
+        state_start_idx=0,
+        market_exposure_cap=market_cap,
+    )
+
+    assert result.trades.iloc[0]["entry_date"] == dates[5].date()
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
+
+
+def test_state_preroll_invalidation_consumes_setup() -> None:
+    bars = [(98, 99, 97, 98)] * 3
+    bars += [(96, 99, 94, 96)]  # preperiod low invalidates stop 95
+    bars += [(98, 99, 97, 98)]
+    bars += [(99, 101, 98, 100)] * 3
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=1, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        _clean_cfg(),
+        sim_start_idx=5,
+        state_start_idx=0,
+    )
+
+    assert result.trades.empty
+    assert result.breakout_events.empty
+
+
+def test_buy_zone_upper_boundary_is_fillable() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(105, 106, 104, 105)]
+    bars += [(105, 106, 104, 105)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    assert result.trades.iloc[0]["entry_price"] == 105.0
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
+
+
+def test_full_portfolio_records_held_symbol_and_capacity_breakouts() -> None:
+    dates, open_m, high_m, low_m, close_m = _multi_matrices(
+        {
+            "AAA": [
+                (98, 99, 97, 98),
+                (99, 101, 98, 100),
+                (100, 101, 99, 100),
+                (104, 106, 103, 105),
+                (105, 106, 104, 105),
+            ],
+            "BBB": [
+                (98, 99, 97, 98),
+                (98, 99, 97, 98),
+                (98, 99, 97, 98),
+                (99, 101, 98, 100),
+                (100, 101, 99, 100),
+            ],
+        }
+    )
+    setups = pd.DataFrame(
+        [
+            {
+                "setup_id": 1, "symbol": "AAA", "detect_date": dates[0].date(),
+                "pivot": 100.0, "last_low": 95.0, "stop_level": 95.0,
+                "valid_until": dates[1].date(), "vcp_score": 90.0,
+            },
+            {
+                "setup_id": 2, "symbol": "AAA", "detect_date": dates[2].date(),
+                "pivot": 105.0, "last_low": 100.0, "stop_level": 100.0,
+                "valid_until": dates[4].date(), "vcp_score": 80.0,
+            },
+            {
+                "setup_id": 3, "symbol": "BBB", "detect_date": dates[2].date(),
+                "pivot": 100.0, "last_low": 95.0, "stop_level": 95.0,
+                "valid_until": dates[4].date(), "vcp_score": 95.0,
+            },
+        ]
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+            "partial_fraction": 0.0,
+        }
+    )
+
+    result = simulate(dates, pd.Index(["AAA", "BBB"]), open_m, high_m, low_m, close_m, setups, cfg)
+
+    decisions = result.breakout_events.set_index("symbol")["decision"].to_dict()
+    assert decisions["AAA"] == "existing_position"
+    assert decisions["BBB"] == "portfolio_capacity"
 
 
 def test_gap_below_stop_exits_at_open():
@@ -981,6 +1251,10 @@ def test_missing_final_symbol_bar_does_not_invent_an_eod_fill():
     assert result.equity.iloc[-1]["open_positions"] == 1
     assert result.equity.iloc[-1]["exposure_pct"] > 0
     assert result.metrics["num_positions"] == 1
+    assert len(result.breakout_events) == 1
+    event = result.breakout_events.iloc[0]
+    assert event["entry_filled"]
+    assert event["entry_date"] == event["breakout_date"] == dates[5].date()
 
 
 def test_open_end_position_with_partial_is_excluded_from_closed_trade_metrics():

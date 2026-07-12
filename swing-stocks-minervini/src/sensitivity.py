@@ -16,7 +16,6 @@ class SensitivityVariant:
     vcp_score_min: float
     dryup_ratio_min: float
     dryup_ratio_max: float
-    breakout_volume_min_ratio: float
 
     @property
     def detection_key(self) -> tuple[float, float, float]:
@@ -35,19 +34,17 @@ class SensitivityVariant:
             vcp_score_min=self.vcp_score_min,
             dryup_ratio_min=self.dryup_ratio_min,
             dryup_ratio_max=self.dryup_ratio_max,
-            breakout_volume_min_ratio=self.breakout_volume_min_ratio,
+            market_filter_enable=False,
         )
 
 
 VARIANTS = (
-    SensitivityVariant("baseline", 65.0, 0.50, 0.70, 1.40),
-    SensitivityVariant("score60", 60.0, 0.50, 0.70, 1.40),
-    SensitivityVariant("score55", 55.0, 0.50, 0.70, 1.40),
-    SensitivityVariant("dryup_low20", 65.0, 0.20, 0.70, 1.40),
-    SensitivityVariant("dryup_high85", 65.0, 0.50, 0.85, 1.40),
-    SensitivityVariant("volume120", 65.0, 0.50, 0.70, 1.20),
-    SensitivityVariant("volume100", 65.0, 0.50, 0.70, 1.00),
-    SensitivityVariant("moderate", 60.0, 0.20, 0.85, 1.20),
+    SensitivityVariant("baseline", 65.0, 0.50, 0.70),
+    SensitivityVariant("score60", 60.0, 0.50, 0.70),
+    SensitivityVariant("score55", 55.0, 0.50, 0.70),
+    SensitivityVariant("dryup_low20", 65.0, 0.20, 0.70),
+    SensitivityVariant("dryup_high85", 65.0, 0.50, 0.85),
+    SensitivityVariant("moderate", 60.0, 0.20, 0.85),
 )
 
 

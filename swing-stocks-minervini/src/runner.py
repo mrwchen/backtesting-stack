@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 
 from . import (
-    breakout_confirmation,
     data_loader,
     db,
     fundamentals,
@@ -390,29 +389,12 @@ def _run_simulation(
     start: date,
     end: date,
     *,
-    confirmation_start: date | None = None,
+    state_start: date | None = None,
 ) -> tuple[int, dict]:
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
-    confirmation_start_idx = int(
-        dates.searchsorted(pd.Timestamp(confirmation_start or start))
-    )
-    confirmed_setups, breakout_events = breakout_confirmation.confirm_daily_breakouts(
-        dates,
-        matrices["symbols"],
-        matrices["open"],
-        matrices["high"],
-        matrices["low"],
-        matrices["close"],
-        matrices["volume"],
-        setups,
-        cfg,
-        start_idx=confirmation_start_idx,
-    )
-    log.info(
-        "Breakout confirmation events %d confirmed %d",
-        len(breakout_events),
-        int(breakout_events["confirmation_pass"].sum()) if not breakout_events.empty else 0,
+    state_start_idx = int(
+        dates.searchsorted(pd.Timestamp(state_start or start))
     )
     market_for_dates = market.reindex(dates)
     market_exposure_cap = (
@@ -428,22 +410,17 @@ def _run_simulation(
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
-        confirmed_setups, cfg, sim_start_idx=sim_start_idx,
+        setups, cfg, sim_start_idx=sim_start_idx, state_start_idx=state_start_idx,
         market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
     trades = result.trades
-    breakout_events = breakout_confirmation.attach_fills(
-        breakout_events, trades, result.entry_decisions
-    )
+    breakout_events = result.breakout_events
     if not breakout_events.empty:
         breakout_date = pd.to_datetime(breakout_events["breakout_date"]).dt.date
-        planned_entry_date = pd.to_datetime(
-            breakout_events["planned_entry_date"], errors="coerce"
-        ).dt.date
         breakout_events = breakout_events.loc[
-            (breakout_date >= start) | (planned_entry_date >= start)
+            breakout_date >= start
         ].reset_index(drop=True)
     if not trades.empty:
         trades = trades.merge(
@@ -465,14 +442,12 @@ def _run_simulation(
         else "none 0"
     )
     log.info(
-        "run %d %s %s setups %d breakout-events %d confirmed %d filled %d positions %s return %s decisions %s",
+        "run %d %s %s setups %d breakout-events %d filled %d positions %s return %s decisions %s",
         run_id,
         cfg.run_label,
         cfg.simulation_mode,
         len(setups),
         len(breakout_events),
-        int(breakout_events["confirmation_pass"].sum())
-        if not breakout_events.empty else 0,
         int(breakout_events["entry_filled"].sum())
         if not breakout_events.empty else 0,
         result.metrics.get("num_positions", 0),
@@ -543,7 +518,7 @@ def run_sensitivity(
             phase_matrices = _slice_matrices(matrices, phase_end)
 
             log.info(
-                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f breakout-volume %.2f setups %d",
+                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f setups %d",
                 variant.name,
                 phase,
                 phase_start,
@@ -551,7 +526,6 @@ def run_sensitivity(
                 variant.vcp_score_min,
                 variant.dryup_ratio_min,
                 variant.dryup_ratio_max,
-                variant.breakout_volume_min_ratio,
                 len(phase_setups),
             )
             _run_simulation(
@@ -564,7 +538,7 @@ def run_sensitivity(
                 regime,
                 phase_start,
                 phase_end,
-                confirmation_start=start,
+                state_start=start,
             )
 
     log.info(

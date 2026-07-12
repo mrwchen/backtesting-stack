@@ -60,11 +60,8 @@ TRADE_COLUMNS = [
 
 BREAKOUT_EVENT_COLUMNS = [
     "run_id", "setup_id", "symbol", "setup_detect_date", "breakout_date",
-    "planned_entry_date", "pivot", "trigger_price", "breakout_open",
-    "breakout_high", "breakout_low", "breakout_close", "breakout_volume",
-    "average_volume_prior", "volume_history_sessions", "breakout_volume_ratio",
-    "close_above_pivot", "volume_confirmed", "confirmation_pass",
-    "entry_filled", "entry_date", "entry_price", "decision",
+    "pivot", "trigger_price", "entry_filled", "entry_date", "entry_price",
+    "decision",
 ]
 
 MARKET_COLUMNS = [

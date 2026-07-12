@@ -40,7 +40,7 @@ disabling the fundamental screen.
 | `backtesting_minervini_market_daily` | causal QQQ/VOO market state, distribution count, follow-through events, breadth and entry-exposure cap |
 | `backtesting_minervini_setups` | VCP bases with transparent 0-100 component scores + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
-| `backtesting_minervini_breakout_events` | every first pivot break, causal prior-volume baseline, confirmation result and D+1 fill state |
+| `backtesting_minervini_breakout_events` | every first pivot touch with its same-session stop-buy fill or rejection decision |
 | `backtesting_minervini_trades` | trade legs per run + IBKR industry/category + world-regime attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
 
@@ -74,13 +74,14 @@ setup  : causal daily/complete-week VCP detection and transparent scoring for
          A missing global session resets
          that symbol's swing/volume structure, and validity expires in global
          market sessions even while the symbol is halted -> setups
-sim    : volume-confirmed D+1 stop-buy entries -> breakout_events, runs, trades,
-         equity_daily. The first pivot break on day D consumes the setup. After
-         D closes, its complete volume is divided by the mean of up to 50 prior
-         sessions (D is excluded; at least 20 observations required). A ratio
-         >= 1.40 and a close above the pivot confirm the signal. Only session
-         D+1 may fill a new stop-buy at the original trigger and inside the 2%
-         buy zone; otherwise the confirmed signal expires.
+sim    : causal same-session pivot stop-buy entries -> breakout_events, runs,
+         trades, equity_daily. A setup detected after close D becomes orderable
+         from D+1. Before each session, an order is built only from information
+         already known at the previous close. A touch of the pivot trigger by
+         the session high fills at max(open, trigger) plus slippage, provided
+         the open is inside the 2% buy zone. The breakout day's final close and
+         volume never influence that fill. The first pivot touch consumes the
+         setup even when a gate, capacity limit or excessive gap blocks entry.
          SIMULATION_MODE=independent trades every triggered setup independently
          with no cash constraint, no position limit and no compounding. That
          research mode measures the signal across the whole universe.
@@ -100,10 +101,10 @@ sim    : volume-confirmed D+1 stop-buy entries -> breakout_events, runs, trades,
          remains open and is only marked at its last known close.
          Market status and exposure cap computed at close t control entries from
          session t+1 (MARKET_FILTER_ENABLE); open positions keep running into their exits.
-         A base is invalidated by a stop-level breach. Its first pivot breakout
-         consumes the setup even when volume/close confirmation fails or the
-         D+1 trade is skipped because of a gate, missing retrigger, excessive
-         gap or unavailable portfolio capacity.
+         A base is invalidated by a stop-level breach. If trigger and stop both
+         occur inside one daily bar, the unknown intraday order is resolved
+         adversely as fill first and stop second. An open at or below structural
+         invalidation cancels the order before any later pivot touch.
          Optional world-regime entry filtering blocks entries whose latest known
          regime label is not in REGIME_ALLOWED_LABELS. A score for day d is only
          usable from d+1 (its 01:00 America/New_York cutoff); weekend rows remain
@@ -120,7 +121,8 @@ sensitivity:
          computes screen and market state once, then runs a fixed strictness
          matrix. Development is 2020-01-02..2023-12-31; 2024-01-01..END_DATE
          is reported separately and is never used to select a winner. The
-         market filter, close-above-pivot rule and D+1 execution stay fixed.
+         market filter is disabled for this isolated entry test. Same-session
+         execution and all exit/risk rules stay fixed.
          Each variant/period produces its own runs, breakout_events, trades and
          equity_daily rows. VCP setups remain in memory because the shared
          setups table is not run-scoped. Negative setup IDs in sensitivity
@@ -129,16 +131,14 @@ sensitivity:
 
 The fixed sensitivity variants are:
 
-| Variant | Minimum VCP score | Dry-up band | Breakout volume ratio |
-|---|---:|---:|---:|
-| `baseline` | 65 | 0.50-0.70 | 1.40 |
-| `score60` | 60 | 0.50-0.70 | 1.40 |
-| `score55` | 55 | 0.50-0.70 | 1.40 |
-| `dryup_low20` | 65 | 0.20-0.70 | 1.40 |
-| `dryup_high85` | 65 | 0.50-0.85 | 1.40 |
-| `volume120` | 65 | 0.50-0.70 | 1.20 |
-| `volume100` | 65 | 0.50-0.70 | 1.00 |
-| `moderate` | 60 | 0.20-0.85 | 1.20 |
+| Variant | Minimum VCP score | Dry-up band |
+|---|---:|---:|
+| `baseline` | 65 | 0.50-0.70 |
+| `score60` | 60 | 0.50-0.70 |
+| `score55` | 55 | 0.50-0.70 |
+| `dryup_low20` | 65 | 0.20-0.70 |
+| `dryup_high85` | 65 | 0.50-0.85 |
+| `moderate` | 60 | 0.20-0.85 |
 
 ## Run
 
@@ -182,10 +182,11 @@ python -m pytest tests -q
   IBD/MarketSurge's proprietary market-status service. QQQ starts rally attempts
   and follow-through days; either configured proxy can add one distribution
   event per session.
-- Breakout volume is deliberately not used for a fill on breakout day D. Its
-  complete daily value becomes knowable only after the close, so confirmation
-  can create an order exclusively for D+1. This is causal but can miss an ideal
-  pivot fill or skip a signal that gaps beyond the buy zone.
+- Daily bars do not reveal the intraday order of high and low. When both the
+  pivot trigger and stop are inside one bar, the simulator deliberately assumes
+  the adverse path: entry first, then stop. A daily model cannot reproduce
+  Minervini's intraday volume extrapolation; close and volume from the breakout
+  session are therefore excluded from the entry decision entirely.
 - The global session grid is the union of available stock bars. A gap in one
   symbol is detected, but a complete provider outage affecting every symbol on
   the same exchange session is not distinguishable without a separate exchange

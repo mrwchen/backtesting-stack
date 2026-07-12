@@ -213,37 +213,37 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     event_id                BIGSERIAL,
     breakout_date           DATE NOT NULL,
     run_id                  BIGINT NOT NULL REFERENCES backtesting_minervini_runs (run_id) ON DELETE CASCADE,
-    setup_id                BIGINT,
+    setup_id                BIGINT NOT NULL,
     symbol                  TEXT NOT NULL,
     setup_detect_date       DATE NOT NULL,
-    planned_entry_date      DATE,
     pivot                   NUMERIC(15,4) NOT NULL,
     trigger_price           NUMERIC(15,4) NOT NULL,
-    breakout_open           NUMERIC(15,4) NOT NULL,
-    breakout_high           NUMERIC(15,4) NOT NULL,
-    breakout_low            NUMERIC(15,4) NOT NULL,
-    breakout_close          NUMERIC(15,4) NOT NULL,
-    breakout_volume         NUMERIC(28,4),
-    average_volume_prior    NUMERIC(28,4),
-    volume_history_sessions SMALLINT NOT NULL,
-    breakout_volume_ratio   NUMERIC(18,6),
-    close_above_pivot       BOOLEAN NOT NULL,
-    volume_confirmed        BOOLEAN NOT NULL,
-    confirmation_pass       BOOLEAN NOT NULL,
     entry_filled            BOOLEAN NOT NULL,
     entry_date              DATE,
     entry_price             NUMERIC(15,4),
     decision                TEXT NOT NULL,
     PRIMARY KEY (breakout_date, event_id),
     CHECK (decision IN (
-        'base_invalidated_on_breakout', 'missing_breakout_volume',
-        'insufficient_volume_history', 'close_below_pivot',
-        'volume_below_threshold', 'no_next_session', 'confirmed',
-        'confirmed_not_filled', 'market_gate_blocked', 'regime_gate_blocked',
+        'market_gate_blocked', 'regime_gate_blocked',
         'existing_position', 'portfolio_capacity', 'invalid_order_parameters',
         'size_below_one_share', 'incomplete_entry_bar',
-        'opened_below_invalidation', 'no_retrigger', 'excessive_gap', 'filled'
-    ))
+        'opened_below_invalidation', 'excessive_gap', 'filled'
+    )),
+    CHECK (
+        (
+            entry_filled
+            AND decision = 'filled'
+            AND entry_date = breakout_date
+            AND entry_price IS NOT NULL
+        )
+        OR
+        (
+            NOT entry_filled
+            AND decision <> 'filled'
+            AND entry_date IS NULL
+            AND entry_price IS NULL
+        )
+    )
 );
 
 SELECT create_hypertable(
