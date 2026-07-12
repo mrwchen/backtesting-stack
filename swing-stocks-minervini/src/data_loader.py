@@ -1,6 +1,6 @@
 """Load source data from TimescaleDB with a local parquet cache.
 
-Sources (all produced by market-data-stack/stock_core_and_fundamental_data_fetcher):
+Sources produced by market-data-stack:
   - stock_core_market_metrics_current      canonical current security identity
   - stock_core_market_metrics_daily        adjusted daily OHLCV
   - stock_core_security_master_current     universe / quote_type filter
@@ -9,6 +9,7 @@ Sources (all produced by market-data-stack/stock_core_and_fundamental_data_fetch
     prior-year comparables and margins per filing accession.
   - stock_core_13f_sponsorship_events       SEC institutional holding changes,
     usable only from each filing's effective date.
+  - alpaca_market_data_1day                  adjusted QQQ/VOO market proxies.
 """
 from __future__ import annotations
 
@@ -92,6 +93,25 @@ SELECT day::date              AS day,
        regime_label
 FROM world_regime_daily_scores_mv
 WHERE day <= %(end)s
+"""
+
+MARKET_INDEX_SQL = """
+SELECT DISTINCT ON (UPPER(TRIM(symbol)), (ts AT TIME ZONE 'America/New_York')::date)
+       UPPER(TRIM(symbol))                           AS symbol,
+       (ts AT TIME ZONE 'America/New_York')::date   AS date,
+       open::float8                                  AS open,
+       high::float8                                  AS high,
+       low::float8                                   AS low,
+       close::float8                                 AS close,
+       volume::float8                                AS volume
+FROM alpaca_market_data_1day
+WHERE UPPER(TRIM(symbol)) = ANY (%(symbols)s)
+  AND (ts AT TIME ZONE 'America/New_York')::date BETWEEN %(start)s AND %(end)s
+ORDER BY UPPER(TRIM(symbol)),
+         (ts AT TIME ZONE 'America/New_York')::date,
+         volume DESC,
+         exchange,
+         cik
 """
 
 QUARTERLY_FUNDAMENTALS_SQL = f"""
@@ -182,6 +202,45 @@ def load_universe(conn, cfg: Config) -> pd.DataFrame:
         return db.read_df(conn, UNIVERSE_SQL)
 
     return _cached(cfg, f"universe_identity_ibkr_v2_{effective_end(cfg)}", _load)
+
+
+def load_market_indexes(conn, cfg: Config) -> pd.DataFrame:
+    """Load adjusted daily ETF proxies used by the causal market-state model."""
+    start, end = warmup_start(cfg), effective_end(cfg)
+
+    def _load():
+        df = db.read_df(
+            conn,
+            MARKET_INDEX_SQL,
+            {"symbols": list(cfg.market_index_symbols), "start": start, "end": end},
+        )
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+        if cfg.market_filter_enable:
+            loaded = set(df["symbol"].unique()) if not df.empty else set()
+            missing = sorted(set(cfg.market_index_symbols) - loaded)
+            if missing:
+                raise RuntimeError(
+                    "alpaca_market_data_1day lacks required market indexes: "
+                    + ",".join(missing)
+                )
+        return df
+
+    indexes = _cached(
+        cfg,
+        f"market_indexes_v1_{'-'.join(cfg.market_index_symbols)}_{start}_{end}",
+        _load,
+        cache_empty=False,
+    )
+    if cfg.market_filter_enable:
+        loaded = set(indexes["symbol"].unique()) if not indexes.empty else set()
+        missing = sorted(set(cfg.market_index_symbols) - loaded)
+        if missing:
+            raise RuntimeError(
+                "alpaca_market_data_1day lacks required market indexes: "
+                + ",".join(missing)
+            )
+    return indexes
 
 
 def _normalize_quarterly_fundamental_events(df: pd.DataFrame) -> pd.DataFrame:

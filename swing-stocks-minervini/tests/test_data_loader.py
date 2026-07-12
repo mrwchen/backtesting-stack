@@ -87,6 +87,38 @@ def test_all_stock_inputs_use_the_same_full_security_identity():
         assert ".cik" in query
 
 
+def test_market_index_loader_fails_without_every_configured_proxy(tmp_path, monkeypatch):
+    def read_only_qqq(*_args, **_kwargs):
+        return pd.DataFrame(
+            [
+                {
+                    "symbol": "QQQ",
+                    "date": "2024-01-02",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 1_000_000.0,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(data_loader.db, "read_df", read_only_qqq)
+    cfg = make_cfg(
+        cache_dir=str(tmp_path),
+        force_refresh=True,
+        market_filter_enable=True,
+        market_index_symbols=("QQQ", "VOO"),
+        market_primary_index="QQQ",
+        end_date="2024-01-31",
+    )
+
+    with pytest.raises(RuntimeError, match="required market indexes: VOO"):
+        data_loader.load_market_indexes(object(), cfg)
+
+    assert list(tmp_path.glob("market_indexes*.parquet")) == []
+
+
 class _FakeConnection:
     def __init__(self):
         self.rollbacks = 0

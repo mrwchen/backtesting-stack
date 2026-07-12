@@ -12,7 +12,7 @@ Entry:  before each session a deterministic, fully funded stop-buy slate is
         built from information known at the previous close. Quantity and
         portfolio capacity are reserved at the worst permitted buy-zone fill. Only
         orders on that slate may fill; unused reservations are not reassigned
-        after observing the day's highs. The market-breadth state produced at
+        after observing the day's highs. The market exposure cap produced at
         close t becomes effective for entries in session t+1.
 Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
@@ -82,7 +82,7 @@ def simulate(
     setups: pd.DataFrame,
     cfg: Config,
     sim_start_idx: int = 0,
-    market_on: np.ndarray | None = None,
+    market_exposure_cap: np.ndarray | None = None,
     regime_entry_allowed: np.ndarray | None = None,
 ) -> SimResult:
     portfolio_mode = cfg.simulation_mode == "portfolio"
@@ -217,6 +217,16 @@ def simulate(
         value = values[idx]
         return bool(value) if not pd.isna(value) else False
 
+    def exposure_cap_value(idx: int) -> float:
+        if market_exposure_cap is None:
+            return 1.0
+        if idx < 0 or idx >= len(market_exposure_cap):
+            return 0.0
+        value = market_exposure_cap[idx]
+        if pd.isna(value):
+            return 0.0
+        return min(1.0, max(0.0, float(value)))
+
     def record_trade(pos: Position, t: int, shares: int, price: float, leg: str, reason: str):
         nonlocal cash, realized_pnl
         proceeds = shares * price * (1 - cfg.commission_pct)
@@ -278,6 +288,19 @@ def simulate(
         # Capture budgets before processing any event from session t. Exits at
         # the open or intraday therefore cannot be recycled into today's slate.
         start_symbols = set(positions)
+        market_cap = exposure_cap_value(t - 1)
+        if portfolio_mode and market_exposure_cap is not None and market_cap <= 0:
+            exposure_index = 0
+            consecutive_winners = 0
+            consecutive_losses = 0
+        feedback_exposure_level = (
+            cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0
+        )
+        entry_exposure_limit = (
+            min(feedback_exposure_level, market_cap)
+            if portfolio_mode
+            else (1.0 if market_cap > 0 else 0.0)
+        )
         if portfolio_mode:
             if t > 0:
                 sizing_equity = account_equity(t - 1)
@@ -289,12 +312,12 @@ def simulate(
             remaining_gross = max(
                 0.0,
                 sizing_equity * cfg.portfolio_max_gross_exposure_pct
-                * cfg.exposure_levels[exposure_index] - start_gross,
+                * entry_exposure_limit - start_gross,
             )
             scaled_slots = max(
                 1,
                 int(np.floor(
-                    cfg.portfolio_max_open_positions * cfg.exposure_levels[exposure_index]
+                    cfg.portfolio_max_open_positions * entry_exposure_limit
                 )),
             )
             remaining_slots = max(
@@ -306,10 +329,10 @@ def simulate(
             remaining_gross = float("inf")
             remaining_slots = len(active_setups)
 
-        # market_on[t] is calculated with close[t], hence only t-1 may govern
-        # an intraday stop order in session t. regime_entry_allowed is already
-        # defined by its caller as a per-session availability gate.
-        entries_allowed = gate_value(market_on, t - 1) and gate_value(
+        # The market cap for row t is calculated with close[t], hence only t-1
+        # may govern an intraday stop order in session t. regime_entry_allowed
+        # is already defined by its caller as a per-session availability gate.
+        entries_allowed = entry_exposure_limit > 0 and gate_value(
             regime_entry_allowed, t
         )
         slate: list[PlannedOrder] = []
@@ -340,10 +363,10 @@ def simulate(
 
                 limits = [
                     sizing_equity * cfg.risk_pct
-                    * (cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0)
+                    * entry_exposure_limit
                     / risk_per_share,
                     sizing_equity * cfg.max_position_pct
-                    * (cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0)
+                    * entry_exposure_limit
                     / worst_fill,
                 ]
                 if portfolio_mode:
@@ -621,7 +644,9 @@ def simulate(
                 "equity": round(day_equity, 2),
                 "open_positions": len(positions),
                 "exposure_pct": round(day_open_notional / exposure_base, 6) if exposure_base > 0 else 0.0,
-                "exposure_level": cfg.exposure_levels[exposure_index],
+                "feedback_exposure_level": feedback_exposure_level,
+                "market_exposure_cap": market_cap,
+                "entry_exposure_limit": entry_exposure_limit,
             }
         )
 
@@ -679,7 +704,6 @@ def simulate(
                 "exposure_pct": round(final_notional / exposure_base, 6)
                 if exposure_base > 0
                 else 0.0,
-                "exposure_level": cfg.exposure_levels[exposure_index],
             }
         )
 

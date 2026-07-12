@@ -124,12 +124,28 @@ CREATE INDEX IF NOT EXISTS idx_bm_screen_industry_breadth
     );
 
 -- ---------------------------------------------------------------------------
--- Stage 1c: daily market regime (breadth of stocks above their 200d MA)
+-- Stage 1c: causal index/volume market state plus secondary stock breadth
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS backtesting_minervini_market_daily (
-    period_end_date     DATE PRIMARY KEY,
-    market_breadth_pct  NUMERIC(8,4),
-    market_on           BOOLEAN NOT NULL
+    period_end_date          DATE PRIMARY KEY,
+    primary_index            TEXT NOT NULL,
+    primary_index_close      NUMERIC(24,4),
+    primary_index_volume     NUMERIC(24,4),
+    primary_index_return_pct NUMERIC(18,6),
+    market_breadth_pct       NUMERIC(8,4),
+    breadth_confirmed        BOOLEAN NOT NULL,
+    market_status            TEXT NOT NULL,
+    rally_attempt_day        SMALLINT NOT NULL,
+    distribution_day         BOOLEAN NOT NULL,
+    distribution_days        SMALLINT NOT NULL,
+    follow_through_day       BOOLEAN NOT NULL,
+    entry_exposure_cap       NUMERIC(8,4) NOT NULL,
+    market_on                BOOLEAN NOT NULL,
+    CHECK (market_status IN (
+        'CORRECTION', 'RALLY_ATTEMPT', 'CONFIRMED_UPTREND',
+        'UPTREND_UNDER_PRESSURE', 'DATA_UNAVAILABLE'
+    )),
+    CHECK (entry_exposure_cap BETWEEN 0 AND 1)
 );
 
 -- ---------------------------------------------------------------------------
@@ -227,7 +243,9 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_equity_daily (
     equity              NUMERIC(18,2) NOT NULL,
     open_positions      INTEGER NOT NULL,
     exposure_pct        NUMERIC(18,6) NOT NULL,
-    exposure_level      NUMERIC(8,4) NOT NULL,
+    feedback_exposure_level NUMERIC(8,4) NOT NULL,
+    market_exposure_cap NUMERIC(8,4) NOT NULL,
+    entry_exposure_limit NUMERIC(8,4) NOT NULL,
     PRIMARY KEY (run_id, period_end_date)
 );
 

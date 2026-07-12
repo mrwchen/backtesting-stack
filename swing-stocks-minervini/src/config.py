@@ -57,10 +57,22 @@ class Config:
     min_above_52w_low: float
     max_below_52w_high: float
 
-    # market regime filter (breadth of stocks above their 200d MA)
+    # IBD-inspired index/volume state with stock breadth confirmation
     market_filter_enable: bool
+    market_index_symbols: tuple[str, ...]
+    market_primary_index: str
+    ftd_min_rally_day: int
+    ftd_min_gain: float
+    distribution_min_loss: float
+    distribution_lookback_sessions: int
+    distribution_pressure_count: int
+    distribution_correction_count: int
     breadth_on_threshold: float
     breadth_off_threshold: float
+    market_confirmed_max_exposure_pct: float
+    market_confirmed_weak_breadth_max_exposure_pct: float
+    market_under_pressure_max_exposure_pct: float
+    market_under_pressure_weak_breadth_max_exposure_pct: float
 
     # world-regime entry gate
     regime_entry_filter_enable: bool
@@ -159,8 +171,30 @@ class Config:
             min_above_52w_low=float(_env("MIN_ABOVE_52W_LOW", "1.30")),
             max_below_52w_high=float(_env("MAX_BELOW_52W_HIGH", "0.75")),
             market_filter_enable=_env_bool("MARKET_FILTER_ENABLE", True),
+            market_index_symbols=_env_str_tuple("MARKET_INDEX_SYMBOLS", "QQQ,VOO"),
+            market_primary_index=_env("MARKET_PRIMARY_INDEX", "QQQ").upper(),
+            ftd_min_rally_day=int(_env("FTD_MIN_RALLY_DAY", "4")),
+            ftd_min_gain=float(_env("FTD_MIN_GAIN", "0.0125")),
+            distribution_min_loss=float(_env("DISTRIBUTION_MIN_LOSS", "0.002")),
+            distribution_lookback_sessions=int(
+                _env("DISTRIBUTION_LOOKBACK_SESSIONS", "25")
+            ),
+            distribution_pressure_count=int(_env("DISTRIBUTION_PRESSURE_COUNT", "4")),
+            distribution_correction_count=int(_env("DISTRIBUTION_CORRECTION_COUNT", "6")),
             breadth_on_threshold=float(_env("BREADTH_ON_THRESHOLD", "0.50")),
             breadth_off_threshold=float(_env("BREADTH_OFF_THRESHOLD", "0.45")),
+            market_confirmed_max_exposure_pct=float(
+                _env("MARKET_CONFIRMED_MAX_EXPOSURE_PCT", "1.0")
+            ),
+            market_confirmed_weak_breadth_max_exposure_pct=float(
+                _env("MARKET_CONFIRMED_WEAK_BREADTH_MAX_EXPOSURE_PCT", "0.25")
+            ),
+            market_under_pressure_max_exposure_pct=float(
+                _env("MARKET_UNDER_PRESSURE_MAX_EXPOSURE_PCT", "0.50")
+            ),
+            market_under_pressure_weak_breadth_max_exposure_pct=float(
+                _env("MARKET_UNDER_PRESSURE_WEAK_BREADTH_MAX_EXPOSURE_PCT", "0.25")
+            ),
             regime_entry_filter_enable=_env_bool("REGIME_ENTRY_FILTER_ENABLE", False),
             regime_allowed_labels=_env_str_tuple(
                 "REGIME_ALLOWED_LABELS", "RISK-ON,CONSTRUCTIVE,NEUTRAL"
@@ -239,6 +273,46 @@ class Config:
             raise ValueError(f"unsupported SCREEN_PERSIST={cfg.screen_persist!r}")
         if cfg.simulation_mode not in ("independent", "portfolio"):
             raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
+        if not cfg.market_index_symbols:
+            raise ValueError("MARKET_INDEX_SYMBOLS must contain at least one symbol")
+        if cfg.market_primary_index not in cfg.market_index_symbols:
+            raise ValueError("MARKET_PRIMARY_INDEX must be included in MARKET_INDEX_SYMBOLS")
+        if cfg.ftd_min_rally_day < 2:
+            raise ValueError("FTD_MIN_RALLY_DAY must be >= 2")
+        if cfg.ftd_min_gain <= 0:
+            raise ValueError("FTD_MIN_GAIN must be > 0")
+        if cfg.distribution_min_loss <= 0:
+            raise ValueError("DISTRIBUTION_MIN_LOSS must be > 0")
+        if cfg.distribution_lookback_sessions < 1:
+            raise ValueError("DISTRIBUTION_LOOKBACK_SESSIONS must be >= 1")
+        if not (
+            1 <= cfg.distribution_pressure_count
+            < cfg.distribution_correction_count
+        ):
+            raise ValueError(
+                "DISTRIBUTION counts must satisfy 1 <= pressure < correction"
+            )
+        if not (0 <= cfg.breadth_off_threshold < cfg.breadth_on_threshold <= 1):
+            raise ValueError("breadth thresholds must satisfy 0 <= off < on <= 1")
+        market_exposure_caps = (
+            cfg.market_confirmed_max_exposure_pct,
+            cfg.market_confirmed_weak_breadth_max_exposure_pct,
+            cfg.market_under_pressure_max_exposure_pct,
+            cfg.market_under_pressure_weak_breadth_max_exposure_pct,
+        )
+        if any(value < 0 or value > 1 for value in market_exposure_caps):
+            raise ValueError("market exposure caps must be between 0 and 1")
+        if not (
+            cfg.market_confirmed_weak_breadth_max_exposure_pct
+            <= cfg.market_confirmed_max_exposure_pct
+        ):
+            raise ValueError("confirmed weak-breadth cap must not exceed confirmed cap")
+        if not (
+            cfg.market_under_pressure_weak_breadth_max_exposure_pct
+            <= cfg.market_under_pressure_max_exposure_pct
+            <= cfg.market_confirmed_max_exposure_pct
+        ):
+            raise ValueError("under-pressure caps must not exceed confirmed cap")
         if cfg.dryup_ratio_min < 0:
             raise ValueError("DRYUP_RATIO_MIN must be >= 0")
         if cfg.dryup_ratio_max <= cfg.dryup_ratio_min:

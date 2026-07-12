@@ -57,11 +57,17 @@ TRADE_COLUMNS = [
     "regime_composite", "regime_label",
 ]
 
-MARKET_COLUMNS = ["period_end_date", "market_breadth_pct", "market_on"]
+MARKET_COLUMNS = [
+    "period_end_date", "primary_index", "primary_index_close",
+    "primary_index_volume", "primary_index_return_pct", "market_breadth_pct",
+    "breadth_confirmed", "market_status", "rally_attempt_day",
+    "distribution_day", "distribution_days", "follow_through_day",
+    "entry_exposure_cap", "market_on",
+]
 
 EQUITY_COLUMNS = [
     "run_id", "period_end_date", "equity", "open_positions", "exposure_pct",
-    "exposure_level",
+    "feedback_exposure_level", "market_exposure_cap", "entry_exposure_limit",
 ]
 
 

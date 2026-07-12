@@ -295,7 +295,9 @@ def run_sim(
         return
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
-    market_on = market["market_on"].to_numpy() if cfg.market_filter_enable else None
+    market_exposure_cap = (
+        market["entry_exposure_cap"].to_numpy() if cfg.market_filter_enable else None
+    )
     regime = data_loader.load_regime_scores(conn, cfg)
     regime_entry_allowed = (
         _regime_entry_allowed(dates, regime, cfg)
@@ -305,7 +307,8 @@ def run_sim(
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
-        setups, cfg, sim_start_idx=sim_start_idx, market_on=market_on,
+        setups, cfg, sim_start_idx=sim_start_idx,
+        market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
@@ -347,10 +350,13 @@ def main() -> None:
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
 
-    market = market_filter.compute_breadth(matrices["close"], cfg)
+    index_bars = data_loader.load_market_indexes(conn, cfg)
+    market = market_filter.compute_market_model(matrices["close"], index_bars, cfg)
     log.info(
-        "market breadth: %.1f%% latest, gate on for %d of %d days in window",
+        "Market model latest %s breadth %.1f%% entry cap %.0f%% active %d %d days",
+        market["market_status"].iloc[-1],
         100 * market["market_breadth"].iloc[-1],
+        100 * market["entry_exposure_cap"].iloc[-1],
         int(market.loc[window, "market_on"].sum()), int(window.sum()),
     )
 

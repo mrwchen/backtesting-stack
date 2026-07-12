@@ -14,6 +14,7 @@ other backtesting services.
 | `ibkr_symbols` | IBKR `industry` / `category` taxonomy for group leadership |
 | `stock_core_sec_quarterly_fundamental_events` | accession-keyed quarterly EPS, revenue, income and margins with prior-year comparators |
 | `stock_core_13f_sponsorship_events` | bitemporal institutional sponsorship changes from official SEC 13F filings |
+| `alpaca_market_data_1day` | adjusted QQQ/VOO OHLCV for rally attempts, follow-through and distribution days |
 
 All stock inputs are joined to one canonical current `(symbol, exchange, cik)`
 identity before caching. This prevents a reused ticker or parallel exchange
@@ -36,7 +37,7 @@ disabling the fundamental screen.
 |---|---|
 | `backtesting_minervini_rs_daily` | daily 1-99 RS rating for every eligible symbol |
 | `backtesting_minervini_screen_daily` | trend-template + fundamental + IBKR group-leadership + industry-breadth flags per symbol/day |
-| `backtesting_minervini_market_daily` | daily market breadth (% above 200d MA) + hysteresis gate |
+| `backtesting_minervini_market_daily` | causal QQQ/VOO market state, distribution count, follow-through events, breadth and entry-exposure cap |
 | `backtesting_minervini_setups` | VCP bases with transparent 0-100 component scores + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
 | `backtesting_minervini_trades` | trade legs per run + IBKR industry/category + world-regime attribution |
@@ -59,8 +60,12 @@ screen : RS rating (cross-sectional percentile) + 8-point trend template
          + IBKR industry breadth:
            industry gate on at >= 55% of members above their 200d MA, off
            below 45% -> rs_daily, screen_daily
-         + market breadth gate (share of stocks above their 200d MA, on >= 50%
-         / off < 45% hysteresis) -> market_daily
+         + QQQ-led market state: correction -> rally attempt -> confirmed
+           uptrend -> uptrend under pressure. A day-4-or-later QQQ gain of at
+           least 1.25% on higher volume confirms a rally. QQQ/VOO declines of
+           at least 0.2% on higher volume add 25-session distribution events;
+           four put the uptrend under pressure and six end it. Stock breadth
+           above the 200d MA is a secondary exposure confirmation -> market_daily
 setup  : causal daily/complete-week VCP detection and transparent scoring for
          contraction quality, final tightness, volume dry-up/slope, tight
          closes, duration, pivot proximity, overhead supply and prior advance.
@@ -86,8 +91,8 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          delayed profit protection, MA-trail, end-of-data when
          the symbol has an executable final-session bar. Otherwise the position
          remains open and is only marked at its last known close.
-         A market-breadth state computed at close t controls entries from session
-         t+1 (MARKET_FILTER_ENABLE); open positions keep running into their exits.
+         Market status and exposure cap computed at close t control entries from
+         session t+1 (MARKET_FILTER_ENABLE); open positions keep running into their exits.
          A base is invalidated by a stop-level breach. Its first pivot breakout
          consumes the setup even when the trade is skipped because of a gate,
          excessive gap or unavailable portfolio capacity.
@@ -98,8 +103,11 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          world-regime composite score at entry as attribution.
          Portfolio exposure starts at 25%, steps up through 50/75/100% only
          after two consecutive closed winners, steps down after a loss, and
-         resets after two losses or a 4% drawdown. Unrealized PnL never raises
-         the exposure level.
+         resets after two losses, a 4% drawdown or a non-investable market
+         state. The actual entry limit is the lower of that feedback level and
+         the market cap: 0% in correction/rally attempt, 25-100% in a confirmed
+         uptrend depending on breadth, and 25-50% under pressure. Unrealized
+         PnL never raises the exposure level.
 ```
 
 ## Run
@@ -133,10 +141,15 @@ python -m pytest tests -q
   knowledge states and never rewrite earlier backtest dates.
 - This is a deterministic SEPA-inspired research proxy, not a claim to reproduce
   Mark Minervini's complete proprietary discretionary process.
+- The QQQ/VOO state machine is a transparent IBD-inspired approximation, not
+  IBD/MarketSurge's proprietary market-status service. QQQ starts rally attempts
+  and follow-through days; either configured proxy can add one distribution
+  event per session.
 - Breakout-volume confirmation is not used as a same-day hard filter because
   daily volume is only known after the close; adding it to stop-buy entries
   would introduce look-ahead unless the entry is delayed to the next session.
 - The global session grid is the union of available stock bars. A gap in one
   symbol is detected, but a complete provider outage affecting every symbol on
   the same exchange session is not distinguishable without a separate exchange
-  calendar source.
+  calendar source. A missing primary-index bar is marked `DATA_UNAVAILABLE` and
+  blocks new entries in the following session.

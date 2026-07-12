@@ -127,7 +127,10 @@ def test_progressive_exposure_steps_up_only_after_two_closed_winners():
     assert final_legs.loc["AAA", "pnl"] > 0
     assert final_legs.loc["BBB", "pnl"] > 0
     assert final_legs.loc["CCC", "shares"] > final_legs.loc["BBB", "shares"]
-    assert result.equity.loc[result.equity["period_end_date"] == dates[11].date(), "exposure_level"].iloc[0] == 0.5
+    assert result.equity.loc[
+        result.equity["period_end_date"] == dates[11].date(),
+        "feedback_exposure_level",
+    ].iloc[0] == 0.5
 
 
 def test_breakout_partial_and_breakeven_stop():
@@ -793,7 +796,7 @@ def test_market_gate_blocks_entries_but_not_exits():
 
     result = simulate(
         dates, close_m.columns, open_m, high_m, low_m, close_m, setups,
-        _clean_cfg(), market_on=market_on,
+        _clean_cfg(), market_exposure_cap=market_on.astype(float),
     )
     trades = result.trades
 
@@ -821,7 +824,7 @@ def test_market_gate_uses_previous_close_not_breakout_day_close():
         close_m,
         setups,
         _clean_cfg(),
-        market_on=turns_on_at_breakout_close,
+        market_exposure_cap=turns_on_at_breakout_close.astype(float),
     )
     assert blocked.trades.empty
 
@@ -837,9 +840,45 @@ def test_market_gate_uses_previous_close_not_breakout_day_close():
         close_m,
         setups,
         _clean_cfg(),
-        market_on=turns_off_at_breakout_close,
+        market_exposure_cap=turns_off_at_breakout_close.astype(float),
     )
     assert allowed.trades.iloc[0]["entry_date"] == dates[5].date()
+
+
+def test_market_exposure_cap_limits_portfolio_order_size():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(101, 102, 100, 101)] * 3
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 8)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "exposure_levels": (1.0,),
+        }
+    )
+    market_cap = np.full(len(dates), 0.25)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        cfg,
+        market_exposure_cap=market_cap,
+    )
+
+    assert result.trades.iloc[0]["shares"] == 25
+    entry_equity = result.equity.loc[
+        result.equity["period_end_date"] == dates[5].date()
+    ].iloc[0]
+    assert entry_equity["market_exposure_cap"] == 0.25
+    assert entry_equity["entry_exposure_limit"] == 0.25
 
 
 def test_regime_gate_blocks_entries_but_not_exits():
