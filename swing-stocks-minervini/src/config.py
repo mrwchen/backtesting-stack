@@ -136,6 +136,10 @@ class Config:
     bad_fundamentals_filter_enable: bool
     pivot_buffer_pct: float
     max_buy_zone_pct: float
+    breakout_volume_lookback_sessions: int
+    breakout_volume_min_history_sessions: int
+    breakout_volume_min_ratio: float
+    breakout_require_close_above_pivot: bool
     time_stop_sessions: int
     time_stop_min_r: float
     profit_protection_trigger_r: float
@@ -256,6 +260,18 @@ class Config:
             bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", True),
             pivot_buffer_pct=float(_env("PIVOT_BUFFER_PCT", "0.001")),
             max_buy_zone_pct=float(_env("MAX_BUY_ZONE_PCT", "0.02")),
+            breakout_volume_lookback_sessions=int(
+                _env("BREAKOUT_VOLUME_LOOKBACK_SESSIONS", "50")
+            ),
+            breakout_volume_min_history_sessions=int(
+                _env("BREAKOUT_VOLUME_MIN_HISTORY_SESSIONS", "20")
+            ),
+            breakout_volume_min_ratio=float(
+                _env("BREAKOUT_VOLUME_MIN_RATIO", "1.40")
+            ),
+            breakout_require_close_above_pivot=_env_bool(
+                "BREAKOUT_REQUIRE_CLOSE_ABOVE_PIVOT", True
+            ),
             time_stop_sessions=int(_env("TIME_STOP_SESSIONS", "10")),
             time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
             profit_protection_trigger_r=float(_env("PROFIT_PROTECTION_TRIGGER_R", "2.0")),
@@ -321,6 +337,17 @@ class Config:
             raise ValueError("DRYUP_RATIO_PREFERRED must be between DRYUP_RATIO_MIN and DRYUP_RATIO_MAX")
         if cfg.failed_breakout_days < 1:
             raise ValueError("FAILED_BREAKOUT_DAYS must be >= 1")
+        if cfg.breakout_volume_lookback_sessions < 1:
+            raise ValueError("BREAKOUT_VOLUME_LOOKBACK_SESSIONS must be >= 1")
+        if not (
+            1 <= cfg.breakout_volume_min_history_sessions
+            <= cfg.breakout_volume_lookback_sessions
+        ):
+            raise ValueError(
+                "BREAKOUT_VOLUME_MIN_HISTORY_SESSIONS must be between 1 and the lookback"
+            )
+        if cfg.breakout_volume_min_ratio <= 0:
+            raise ValueError("BREAKOUT_VOLUME_MIN_RATIO must be > 0")
         if cfg.portfolio_max_open_positions < 1:
             raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
         if cfg.portfolio_max_gross_exposure_pct <= 0:

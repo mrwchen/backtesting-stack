@@ -69,6 +69,7 @@ class PlannedOrder:
 class SimResult:
     trades: pd.DataFrame = field(default_factory=pd.DataFrame)
     equity: pd.DataFrame = field(default_factory=pd.DataFrame)
+    entry_decisions: pd.DataFrame = field(default_factory=pd.DataFrame)
     metrics: dict = field(default_factory=dict)
 
 
@@ -129,6 +130,7 @@ def simulate(
     active_setups: dict[str, object] = {}
     trades: list[dict] = []
     equity_rows: list[dict] = []
+    entry_decisions: dict[int, dict] = {}
     next_setup = 0
     next_position_id = 1
     exposure_index = 0 if portfolio_mode else len(cfg.exposure_levels) - 1
@@ -183,6 +185,23 @@ def simulate(
             str(getattr(setup, "symbol", "")),
             int(_num_attr(setup, "setup_id", 0.0)),
         )
+
+    def set_entry_decision(
+        setup,
+        decision: str,
+        *,
+        entry_date=None,
+        entry_price: float | None = None,
+    ) -> None:
+        setup_id = getattr(setup, "setup_id", None)
+        if setup_id is None or pd.isna(setup_id):
+            return
+        entry_decisions[int(setup_id)] = {
+            "setup_id": int(setup_id),
+            "entry_decision": decision,
+            "entry_date": entry_date,
+            "entry_price": entry_price,
+        }
 
     def open_notional(t: int) -> float:
         total = 0.0
@@ -338,11 +357,27 @@ def simulate(
         slate: list[PlannedOrder] = []
         selected_symbols: set[str] = set()
         unusable_setup_keys: set[int] = set()
-        if entries_allowed:
-            for setup in sorted(active_setups.values(), key=setup_priority):
+        prioritized_setups = sorted(active_setups.values(), key=setup_priority)
+        if not entries_allowed:
+            gate_decision = (
+                "market_gate_blocked"
+                if entry_exposure_limit <= 0
+                else "regime_gate_blocked"
+            )
+            for setup in prioritized_setups:
+                set_entry_decision(
+                    setup,
+                    "existing_position" if setup.symbol in start_symbols else gate_decision,
+                )
+        else:
+            for position, setup in enumerate(prioritized_setups):
                 if setup.symbol in start_symbols or setup.symbol in selected_symbols:
+                    set_entry_decision(setup, "existing_position")
                     continue
                 if portfolio_mode and remaining_slots <= 0:
+                    for skipped in prioritized_setups[position:]:
+                        if skipped.symbol not in start_symbols:
+                            set_entry_decision(skipped, "portfolio_capacity")
                     break
 
                 pivot = _num_attr(setup, "pivot", np.nan)
@@ -359,6 +394,7 @@ def simulate(
                     or risk_per_share <= 0
                 ):
                     unusable_setup_keys.add(setup_key)
+                    set_entry_decision(setup, "invalid_order_parameters")
                     continue
 
                 limits = [
@@ -379,6 +415,7 @@ def simulate(
                     )
                 shares = int(min(limits))
                 if shares < 1:
+                    set_entry_decision(setup, "size_below_one_share")
                     continue
 
                 slate.append(
@@ -531,6 +568,7 @@ def simulate(
                 # complete session range and close. The setup continuity is
                 # broken and the order is consumed.
                 consumed_setup_keys.add(order.setup_key)
+                set_entry_decision(setup, "incomplete_entry_bar")
                 continue
             pivot = float(setup.pivot)
             trigger = pivot * (1 + cfg.pivot_buffer_pct)
@@ -542,10 +580,13 @@ def simulate(
             # known before any later intraday pivot trade and cancels the order.
             if np.isfinite(invalidation_level) and day_open <= invalidation_level:
                 consumed_setup_keys.add(order.setup_key)
+                set_entry_decision(setup, "opened_below_invalidation")
                 continue
             if day_high <= trigger:
+                set_entry_decision(setup, "no_retrigger")
                 continue
             if day_open > trigger * (1 + cfg.max_buy_zone_pct):
+                set_entry_decision(setup, "excessive_gap")
                 continue
 
             fill = max(day_open, trigger) * (1 + cfg.slippage_pct)
@@ -568,6 +609,12 @@ def simulate(
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
+            set_entry_decision(
+                setup,
+                "filled",
+                entry_date=dates[t].date(),
+                entry_price=fill,
+            )
             if portfolio_mode:
                 cash -= shares * fill * (1 + cfg.commission_pct)
             # entry-day stop: if the bar's low also breaches the stop, assume
@@ -719,7 +766,15 @@ def simulate(
     # Opened positions without an executable final bar have no exit leg, but
     # they still count as strategy positions in the run summary.
     metrics["num_positions"] = next_position_id - 1
-    return SimResult(trades=trades_df, equity=equity_df, metrics=metrics)
+    decisions_df = pd.DataFrame(
+        [entry_decisions[setup_id] for setup_id in sorted(entry_decisions)]
+    )
+    return SimResult(
+        trades=trades_df,
+        equity=equity_df,
+        entry_decisions=decisions_df,
+        metrics=metrics,
+    )
 
 
 def _metrics(

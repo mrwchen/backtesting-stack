@@ -15,6 +15,7 @@ SCREEN_TABLE = "backtesting_minervini_screen_daily"
 MARKET_TABLE = "backtesting_minervini_market_daily"
 SETUPS_TABLE = "backtesting_minervini_setups"
 RUNS_TABLE = "backtesting_minervini_runs"
+BREAKOUT_EVENTS_TABLE = "backtesting_minervini_breakout_events"
 TRADES_TABLE = "backtesting_minervini_trades"
 EQUITY_TABLE = "backtesting_minervini_equity_daily"
 
@@ -55,6 +56,15 @@ TRADE_COLUMNS = [
     "entry_date", "entry_price", "stop_price", "pivot", "shares",
     "exit_date", "exit_price", "pnl", "r_multiple", "holding_days",
     "regime_composite", "regime_label",
+]
+
+BREAKOUT_EVENT_COLUMNS = [
+    "run_id", "setup_id", "symbol", "setup_detect_date", "breakout_date",
+    "planned_entry_date", "pivot", "trigger_price", "breakout_open",
+    "breakout_high", "breakout_low", "breakout_close", "breakout_volume",
+    "average_volume_prior", "volume_history_sessions", "breakout_volume_ratio",
+    "close_above_pivot", "volume_confirmed", "confirmation_pass",
+    "entry_filled", "entry_date", "entry_price", "decision",
 ]
 
 MARKET_COLUMNS = [
@@ -152,6 +162,14 @@ def write_trades(conn, run_id: int, trades: pd.DataFrame) -> None:
     trades = trades.copy()
     trades["run_id"] = run_id
     db.copy_df(conn, trades, TRADES_TABLE, TRADE_COLUMNS)
+
+
+def write_breakout_events(conn, run_id: int, events: pd.DataFrame) -> None:
+    if events.empty:
+        return
+    events = events.copy()
+    events["run_id"] = run_id
+    db.copy_df(conn, events, BREAKOUT_EVENTS_TABLE, BREAKOUT_EVENT_COLUMNS)
 
 
 def write_equity(conn, run_id: int, equity: pd.DataFrame) -> None:

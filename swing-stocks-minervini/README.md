@@ -40,6 +40,7 @@ disabling the fundamental screen.
 | `backtesting_minervini_market_daily` | causal QQQ/VOO market state, distribution count, follow-through events, breadth and entry-exposure cap |
 | `backtesting_minervini_setups` | VCP bases with transparent 0-100 component scores + IBKR industry/category |
 | `backtesting_minervini_runs` | one row per simulation run (params + metrics) |
+| `backtesting_minervini_breakout_events` | every first pivot break, causal prior-volume baseline, confirmation result and D+1 fill state |
 | `backtesting_minervini_trades` | trade legs per run + IBKR industry/category + world-regime attribution |
 | `backtesting_minervini_equity_daily` | daily equity curve per run |
 
@@ -72,7 +73,13 @@ setup  : causal daily/complete-week VCP detection and transparent scoring for
          A missing global session resets
          that symbol's swing/volume structure, and validity expires in global
          market sessions even while the symbol is halted -> setups
-sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
+sim    : volume-confirmed D+1 stop-buy entries -> breakout_events, runs, trades,
+         equity_daily. The first pivot break on day D consumes the setup. After
+         D closes, its complete volume is divided by the mean of up to 50 prior
+         sessions (D is excluded; at least 20 observations required). A ratio
+         >= 1.40 and a close above the pivot confirm the signal. Only session
+         D+1 may fill a new stop-buy at the original trigger and inside the 2%
+         buy zone; otherwise the confirmed signal expires.
          SIMULATION_MODE=independent trades every triggered setup independently
          with no cash constraint, no position limit and no compounding. That
          research mode measures the signal across the whole universe.
@@ -85,8 +92,7 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          contraction count, risk distance, volume dry-up quality and growth
          fields from screen_daily. Independent mode uses the same pre-session
          sizing discipline with INITIAL_EQUITY but no portfolio constraints.
-         Entries require a buffered pivot break and remain inside the 2% buy
-         zone. Exits: structural stop (maximum 8%, also checked on the entry
+         Exits: structural stop (maximum 8%, also checked on the entry
          bar), failed-breakout exit, ten-session no-progress time stop,
          delayed profit protection, MA-trail, end-of-data when
          the symbol has an executable final-session bar. Otherwise the position
@@ -94,8 +100,9 @@ sim    : stop-buy breakout entries over the pivot -> runs, trades, equity_daily
          Market status and exposure cap computed at close t control entries from
          session t+1 (MARKET_FILTER_ENABLE); open positions keep running into their exits.
          A base is invalidated by a stop-level breach. Its first pivot breakout
-         consumes the setup even when the trade is skipped because of a gate,
-         excessive gap or unavailable portfolio capacity.
+         consumes the setup even when volume/close confirmation fails or the
+         D+1 trade is skipped because of a gate, missing retrigger, excessive
+         gap or unavailable portfolio capacity.
          Optional world-regime entry filtering blocks entries whose latest known
          regime label is not in REGIME_ALLOWED_LABELS. A score for day d is only
          usable from d+1 (its 01:00 America/New_York cutoff); weekend rows remain
@@ -145,9 +152,10 @@ python -m pytest tests -q
   IBD/MarketSurge's proprietary market-status service. QQQ starts rally attempts
   and follow-through days; either configured proxy can add one distribution
   event per session.
-- Breakout-volume confirmation is not used as a same-day hard filter because
-  daily volume is only known after the close; adding it to stop-buy entries
-  would introduce look-ahead unless the entry is delayed to the next session.
+- Breakout volume is deliberately not used for a fill on breakout day D. Its
+  complete daily value becomes knowable only after the close, so confirmation
+  can create an order exclusively for D+1. This is causal but can miss an ideal
+  pivot fill or skip a signal that gaps beyond the buy zone.
 - The global session grid is the union of available stock bars. A gap in one
   symbol is detected, but a complete provider outage affecting every symbol on
   the same exchange session is not distinguishable without a separate exchange

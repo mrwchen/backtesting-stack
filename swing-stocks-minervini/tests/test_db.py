@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 
 from src import db
@@ -51,3 +53,16 @@ def test_copy_df_writes_infinite_numbers_as_null_csv_fields():
     assert written == 2
     assert conn.committed is True
     assert conn.cursor_obj.copied_csv == "2026-07-03,AAA,\n2026-07-04,BBB,\n"
+
+
+def test_breakout_events_schema_is_a_365_day_hypertable_created_only_in_init_sql():
+    root = Path(__file__).parents[1]
+    schema = (root / "init" / "schema.sql").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in (root / "src").glob("*.py")
+    )
+
+    assert "CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events" in schema
+    assert "'backtesting_minervini_breakout_events'" in schema
+    assert "chunk_time_interval => INTERVAL '365 days'" in schema
+    assert "CREATE TABLE" not in source

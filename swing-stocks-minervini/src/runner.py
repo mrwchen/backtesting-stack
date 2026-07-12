@@ -7,7 +7,18 @@ import time
 import numpy as np
 import pandas as pd
 
-from . import data_loader, db, fundamentals, group_filter, market_filter, persistence, rs_rating, trend_template, vcp
+from . import (
+    breakout_confirmation,
+    data_loader,
+    db,
+    fundamentals,
+    group_filter,
+    market_filter,
+    persistence,
+    rs_rating,
+    trend_template,
+    vcp,
+)
 from .config import Config
 from .simulator import simulate
 
@@ -295,6 +306,23 @@ def run_sim(
         return
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
+    confirmed_setups, breakout_events = breakout_confirmation.confirm_daily_breakouts(
+        dates,
+        matrices["symbols"],
+        matrices["open"],
+        matrices["high"],
+        matrices["low"],
+        matrices["close"],
+        matrices["volume"],
+        setups,
+        cfg,
+        start_idx=sim_start_idx,
+    )
+    log.info(
+        "Breakout confirmation events %d confirmed %d",
+        len(breakout_events),
+        int(breakout_events["confirmation_pass"].sum()) if not breakout_events.empty else 0,
+    )
     market_exposure_cap = (
         market["entry_exposure_cap"].to_numpy() if cfg.market_filter_enable else None
     )
@@ -307,18 +335,22 @@ def run_sim(
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
-        setups, cfg, sim_start_idx=sim_start_idx,
+        confirmed_setups, cfg, sim_start_idx=sim_start_idx,
         market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
     )
     run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
     trades = result.trades
+    breakout_events = breakout_confirmation.attach_fills(
+        breakout_events, trades, result.entry_decisions
+    )
     if not trades.empty:
         trades = trades.merge(
             universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
         )
         trades = _attach_regime_attribution(trades, regime)
     persistence.write_trades(conn, run_id, trades)
+    persistence.write_breakout_events(conn, run_id, breakout_events)
     persistence.write_equity(conn, run_id, result.equity)
     log.info("run %d persisted: %s", run_id, result.metrics)
 
