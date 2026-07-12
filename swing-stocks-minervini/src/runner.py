@@ -79,8 +79,10 @@ def _effective_regime(regime: pd.DataFrame) -> pd.DataFrame:
     Sunday's score is available before Monday's session.
     """
     effective = regime.copy()
-    effective["day"] = pd.to_datetime(effective["day"])
-    effective["effective_date"] = effective["day"].dt.normalize() + pd.Timedelta(days=1)
+    effective["day"] = pd.to_datetime(effective["day"]).astype("datetime64[ns]")
+    effective["effective_date"] = (
+        effective["day"].dt.normalize() + pd.Timedelta(days=1)
+    ).astype("datetime64[ns]")
     return (
         effective.sort_values(["effective_date", "day"], kind="stable")
         .drop_duplicates("effective_date", keep="last")
@@ -98,7 +100,13 @@ def _regime_entry_allowed(dates: pd.DatetimeIndex, regime: pd.DataFrame, cfg: Co
         regime[["day", "regime_label"]].dropna(subset=["day"])
     )
     labels["regime_label"] = labels["regime_label"].astype(str).str.upper()
-    sessions = pd.DataFrame({"session_date": pd.DatetimeIndex(dates).normalize()})
+    sessions = pd.DataFrame(
+        {
+            "session_date": pd.DatetimeIndex(dates)
+            .normalize()
+            .astype("datetime64[ns]")
+        }
+    )
     aligned = pd.merge_asof(
         sessions.sort_values("session_date"),
         labels[["effective_date", "regime_label"]].sort_values("effective_date"),
@@ -125,7 +133,9 @@ def _attach_regime_attribution(trades: pd.DataFrame, regime: pd.DataFrame) -> pd
 
     trades = trades.copy()
     trades["_order"] = np.arange(len(trades))
-    trades["_entry_ts"] = pd.to_datetime(trades["entry_date"])
+    trades["_entry_ts"] = pd.to_datetime(trades["entry_date"]).astype(
+        "datetime64[ns]"
+    )
     regime = _effective_regime(
         regime[["day", "regime_composite", "regime_label"]].dropna(subset=["day"])
     )
