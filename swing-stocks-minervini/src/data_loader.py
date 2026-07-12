@@ -7,8 +7,8 @@ Sources produced by market-data-stack:
   - ibkr_symbols                           IBKR industry/category taxonomy
   - stock_core_sec_quarterly_fundamental_events SEC quarterly reported values,
     prior-year comparables and margins per filing accession.
-  - stock_core_13f_sponsorship_events       SEC institutional holding changes,
-    usable only from each filing's effective date.
+  - stock_core_13f_sponsorship_identity_events compact SEC institutional
+    changes, usable only from each filing's effective date.
   - alpaca_market_data_1day                  adjusted QQQ/VOO market proxies.
 """
 from __future__ import annotations
@@ -145,16 +145,16 @@ WITH canonical_identity AS (
 )
 SELECT e.symbol,
        e.effective_date::date AS available_date,
-       SUM(e.manager_count_delta)::float8 AS manager_count_delta,
-       SUM(e.new_position_count + e.increased_count
+       e.manager_count_delta::float8 AS manager_count_delta,
+       (e.new_position_count + e.increased_count
            - e.decreased_count - e.exited_count)::float8 AS net_activity_delta
-FROM stock_core_13f_sponsorship_events e
+FROM stock_core_13f_sponsorship_identity_events e
 JOIN canonical_identity i
   ON i.symbol = e.symbol
  AND i.exchange = e.exchange
  AND i.cik = e.cik
 WHERE e.effective_date <= %(end)s
-GROUP BY e.symbol, e.effective_date
+ORDER BY e.symbol, e.effective_date
 """
 
 
@@ -315,10 +315,10 @@ def load_sponsorship_events(conn, cfg: Config) -> pd.DataFrame:
             df["available_date"] = pd.to_datetime(df["available_date"])
         return df
 
-    events = _cached(cfg, f"sponsorship_identity_v1_{end}", _load, cache_empty=False)
+    events = _cached(cfg, f"sponsorship_identity_v2_{end}", _load, cache_empty=False)
     if cfg.institutional_sponsorship_filter_enable and events.empty:
         raise RuntimeError(
-            "stock_core_13f_sponsorship_events is empty while the institutional sponsorship filter is enabled"
+            "stock_core_13f_sponsorship_identity_events is empty while the institutional sponsorship filter is enabled"
         )
     return events
 

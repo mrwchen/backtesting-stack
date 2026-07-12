@@ -87,6 +87,42 @@ def test_all_stock_inputs_use_the_same_full_security_identity():
         assert ".cik" in query
 
 
+def test_sponsorship_loader_reads_compact_identity_events_and_refreshes_cache_version():
+    assert "stock_core_13f_sponsorship_identity_events" in data_loader.SPONSORSHIP_SQL
+    assert "stock_core_13f_sponsorship_events e" not in data_loader.SPONSORSHIP_SQL
+
+
+def test_sponsorship_loader_uses_v2_cache_for_compact_source(tmp_path, monkeypatch):
+    observed = {}
+
+    def read_df(_conn, query, _params):
+        observed["query"] = query
+        return pd.DataFrame(
+            {
+                "symbol": ["AAA"],
+                "available_date": ["2023-12-29"],
+                "manager_count_delta": [1.0],
+                "net_activity_delta": [1.0],
+            }
+        )
+
+    monkeypatch.setattr(data_loader.db, "read_df", read_df)
+    def cached(_cfg, name, loader, **_kwargs):
+        observed["cache_name"] = name
+        return loader()
+
+    monkeypatch.setattr(data_loader, "_cached", cached)
+    cfg = make_cfg(
+        cache_dir=str(tmp_path), force_refresh=True, end_date="2023-12-31"
+    )
+
+    result = data_loader.load_sponsorship_events(object(), cfg)
+
+    assert len(result) == 1
+    assert "stock_core_13f_sponsorship_identity_events" in observed["query"]
+    assert observed["cache_name"] == "sponsorship_identity_v2_2023-12-31"
+
+
 def test_market_index_loader_fails_without_every_configured_proxy(tmp_path, monkeypatch):
     def read_only_qqq(*_args, **_kwargs):
         return pd.DataFrame(

@@ -13,7 +13,7 @@ other backtesting services.
 | `stock_core_security_master_current` | universe filter (`quote_type = EQUITY`) |
 | `ibkr_symbols` | IBKR `industry` / `category` taxonomy for group leadership |
 | `stock_core_sec_quarterly_fundamental_events` | accession-keyed quarterly EPS, revenue, income and margins with prior-year comparators |
-| `stock_core_13f_sponsorship_events` | bitemporal institutional sponsorship changes from official SEC 13F filings |
+| `stock_core_13f_sponsorship_identity_events` | compact bitemporal institutional sponsorship changes from official SEC 13F filings |
 | `alpaca_market_data_1day` | adjusted QQQ/VOO OHLCV for rally attempts, follow-through and distribution days |
 
 All stock inputs are joined to one canonical current `(symbol, exchange, cik)`
@@ -141,13 +141,24 @@ The fixed market-filter ablation arms are:
 
 ## Run
 
+First rebuild the upstream SEC 13F data model. This drops the raw and compact
+13F tables, backfills the official SEC source events, then builds the compact
+identity event stream:
+
 ```bash
-docker compose up --build
+cd /home/wei/market-data-stack/sec_13f_data_fetcher
+DROP_ALL_SEC_13F_TABLES_ON_START=true docker compose up --build
 ```
 
-No schema change or table drop is required for the ablation. The compose drop
-switch remains `false`, so the prior Daily-Pivot results stay available under
-their existing run labels.
+Then reset the Minervini result tables and run the development-only ablation:
+
+```bash
+cd /home/wei/backtesting-stack/swing-stocks-minervini
+DROP_ALL_MINERVINI_TABLES_ON_START=true docker compose up --build
+```
+
+Both destructive switches default to `false`; use the explicit overrides only
+for this intentionally incompatible source-model rebuild.
 
 All parameters (thresholds, VCP geometry, risk settings) are env vars in
 `compose.yaml`. `SCREEN_PERSIST=universe` persists every rankable symbol/day
