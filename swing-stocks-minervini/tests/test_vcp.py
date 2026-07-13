@@ -45,6 +45,9 @@ def _detect(data, *, pass_start: int = 25, **overrides):
     }
     defaults.update(overrides)
     cfg = make_cfg(**defaults)
+    continuity_segment = np.ones(len(dates), dtype=int)
+    continuity_break = np.zeros(len(dates), dtype=bool)
+    continuity_break[0] = True
     return find_setups(
         "TEST",
         dates,
@@ -52,6 +55,8 @@ def _detect(data, *, pass_start: int = 25, **overrides):
         low,
         close,
         volume,
+        continuity_segment,
+        continuity_break,
         np.arange(pass_start, len(dates)),
         cfg,
         trading_dates=dates,
@@ -105,6 +110,9 @@ def _patched_detection(
     monkeypatch.setattr(minervini, "_vcp_candidate", vcp_candidate)
     dates = pd.bdate_range("2020-01-02", periods=40)
     close = np.full(len(dates), 95.0)
+    continuity_segment = np.ones(len(dates), dtype=int)
+    continuity_break = np.zeros(len(dates), dtype=bool)
+    continuity_break[0] = True
     found = find_setups(
         "TEST",
         dates,
@@ -112,6 +120,8 @@ def _patched_detection(
         close * 0.99,
         close,
         np.full(len(dates), 1_000_000.0),
+        continuity_segment,
+        continuity_break,
         np.asarray(pass_idx),
         make_cfg(**config_overrides),
         trading_dates=dates,
@@ -219,13 +229,16 @@ def test_flat_base_setup_class():
 def test_power_play_setup_class():
     data = _series(
         [
-            np.linspace(30, 35, 35),
-            np.linspace(35, 66, 20),
+            np.full(20, 30.0),
+            np.linspace(30, 66, 20),
             62 + np.sin(np.linspace(0, 3 * np.pi, 18)) * 2.0,
             np.linspace(62.5, 64.5, 7),
         ],
-        quiet_from=66,
+        quiet_from=55,
     )
+    dates, high, low, close, volume = data
+    volume[24:40] = 2_000_000.0
+    data = dates, high, low, close, volume
     found = _detect(data)
     assert any(item.setup_type == "power_play" for item in found)
 
@@ -310,7 +323,7 @@ def test_recent_overlapping_structure_is_not_reemitted_under_new_label(monkeypat
     def vcp_candidate(t):
         if t == 31:
             return _synthetic_candidate(
-                "vcp", t=t, pivot_idx=11, pivot=101.0, score=95.0, base_start=8
+                "vcp", t=t, pivot_idx=11, pivot=100.5, score=95.0, base_start=8
             )
         return None
 
@@ -385,7 +398,7 @@ def test_bridge_candidate_does_not_merge_nonoverlapping_endpoint_pivots():
     assert {candidate["pivot"] for candidate in collapsed} == {100.0, 104.0}
 
 
-def test_structure_reemission_has_no_session_gap_after_validity(monkeypatch):
+def test_structure_expiry_alone_does_not_reemit_it(monkeypatch):
     def range_candidate(setup_type, t):
         if setup_type != "power_play":
             return None
@@ -403,9 +416,7 @@ def test_structure_reemission_has_no_session_gap_after_validity(monkeypatch):
 
     assert [setup.detect_date for setup in found] == [
         pd.Timestamp("2020-02-13").date(),
-        pd.Timestamp("2020-02-17").date(),
     ]
-    assert found[0].valid_until == found[1].detect_date
 
 
 def test_equal_quality_classification_uses_specificity_not_input_order():
@@ -513,6 +524,9 @@ def test_gold_catalog_is_balanced_metadata_not_asserted_signals():
 def test_setup_expiry_uses_global_sessions():
     dates, high, low, close, volume = _vcp_series()
     global_dates = pd.bdate_range(dates[0], periods=len(dates) + 40)
+    continuity_segment = np.ones(len(dates), dtype=int)
+    continuity_break = np.zeros(len(dates), dtype=bool)
+    continuity_break[0] = True
     found = find_setups(
         "TEST",
         dates,
@@ -520,6 +534,8 @@ def test_setup_expiry_uses_global_sessions():
         low,
         close,
         volume,
+        continuity_segment,
+        continuity_break,
         np.arange(95, len(dates)),
         make_cfg(setup_valid_days=10, dryup_score_zero_ratio=1.25),
         trading_dates=global_dates,
@@ -533,4 +549,29 @@ def test_setup_dataclass_has_explicit_type_and_no_legacy_vcp_score():
     setup = _detect(_vcp_series())[0]
     assert setup.setup_type in {"vcp", "flat_base", "power_play", "tight_shelf"}
     assert setup.setup_score > 0
+    assert setup.price_continuity_segment == 1
     assert not hasattr(setup, "vcp_score")
+
+
+def test_setup_geometry_cannot_cross_price_continuity_segment():
+    dates, high, low, close, volume = _vcp_series()
+    continuity_segment = np.ones(len(dates), dtype=int)
+    continuity_segment[88:] = 2
+    continuity_break = np.zeros(len(dates), dtype=bool)
+    continuity_break[[0, 88]] = True
+
+    found = find_setups(
+        "TEST",
+        dates,
+        high,
+        low,
+        close,
+        volume,
+        continuity_segment,
+        continuity_break,
+        np.arange(95, len(dates)),
+        make_cfg(contractions_min=3, dryup_score_zero_ratio=1.25),
+        trading_dates=dates,
+    )
+
+    assert found == []

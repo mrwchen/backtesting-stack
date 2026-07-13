@@ -30,16 +30,16 @@ RESULT_SCHEMA_COLUMNS = {
     "backtesting_minervini_setups": {
         "setup_id", "symbol", "setup_type", "detect_date", "pivot",
         "contraction_depths", "setup_score", "structure_quality_score",
-        "prior_advance_pct", "valid_until",
+        "prior_advance_pct", "valid_until", "price_continuity_segment",
     },
     "backtesting_minervini_runs": {
         "run_id", "model_version", "input_fingerprint", "params",
     },
     "backtesting_minervini_breakout_events": {
         "run_id", "setup_id", "setup_type", "breakout_date", "decision",
-        "snapshot_date", "dynamic_setup_score", "readiness_score",
-        "context_score", "setup_age_sessions", "distance_to_pivot_pct",
-        "candidate_rank",
+        "snapshot_date", "quality_score", "fill_probability",
+        "slate_priority", "setup_age_sessions", "distance_to_pivot_pct",
+        "quality_rank",
     },
     "backtesting_minervini_trades": {
         "run_id", "position_id", "setup_type", "entry_date", "exit_date",
@@ -95,9 +95,20 @@ def validate_result_schema(conn) -> None:
         for table, columns in RESULT_SCHEMA_COLUMNS.items()
         for column in sorted(columns - actual_by_table[table])
     ]
-    legacy = "vcp_score" in actual_by_table["backtesting_minervini_setups"]
+    legacy_columns = {
+        "backtesting_minervini_setups": {"vcp_score"},
+        "backtesting_minervini_breakout_events": {
+            "dynamic_setup_score", "readiness_score", "context_score",
+            "candidate_rank",
+        },
+    }
+    legacy = [
+        f"{table}.{column}"
+        for table, columns in legacy_columns.items()
+        for column in sorted(columns & actual_by_table[table])
+    ]
     if missing or legacy:
-        detail = ",".join(missing[:12]) or "legacy vcp_score column"
+        detail = ",".join((missing + legacy)[:12])
         raise RuntimeError(
             "Minervini result schema is incompatible; run once with "
             f"DROP_ALL_MINERVINI_TABLES_ON_START=true; details {detail}"

@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from src import runner
+from src.candidate_ranking import FillCalibrationLabel, QualityCalibrationLabel
 from src.runner import _attach_regime_attribution, _regime_entry_allowed
 
 from .util import make_cfg
@@ -22,6 +23,9 @@ class _TransactionConnection:
 
 def _matrices(dates: pd.DatetimeIndex) -> dict:
     close = pd.DataFrame({"AAA": [100.0] * len(dates)}, index=dates)
+    continuity = pd.DataFrame(1, index=dates, columns=close.columns, dtype="int64")
+    boundary = pd.DataFrame(False, index=dates, columns=close.columns)
+    boundary.iloc[0] = True
     return {
         "dates": dates,
         "symbols": close.columns,
@@ -30,6 +34,8 @@ def _matrices(dates: pd.DatetimeIndex) -> dict:
         "low": close.copy(),
         "close": close.copy(),
         "volume": close.copy(),
+        "price_continuity_segment": continuity,
+        "price_continuity_break": boundary,
     }
 
 
@@ -212,6 +218,24 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
     matrices = _matrices(dates)
     calls = []
     conn = _TransactionConnection()
+    quality_labels = (
+        QualityCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            raw_quality_score=75.0,
+            realized_r_multiple=1.5,
+        ),
+    )
+    fill_labels = (
+        FillCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            readiness_signal=80.0,
+            filled=True,
+        ),
+    )
 
     def fake_run(*args, **kwargs):
         phase_cfg = args[1]
@@ -220,12 +244,17 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
                 phase_cfg.simulation_mode,
                 phase_cfg.market_filter_enable,
                 phase_cfg.regime_entry_filter_enable,
-                phase_cfg.bad_fundamentals_filter_enable,
                 phase_cfg.run_label,
                 kwargs["candidate_context"],
                 kwargs["commit"],
+                kwargs.get("quality_labels", ()),
+                kwargs.get("fill_labels", ()),
+                kwargs.get("label_sink"),
             )
         )
+        if kwargs.get("label_sink") is not None:
+            kwargs["label_sink"]["quality_labels"] = quality_labels
+            kwargs["label_sink"]["fill_labels"] = fill_labels
         return len(calls), {"num_positions": len(calls)}
 
     monkeypatch.setattr(runner, "_run_simulation", fake_run)
@@ -255,12 +284,17 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
     )
 
     assert actual == ((1, {"num_positions": 1}), (2, {"num_positions": 2}))
-    assert [call[:5] for call in calls] == [
-        ("independent", False, False, False, "daily_first_touch"),
-        ("portfolio", True, False, False, "daily_portfolio"),
+    assert [call[:4] for call in calls] == [
+        ("independent", False, False, "daily_first_touch"),
+        ("portfolio", True, False, "daily_portfolio"),
     ]
-    assert calls[0][5] is calls[1][5]
-    assert calls[0][6] is calls[1][6] is False
+    assert calls[0][4] is calls[1][4]
+    assert calls[0][5] is calls[1][5] is False
+    assert calls[0][6:8] == ((), ())
+    assert calls[1][6] is quality_labels
+    assert calls[1][7] is fill_labels
+    assert calls[0][8] is not None
+    assert calls[1][8] is None
     assert conn.commits == 1
     assert conn.rollbacks == 0
 
@@ -274,6 +308,9 @@ def test_both_mode_rolls_back_both_arms_when_second_arm_fails(monkeypatch) -> No
     def fake_run(*_args, **_kwargs):
         nonlocal calls
         calls += 1
+        if _kwargs.get("label_sink") is not None:
+            _kwargs["label_sink"]["quality_labels"] = ()
+            _kwargs["label_sink"]["fill_labels"] = ()
         if calls == 2:
             raise RuntimeError("portfolio persistence failed")
         return 1, {}
@@ -328,7 +365,6 @@ def test_single_independent_mode_is_canonical_unfiltered_first_touch(
             simulation_mode="independent",
             market_filter_enable=True,
             regime_entry_filter_enable=True,
-            bad_fundamentals_filter_enable=True,
         ),
         matrices,
         pd.DataFrame(),
@@ -348,4 +384,3 @@ def test_single_independent_mode_is_canonical_unfiltered_first_touch(
     assert observed["cfg"].simulation_mode == "independent"
     assert not observed["cfg"].market_filter_enable
     assert not observed["cfg"].regime_entry_filter_enable
-    assert not observed["cfg"].bad_fundamentals_filter_enable

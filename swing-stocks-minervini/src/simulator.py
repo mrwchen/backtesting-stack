@@ -36,7 +36,12 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .candidate_ranking import CandidateRanker, CandidateSnapshot
+from .candidate_ranking import (
+    CandidateRanker,
+    CandidateSnapshot,
+    FillCalibrationLabel,
+    QualityCalibrationLabel,
+)
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -58,6 +63,8 @@ class Position:
     pivot: float
     max_high: float
     feedback_risk_units: float
+    price_continuity_segment: int
+    entry_snapshot: CandidateSnapshot
     next_stop: float | None = None
     realized_position_pnl: float = 0.0
     partial_done: bool = False
@@ -93,6 +100,8 @@ class SimResult:
     equity: pd.DataFrame = field(default_factory=pd.DataFrame)
     breakout_events: pd.DataFrame = field(default_factory=pd.DataFrame)
     metrics: dict = field(default_factory=dict)
+    quality_labels: tuple[QualityCalibrationLabel, ...] = ()
+    fill_labels: tuple[FillCalibrationLabel, ...] = ()
 
 
 def simulate(
@@ -110,6 +119,10 @@ def simulate(
     regime_entry_allowed: np.ndarray | None = None,
     volume_m: pd.DataFrame | None = None,
     candidate_context: dict[str, pd.DataFrame] | None = None,
+    continuity_segment_m: pd.DataFrame | None = None,
+    quality_labels: tuple[QualityCalibrationLabel, ...] = (),
+    fill_labels: tuple[FillCalibrationLabel, ...] = (),
+    online_calibration: bool = True,
 ) -> SimResult:
     state_start_idx = sim_start_idx if state_start_idx is None else state_start_idx
     if not 0 <= state_start_idx <= sim_start_idx < len(dates):
@@ -121,8 +134,47 @@ def simulate(
     h = high_m.to_numpy()
     lo = low_m.to_numpy()
     c = close_m.to_numpy()
+    if continuity_segment_m is None:
+        raise ValueError(
+            "v5 simulation requires continuity_segment_m"
+        )
+    if (
+        not continuity_segment_m.index.equals(dates)
+        or not continuity_segment_m.columns.equals(symbols)
+    ):
+        raise ValueError(
+            "continuity_segment_m must align exactly with dates and symbols"
+        )
+    continuity_numeric = continuity_segment_m.apply(
+        pd.to_numeric, errors="coerce"
+    ).to_numpy(dtype=float)
+    if np.any(
+        np.isfinite(continuity_numeric)
+        & (
+            (continuity_numeric <= 0)
+            | (continuity_numeric != np.floor(continuity_numeric))
+        )
+    ):
+        raise ValueError(
+            "continuity_segment_m must contain positive integer IDs or missing bars"
+        )
     c_ffill = close_m.ffill().to_numpy()
-    ma_trail = close_m.rolling(cfg.trail_ma_days, min_periods=cfg.trail_ma_days).mean().to_numpy()
+    trail_frame = pd.DataFrame(np.nan, index=dates, columns=symbols, dtype=float)
+    for symbol in symbols:
+        symbol_segments = pd.to_numeric(
+            continuity_segment_m[symbol], errors="coerce"
+        )
+        for segment_id in symbol_segments.dropna().unique():
+            in_segment = symbol_segments.eq(segment_id)
+            trail_frame.loc[in_segment, symbol] = (
+                close_m.loc[in_segment, symbol]
+                .rolling(
+                    cfg.trail_ma_days,
+                    min_periods=cfg.trail_ma_days,
+                )
+                .mean()
+            )
+    ma_trail = trail_frame.to_numpy()
     col_index = {s: i for i, s in enumerate(symbols)}
     context = dict(candidate_context or {})
     rs_matrix = context.pop("rs_rating", None)
@@ -133,6 +185,9 @@ def simulate(
         volume=volume_m,
         rs_rating=rs_matrix,
         context=context,
+        continuity_segment=continuity_segment_m,
+        quality_labels=quality_labels,
+        fill_labels=fill_labels,
         dryup_zero_ratio=cfg.dryup_score_zero_ratio,
     )
 
@@ -142,6 +197,20 @@ def simulate(
         pd.to_datetime(setups["valid_until"]), side="right"
     ) - 1
     setups["sim_setup_key"] = np.arange(len(setups), dtype=int)
+    if "price_continuity_segment" not in setups.columns:
+        raise ValueError(
+            "v5 setups require price_continuity_segment"
+        )
+    setup_segments = pd.to_numeric(
+        setups["price_continuity_segment"], errors="coerce"
+    )
+    if (
+        setup_segments.isna().any()
+        or (setup_segments <= 0).any()
+        or (setup_segments != np.floor(setup_segments)).any()
+    ):
+        raise ValueError("setups require positive integer continuity segments")
+    setups["price_continuity_segment"] = setup_segments.astype("int64")
     setup_sort = ["start_idx", "symbol", "detect_date"]
     if "setup_id" in setups.columns:
         setup_sort.append("setup_id")
@@ -170,7 +239,6 @@ def simulate(
     closed_outcomes: list[tuple[int, float, float]] = []
     feedback_winner_positions: set[int] = set()
     current_snapshots: dict[int, CandidateSnapshot] = {}
-    current_candidate_ranks: dict[int, int] = {}
 
     def _num_attr(setup, name: str, default: float) -> float:
         value = getattr(setup, name, default)
@@ -179,16 +247,6 @@ def simulate(
         except (TypeError, ValueError):
             return default
         return default if np.isnan(out) else out
-
-    def _known_bad_growth(snapshot: CandidateSnapshot) -> bool:
-        eps_yoy = snapshot.eps_yoy
-        revenue_yoy = snapshot.revenue_yoy
-        return (
-            eps_yoy is not None
-            and revenue_yoy is not None
-            and eps_yoy < cfg.eps_yoy_min
-            and revenue_yoy < cfg.revenue_yoy_min
-        )
 
     def allocate_portfolio_slate(
         candidates: list[SlateCandidate],
@@ -349,20 +407,16 @@ def simulate(
             "entry_date": entry_date,
             "entry_price": entry_price,
             "snapshot_date": snapshot.information_date.date(),
-            "dynamic_setup_score": round(snapshot.ranking_score, 4),
-            "readiness_score": (
-                round(snapshot.readiness_score, 4)
-                if snapshot.readiness_score is not None
-                else None
-            ),
-            "context_score": round(snapshot.context_score, 4),
+            "quality_score": round(snapshot.quality_score, 8),
+            "fill_probability": round(snapshot.fill_probability, 8),
+            "slate_priority": round(snapshot.slate_priority, 8),
             "setup_age_sessions": snapshot.setup_age_sessions,
             "distance_to_pivot_pct": (
                 round(snapshot.distance_to_pivot_pct, 6)
                 if snapshot.distance_to_pivot_pct is not None
                 else None
             ),
-            "candidate_rank": current_candidate_ranks.get(setup_key),
+            "quality_rank": snapshot.quality_rank,
         }
 
     def record_breakout_event(setup, t: int, trigger: float) -> None:
@@ -381,12 +435,12 @@ def simulate(
                 "symbol": setup.symbol,
                 "setup_detect_date": pd.Timestamp(setup.detect_date).date(),
                 "snapshot_date": decision_row["snapshot_date"],
-                "dynamic_setup_score": decision_row["dynamic_setup_score"],
-                "readiness_score": decision_row["readiness_score"],
-                "context_score": decision_row["context_score"],
+                "quality_score": decision_row["quality_score"],
+                "fill_probability": decision_row["fill_probability"],
+                "slate_priority": decision_row["slate_priority"],
                 "setup_age_sessions": decision_row["setup_age_sessions"],
                 "distance_to_pivot_pct": decision_row["distance_to_pivot_pct"],
-                "candidate_rank": decision_row["candidate_rank"],
+                "quality_rank": decision_row["quality_rank"],
                 "breakout_date": dates[t].date(),
                 "pivot": round(float(setup.pivot), 4),
                 "trigger_price": round(trigger, 4),
@@ -440,7 +494,14 @@ def simulate(
             return 0.0
         return min(1.0, max(0.0, float(value)))
 
-    def record_trade(pos: Position, t: int, shares: int, price: float, leg: str, reason: str):
+    def record_trade(
+        pos: Position,
+        t: int,
+        shares: int,
+        price: float,
+        leg: str,
+        reason: str,
+    ):
         nonlocal cash, realized_pnl
         proceeds = shares * price * (1 - cfg.commission_pct)
         cost = shares * pos.entry_price * (1 + cfg.commission_pct)
@@ -470,6 +531,17 @@ def simulate(
                 "holding_days": int(t - pos.entry_idx),
             }
         )
+        if leg == "final" and not portfolio_mode and online_calibration:
+            initial_risk = (
+                (pos.entry_price - pos.initial_stop) * pos.initial_shares
+            )
+            if initial_risk > 0:
+                ranker.add_quality_label(
+                    pos.entry_snapshot,
+                    available_date=dates[t],
+                    realized_r_multiple=pos.realized_position_pnl
+                    / initial_risk,
+                )
         if portfolio_mode and leg == "final":
             closed_outcomes.append(
                 (
@@ -482,20 +554,21 @@ def simulate(
     def ratchet_stop_from_known_high(pos: Position) -> float | None:
         """Return tomorrow's causal stop from today's completed high.
 
-        The fixed ladder is deliberately simple and monotone: a completed
-        +2R high protects break-even, +3R protects +1R, +4R protects +2R and
-        each further completed whole R raises the floor by another R. The
-        caller stores this as ``next_stop`` so the new floor can never affect
-        the bar whose high first qualified it.
+        The fixed ladder is deliberately simple and monotone. Ordinary bases
+        protect break-even after a completed +2R high. A Power Play has its
+        own faster ladder: +1R protects break-even, +2R protects +1R, and so
+        on. The caller stores this as ``next_stop`` so a completed daily high
+        can only affect the following session.
         """
         r_unit = pos.entry_price - pos.initial_stop
         if r_unit <= 0 or not np.isfinite(pos.max_high):
             return None
         achieved_r = (pos.max_high - pos.entry_price) / r_unit
         completed_r = int(np.floor(achieved_r + 1e-12))
-        if completed_r < 2:
+        power_play_offset = 1 if pos.setup_type == "power_play" else 2
+        if completed_r < power_play_offset:
             return None
-        return pos.entry_price + (completed_r - 2) * r_unit
+        return pos.entry_price + (completed_r - power_play_offset) * r_unit
 
     def arm_next_ratchet_stop(pos: Position) -> None:
         candidate = ratchet_stop_from_known_high(pos)
@@ -568,6 +641,21 @@ def simulate(
             for setup_key, setup in active_setups.items()
             if setup.end_idx >= t
         }
+        # A structure belongs to exactly one comparable price-history segment.
+        # Once the source declares a new segment it cannot remain an order.
+        active_setups = {
+            setup_key: setup
+            for setup_key, setup in active_setups.items()
+            if (
+                np.isfinite(
+                    continuity_numeric[t, col_index[str(setup.symbol)]]
+                )
+                and int(
+                    continuity_numeric[t, col_index[str(setup.symbol)]]
+                )
+                == int(setup.price_continuity_segment)
+            )
+        }
 
         # Replay setup lifecycle before the measured period without opening
         # positions. This prevents an already broken or invalidated setup from
@@ -599,27 +687,23 @@ def simulate(
         # therefore still recorded and a later requalification remains possible
         # if price has not touched the pivot or invalidated the base.
         ranked_snapshots = list(ranker.rank(active_setups, t))
+        session_ranked_setups = dict(active_setups)
         current_snapshots = {
             snapshot.setup_key: snapshot for snapshot in ranked_snapshots
         }
-        current_candidate_ranks = {
-            snapshot.setup_key: rank
-            for rank, snapshot in enumerate(ranked_snapshots, start=1)
-        }
         ineligible: dict[int, str] = {}
         if portfolio_mode:
-            trend_context_enabled = "trend_template_pass" in ranker.context
             for snapshot in ranked_snapshots:
-                trend_value = snapshot.context_value("trend_template_pass")
-                if trend_context_enabled and (
-                    trend_value is None or trend_value < 0.5
-                ):
-                    ineligible[snapshot.setup_key] = "trend_template_not_passed"
+                if snapshot.setup_type == "tight_shelf":
+                    ineligible[snapshot.setup_key] = (
+                        "setup_class_research_only"
+                    )
                 elif (
-                    cfg.bad_fundamentals_filter_enable
-                    and _known_bad_growth(snapshot)
+                    snapshot.quality_score < 0.0
+                    and snapshot.quality_effective_samples
+                    >= ranker.quality_prior_strength
                 ):
-                    ineligible[snapshot.setup_key] = "bad_fundamentals"
+                    ineligible[snapshot.setup_key] = "non_positive_quality"
         for setup_key, decision in ineligible.items():
             set_entry_decision(active_setups[setup_key], decision)
         eligible_snapshots = [
@@ -807,6 +891,24 @@ def simulate(
         for sym in list(positions):
             pos = positions[sym]
             col = pos.col
+            current_segment = continuity_numeric[t, col]
+            if (
+                np.isfinite(current_segment)
+                and int(current_segment) != pos.price_continuity_segment
+            ):
+                boundary_open = o[t, col]
+                if not np.isfinite(boundary_open):
+                    continue
+                record_trade(
+                    pos,
+                    t,
+                    pos.shares,
+                    boundary_open * (1 - cfg.slippage_pct),
+                    "final",
+                    "continuity_break",
+                )
+                del positions[sym]
+                continue
             day_open, day_high, day_low = o[t, col], h[t, col], lo[t, col]
             if np.isnan(day_open):
                 continue  # no bar today, hold
@@ -975,6 +1077,10 @@ def simulate(
                 pivot=pivot,
                 max_high=fill,
                 feedback_risk_units=order.feedback_risk_units,
+                price_continuity_segment=int(
+                    continuity_numeric[t, col]
+                ),
+                entry_snapshot=order.snapshot,
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
@@ -1054,6 +1160,34 @@ def simulate(
                 or damaged_base
             ):
                 del active_setups[setup_key]
+
+        # Capacity-independent first-touch observations train the fill model.
+        # Portfolio selections are deliberately excluded so slots, gates and
+        # the current ranking cannot leak into their own calibration sample.
+        if not portfolio_mode and online_calibration:
+            for snapshot in ranked_snapshots:
+                setup = session_ranked_setups[snapshot.setup_key]
+                col = col_index[setup.symbol]
+                day_open = o[t, col]
+                day_high = h[t, col]
+                day_low = lo[t, col]
+                trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
+                invalidation_level = max(
+                    _num_attr(setup, "last_low", -np.inf),
+                    _num_attr(setup, "stop_level", -np.inf),
+                )
+                independently_fillable = bool(
+                    np.isfinite([day_open, day_high, day_low]).all()
+                    and day_open > invalidation_level
+                    and day_high >= trigger
+                    and day_open
+                    <= trigger * (1 + cfg.max_buy_zone_pct)
+                )
+                ranker.add_fill_label(
+                    snapshot,
+                    available_date=dates[t],
+                    filled=independently_fillable,
+                )
 
         # ---- daily aggregate (research curve, not a cash-constrained account) --
         day_open_notional = open_notional(t)
@@ -1153,9 +1287,9 @@ def simulate(
         breakout_events,
         columns=[
             "setup_id", "setup_type", "symbol", "setup_detect_date",
-            "snapshot_date", "dynamic_setup_score", "readiness_score",
-            "context_score", "setup_age_sessions", "distance_to_pivot_pct",
-            "candidate_rank",
+            "snapshot_date", "quality_score", "fill_probability",
+            "slate_priority", "setup_age_sessions", "distance_to_pivot_pct",
+            "quality_rank",
             "breakout_date", "pivot", "trigger_price", "entry_filled",
             "entry_date", "entry_price", "decision",
         ],
@@ -1165,6 +1299,8 @@ def simulate(
         equity=equity_df,
         breakout_events=breakout_events_df,
         metrics=metrics,
+        quality_labels=ranker.quality_labels,
+        fill_labels=ranker.fill_labels,
     )
 
 

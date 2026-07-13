@@ -1,107 +1,192 @@
-"""Causal, deterministic ranking of active pre-session setup candidates.
+"""Causal v5 candidate quality, fill and slate-priority estimates.
 
-``CandidateRanker`` is deliberately independent of portfolio state.  For an
-order session at index ``t`` it reads dynamic market data only at ``t - 1`` or
-from windows ending at ``t - 1``.  Detection-time values on the setup row are
-safe fallbacks when a dynamic matrix is unavailable.
+The three public estimates deliberately have different meanings:
 
-The rank is continuous and uses a separate feature-weight profile for each
-setup class.  Missing features receive a neutral score instead of silently
-becoming either perfect or failed observations; ``feature_coverage`` exposes
-how much of the configured weight was actually observed.  Only the explicit
-technical/fundamental whitelist below can enter the score.  In particular,
-current IBKR taxonomy/group fields and raw institutional/13F counts are not
-ranking inputs.
+``quality_score``
+    Setup-type-specific posterior expected R-multiple.  Its raw signal uses
+    technical and point-in-time fundamental information only.  Pivot distance
+    and readiness are explicitly excluded.
+``fill_probability``
+    Setup-type-specific posterior probability that an order touches.  This is
+    the only model that may use the readiness/pivot-distance signal.
+``slate_priority``
+    ``quality_score * fill_probability``.  It is an expected-R contribution,
+    not another independently tuned score.
+
+Both calibrators are deterministic, dependency-free kernel smoothers with
+explicit neutral priors.  Every label carries the date on which its outcome
+became known.  A snapshot for session ``t`` can therefore consume only labels
+whose ``available_date`` is no later than the information close ``t - 1``.
+Calibration is always isolated by setup class; observations are never pooled
+across VCP, flat-base, power-play, tight-shelf or unknown classes.
 """
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
-from math import exp, isfinite, log
+from bisect import bisect_right
+from dataclasses import dataclass, field, replace
+from math import isfinite
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 
-SCORE_FEATURES = frozenset(
+QUALITY_FEATURES = frozenset(
     {
-        "readiness",
+        "trend",
         "rs",
         "dryup",
         "structure",
         "tightness",
         "prior_advance",
         "fundamental",
-        "freshness",
     }
 )
 
-# All component values are scaled to [0, 100] before these weights are
-# applied.  The profiles intentionally express structural differences rather
-# than an empirically fitted setup-type return premium.
-DEFAULT_TYPE_WEIGHTS: dict[str, dict[str, float]] = {
+# These profiles create a within-class raw ordering signal.  They are not
+# treated as comparable return forecasts across setup classes.  Only the
+# class-local, outcome-calibrated ``quality_score`` is comparable.
+DEFAULT_QUALITY_WEIGHTS: dict[str, dict[str, float]] = {
     "vcp": {
-        "readiness": 0.26,
-        "rs": 0.20,
-        "dryup": 0.19,
-        "structure": 0.18,
-        "tightness": 0.09,
+        "trend": 0.10,
+        "rs": 0.22,
+        "dryup": 0.23,
+        "structure": 0.22,
+        "tightness": 0.13,
         "prior_advance": 0.03,
-        "fundamental": 0.03,
-        "freshness": 0.02,
+        "fundamental": 0.07,
     },
     "flat_base": {
-        "readiness": 0.30,
-        "rs": 0.20,
-        "dryup": 0.10,
-        "structure": 0.13,
-        "tightness": 0.14,
+        "trend": 0.10,
+        "rs": 0.23,
+        "dryup": 0.11,
+        "structure": 0.21,
+        "tightness": 0.20,
         "prior_advance": 0.05,
-        "fundamental": 0.05,
-        "freshness": 0.03,
+        "fundamental": 0.10,
     },
     "power_play": {
-        "readiness": 0.24,
-        "rs": 0.25,
-        "dryup": 0.07,
-        "structure": 0.08,
-        "tightness": 0.08,
-        "prior_advance": 0.22,
-        "fundamental": 0.04,
-        "freshness": 0.02,
+        "trend": 0.10,
+        "rs": 0.23,
+        "dryup": 0.05,
+        "structure": 0.13,
+        "tightness": 0.09,
+        "prior_advance": 0.31,
+        "fundamental": 0.09,
     },
     "tight_shelf": {
-        "readiness": 0.30,
-        "rs": 0.21,
-        "dryup": 0.12,
-        "structure": 0.10,
-        "tightness": 0.19,
-        "prior_advance": 0.03,
-        "fundamental": 0.03,
-        "freshness": 0.02,
+        "trend": 0.10,
+        "rs": 0.20,
+        "dryup": 0.14,
+        "structure": 0.16,
+        "tightness": 0.27,
+        "prior_advance": 0.04,
+        "fundamental": 0.09,
     },
     "default": {
-        "readiness": 0.28,
+        "trend": 0.10,
         "rs": 0.22,
-        "dryup": 0.15,
-        "structure": 0.14,
-        "tightness": 0.08,
-        "prior_advance": 0.06,
-        "fundamental": 0.04,
-        "freshness": 0.03,
+        "dryup": 0.14,
+        "structure": 0.19,
+        "tightness": 0.18,
+        "prior_advance": 0.08,
+        "fundamental": 0.09,
     },
 }
 
 
+def _day(value: Any) -> pd.Timestamp:
+    """Return a timezone-neutral normalized timestamp for causal comparisons."""
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        raise ValueError("calibration dates must not be missing")
+    if timestamp.tz is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp.normalize()
+
+
+@dataclass(frozen=True)
+class QualityCalibrationLabel:
+    """A completed trade outcome and when that outcome became observable.
+
+    ``raw_quality_score`` must be the raw score from the entry-decision
+    snapshot, not a value recomputed at exit.  One independently executable
+    first-touch setup contributes one quality label only after its complete
+    R-multiple is known.  Portfolio selection must not define this training
+    set, otherwise the calibrator would learn its own selection bias.
+    """
+
+    setup_type: str
+    information_date: pd.Timestamp
+    available_date: pd.Timestamp
+    raw_quality_score: float
+    realized_r_multiple: float
+    weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        information_date = _day(self.information_date)
+        available_date = _day(self.available_date)
+        raw_quality_score = float(self.raw_quality_score)
+        realized_r_multiple = float(self.realized_r_multiple)
+        weight = float(self.weight)
+        if available_date <= information_date:
+            raise ValueError("quality label must become available after its snapshot")
+        if not isfinite(raw_quality_score) or not 0.0 <= raw_quality_score <= 100.0:
+            raise ValueError("raw_quality_score must be finite and between 0 and 100")
+        if not isfinite(realized_r_multiple):
+            raise ValueError("realized_r_multiple must be finite")
+        if not isfinite(weight) or weight <= 0.0:
+            raise ValueError("label weight must be finite and positive")
+        object.__setattr__(self, "setup_type", str(self.setup_type))
+        object.__setattr__(self, "information_date", information_date)
+        object.__setattr__(self, "available_date", available_date)
+        object.__setattr__(self, "raw_quality_score", raw_quality_score)
+        object.__setattr__(self, "realized_r_multiple", realized_r_multiple)
+        object.__setattr__(self, "weight", weight)
+
+
+@dataclass(frozen=True)
+class FillCalibrationLabel:
+    """One order-session executable-fill outcome known after session close.
+
+    ``filled`` describes whether the setup's own stop-buy and buy-zone rules
+    would have executed.  Portfolio capacity, market gates and whether the
+    candidate happened to be selected must not turn that counterfactual market
+    outcome into a negative label.
+    """
+
+    setup_type: str
+    information_date: pd.Timestamp
+    available_date: pd.Timestamp
+    readiness_signal: float
+    filled: bool
+    weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        information_date = _day(self.information_date)
+        available_date = _day(self.available_date)
+        readiness_signal = float(self.readiness_signal)
+        weight = float(self.weight)
+        if available_date <= information_date:
+            raise ValueError("fill label must become available after its snapshot")
+        if not isfinite(readiness_signal) or not 0.0 <= readiness_signal <= 100.0:
+            raise ValueError("readiness_signal must be finite and between 0 and 100")
+        if not isinstance(self.filled, (bool, np.bool_)):
+            raise TypeError("filled must be boolean")
+        if not isfinite(weight) or weight <= 0.0:
+            raise ValueError("label weight must be finite and positive")
+        object.__setattr__(self, "setup_type", str(self.setup_type))
+        object.__setattr__(self, "information_date", information_date)
+        object.__setattr__(self, "available_date", available_date)
+        object.__setattr__(self, "readiness_signal", readiness_signal)
+        object.__setattr__(self, "filled", bool(self.filled))
+        object.__setattr__(self, "weight", weight)
+
+
 @dataclass(frozen=True)
 class CandidateSnapshot:
-    """Information available immediately before one order session.
-
-    Higher ``ranking_score`` is better.  ``context_values`` is sorted by name
-    and immutable so snapshots remain deterministic and easy to persist as
-    ordinary scalar columns chosen by the caller (no JSON is required).
-    """
+    """All information and v5 estimates available before one order session."""
 
     setup_key: int
     setup_id: int | None
@@ -125,29 +210,61 @@ class CandidateSnapshot:
     structure_quality_score: float | None
     tightness_score: float | None
     prior_advance_score: float | None
-    context_score: float
-    ranking_score: float
-    feature_coverage: float
+    raw_quality_score: float
+    quality_feature_coverage: float
+    quality_score: float
+    fill_probability: float
+    slate_priority: float
+    quality_rank: int | None
+    quality_calibration_count: int
+    quality_effective_samples: float
+    fill_calibration_count: int
+    fill_effective_samples: float
     context_values: tuple[tuple[str, float | None], ...]
-
-    @property
-    def total_rank(self) -> float:
-        """Alias describing the score's role when persisting research data."""
-        return self.ranking_score
 
     def context_value(self, name: str) -> float | None:
         """Return one named as-of context value, or ``None`` when absent."""
         return dict(self.context_values).get(name)
 
 
-class CandidateRanker:
-    """Build and order causal snapshots from aligned daily matrices.
+@dataclass(frozen=True)
+class _Estimate:
+    value: float
+    count: int
+    effective_samples: float
 
-    Parameters mirror the simulator's matrix API.  ``close`` is required;
-    ``volume``, ``rs_rating`` and named context matrices are optional but, when
-    supplied, must have exactly the same dates and symbols.  Named context is
-    captured for attribution.  Of it, only ``fundamental_score`` is on the
-    score whitelist; ``eps_yoy`` and ``revenue_yoy`` are exposed as context.
+
+@dataclass
+class _BinnedCalibrationState:
+    """Incremental as-of aggregates for one setup class."""
+
+    as_of: pd.Timestamp | None = None
+    next_label: int = 0
+    count: int = 0
+    weights: np.ndarray = field(default_factory=lambda: np.zeros(101, dtype=float))
+    weighted_signals: np.ndarray = field(
+        default_factory=lambda: np.zeros(101, dtype=float)
+    )
+    weighted_targets: np.ndarray = field(
+        default_factory=lambda: np.zeros(101, dtype=float)
+    )
+
+    def reset(self) -> None:
+        self.as_of = None
+        self.next_label = 0
+        self.count = 0
+        self.weights.fill(0.0)
+        self.weighted_signals.fill(0.0)
+        self.weighted_targets.fill(0.0)
+
+
+class CandidateRanker:
+    """Build, calibrate and order strictly pre-session candidate snapshots.
+
+    Labels can be supplied up front or registered online.  Supplying a future
+    label up front is safe: every estimate filters by ``available_date``.  For
+    a realistic simulation, register a fill label after every eligible order
+    session and a quality label only when the associated trade has closed.
     """
 
     def __init__(
@@ -156,14 +273,22 @@ class CandidateRanker:
         symbols: pd.Index,
         close: pd.DataFrame,
         *,
+        continuity_segment: pd.DataFrame,
         volume: pd.DataFrame | None = None,
         rs_rating: pd.DataFrame | None = None,
         context: Mapping[str, pd.DataFrame] | None = None,
-        type_weights: Mapping[str, Mapping[str, float]] | None = None,
+        quality_type_weights: Mapping[str, Mapping[str, float]] | None = None,
+        quality_labels: Iterable[QualityCalibrationLabel] = (),
+        fill_labels: Iterable[FillCalibrationLabel] = (),
+        quality_prior_r_multiple: float = 0.0,
+        fill_prior_probability: float = 0.5,
+        quality_prior_strength: float = 12.0,
+        fill_prior_strength: float = 12.0,
+        quality_kernel_bandwidth: float = 20.0,
+        fill_kernel_bandwidth: float = 20.0,
         dryup_recent_sessions: int = 5,
         dryup_baseline_sessions: int = 50,
         dryup_zero_ratio: float = 1.25,
-        age_half_life_sessions: float = 10.0,
     ) -> None:
         self.dates = pd.DatetimeIndex(dates)
         self.symbols = pd.Index(symbols)
@@ -173,6 +298,11 @@ class CandidateRanker:
             raise ValueError("symbols must be unique")
 
         self.close = self._validate_matrix("close", close)
+        self.continuity_segment = self._validate_matrix(
+            "continuity_segment", continuity_segment
+        )
+        if self.continuity_segment is None:  # pragma: no cover - signature enforces it
+            raise TypeError("continuity_segment is required")
         self.volume = self._validate_matrix("volume", volume)
         self.rs_rating = self._validate_matrix("rs_rating", rs_rating)
         self.context = {
@@ -185,15 +315,106 @@ class CandidateRanker:
             raise ValueError("dryup_recent_sessions must be at least 3")
         if dryup_baseline_sessions < 20:
             raise ValueError("dryup_baseline_sessions must be at least 20")
-        if not isfinite(dryup_zero_ratio) or dryup_zero_ratio <= 0:
-            raise ValueError("dryup_zero_ratio must be finite and positive")
-        if not isfinite(age_half_life_sessions) or age_half_life_sessions <= 0:
-            raise ValueError("age_half_life_sessions must be finite and positive")
         self.dryup_recent_sessions = int(dryup_recent_sessions)
         self.dryup_baseline_sessions = int(dryup_baseline_sessions)
-        self.dryup_zero_ratio = float(dryup_zero_ratio)
-        self.age_half_life_sessions = float(age_half_life_sessions)
-        self.type_weights = self._validate_weights(type_weights or DEFAULT_TYPE_WEIGHTS)
+        self.dryup_zero_ratio = self._positive("dryup_zero_ratio", dryup_zero_ratio)
+        self.quality_prior_r_multiple = self._finite(
+            "quality_prior_r_multiple", quality_prior_r_multiple
+        )
+        self.fill_prior_probability = self._finite(
+            "fill_prior_probability", fill_prior_probability
+        )
+        if not 0.0 <= self.fill_prior_probability <= 1.0:
+            raise ValueError("fill_prior_probability must be between 0 and 1")
+        self.quality_prior_strength = self._positive(
+            "quality_prior_strength", quality_prior_strength
+        )
+        self.fill_prior_strength = self._positive(
+            "fill_prior_strength", fill_prior_strength
+        )
+        self.quality_kernel_bandwidth = self._positive(
+            "quality_kernel_bandwidth", quality_kernel_bandwidth
+        )
+        self.fill_kernel_bandwidth = self._positive(
+            "fill_kernel_bandwidth", fill_kernel_bandwidth
+        )
+        self.quality_type_weights = self._validate_weights(
+            quality_type_weights or DEFAULT_QUALITY_WEIGHTS
+        )
+        self._quality_labels = [self._quality_label(label) for label in quality_labels]
+        self._fill_labels = [self._fill_label(label) for label in fill_labels]
+        self._quality_by_type: dict[str, list[QualityCalibrationLabel]] = {}
+        self._fill_by_type: dict[str, list[FillCalibrationLabel]] = {}
+        for label in sorted(self._quality_labels, key=self._quality_sort_key):
+            self._quality_by_type.setdefault(label.setup_type, []).append(label)
+        for label in sorted(self._fill_labels, key=self._fill_sort_key):
+            self._fill_by_type.setdefault(label.setup_type, []).append(label)
+        self._quality_states: dict[str, _BinnedCalibrationState] = {}
+        self._fill_states: dict[str, _BinnedCalibrationState] = {}
+
+    @property
+    def quality_labels(self) -> tuple[QualityCalibrationLabel, ...]:
+        """Immutable copy suitable for a second, causally filtered simulation."""
+        return tuple(sorted(self._quality_labels, key=self._quality_export_sort_key))
+
+    @property
+    def fill_labels(self) -> tuple[FillCalibrationLabel, ...]:
+        """Immutable copy suitable for a second, causally filtered simulation."""
+        return tuple(sorted(self._fill_labels, key=self._fill_export_sort_key))
+
+    @staticmethod
+    def _finite(name: str, value: Any) -> float:
+        numeric = float(value)
+        if not isfinite(numeric):
+            raise ValueError(f"{name} must be finite")
+        return numeric
+
+    @classmethod
+    def _positive(cls, name: str, value: Any) -> float:
+        numeric = cls._finite(name, value)
+        if numeric <= 0.0:
+            raise ValueError(f"{name} must be positive")
+        return numeric
+
+    @staticmethod
+    def _quality_label(label: QualityCalibrationLabel) -> QualityCalibrationLabel:
+        if not isinstance(label, QualityCalibrationLabel):
+            raise TypeError("quality_labels must contain QualityCalibrationLabel values")
+        return label
+
+    @staticmethod
+    def _fill_label(label: FillCalibrationLabel) -> FillCalibrationLabel:
+        if not isinstance(label, FillCalibrationLabel):
+            raise TypeError("fill_labels must contain FillCalibrationLabel values")
+        return label
+
+    @staticmethod
+    def _quality_sort_key(label: QualityCalibrationLabel) -> tuple:
+        return (
+            label.available_date,
+            label.information_date,
+            label.raw_quality_score,
+            label.realized_r_multiple,
+            label.weight,
+        )
+
+    @classmethod
+    def _quality_export_sort_key(cls, label: QualityCalibrationLabel) -> tuple:
+        return (label.setup_type, *cls._quality_sort_key(label))
+
+    @staticmethod
+    def _fill_sort_key(label: FillCalibrationLabel) -> tuple:
+        return (
+            label.available_date,
+            label.information_date,
+            label.readiness_signal,
+            label.filled,
+            label.weight,
+        )
+
+    @classmethod
+    def _fill_export_sort_key(cls, label: FillCalibrationLabel) -> tuple:
+        return (label.setup_type, *cls._fill_sort_key(label))
 
     def _validate_matrix(
         self, name: str, matrix: pd.DataFrame | None
@@ -213,21 +434,21 @@ class CandidateRanker:
         weights: Mapping[str, Mapping[str, float]],
     ) -> dict[str, dict[str, float]]:
         if "default" not in weights:
-            raise ValueError("type_weights must contain a default profile")
+            raise ValueError("quality_type_weights must contain a default profile")
         validated: dict[str, dict[str, float]] = {}
         for setup_type, profile in weights.items():
-            unknown = set(profile) - SCORE_FEATURES
+            unknown = set(profile) - QUALITY_FEATURES
             if unknown:
                 raise ValueError(
-                    "non-whitelisted ranking features: " + ", ".join(sorted(unknown))
+                    "non-whitelisted quality features: " + ", ".join(sorted(unknown))
                 )
             clean: dict[str, float] = {}
             for name, weight in profile.items():
                 numeric = float(weight)
-                if not isfinite(numeric) or numeric < 0:
-                    raise ValueError("ranking weights must be finite and non-negative")
+                if not isfinite(numeric) or numeric < 0.0:
+                    raise ValueError("quality weights must be finite and non-negative")
                 clean[name] = numeric
-            if sum(clean.values()) <= 0:
+            if sum(clean.values()) <= 0.0:
                 raise ValueError("each setup-type profile needs positive total weight")
             validated[str(setup_type)] = clean
         return validated
@@ -264,12 +485,38 @@ class CandidateRanker:
     ) -> tuple[float | None, float]:
         if self.volume is None:
             return None, 0.0
+        current_segment = self.continuity_segment.iat[information_idx, col]
+        if pd.isna(current_segment):
+            return None, 0.0
+
+        # A segment id is meaningful only as one contiguous price history.
+        # Walk back at most the configured feature horizon; no older row can
+        # contribute to either the recent or baseline window.
+        horizon_start = max(
+            0,
+            information_idx
+            - self.dryup_recent_sessions
+            - self.dryup_baseline_sessions
+            + 1,
+        )
+        segment_start = information_idx
+        for row in range(information_idx - 1, horizon_start - 1, -1):
+            previous_segment = self.continuity_segment.iat[row, col]
+            if pd.isna(previous_segment) or previous_segment != current_segment:
+                break
+            segment_start = row
+
         recent_start = information_idx - self.dryup_recent_sessions + 1
         baseline_end = recent_start
-        baseline_start = baseline_end - self.dryup_baseline_sessions
-        if recent_start < 0 or baseline_end < 20:
+        if recent_start < segment_start:
             return None, 0.0
-        baseline_start = max(0, baseline_start)
+        baseline_start = max(
+            segment_start, baseline_end - self.dryup_baseline_sessions
+        )
+        # A fresh listing/reorganisation needs at least 20 complete baseline
+        # sessions plus the configured recent window before dry-up is known.
+        if baseline_end - baseline_start < 20:
+            return None, 0.0
         baseline = pd.to_numeric(
             self.volume.iloc[baseline_start:baseline_end, col], errors="coerce"
         ).to_numpy(dtype=float)
@@ -278,13 +525,10 @@ class CandidateRanker:
         ).to_numpy(dtype=float)
         baseline = baseline[np.isfinite(baseline) & (baseline > 0)]
         recent = recent[np.isfinite(recent) & (recent > 0)]
-        baseline_coverage = min(
-            1.0, len(baseline) / float(self.dryup_baseline_sessions)
+        coverage = min(
+            min(1.0, len(baseline) / float(self.dryup_baseline_sessions)),
+            min(1.0, len(recent) / float(self.dryup_recent_sessions)),
         )
-        recent_coverage = min(
-            1.0, len(recent) / float(self.dryup_recent_sessions)
-        )
-        coverage = min(baseline_coverage, recent_coverage)
         if len(baseline) < 20 or len(recent) < 3:
             return None, 0.0
         return float(np.mean(recent) / np.mean(baseline)), coverage
@@ -298,6 +542,182 @@ class CandidateRanker:
             raise ValueError("a setup needs detect_date or start_idx")
         return int(self.dates.searchsorted(pd.Timestamp(detect_date), side="right"))
 
+    @staticmethod
+    def _signal_bin(signal: float) -> int:
+        return min(100, max(0, int(signal)))
+
+    @staticmethod
+    def _state_estimate(
+        state: _BinnedCalibrationState,
+        *,
+        signal: float,
+        bandwidth: float,
+        prior_value: float,
+        prior_strength: float,
+    ) -> _Estimate:
+        populated = state.weights > 0.0
+        if not np.any(populated):
+            return _Estimate(prior_value, state.count, 0.0)
+        weights = state.weights[populated]
+        centers = state.weighted_signals[populated] / weights
+        kernels = np.exp(-0.5 * np.square((centers - signal) / bandwidth))
+        kernel_weights = kernels * weights
+        effective_samples = float(np.sum(kernel_weights))
+        numerator = prior_strength * prior_value + float(
+            np.sum(kernels * state.weighted_targets[populated])
+        )
+        value = numerator / (prior_strength + effective_samples)
+        return _Estimate(value, state.count, effective_samples)
+
+    def _quality_state(
+        self, setup_type: str, information_date: pd.Timestamp
+    ) -> _BinnedCalibrationState:
+        state = self._quality_states.setdefault(
+            setup_type, _BinnedCalibrationState()
+        )
+        if state.as_of is not None and information_date < state.as_of:
+            state.reset()
+        labels = self._quality_by_type.get(setup_type, [])
+        while (
+            state.next_label < len(labels)
+            and labels[state.next_label].available_date <= information_date
+        ):
+            label = labels[state.next_label]
+            index = self._signal_bin(label.raw_quality_score)
+            state.weights[index] += label.weight
+            state.weighted_signals[index] += label.weight * label.raw_quality_score
+            state.weighted_targets[index] += (
+                label.weight * label.realized_r_multiple
+            )
+            state.next_label += 1
+            state.count += 1
+        state.as_of = information_date
+        return state
+
+    def _fill_state(
+        self, setup_type: str, information_date: pd.Timestamp
+    ) -> _BinnedCalibrationState:
+        state = self._fill_states.setdefault(setup_type, _BinnedCalibrationState())
+        if state.as_of is not None and information_date < state.as_of:
+            state.reset()
+        labels = self._fill_by_type.get(setup_type, [])
+        while (
+            state.next_label < len(labels)
+            and labels[state.next_label].available_date <= information_date
+        ):
+            label = labels[state.next_label]
+            index = self._signal_bin(label.readiness_signal)
+            state.weights[index] += label.weight
+            state.weighted_signals[index] += label.weight * label.readiness_signal
+            state.weighted_targets[index] += label.weight * float(label.filled)
+            state.next_label += 1
+            state.count += 1
+        state.as_of = information_date
+        return state
+
+    def _quality_estimate(
+        self, setup_type: str, raw_score: float, information_date: pd.Timestamp
+    ) -> _Estimate:
+        state = self._quality_state(setup_type, information_date)
+        estimate = self._state_estimate(
+            state,
+            signal=raw_score,
+            bandwidth=self.quality_kernel_bandwidth,
+            prior_value=self.quality_prior_r_multiple,
+            prior_strength=self.quality_prior_strength,
+        )
+        value = estimate.value
+        if not isfinite(value):
+            raise RuntimeError("quality calibration produced a non-finite estimate")
+        return estimate
+
+    def _fill_estimate(
+        self, setup_type: str, readiness_signal: float, information_date: pd.Timestamp
+    ) -> _Estimate:
+        state = self._fill_state(setup_type, information_date)
+        estimate = self._state_estimate(
+            state,
+            signal=readiness_signal,
+            bandwidth=self.fill_kernel_bandwidth,
+            prior_value=self.fill_prior_probability,
+            prior_strength=self.fill_prior_strength,
+        )
+        return replace(estimate, value=float(np.clip(estimate.value, 0.0, 1.0)))
+
+    def add_quality_label(
+        self,
+        snapshot: CandidateSnapshot,
+        *,
+        available_date: Any,
+        realized_r_multiple: float,
+        weight: float = 1.0,
+    ) -> QualityCalibrationLabel:
+        """Register a closed outcome using the original decision snapshot."""
+        label = QualityCalibrationLabel(
+            setup_type=snapshot.setup_type,
+            information_date=snapshot.information_date,
+            available_date=available_date,
+            raw_quality_score=snapshot.raw_quality_score,
+            realized_r_multiple=realized_r_multiple,
+            weight=weight,
+        )
+        self._quality_labels.append(label)
+        labels = self._quality_by_type.setdefault(label.setup_type, [])
+        if labels and label.available_date < labels[-1].available_date:
+            position = bisect_right(
+                [item.available_date for item in labels], label.available_date
+            )
+            labels.insert(position, label)
+        else:
+            labels.append(label)
+        state = self._quality_states.get(label.setup_type)
+        if (
+            state is not None
+            and state.as_of is not None
+            and label.available_date <= state.as_of
+        ):
+            state.reset()
+        return label
+
+    def add_fill_label(
+        self,
+        snapshot: CandidateSnapshot,
+        *,
+        available_date: Any,
+        filled: bool,
+        weight: float = 1.0,
+    ) -> FillCalibrationLabel:
+        """Register one completed, capacity-independent fill outcome."""
+        label = FillCalibrationLabel(
+            setup_type=snapshot.setup_type,
+            information_date=snapshot.information_date,
+            available_date=available_date,
+            readiness_signal=(
+                snapshot.readiness_score
+                if snapshot.readiness_score is not None
+                else 50.0
+            ),
+            filled=filled,
+            weight=weight,
+        )
+        self._fill_labels.append(label)
+        labels = self._fill_by_type.setdefault(label.setup_type, [])
+        if labels and label.available_date < labels[-1].available_date:
+            position = bisect_right(
+                [item.available_date for item in labels], label.available_date
+            )
+            labels.insert(position, label)
+        else:
+            labels.append(label)
+        state = self._fill_states.get(label.setup_type)
+        if (
+            state is not None
+            and state.as_of is not None
+            and label.available_date <= state.as_of
+        ):
+            state.reset()
+        return label
+
     def snapshot(
         self,
         setup: object,
@@ -305,7 +725,7 @@ class CandidateRanker:
         *,
         setup_key: int | None = None,
     ) -> CandidateSnapshot:
-        """Build one snapshot using no observation newer than ``t - 1``."""
+        """Build one snapshot using no market observation newer than ``t - 1``."""
         if not 0 < session_idx < len(self.dates):
             raise ValueError("session_idx must have a preceding session")
         first_order_idx = self._first_order_idx(setup)
@@ -317,19 +737,24 @@ class CandidateRanker:
             raise KeyError(f"unknown setup symbol {symbol!r}")
         col = self._symbol_col[symbol]
         information_idx = session_idx - 1
+        information_date = _day(self.dates[information_idx])
         pivot = self._optional_float(self._attr(setup, "pivot"))
-        if pivot is not None and pivot <= 0:
+        if pivot is not None and pivot <= 0.0:
             pivot = None
         prior_close = self._matrix_value(self.close, information_idx, col)
         if pivot is None or prior_close is None:
-            distance = None
+            distance_fraction = None
+            distance_pct = None
             readiness = None
         else:
-            distance = (pivot - prior_close) / pivot
-            # A close just below the pivot is ideal.  Being far below the
-            # pivot decays over 10%; already being above it decays faster.
-            scale = 0.10 if distance >= 0 else 0.02
-            readiness = float(np.clip(100.0 * (1.0 - abs(distance) / scale), 0.0, 100.0))
+            distance_fraction = (pivot - prior_close) / pivot
+            distance_pct = 100.0 * distance_fraction
+            scale = 0.10 if distance_fraction >= 0.0 else 0.02
+            readiness = float(
+                np.clip(
+                    100.0 * (1.0 - abs(distance_fraction) / scale), 0.0, 100.0
+                )
+            )
 
         current_rs = self._matrix_value(self.rs_rating, information_idx, col)
         if current_rs is None:
@@ -339,9 +764,6 @@ class CandidateRanker:
             information_idx, col
         )
         if self.volume is not None:
-            # Once a daily volume source is part of the run contract, an
-            # incomplete current window is unknown. Falling back to the
-            # detect-day value would quietly reintroduce stale ranking context.
             dryup_ratio = dynamic_dryup
             dryup_coverage = dynamic_dryup_coverage
             dryup_source = (
@@ -353,7 +775,7 @@ class CandidateRanker:
             )
         else:
             dryup_ratio = self._optional_float(self._attr(setup, "dryup_ratio"))
-            if dryup_ratio is not None and dryup_ratio > 0:
+            if dryup_ratio is not None and dryup_ratio > 0.0:
                 dryup_source = "setup"
                 dryup_coverage = 1.0
             else:
@@ -369,7 +791,11 @@ class CandidateRanker:
 
         def context_or_setup(name: str) -> float | None:
             value = current_context.get(name)
-            return value if value is not None else self._optional_float(self._attr(setup, name))
+            return (
+                value
+                if value is not None
+                else self._optional_float(self._attr(setup, name))
+            )
 
         fundamental_score = context_or_setup("fundamental_score")
         raw_fundamental_coverage = context_or_setup("fundamental_coverage")
@@ -382,31 +808,47 @@ class CandidateRanker:
         )
         eps_yoy = context_or_setup("eps_yoy")
         revenue_yoy = context_or_setup("revenue_yoy")
-        structure = self._optional_float(self._attr(setup, "structure_quality_score"))
+        trend_template_pass = context_or_setup("trend_template_pass")
+        structure = self._optional_float(
+            self._attr(setup, "structure_quality_score")
+        )
         tightness = self._optional_float(self._attr(setup, "tightness_score"))
-        prior_advance = self._optional_float(self._attr(setup, "prior_advance_score"))
+        prior_advance = self._optional_float(
+            self._attr(setup, "prior_advance_score")
+        )
         setup_age = session_idx - first_order_idx
 
         dryup_component = (
-            float(np.clip(100.0 * (1.0 - dryup_ratio / self.dryup_zero_ratio), 0.0, 100.0))
+            float(
+                np.clip(
+                    100.0 * (1.0 - dryup_ratio / self.dryup_zero_ratio),
+                    0.0,
+                    100.0,
+                )
+            )
             if dryup_ratio is not None
             else None
         )
         fundamental_observed_count = 6.0 * fundamental_coverage
         fundamental_component = (
             self._scaled(fundamental_score, fundamental_observed_count)
-            if fundamental_observed_count > 0
+            if fundamental_observed_count > 0.0
             else None
         )
         components = {
-            "readiness": readiness,
-            "rs": self._scaled(current_rs - 1.0, 98.0) if current_rs is not None else None,
+            "trend": (
+                float(np.clip(trend_template_pass * 100.0, 0.0, 100.0))
+                if trend_template_pass is not None
+                else None
+            ),
+            "rs": self._scaled(current_rs - 1.0, 98.0)
+            if current_rs is not None
+            else None,
             "dryup": dryup_component,
             "structure": self._scaled(structure, 25.0),
             "tightness": self._scaled(tightness, 20.0),
             "prior_advance": self._scaled(prior_advance, 25.0),
             "fundamental": fundamental_component,
-            "freshness": 100.0 * exp(-log(2.0) * setup_age / self.age_half_life_sessions),
         }
         component_coverage = {
             name: (
@@ -428,34 +870,28 @@ class CandidateRanker:
             return coverage * observed_value + (1.0 - coverage) * 50.0
 
         setup_type = str(self._attr(setup, "setup_type", "unknown"))
-        profile = self.type_weights.get(setup_type, self.type_weights["default"])
+        profile = self.quality_type_weights.get(
+            setup_type, self.quality_type_weights["default"]
+        )
         total_weight = sum(profile.values())
         observed_weight = sum(
             weight * component_coverage.get(name, 0.0)
             for name, weight in profile.items()
         )
-        # Missing information gets a neutral prior.  This avoids both the old
-        # zero-as-failure behaviour and a renormalisation that could make a
-        # sparsely observed candidate look artificially perfect.
-        weighted_score = sum(
-            weight * effective_component(name)
-            for name, weight in profile.items()
+        raw_quality_score = (
+            sum(weight * effective_component(name) for name, weight in profile.items())
+            / total_weight
         )
-        context_weights = {
-            "rs": profile.get("rs", 0.0),
-            "fundamental": profile.get("fundamental", 0.0),
-        }
-        context_weight = sum(context_weights.values())
-        context_score = (
-            sum(
-                weight
-                * effective_component(name)
-                for name, weight in context_weights.items()
-            )
-            / context_weight
-            if context_weight > 0
-            else 50.0
+        readiness_signal = readiness if readiness is not None else 50.0
+        quality_estimate = self._quality_estimate(
+            setup_type, raw_quality_score, information_date
         )
+        fill_estimate = self._fill_estimate(
+            setup_type, readiness_signal, information_date
+        )
+        slate_priority = quality_estimate.value * fill_estimate.value
+        if not isfinite(slate_priority):
+            raise RuntimeError("slate priority produced a non-finite estimate")
 
         raw_setup_id = self._optional_float(self._attr(setup, "setup_id"))
         setup_id = int(raw_setup_id) if raw_setup_id is not None else None
@@ -479,7 +915,7 @@ class CandidateRanker:
             setup_age_sessions=setup_age,
             pivot=pivot,
             prior_close=prior_close,
-            distance_to_pivot_pct=distance,
+            distance_to_pivot_pct=distance_pct,
             readiness_score=readiness,
             current_rs_rating=current_rs,
             dynamic_dryup_ratio=dryup_ratio,
@@ -492,9 +928,16 @@ class CandidateRanker:
             structure_quality_score=structure,
             tightness_score=tightness,
             prior_advance_score=prior_advance,
-            context_score=context_score,
-            ranking_score=weighted_score / total_weight,
-            feature_coverage=observed_weight / total_weight,
+            raw_quality_score=raw_quality_score,
+            quality_feature_coverage=observed_weight / total_weight,
+            quality_score=quality_estimate.value,
+            fill_probability=fill_estimate.value,
+            slate_priority=slate_priority,
+            quality_rank=None,
+            quality_calibration_count=quality_estimate.count,
+            quality_effective_samples=quality_estimate.effective_samples,
+            fill_calibration_count=fill_estimate.count,
+            fill_effective_samples=fill_estimate.effective_samples,
             context_values=context_values,
         )
 
@@ -503,7 +946,12 @@ class CandidateRanker:
         active_setups: Mapping[int, object] | Iterable[object],
         session_idx: int,
     ) -> tuple[CandidateSnapshot, ...]:
-        """Return snapshots best-first with stable, data-independent tie breaks."""
+        """Return candidates in slate order and attach their pure-quality rank.
+
+        The returned order follows ``slate_priority`` because that is what the
+        order allocator consumes. ``quality_rank`` deliberately ignores fill
+        probability and therefore remains an honest rank of expected R.
+        """
         if isinstance(active_setups, Mapping):
             snapshots = [
                 self.snapshot(setup, session_idx, setup_key=int(key))
@@ -511,15 +959,64 @@ class CandidateRanker:
             ]
         else:
             snapshots = [self.snapshot(setup, session_idx) for setup in active_setups]
+        quality_order = sorted(
+            snapshots,
+            key=lambda item: (
+                -item.quality_score,
+                item.setup_type,
+                -item.raw_quality_score,
+                item.symbol,
+                item.setup_id if item.setup_id is not None else 2**63 - 1,
+                item.setup_key,
+            ),
+        )
+        quality_ranks: dict[int, int] = {}
+        previous_quality: float | None = None
+        current_rank = 0
+        for position, snapshot in enumerate(quality_order, start=1):
+            if previous_quality is None or snapshot.quality_score != previous_quality:
+                current_rank = position
+                previous_quality = snapshot.quality_score
+            quality_ranks[id(snapshot)] = current_rank
+
+        # Equal posterior estimates contain no evidence for a cross-class
+        # preference. A lexical setup-type tie break would silently create one.
+        # Interleave every exact posterior tie by class, rotate the first class
+        # by session, and use raw quality only within its own class. This covers
+        # cold start and neutral/shrunk ties without an outcome-tuned threshold.
+        posterior_groups: dict[
+            tuple[float, float], list[CandidateSnapshot]
+        ] = {}
+        for snapshot in snapshots:
+            posterior_groups.setdefault(
+                (snapshot.slate_priority, snapshot.quality_score), []
+            ).append(snapshot)
+        slate_order: list[CandidateSnapshot] = []
+        for group_number, posterior in enumerate(
+            sorted(posterior_groups, key=lambda value: (-value[0], -value[1]))
+        ):
+            by_type: dict[str, list[CandidateSnapshot]] = {}
+            for snapshot in posterior_groups[posterior]:
+                by_type.setdefault(snapshot.setup_type, []).append(snapshot)
+            for candidates in by_type.values():
+                candidates.sort(
+                    key=lambda item: (
+                        -item.raw_quality_score,
+                        -item.fill_probability,
+                        item.symbol,
+                        item.setup_id if item.setup_id is not None else 2**63 - 1,
+                        item.setup_key,
+                    )
+                )
+            setup_types = sorted(by_type)
+            rotation = (session_idx + group_number) % len(setup_types)
+            setup_types = setup_types[rotation:] + setup_types[:rotation]
+            for index in range(max(len(values) for values in by_type.values())):
+                for setup_type in setup_types:
+                    candidates = by_type[setup_type]
+                    if index < len(candidates):
+                        slate_order.append(candidates[index])
         return tuple(
-            sorted(
-                snapshots,
-                key=lambda item: (
-                    -item.ranking_score,
-                    item.setup_type,
-                    item.symbol,
-                    item.setup_id if item.setup_id is not None else 2**63 - 1,
-                    item.setup_key,
-                ),
-            )
+            replace(snapshot, quality_rank=quality_ranks[id(snapshot)])
+            for snapshot in slate_order
         )

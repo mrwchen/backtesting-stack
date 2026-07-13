@@ -8,7 +8,7 @@ it emits a pre-session setup whose pivot can be used by a daily stop-buy model.
 The pattern rules favour robust shape properties over exact textbook geometry:
 
 * every setup requires a material prior advance;
-* a VCP may contain one modestly wider contraction;
+* a VCP may contain one modestly wider contraction, but must finish tight;
 * an ambiguous outside bar is ignored rather than erasing prior structure;
 * bases may last up to roughly six months;
 * lower dry-up ratios always receive a higher score; and
@@ -29,7 +29,7 @@ import pandas as pd
 
 SetupType = Literal["vcp", "flat_base", "power_play", "tight_shelf"]
 Swing = tuple[int, float, Literal["H", "L"]]
-MODEL_VERSION = "minervini_daily_v4"
+MODEL_VERSION = "minervini_daily_v5"
 
 # Classification is score-first.  The order is only a deterministic tie
 # breaker for nested patterns with identical quality: a contraction structure
@@ -49,6 +49,7 @@ class Setup:
 
     symbol: str
     setup_type: SetupType
+    price_continuity_segment: int
     detect_date: date
     pivot: float
     last_low: float
@@ -203,6 +204,44 @@ def _prior_advance(
     return float(high[base_start] / prior_low - 1.0) if prior_low > 0 else 0.0
 
 
+def _power_play_thrust_volume_ratio(
+    volume: np.ndarray,
+    base_start: int,
+    segment_start: int,
+    lookback: int = 40,
+) -> float | None:
+    """Return causal volume expansion in the thrust immediately before a base.
+
+    A Power Play is an exceptional price-and-demand event, not merely a short
+    base after an ordinary uptrend.  The comparison uses only the sessions at
+    or before ``base_start``.  The median of the same fixed thrust window is a
+    robust local baseline; the mean of its three largest prints represents the
+    institutional demand burst without letting a single bad tick qualify it.
+    """
+    start = max(segment_start, base_start - lookback + 1)
+    observed = volume[start : base_start + 1]
+    valid = observed[np.isfinite(observed) & (observed > 0)]
+    if len(valid) < 20:
+        return None
+    baseline = float(np.median(valid))
+    if baseline <= 0:
+        return None
+    leaders = np.partition(valid, -min(3, len(valid)))[-min(3, len(valid)) :]
+    return float(np.mean(leaders) / baseline)
+
+
+def _close_dispersion(
+    close: np.ndarray,
+    start: int,
+    end: int,
+    pivot: float,
+) -> float:
+    values = close[start:end]
+    if pivot <= 0 or len(values) == 0 or not np.isfinite(values).all():
+        return float("inf")
+    return float((np.max(values) - np.min(values)) / pivot)
+
+
 def _final_tight_area(
     t: int,
     pivot: float,
@@ -311,14 +350,19 @@ def _vcp_candidate(
         if not rules.base_min_days <= base_days <= rules.base_max_days:
             continue
         depths = np.asarray([(hi[1] - lo[1]) / hi[1] for hi, lo in selected], dtype=float)
-        if np.any(depths <= 0) or depths[0] > rules.base_depth_max or depths[-1] > rules.final_depth_max:
+        if (
+            np.any(depths <= 0)
+            or depths[0] > rules.base_depth_max
+            or depths[-1] > min(rules.final_depth_max, 0.08)
+        ):
             continue
         widen = depths[1:] - depths[:-1]
         allowed = np.maximum(rules.widening_absolute_tolerance, depths[:-1] * rules.widening_relative_tolerance)
         if int(np.sum(widen > allowed)) > rules.max_widening_steps:
             continue
-        # The base must contract overall even when one intermediate step is noisy.
-        if depths[-1] >= depths[0] * 0.85:
+        # The base must contract materially overall even when one intermediate
+        # step is noisy. This is deliberately structural, not outcome-fitted.
+        if depths[-1] >= depths[0] * 0.75:
             continue
         pivot = float(selected[-1][0][1])
         base_high = max(float(pair[0][1]) for pair in selected)
@@ -342,6 +386,8 @@ def _vcp_candidate(
         final = _final_tight_area(t, pivot, high, low, close, rules)
         dryup = _volume_dryup(t, volume, segment_start)
         if final is None:
+            continue
+        if dryup is not None and dryup > 1.10:
             continue
         dryup = float("nan") if dryup is None else dryup
         tightness, proximity = final
@@ -389,9 +435,19 @@ def _range_candidate(
     rules: _Rules,
 ) -> dict[str, Any] | None:
     if setup_type == "power_play":
-        lengths, max_depth, required_advance = range(10, 26), 0.20, max(0.60, rules.prior_advance_min)
+        # A Power Play is the exceptional case: at least a 100% thrust in no
+        # more than 40 sessions, followed by roughly two to six weeks of rest.
+        lengths, max_depth, required_advance = (
+            range(10, 31),
+            0.20,
+            max(1.00, rules.prior_advance_min),
+        )
     elif setup_type == "tight_shelf":
-        lengths, max_depth, required_advance = range(8, 20), 0.08, rules.prior_advance_min
+        lengths, max_depth, required_advance = (
+            range(10, 22),
+            0.06,
+            rules.prior_advance_min,
+        )
     elif setup_type == "flat_base":
         lengths, max_depth, required_advance = range(25, 71), 0.15, rules.prior_advance_min
     else:
@@ -426,8 +482,20 @@ def _range_candidate(
         )
         if prior < required_advance:
             continue
+        thrust_volume_ratio: float | None = None
+        if setup_type == "power_play":
+            thrust_volume_ratio = _power_play_thrust_volume_ratio(
+                volume, start, segment_start
+            )
+            if thrust_volume_ratio is None or thrust_volume_ratio < 1.50:
+                continue
         if not last_low < close[t] < pivot:
             continue
+        tightness_limit = (
+            0.08
+            if setup_type == "power_play"
+            else 0.03 if setup_type == "tight_shelf" else None
+        )
         final = _final_tight_area(
             t,
             pivot,
@@ -435,7 +503,7 @@ def _range_candidate(
             low,
             close,
             rules,
-            max_tightness=0.12 if setup_type == "power_play" else None,
+            max_tightness=tightness_limit,
             require_high_below_pivot=True,
         )
         dryup = _volume_dryup(t, volume, segment_start)
@@ -443,9 +511,48 @@ def _range_candidate(
             continue
         dryup = float("nan") if dryup is None else dryup
         tightness, proximity = final
+        final_close_dispersion = _close_dispersion(
+            close, final_start, t + 1, pivot
+        )
+        if setup_type == "power_play":
+            if final_close_dispersion > 0.04:
+                continue
+            if depth > 0.10:
+                early_end = max(start + 5, final_start)
+                early_high = high[start:early_end]
+                early_low = low[start:early_end]
+                if (
+                    len(early_high) < 5
+                    or not np.isfinite(early_high).all()
+                    or not np.isfinite(early_low).all()
+                ):
+                    continue
+                early_range = float(
+                    (np.max(early_high) - np.min(early_low)) / pivot
+                )
+                if tightness > 0.80 * early_range:
+                    continue
+        elif setup_type == "tight_shelf":
+            # Kept as a research label only.  Detection itself is strict so
+            # its independent-mode evidence remains interpretable.
+            if (
+                final_close_dispersion > 0.03
+                or not np.isfinite(dryup)
+                or dryup > 1.00
+                or float(np.mean(l[-rules.final_tight_days :]))
+                + 1e-12
+                < float(np.mean(l[: rules.final_tight_days]))
+            ):
+                continue
         structure_quality = float(np.clip(1.0 - depth / max_depth, 0.0, 1.0))
         if setup_type == "power_play":
-            structure_quality = 0.5 * structure_quality + 0.5 * float(np.clip(prior / 1.0, 0.0, 1.0))
+            assert thrust_volume_ratio is not None
+            structure_quality = (
+                0.40 * structure_quality
+                + 0.35 * float(np.clip(prior / 1.50, 0.0, 1.0))
+                + 0.25
+                * float(np.clip((thrust_volume_ratio - 1.0) / 1.5, 0.0, 1.0))
+            )
         score = _score(
             structure_quality=structure_quality,
             final_tightness=tightness,
@@ -502,6 +609,44 @@ def _same_structure(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return shorter > 0 and overlap / shorter >= 0.60
 
 
+def _materially_improved(
+    candidate: dict[str, Any],
+    prior: dict[str, Any],
+    session_positions: np.ndarray,
+) -> bool:
+    """Allow a repeated structure only after new causal evidence improves it.
+
+    Expiry by itself is never evidence. A genuinely higher resistance anchor
+    is a new actionable structure. Otherwise at least ten fresh sessions and
+    a material improvement in tightness or volume contraction are required.
+    """
+    candidate_pivot = float(candidate["pivot"])
+    prior_pivot = float(prior["pivot"])
+    if (
+        int(candidate["pivot_idx"]) > int(prior["pivot_idx"])
+        and candidate_pivot >= prior_pivot * 1.01
+    ):
+        return True
+
+    fresh_sessions = int(
+        session_positions[int(candidate["structure_end"])]
+        - session_positions[int(prior["structure_end"])]
+    )
+    if fresh_sessions < 10:
+        return False
+    tighter = float(candidate["tightness"]) <= 0.80 * float(prior["tightness"])
+    new_dryup = float(candidate["dryup"])
+    prior_dryup = float(prior["dryup"])
+    dryer = (
+        np.isfinite(new_dryup)
+        and (
+            not np.isfinite(prior_dryup)
+            or new_dryup <= 0.80 * prior_dryup
+        )
+    )
+    return bool(tighter or dryer)
+
+
 def _classification_key(candidate: dict[str, Any]) -> tuple[float, int, float, int, int, str]:
     """Return a total, deterministic order for competing classifications."""
     total = float(candidate["score"][0])
@@ -548,18 +693,49 @@ def _validate_inputs(
     low: np.ndarray,
     close: np.ndarray,
     volume: np.ndarray,
+    continuity_segment: np.ndarray,
+    continuity_break: np.ndarray,
     trading_dates: pd.DatetimeIndex,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n = len(dates)
-    if not (len(high) == len(low) == len(close) == len(volume) == n):
-        raise ValueError("dates and OHLCV arrays must have equal length")
+    if not (
+        len(high)
+        == len(low)
+        == len(close)
+        == len(volume)
+        == len(continuity_segment)
+        == len(continuity_break)
+        == n
+    ):
+        raise ValueError(
+            "dates, OHLCV and price continuity arrays must have equal length"
+        )
     if trading_dates.empty or not trading_dates.is_monotonic_increasing or not trading_dates.is_unique:
         raise ValueError("trading_dates must be non-empty, sorted and unique")
     session_positions = trading_dates.get_indexer(dates)
     if np.any(session_positions < 0):
         raise ValueError("every symbol date must exist in trading_dates")
+    segment_numeric = pd.to_numeric(
+        pd.Series(continuity_segment), errors="coerce"
+    ).to_numpy(dtype=float)
+    if (
+        not np.isfinite(segment_numeric).all()
+        or not np.equal(segment_numeric, np.floor(segment_numeric)).all()
+        or np.any(segment_numeric <= 0)
+    ):
+        raise ValueError(
+            "price_continuity_segment must contain positive finite integers"
+        )
+    break_values = pd.Series(continuity_break, dtype="boolean")
+    if break_values.isna().any():
+        raise ValueError("price_continuity_break must contain booleans")
     price_complete = np.isfinite(high) & np.isfinite(low) & np.isfinite(close)
-    return session_positions, price_complete
+    return (
+        session_positions,
+        price_complete,
+        segment_numeric.astype(np.int64),
+        break_values.to_numpy(dtype=bool),
+    )
 
 
 def find_setups(
@@ -569,6 +745,8 @@ def find_setups(
     low: np.ndarray,
     close: np.ndarray,
     volume: np.ndarray,
+    continuity_segment: np.ndarray,
+    continuity_break: np.ndarray,
     pass_idx: np.ndarray,
     cfg: Any,
     *,
@@ -586,26 +764,45 @@ def find_setups(
     low = np.asarray(low, dtype=float)
     close = np.asarray(close, dtype=float)
     volume = np.asarray(volume, dtype=float)
+    continuity_segment = np.asarray(continuity_segment)
+    continuity_break = np.asarray(continuity_break)
     rules = _Rules.from_config(cfg)
     if rules.swing_window < 1:
         raise ValueError("swing_window must be >= 1")
-    session_positions, complete = _validate_inputs(dates, high, low, close, volume, trading_dates)
+    session_positions, complete, segments, segment_breaks = _validate_inputs(
+        dates,
+        high,
+        low,
+        close,
+        volume,
+        continuity_segment,
+        continuity_break,
+        trading_dates,
+    )
     pass_days = {int(i) for i in np.asarray(pass_idx, dtype=int) if 0 <= int(i) < len(dates)}
     if not pass_days:
         return []
 
     setups: list[Setup] = []
     swings: list[Swing] = []
-    recent_emissions: list[tuple[int, dict[str, Any]]] = []
+    emission_history: list[dict[str, Any]] = []
     base_count = 0
     previous_pivot: float | None = None
     segment_start = 0
     k = rules.swing_window
 
     for t in range(max(pass_days) + 1):
+        explicit_boundary = (
+            t == 0
+            or segment_breaks[t]
+            or segments[t] != segments[t - 1]
+        )
         gap = t > 0 and session_positions[t] != session_positions[t - 1] + 1
-        if gap or not complete[t]:
+        if explicit_boundary or gap or not complete[t]:
             swings.clear()
+            emission_history.clear()
+            base_count = 0
+            previous_pivot = None
             segment_start = t + (0 if complete[t] else 1)
             if not complete[t]:
                 continue
@@ -629,35 +826,34 @@ def find_setups(
         if not observed:
             continue
 
-        # Suppression is candidate-local and setup-type agnostic. Therefore a
-        # repeated Power Play cannot hide a distinct valid VCP (or vice versa),
-        # while one recent price structure cannot be re-emitted under a new
-        # label merely because another detector chose a neighbouring pivot bar.
-        recent_emissions = [
-            emission
-            for emission in recent_emissions
-            if session_positions[t] - session_positions[emission[0]]
-            < rules.setup_valid_days
-        ]
-        eligible: list[dict[str, Any]] = []
-        for candidate in observed:
-            if any(_same_structure(candidate, prior) for _, prior in recent_emissions):
-                continue
-            eligible.append(candidate)
-        if not eligible:
-            continue
-
         # Collapse only alternate labels of the same structure. Distinct pivots
         # on the same day remain separate first-touch research candidates; the
         # portfolio layer can still nominate at most one per symbol.
         representatives = sorted(
-            _collapse_overlapping_classifications(eligible),
+            _collapse_overlapping_classifications(observed),
             key=_classification_key,
             reverse=True,
         )
         for found in representatives:
+            matching_history = [
+                prior
+                for prior in emission_history
+                if _same_structure(found, prior)
+            ]
+            if matching_history:
+                latest = max(
+                    matching_history,
+                    key=lambda prior: int(prior["structure_end"]),
+                )
+                if not _materially_improved(found, latest, session_positions):
+                    continue
             setup_type: SetupType = found["setup_type"]
-            recent_emissions.append((t, found))
+            emission_history = [
+                prior
+                for prior in emission_history
+                if not _same_structure(found, prior)
+            ]
+            emission_history.append(found)
 
             if previous_pivot is None or found["pivot"] >= previous_pivot * 1.25:
                 base_count = 1
@@ -679,6 +875,7 @@ def find_setups(
                 Setup(
                     symbol=symbol,
                     setup_type=setup_type,
+                    price_continuity_segment=int(segments[t]),
                     detect_date=dates[t].date(),
                     pivot=round(float(found["pivot"]), 8),
                     last_low=round(float(found["last_low"]), 8),

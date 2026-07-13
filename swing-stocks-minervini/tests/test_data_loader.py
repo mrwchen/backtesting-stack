@@ -91,6 +91,8 @@ def test_all_stock_inputs_use_the_same_full_security_identity():
 def test_prices_expose_raw_close_without_replacing_adjusted_technical_fields():
     assert "p.adjusted_close::float8                 AS close" in data_loader.PRICES_SQL
     assert "p.raw_close::float8                      AS raw_close" in data_loader.PRICES_SQL
+    assert "p.price_continuity_segment::integer" in data_loader.PRICES_SQL
+    assert "p.price_continuity_break" in data_loader.PRICES_SQL
 
 
 def test_price_validation_rejects_ambiguous_duplicate_identity_dates():
@@ -104,6 +106,8 @@ def test_price_validation_rejects_ambiguous_duplicate_identity_dates():
             "close": [10.5, 10.5],
             "raw_close": [10.5, 10.5],
             "volume": [1000.0, 1000.0],
+            "price_continuity_segment": [1, 1],
+            "price_continuity_break": [True, True],
         }
     )
 
@@ -122,6 +126,8 @@ def test_price_validation_discards_non_causal_or_missing_nominal_bars():
             "close": [10.5, 10.5, 20.5],
             "raw_close": [10.5, 10.5, None],
             "volume": [1000.0, 1000.0, 1000.0],
+            "price_continuity_segment": [1, 1, 1],
+            "price_continuity_break": [True, False, True],
         }
     )
 
@@ -132,12 +138,57 @@ def test_price_validation_discards_non_causal_or_missing_nominal_bars():
     ]
 
 
+def test_price_validation_requires_consistent_continuity_metadata():
+    prices = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "AAA"],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+            "open": [10.0, 10.5, 100.0],
+            "high": [11.0, 11.0, 101.0],
+            "low": [9.0, 10.0, 99.0],
+            "close": [10.5, 10.8, 100.5],
+            "raw_close": [10.5, 10.8, 100.5],
+            "volume": [1000.0, 1000.0, 1000.0],
+            "price_continuity_segment": [1, 1, 2],
+            # The first row of segment 2 must carry the boundary marker.
+            "price_continuity_break": [True, False, False],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="inconsistent price continuity sequence"):
+        _validate_prices(prices)
+
+
+def test_price_continuity_fields_are_pivotable_with_price_matrix_axes():
+    prices = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "BBB"],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02"]),
+            "close": [10.0, 100.0, 20.0],
+            "price_continuity_segment": [1, 2, 1],
+            "price_continuity_break": [True, True, True],
+        }
+    )
+
+    close = data_loader.pivot_field(prices, "close")
+    segment = data_loader.pivot_field(prices, "price_continuity_segment")
+    boundary = data_loader.pivot_field(prices, "price_continuity_break")
+
+    assert segment.index.equals(close.index)
+    assert segment.columns.equals(close.columns)
+    assert boundary.index.equals(close.index)
+    assert boundary.columns.equals(close.columns)
+    assert segment.loc[pd.Timestamp("2024-01-03"), "AAA"] == 2
+    assert bool(boundary.loc[pd.Timestamp("2024-01-03"), "AAA"])
+
+
 def test_cache_path_contains_explicit_contract_version(tmp_path):
     cfg = make_cfg(cache_dir=str(tmp_path))
     path = data_loader._cache_path(cfg, "prices_2020_2023")
 
     assert data_loader.CACHE_SCHEMA_VERSION in path
     assert path.endswith(".parquet")
+    assert data_loader.CACHE_SCHEMA_VERSION == "minervini_source_v4"
 
 
 def test_sponsorship_loader_reads_compact_identity_events_and_refreshes_cache_version():

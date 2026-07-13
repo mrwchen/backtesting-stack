@@ -1,6 +1,6 @@
--- Idempotent schema for the Minervini swing backtester.
+-- v5 schema for the Minervini swing backtester.
 -- All tables are prefixed backtesting_minervini_.
--- Safe to re-run: statements use IF NOT EXISTS or equivalent guards.
+-- There is deliberately no migration or backward-compatible schema path.
 
 DO $$
 BEGIN
@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_bm_rs_period
     ON backtesting_minervini_rs_daily (period_end_date DESC, rs_rating DESC);
 
 -- ---------------------------------------------------------------------------
--- Stage 1b: daily screen result (trend template + fundamentals per symbol/day)
+-- Stage 1b: daily rankable universe plus soft trend/fundamental/group context
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS backtesting_minervini_screen_daily (
     period_end_date             DATE NOT NULL,
@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_market_daily (
 CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     setup_id            BIGSERIAL PRIMARY KEY,
     symbol              TEXT NOT NULL,
+    price_continuity_segment INTEGER NOT NULL,
     setup_type          TEXT NOT NULL,
     ibkr_industry       TEXT,
     ibkr_category       TEXT,
@@ -197,6 +198,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     valid_until         DATE NOT NULL,
     created_ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (setup_type IN ('vcp', 'flat_base', 'power_play', 'tight_shelf')),
+    CHECK (price_continuity_segment > 0),
     CHECK (setup_score BETWEEN 0 AND 100),
     CHECK (valid_until >= detect_date)
 );
@@ -238,12 +240,14 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     symbol                  TEXT NOT NULL,
     setup_detect_date       DATE NOT NULL,
     snapshot_date           DATE NOT NULL,
-    dynamic_setup_score     NUMERIC NOT NULL,
-    readiness_score         NUMERIC,
-    context_score           NUMERIC NOT NULL,
+    -- quality_score is a causal expected R-multiple, not a 0..100 score.
+    quality_score           NUMERIC NOT NULL,
+    fill_probability        NUMERIC NOT NULL,
+    -- Pre-session order priority: quality_score * fill_probability.
+    slate_priority          NUMERIC NOT NULL,
     setup_age_sessions      INTEGER NOT NULL,
     distance_to_pivot_pct   NUMERIC,
-    candidate_rank          INTEGER,
+    quality_rank            INTEGER NOT NULL,
     pivot                   NUMERIC(15,4) NOT NULL,
     trigger_price           NUMERIC(15,4) NOT NULL,
     entry_filled            BOOLEAN NOT NULL,
@@ -252,15 +256,20 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     decision                TEXT NOT NULL,
     PRIMARY KEY (breakout_date, event_id),
     CHECK (setup_type IN ('vcp', 'flat_base', 'power_play', 'tight_shelf')),
-    CHECK (dynamic_setup_score BETWEEN 0 AND 100),
-    CHECK (readiness_score IS NULL OR readiness_score BETWEEN 0 AND 100),
-    CHECK (context_score BETWEEN 0 AND 100),
+    CHECK (quality_score NOT IN (
+        'NaN'::NUMERIC, 'Infinity'::NUMERIC, '-Infinity'::NUMERIC
+    )),
+    CHECK (fill_probability BETWEEN 0 AND 1),
+    CHECK (slate_priority NOT IN (
+        'NaN'::NUMERIC, 'Infinity'::NUMERIC, '-Infinity'::NUMERIC
+    )),
     CHECK (setup_age_sessions >= 0),
-    CHECK (candidate_rank IS NULL OR candidate_rank > 0),
+    CHECK (quality_rank > 0),
     CHECK (snapshot_date < breakout_date),
     CHECK (decision IN (
         'market_gate_blocked', 'regime_gate_blocked',
-        'trend_template_not_passed', 'bad_fundamentals',
+        'setup_class_research_only', 'price_continuity_break',
+        'non_positive_quality',
         'existing_position', 'portfolio_capacity', 'invalid_order_parameters',
         'size_below_one_share', 'incomplete_entry_bar',
         'opened_below_invalidation', 'excessive_gap', 'filled'

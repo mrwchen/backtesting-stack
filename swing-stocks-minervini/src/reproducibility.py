@@ -39,7 +39,7 @@ SIM_CONFIG_FIELDS = (
     "max_position_pct", "slippage_pct", "commission_pct", "partial_at_r",
     "partial_fraction", "breakeven_after_partial", "trail_ma_days",
     "failed_breakout_exit_enable", "failed_breakout_days",
-    "failed_breakout_min_r", "bad_fundamentals_filter_enable",
+    "failed_breakout_min_r",
     "eps_yoy_min", "revenue_yoy_min", "dryup_score_zero_ratio",
     "pivot_buffer_pct", "max_buy_zone_pct", "time_stop_sessions",
     "time_stop_min_r", "portfolio_max_open_positions",

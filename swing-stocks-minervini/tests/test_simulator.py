@@ -2,8 +2,43 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.simulator import simulate
+from src.simulator import simulate as _simulate
 from tests.util import make_cfg
+
+
+def simulate(
+    dates,
+    symbols,
+    open_m,
+    high_m,
+    low_m,
+    close_m,
+    setups,
+    cfg,
+    *args,
+    **kwargs,
+):
+    """Supply explicit single-segment metadata for synthetic unit fixtures."""
+    continuity = kwargs.pop(
+        "continuity_segment_m",
+        pd.DataFrame(1, index=dates, columns=symbols, dtype="int64"),
+    )
+    setups = setups.copy()
+    if "price_continuity_segment" not in setups.columns:
+        setups["price_continuity_segment"] = 1
+    return _simulate(
+        dates,
+        symbols,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        cfg,
+        *args,
+        continuity_segment_m=continuity,
+        **kwargs,
+    )
 
 
 def _matrices(bars: list[tuple[float, float, float, float]]):
@@ -415,13 +450,13 @@ def test_breakout_event_contains_previous_session_candidate_snapshot() -> None:
 
     event = result.breakout_events.iloc[0]
     assert event["snapshot_date"] == dates[4].date()
-    assert event["candidate_rank"] == 1
+    assert event["quality_rank"] == 1
     assert event["setup_age_sessions"] == 0
-    assert event["distance_to_pivot_pct"] == pytest.approx(0.02)
+    assert event["distance_to_pivot_pct"] == pytest.approx(2.0)
     for column in (
-        "dynamic_setup_score",
-        "readiness_score",
-        "context_score",
+        "quality_score",
+        "fill_probability",
+        "slate_priority",
     ):
         assert np.isfinite(event[column])
 
@@ -781,6 +816,7 @@ def test_portfolio_mode_limits_gross_exposure():
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 10,
             "portfolio_max_gross_exposure_pct": 0.4,
+            "min_slate_risk_utilization": 0.50,
         }
     )
 
@@ -991,6 +1027,7 @@ def test_capacity_feasible_slate_can_skip_a_large_candidate():
             "max_buy_zone_pct": 0.0,
             "portfolio_max_open_positions": 3,
             "portfolio_max_gross_exposure_pct": 0.15,
+            "min_slate_risk_utilization": 0.50,
         }
     )
 
@@ -1041,6 +1078,7 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
             "max_buy_zone_pct": 0.0,
             "portfolio_max_open_positions": 3,
             "portfolio_max_gross_exposure_pct": 0.15,
+            "min_slate_risk_utilization": 0.50,
         }
     )
 
@@ -1139,8 +1177,8 @@ def test_current_session_context_cannot_change_same_session_selection():
     assert result.trades["symbol"].unique().tolist() == ["AAA"]
     events = result.breakout_events.set_index("symbol")
     assert events.loc["AAA", "snapshot_date"] == dates[4].date()
-    assert events.loc["AAA", "candidate_rank"] == 1
-    assert events.loc["BBB", "candidate_rank"] == 2
+    assert events.loc["AAA", "quality_rank"] == 1
+    assert events.loc["BBB", "quality_rank"] == 1
 
 
 def test_prior_day_dynamic_context_can_change_portfolio_rank():
@@ -1222,7 +1260,7 @@ def test_temporary_pre_period_eligibility_failure_does_not_destroy_structure():
     assert result.breakout_events.iloc[0]["decision"] == "filled"
 
 
-def test_portfolio_records_trend_ineligible_first_touch_instead_of_hiding_it():
+def test_portfolio_uses_trend_as_soft_feature_not_hard_gate():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100)]
     bars += [(100, 101, 99, 100)] * 2
@@ -1243,9 +1281,9 @@ def test_portfolio_records_trend_ineligible_first_touch_instead_of_hiding_it():
         candidate_context={"trend_template_pass": trend},
     )
 
-    assert result.trades.empty
+    assert not result.trades.empty
     assert len(result.breakout_events) == 1
-    assert result.breakout_events.iloc[0]["decision"] == "trend_template_not_passed"
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
 
 
 def test_independent_first_touch_is_not_filtered_by_daily_trend_context():
@@ -1667,7 +1705,7 @@ def test_strong_volume_dryup_has_no_artificial_lower_rejection():
     assert result.metrics["final_equity"] > result.metrics["initial_equity"]
 
 
-def test_portfolio_records_known_bad_growth_touch_when_gate_is_enabled():
+def test_portfolio_uses_known_bad_growth_as_feature_not_hard_gate():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]
     bars += [(101, 102, 100.5, 101.5)] * 6
@@ -1688,14 +1726,257 @@ def test_portfolio_records_known_bad_growth_touch_when_gate_is_enabled():
             **{
                 **_clean_cfg().__dict__,
                 "simulation_mode": "portfolio",
-                "bad_fundamentals_filter_enable": True,
             }
         ),
     )
 
+    assert not result.trades.empty
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
+
+
+def test_v5_simulation_rejects_missing_continuity_contract():
+    bars = [(98, 99, 97, 98)] * 6
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 5).assign(
+        price_continuity_segment=1
+    )
+
+    with pytest.raises(ValueError, match="requires continuity_segment_m"):
+        _simulate(
+            dates,
+            close_m.columns,
+            open_m,
+            high_m,
+            low_m,
+            close_m,
+            setups,
+            _clean_cfg(),
+        )
+
+
+def test_old_segment_setup_is_cancelled_before_break_session_ordering():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 105, 97, 103), (103, 106, 101, 104)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    continuity = pd.DataFrame(1, index=dates, columns=close_m.columns)
+    continuity.iloc[5:, 0] = 2
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+        setup_type="vcp", price_continuity_segment=1
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+        continuity_segment_m=continuity,
+    )
+
     assert result.trades.empty
-    assert result.metrics["final_equity"] == 100000.0
-    assert result.breakout_events.iloc[0]["decision"] == "bad_fundamentals"
+    assert result.breakout_events.empty
+
+
+def test_open_position_exits_at_break_session_open_without_backdating():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [
+        (99, 101, 98, 100),
+        (101, 104, 99, 103),
+        (70, 72, 68, 71),
+        (71, 73, 70, 72),
+    ]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    continuity = pd.DataFrame(1, index=dates, columns=close_m.columns)
+    continuity.iloc[7:, 0] = 2
+    setup = _setup_row(dates, 4, 100.0, 95.0, 8).assign(
+        setup_type="vcp", price_continuity_segment=1
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "partial_fraction": 0.0,
+            "failed_breakout_exit_enable": False,
+            "time_stop_sessions": 999,
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        cfg,
+        continuity_segment_m=continuity,
+    )
+
+    final = result.trades.iloc[-1]
+    assert final["exit_reason"] == "continuity_break"
+    assert final["exit_date"] == dates[7].date()
+    assert final["exit_price"] == 70.0
+
+
+def test_trailing_average_restarts_inside_new_continuity_segment():
+    bars = [(200, 202, 198, 200)] * 5
+    bars += [
+        (98, 99, 97, 98),
+        (99, 101, 96, 96),
+        (110, 111, 100, 110),
+        (111, 112, 109, 111),
+    ]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    continuity = pd.DataFrame(1, index=dates, columns=close_m.columns)
+    continuity.iloc[5:, 0] = 2
+    setup = _setup_row(dates, 5, 100.0, 95.0, 8).assign(
+        setup_type="vcp", price_continuity_segment=2
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "trail_ma_days": 3,
+            "partial_fraction": 0.0,
+            "failed_breakout_exit_enable": False,
+            "time_stop_sessions": 999,
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        cfg,
+        continuity_segment_m=continuity,
+    )
+
+    assert result.trades.iloc[-1]["exit_reason"] == "eod"
+    assert result.trades.iloc[-1]["exit_date"] == dates[-1].date()
+
+
+def test_tight_shelf_is_first_touch_research_only_not_portfolio_order():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100), (100, 102, 99, 101)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+        setup_type="tight_shelf"
+    )
+
+    independent = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+    )
+    portfolio = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        make_cfg(**{**_clean_cfg().__dict__, "simulation_mode": "portfolio"}),
+    )
+
+    assert not independent.trades.empty
+    assert portfolio.trades.empty
+    assert portfolio.breakout_events.iloc[0]["decision"] == (
+        "setup_class_research_only"
+    )
+
+
+def test_power_play_one_r_ratchet_arms_only_for_following_session():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [
+        (99, 105, 98, 104),
+        (101, 102, 99, 101),
+        (101, 102, 100, 101),
+    ]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    base_setup = _setup_row(dates, 4, 100.0, 95.0, 7)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "partial_fraction": 0.0,
+            "failed_breakout_exit_enable": False,
+            "time_stop_sessions": 999,
+        }
+    )
+
+    power = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        base_setup.assign(setup_type="power_play"),
+        cfg,
+    )
+    vcp = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        base_setup.assign(setup_type="vcp"),
+        cfg,
+    )
+
+    assert power.trades.iloc[-1]["exit_reason"] == "stop"
+    assert power.trades.iloc[-1]["exit_date"] == dates[6].date()
+    assert power.trades.iloc[-1]["exit_price"] == 100.0
+    assert vcp.trades.iloc[-1]["exit_reason"] == "eod"
+
+
+def test_first_touch_exports_labels_and_portfolio_does_not_duplicate_them():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100), (101, 103, 100, 102)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6).assign(setup_type="vcp")
+
+    first_touch = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+    )
+    portfolio = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        make_cfg(**{**_clean_cfg().__dict__, "simulation_mode": "portfolio"}),
+        quality_labels=first_touch.quality_labels,
+        fill_labels=first_touch.fill_labels,
+        online_calibration=False,
+    )
+
+    assert len(first_touch.quality_labels) == 1
+    assert len(first_touch.fill_labels) == 1
+    assert first_touch.fill_labels[0].filled
+    assert portfolio.quality_labels == first_touch.quality_labels
+    assert portfolio.fill_labels == first_touch.fill_labels
 
 
 def test_failed_breakout_exits_next_open():

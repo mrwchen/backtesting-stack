@@ -43,7 +43,8 @@ SCREEN_COLUMNS = [
 ]
 
 SETUP_COLUMNS = [
-    "symbol", "setup_type", "ibkr_industry", "ibkr_category", "detect_date",
+    "symbol", "price_continuity_segment", "setup_type", "ibkr_industry",
+    "ibkr_category", "detect_date",
     "pivot", "last_low", "stop_level", "base_start_date", "base_days",
     "n_contractions", "contraction_depths", "base_count", "dryup_ratio",
     "setup_score", "prior_advance_pct", "final_tightness_pct",
@@ -61,8 +62,8 @@ TRADE_COLUMNS = [
 
 BREAKOUT_EVENT_COLUMNS = [
     "run_id", "setup_id", "setup_type", "symbol", "setup_detect_date",
-    "snapshot_date", "dynamic_setup_score", "readiness_score", "context_score",
-    "setup_age_sessions", "distance_to_pivot_pct", "candidate_rank",
+    "snapshot_date", "quality_score", "fill_probability", "slate_priority",
+    "setup_age_sessions", "distance_to_pivot_pct", "quality_rank",
     "breakout_date", "pivot", "trigger_price", "entry_filled", "entry_date",
     "entry_price", "decision",
 ]
@@ -194,7 +195,7 @@ def read_screen_stage_output(conn, start, end) -> pd.DataFrame:
 def read_setups(conn, start, end) -> pd.DataFrame:
     return db.read_df(
         conn,
-        f"""SELECT setup_id, symbol, setup_type, detect_date,
+        f"""SELECT setup_id, symbol, price_continuity_segment, setup_type, detect_date,
                    pivot, last_low, stop_level, base_start_date, base_days,
                    n_contractions, contraction_depths, base_count, dryup_ratio,
                    setup_score, prior_advance_pct, final_tightness_pct,

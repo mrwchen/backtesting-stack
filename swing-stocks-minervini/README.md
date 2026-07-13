@@ -4,9 +4,9 @@ Daily, causal research implementation of a Minervini/SEPA-style stock process.
 The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
-The Phase-1 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
-`minervini_sepa_daily_v4_dynamic_rank`
-(`MODEL_VERSION=minervini_daily_v4`). One invocation persists two separate
+The v5 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
+`minervini_sepa_daily_v5_quality_slate`
+(`MODEL_VERSION=minervini_daily_v5`). One invocation persists two separate
 runs in one database transaction: an unfiltered, true first-touch `independent`
 research run and the market-gated `portfolio` run with the configured cash,
 slot and exposure controls. It uses the known 2020-2023 development window. The 2024-2026 period
@@ -22,9 +22,13 @@ The pipeline has three functional stages:
    split cannot retroactively turn an historically expensive leader into a
    penny stock. Trends, returns and chart geometry use split-adjusted OHLCV.
    The 12-month RS approximation uses four disjoint quarters with a 40/20/20/20
-   recency weighting.
-2. **Setup:** eagerly evaluates `vcp`, `flat_base`, `power_play` and
-   `tight_shelf` on every eligible detection day. Every class requires a
+   recency weighting. The setup funnel's `screen_pass` means only that the
+   symbol satisfies the price/liquidity rules and has a complete,
+   continuity-safe RS observation. It does not require the trend template,
+   fundamentals, an IBKR group diagnostic or the template's RS >= 70
+   criterion. Those rows remain in the daily screen as causal ranking context.
+2. **Setup:** evaluates `vcp`, `flat_base`, `power_play` and `tight_shelf`
+   independently on every eligible detection day. Every class requires a
    material prior advance and a causal, pre-breakout tight area. VCP accepts one
    modestly noisy contraction, keeps confirmed structure across an ambiguous
    outside bar and permits bases up to 130 sessions. Lower volume dry-up is
@@ -36,30 +40,56 @@ The pipeline has three functional stages:
    pivots and overlapping base intervals identify the same price structure;
    nested classifications collapse deterministically to the strongest label
    instead of producing type-dependent duplicates. Genuinely distinct pivots
-   on the same detection day remain separate research candidates. Duplicate
-   suppression lasts for the configured setup-validity window.
+   on the same detection day remain separate research candidates. An identical
+   structure is not re-emitted merely because its validity window elapsed; it
+   needs a materially improved pivot or chart structure. `tight_shelf` remains
+   visible in the first-touch research sample but is not a portfolio order
+   class. `power_play` is deliberately exceptional rather than a short generic
+   base: it requires at least a 100% prior advance within 40 sessions, a 10-30
+   session consolidation no deeper than 20%, demand evidence from the mean of
+   the three largest thrust-volume observations at least 1.5x their local
+   median (with at least 20 valid observations), final tightness no greater
+   than 8% and final-close dispersion no greater than 4%. If the whole base is
+   deeper than 10%, its final range must also be materially narrower than its
+   early range. None of these rules uses the breakout day's close or volume.
+   Every setup is bound to one positive `price_continuity_segment` and no
+   pattern geometry may cross a segment boundary.
 3. **Simulation:** places a stop-buy from information available after setup day
    D for session D+1. For each order session, all active candidates receive a
-   fresh snapshot using observations through t-1 only. The dynamic rank combines
-   pivot readiness/distance, current RS, refreshed volume dry-up, setup age,
-   point-in-time fundamentals and structural setup components. Every component
-   is scaled to a common 0-100 range; setup-class-specific weights produce one
-   continuous, cross-class comparable score. Missing features receive a neutral
-   contribution rather than becoming an implicit pass or failure. Missing or
-   expired SEC observations remain unknown, and an incomplete current volume
-   window cannot fall back to a stale detect-day dry-up value.
+   fresh snapshot using observations through t-1 only. The v5 rank keeps three
+   different questions separate: `quality_score` is a setup-class-calibrated
+   expected R-multiple, `fill_probability` estimates a near-term trigger, and
+   `slate_priority` is their product for pre-session order planning. Pivot
+   readiness therefore cannot masquerade as trade quality. Calibration is
+   walk-forward: a session may use only labels from trades completed before its
+   information date, with causal priors/shrinkage when class history is sparse.
+   Current RS, refreshed volume dry-up, setup age, point-in-time fundamentals,
+   the trend-template result and structural components are soft quality
+   features, not ex-post filters or entry gates. The trend-template contribution
+   is 10% of each setup class's raw within-class quality signal. Missing or
+   expired observations stay unknown rather than becoming implicit passes or
+   failures.
 
    The `independent` half of the default `both` run records each setup's true
    first touch without cash, slot, exposure, existing-position, market, regime
-   or fundamental-gate interaction. The `portfolio` half enforces the configured market state,
-   cash, slots, per-trade risk and one aggregate gross-exposure cap. Before the
+   or fundamental-gate interaction. Its completed, full-position net R outcome
+   supplies one quality label only when the final exit is known; each active
+   setup/session also supplies a capacity-independent fill label. The portfolio
+   receives these labels but may consume only labels whose availability date is
+   no later than that session's t-1 information date, so its own selected trades
+   never train the model. A portfolio-only or OOS run builds the same first-touch
+   calibration in memory; when OOS state starts before the reporting window,
+   that hidden pass includes the pre-roll development sessions. No calibration
+   or audit-only table is written. The `portfolio` half enforces the configured
+   market state, cash, slots, per-trade risk and one aggregate gross-exposure cap. Before the
    session, every portfolio candidate gets its standalone risk-sized target; a
-   ranked, capacity-feasible slate is then built incrementally. Its integer
+   priority-ranked, capacity-feasible slate is then built incrementally. Its integer
    minimum is funded first; one common scale distributes the remaining budget
    before deterministic integer rounding. A lower-ranked candidate that cannot
    retain the minimum may be skipped while a later, less capital-intensive
    candidate can still qualify. Every nominated order must retain at least
-   `MIN_SLATE_RISK_UTILIZATION` (default 50%) of that target.
+   `MIN_SLATE_RISK_UTILIZATION` (default 10%) of that target, so the
+   initial 25% exposure tier can reserve several conditional orders.
    Lower-ranked candidates that would create smaller residual orders are
    rejected as portfolio capacity instead of becoming dust trades. Frozen
    reservations are not recycled after observing which daily highs triggered.
@@ -68,12 +98,16 @@ The pipeline has three functional stages:
    Mixed exit sessions process every risk unit but use the adverse ordering of
    winners first and losses last because daily bars do not reveal cross-symbol
    exit order. Positions can re-enter after a scheduled same-symbol exit when
-   conservative cash/capacity remains, without creating overlapping lots. A
-   daily trend/fundamental eligibility failure blocks only that portfolio
-   session; a pivot touch while blocked is persisted with its rejection reason.
-   Stops ratchet causally from the next
-   session: +2R protects break-even, +3R protects +1R and so on. The time stop
-   requires both insufficient MFE and a close back at or below the pivot.
+   conservative cash/capacity remains, without creating overlapping lots.
+   Trend-template and fundamental values do not hard-block portfolio orders.
+   Stops ratchet causally from the next session. A `power_play` completed high
+   of +1R protects break-even on the following session, +2R protects +1R and so
+   on; every other setup starts at +2R -> break-even, then +3R -> +1R. The time
+   stop requires both insufficient MFE and a close back at or below the pivot.
+   A price-continuity break invalidates pending setups and exits an open
+   position at the first usable session open in the new segment, including
+   normal exit slippage. It never backdates the exit to the old segment and
+   never carries chart, trailing-MA or risk state across the discontinuity.
 
 There is deliberately **no daily-close or breakout-volume confirmation** in
 this model. A stop-buy fills on the breakout session when the daily high reaches
@@ -82,9 +116,10 @@ and volume are not known at order time and do not influence that entry. If entry
 and stop are both inside one daily bar, the simulator assumes the adverse path:
 entry first, stop second.
 
-SEC fundamentals are point-in-time candidate context but are not prerequisites
-for chart-setup recognition. Current IBKR taxonomy/group measurements and raw
-13F sponsorship counts do not enter candidate ranking. They remain diagnostic
+SEC fundamentals are point-in-time candidate features but are neither
+prerequisites for chart-setup recognition nor entry hard-gates. Current IBKR
+taxonomy/group measurements and raw 13F sponsorship counts do not enter slate
+ranking. They remain diagnostic
 or entry-attribution fields only. The model has no hard IBKR group, IBKR
 industry-breadth or institutional-sponsorship gate; their pass fields remain
 honest diagnostics instead of being forced to `true` by an enable switch. The
@@ -102,7 +137,7 @@ database.
 | Table | Use |
 |---|---|
 | `stock_core_market_metrics_current` | canonical current symbol/exchange/CIK identity |
-| `stock_core_market_metrics_daily` | adjusted OHLCV plus raw close |
+| `stock_core_market_metrics_daily` | adjusted OHLCV, raw close and mandatory price-continuity segment/break markers |
 | `stock_core_security_master_current` | current equity universe |
 | `stock_core_sec_quarterly_fundamental_events` | filing-effective quarterly fundamentals |
 | `stock_core_13f_sponsorship_identity_events` | filing-effective institutional diagnostics; not a rank input |
@@ -114,7 +149,7 @@ The versioned parquet-cache contract is validated before reuse. Sponsorship is
 checked fresh at the source boundary, so a stale local cache cannot conceal a
 changed or empty optional source. Functional stage fingerprints bind the exact
 date range, adjusted/raw price matrices and every source input relevant to the
-stage, including the daily candidate context used by t-1 ranking. `setup` or
+stage, including continuity and the daily candidate context used by t-1 ranking. `setup` or
 `sim` therefore refuses stale output from a different model, configuration or
 source snapshot. A PostgreSQL advisory lock serializes writers because the
 stage tables are functional current state, not run-scoped copies. Runtime
@@ -129,11 +164,11 @@ All service-owned tables use the prefix `backtesting_minervini_`:
 |---|---|
 | `stage_state` | model/config/input/output fingerprint for functional stage hand-off |
 | `rs_daily` | daily RS values and cross-sectional ratings |
-| `screen_daily` | trend pass plus fundamental, sponsorship and group diagnostics |
+| `screen_daily` | every rankable symbol/session, including trend failures, plus fundamental, sponsorship and group diagnostics |
 | `market_daily` | causal market status, breadth and exposure cap |
-| `setups` | typed chart setups, pivot, stop and component scores |
+| `setups` | typed chart setups, continuity segment, pivot, stop and component scores |
 | `runs` | model/input identity, mode, parameters and aggregate metrics; two rows for the default `both` run |
-| `breakout_events` | first pivot touch and fill/rejection decision plus scalar t-1 rank snapshot |
+| `breakout_events` | first pivot touch and fill/rejection decision plus scalar t-1 quality/fill/slate snapshot |
 | `trades` | completed trade legs and entry-time attribution |
 | `equity_daily` | portfolio equity, open positions and exposure state |
 
@@ -142,14 +177,14 @@ compression. Database structure is defined only in `init/schema.sql`; runtime
 Python validates and uses the schema but does not create or migrate it.
 
 Each breakout event stores the ordinary scalar research fields
-`snapshot_date`, `dynamic_setup_score`, `readiness_score`, `context_score`,
-`setup_age_sessions`, `distance_to_pivot_pct` and `candidate_rank`. There is no
+`snapshot_date`, `quality_score`, `fill_probability`, `slate_priority`,
+`setup_age_sessions`, `distance_to_pivot_pct` and `quality_rank`. There is no
 JSON snapshot payload and no audit-only table.
 
 ## Run
 
-The v4 Phase-1 rebuild is intentionally incompatible with every earlier result
-schema. There is no migration and no backward-compatibility path. The first v4
+The v5 rebuild is intentionally incompatible with every earlier result schema.
+There is no migration and no backward-compatibility path. The first v5
 run must drop and recreate all `backtesting_minervini_*` tables through the init
 container:
 

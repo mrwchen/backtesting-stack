@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 # cached frame contract changes.  Keeping this token in every parquet filename
 # makes the exact cache contract visible and prevents an older, structurally
 # compatible-looking frame from silently changing a later backtest.
-CACHE_SCHEMA_VERSION = "minervini_source_v3"
+CACHE_SCHEMA_VERSION = "minervini_source_v4"
 
 CANONICAL_IDENTITY_SQL = """
 SELECT DISTINCT ON (symbol)
@@ -54,7 +54,9 @@ SELECT p.symbol,
        p.adjusted_low::float8                   AS low,
        p.adjusted_close::float8                 AS close,
        p.raw_close::float8                      AS raw_close,
-       COALESCE(p.adjusted_volume, p.raw_volume)::float8 AS volume
+       COALESCE(p.adjusted_volume, p.raw_volume)::float8 AS volume,
+       p.price_continuity_segment::integer      AS price_continuity_segment,
+       p.price_continuity_break                 AS price_continuity_break
 FROM stock_core_market_metrics_daily p
 JOIN canonical_identity i
   ON i.symbol = p.symbol
@@ -217,7 +219,18 @@ def _validate_prices(df: pd.DataFrame) -> pd.DataFrame:
     """Reject ambiguous identities and remove unusable daily bars explicitly."""
     if df.empty:
         raise RuntimeError("stock_core_market_metrics_daily returned no price rows")
-    required = {"symbol", "date", "open", "high", "low", "close", "raw_close", "volume"}
+    required = {
+        "symbol",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "raw_close",
+        "volume",
+        "price_continuity_segment",
+        "price_continuity_break",
+    }
     missing = sorted(required - set(df.columns))
     if missing:
         raise RuntimeError("daily prices lack required columns: " + ",".join(missing))
@@ -228,6 +241,25 @@ def _validate_prices(df: pd.DataFrame) -> pd.DataFrame:
             for row in df.loc[duplicate, ["symbol", "date"]].head(5).itertuples(index=False)
         )
         raise RuntimeError("daily prices contain duplicate symbol/date rows: " + examples)
+
+    segment = pd.to_numeric(df["price_continuity_segment"], errors="coerce")
+    valid_segment = (
+        segment.notna()
+        & np.isfinite(segment)
+        & (segment > 0)
+        & segment.eq(np.floor(segment))
+    )
+    valid_break = df["price_continuity_break"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+    )
+    if not valid_segment.all() or not valid_break.all():
+        raise RuntimeError(
+            "daily prices contain missing or invalid price continuity metadata"
+        )
+
+    df = df.copy()
+    df["price_continuity_segment"] = segment.astype("int64")
+    df["price_continuity_break"] = df["price_continuity_break"].astype(bool)
     prices = df[["open", "high", "low", "close", "raw_close"]]
     finite_positive = (
         pd.Series(np.isfinite(prices.to_numpy(dtype=float)).all(axis=1), index=df.index)
@@ -246,6 +278,25 @@ def _validate_prices(df: pd.DataFrame) -> pd.DataFrame:
     clean = df.loc[valid].sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
     if clean.empty:
         raise RuntimeError("no valid daily price rows remain after validation")
+
+    previous_segment = clean.groupby("symbol", sort=False)[
+        "price_continuity_segment"
+    ].shift()
+    has_previous = previous_segment.notna()
+    segment_change = clean["price_continuity_segment"].ne(previous_segment)
+    inconsistent_break = has_previous & clean["price_continuity_break"].ne(segment_change)
+    segment_reversal = has_previous & clean["price_continuity_segment"].lt(
+        previous_segment
+    )
+    if inconsistent_break.any() or segment_reversal.any():
+        bad = clean.loc[
+            inconsistent_break | segment_reversal,
+            ["symbol", "date", "price_continuity_segment", "price_continuity_break"],
+        ].iloc[0]
+        raise RuntimeError(
+            "daily prices contain inconsistent price continuity sequence: "
+            f"{bad['symbol']}:{pd.Timestamp(bad['date']).date()}"
+        )
     return clean
 
 
@@ -260,7 +311,7 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
     return _validate_prices(
         _cached(
             cfg,
-            f"prices_identity_v3_{start}_{end}",
+            f"prices_identity_v4_{start}_{end}",
             _load,
             required_columns=(
                 "symbol",
@@ -271,6 +322,8 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
                 "close",
                 "raw_close",
                 "volume",
+                "price_continuity_segment",
+                "price_continuity_break",
             ),
         )
     )

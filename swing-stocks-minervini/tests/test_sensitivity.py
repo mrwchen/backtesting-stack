@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from src import runner, sensitivity
+from src.candidate_ranking import FillCalibrationLabel, QualityCalibrationLabel
 from src.config import Config
 from src.simulator import SimResult
 from tests.util import make_cfg
@@ -23,6 +24,9 @@ class _TransactionConnection:
 
 def _matrices(dates: pd.DatetimeIndex) -> dict:
     frame = pd.DataFrame({"AAA": [100.0] * len(dates)}, index=dates)
+    continuity = pd.DataFrame(1, index=dates, columns=frame.columns, dtype="int64")
+    boundary = pd.DataFrame(False, index=dates, columns=frame.columns)
+    boundary.iloc[0] = True
     return {
         "dates": dates,
         "symbols": frame.columns,
@@ -31,6 +35,8 @@ def _matrices(dates: pd.DatetimeIndex) -> dict:
         "low": frame.copy(),
         "close": frame.copy(),
         "volume": frame.copy(),
+        "price_continuity_segment": continuity,
+        "price_continuity_break": boundary,
     }
 
 
@@ -294,6 +300,105 @@ def test_zero_setup_simulation_still_persists_a_run(monkeypatch) -> None:
     )
     assert conn.commits == 1
     assert conn.rollbacks == 0
+
+
+def test_oos_run_preloads_hidden_first_touch_labels_without_online_duplication(
+    monkeypatch,
+) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=5)
+    matrices = _matrices(dates)
+    setups = pd.DataFrame(
+        {
+            "setup_id": [1],
+            "symbol": ["AAA"],
+            "detect_date": [dates[0].date()],
+            "valid_until": [dates[-1].date()],
+        }
+    )
+    quality_labels = (
+        QualityCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            raw_quality_score=70.0,
+            realized_r_multiple=1.25,
+        ),
+    )
+    fill_labels = (
+        FillCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            readiness_signal=85.0,
+            filled=True,
+        ),
+    )
+    hidden = {}
+    simulated = {}
+
+    def fake_first_touch(
+        cfg, actual_matrices, actual_setups, candidate_context, *, state_start_idx
+    ):
+        hidden.update(
+            {
+                "cfg": cfg,
+                "matrices": actual_matrices,
+                "setups": actual_setups,
+                "candidate_context": candidate_context,
+                "state_start_idx": state_start_idx,
+            }
+        )
+        return quality_labels, fill_labels
+
+    def fake_simulate(*args, **kwargs):
+        simulated.update(kwargs)
+        return SimResult(
+            metrics={"initial_equity": 100000.0, "final_equity": 100000.0},
+            quality_labels=kwargs["quality_labels"],
+            fill_labels=kwargs["fill_labels"],
+        )
+
+    monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_first_touch)
+    monkeypatch.setattr(runner, "simulate", fake_simulate)
+    monkeypatch.setattr(runner.persistence, "create_run", lambda *args, **kwargs: 13)
+    monkeypatch.setattr(runner.persistence, "write_trades", lambda *args: None)
+    monkeypatch.setattr(
+        runner.persistence, "write_breakout_events", lambda *args: None
+    )
+    monkeypatch.setattr(runner.persistence, "write_equity", lambda *args: None)
+
+    cfg = make_cfg(
+        simulation_mode="independent",
+        market_filter_enable=False,
+        regime_entry_filter_enable=False,
+    )
+    context = _candidate_context(dates)
+    runner._run_simulation(
+        _TransactionConnection(),
+        cfg,
+        matrices,
+        pd.DataFrame(columns=["symbol", "ibkr_industry", "ibkr_category"]),
+        pd.DataFrame(index=dates),
+        setups,
+        pd.DataFrame(),
+        dates[2].date(),
+        dates[-1].date(),
+        candidate_context=context,
+        state_start=dates[0].date(),
+    )
+
+    assert hidden == {
+        "cfg": cfg,
+        "matrices": matrices,
+        "setups": setups,
+        "candidate_context": context,
+        "state_start_idx": 0,
+    }
+    assert simulated["sim_start_idx"] == 2
+    assert simulated["state_start_idx"] == 0
+    assert simulated["quality_labels"] is quality_labels
+    assert simulated["fill_labels"] is fill_labels
+    assert simulated["online_calibration"] is False
 
 
 def test_single_run_rolls_back_when_a_result_write_fails(monkeypatch) -> None:

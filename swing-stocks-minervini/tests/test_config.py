@@ -11,13 +11,28 @@ def test_combined_mode_is_an_explicit_valid_runtime_mode(monkeypatch) -> None:
     assert Config.from_env().simulation_mode == "both"
 
 
+def test_default_run_label_identifies_v5_quality_slate(monkeypatch) -> None:
+    monkeypatch.delenv("RUN_LABEL", raising=False)
+
+    assert Config.from_env().run_label == "minervini_sepa_daily_v5_quality_slate"
+
+
+def test_v5_has_no_fundamental_entry_gate_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BAD_FUNDAMENTALS_FILTER_ENABLE", "true")
+
+    cfg = Config.from_env()
+
+    assert not hasattr(cfg, "bad_fundamentals_filter_enable")
+    assert "bad_fundamentals_filter_enable" not in json.loads(cfg.to_json())
+
+
 def test_default_slate_risk_floor_is_serialized_in_run_params(monkeypatch) -> None:
     monkeypatch.delenv("MIN_SLATE_RISK_UTILIZATION", raising=False)
 
     cfg = Config.from_env()
 
-    assert cfg.min_slate_risk_utilization == 0.50
-    assert json.loads(cfg.to_json())["min_slate_risk_utilization"] == 0.50
+    assert cfg.min_slate_risk_utilization == 0.10
+    assert json.loads(cfg.to_json())["min_slate_risk_utilization"] == 0.10
 
 
 @pytest.mark.parametrize("value", ["0", "-0.1", "1.01"])

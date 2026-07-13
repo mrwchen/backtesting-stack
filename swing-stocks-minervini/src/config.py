@@ -127,7 +127,6 @@ class Config:
     failed_breakout_exit_enable: bool
     failed_breakout_days: int
     failed_breakout_min_r: float
-    bad_fundamentals_filter_enable: bool
     pivot_buffer_pct: float
     max_buy_zone_pct: float
     time_stop_sessions: int
@@ -149,7 +148,7 @@ class Config:
             start_date=_env("START_DATE", "2020-01-02"),
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
-            run_label=_env("RUN_LABEL", "minervini_v1"),
+            run_label=_env("RUN_LABEL", "minervini_sepa_daily_v5_quality_slate"),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
@@ -238,14 +237,13 @@ class Config:
             failed_breakout_exit_enable=_env_bool("FAILED_BREAKOUT_EXIT_ENABLE", True),
             failed_breakout_days=int(_env("FAILED_BREAKOUT_DAYS", "10")),
             failed_breakout_min_r=float(_env("FAILED_BREAKOUT_MIN_R", "-0.5")),
-            bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", False),
             pivot_buffer_pct=float(_env("PIVOT_BUFFER_PCT", "0.001")),
             max_buy_zone_pct=float(_env("MAX_BUY_ZONE_PCT", "0.02")),
             time_stop_sessions=int(_env("TIME_STOP_SESSIONS", "10")),
             time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
-            min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.50")),
+            min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.10")),
             exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
             exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "2")),
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),

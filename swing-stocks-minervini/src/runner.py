@@ -23,6 +23,7 @@ from . import (
     trend_template,
 )
 from .config import Config
+from .candidate_ranking import FillCalibrationLabel, QualityCalibrationLabel
 from .simulator import simulate
 
 log = logging.getLogger("runner")
@@ -38,7 +39,8 @@ CANDIDATE_CONTEXT_COLUMNS = (
 
 SCREEN_FINGERPRINT_COLUMNS = tuple(persistence.SCREEN_COLUMNS)
 SETUP_FINGERPRINT_COLUMNS = (
-    "symbol", "setup_type", "detect_date", "pivot", "last_low", "stop_level",
+    "symbol", "setup_type", "price_continuity_segment", "detect_date",
+    "pivot", "last_low", "stop_level",
     "base_start_date", "base_days", "n_contractions", "base_count",
     "contraction_depths", "dryup_ratio", "setup_score", "prior_advance_pct",
     "final_tightness_pct", "structure_quality_score",
@@ -106,7 +108,10 @@ def _source_input_fingerprint(matrices: dict, universe: pd.DataFrame) -> str:
         matrices["symbols"],
         {
             field: matrices[field]
-            for field in ("open", "high", "low", "close", "raw_close", "volume")
+            for field in (
+                "open", "high", "low", "close", "raw_close", "volume",
+                "price_continuity_segment", "price_continuity_break",
+            )
         },
     )
     universe_columns = tuple(
@@ -151,7 +156,10 @@ def _simulation_input_fingerprint(
     dates = matrices["dates"]
     price_matrices = {
         field: matrices[field]
-        for field in ("open", "high", "low", "close", "volume")
+        for field in (
+            "open", "high", "low", "close", "volume",
+            "price_continuity_segment", "price_continuity_break",
+        )
     }
     price_fingerprint = reproducibility.matrix_fingerprint(
         dates,
@@ -322,6 +330,8 @@ def run_screen(
         volume_m,
         cfg,
         raw_close=matrices["raw_close"],
+        continuity_segment=matrices["price_continuity_segment"],
+        continuity_break=matrices["price_continuity_break"],
     )
     log.info("computing trend template")
     template = trend_template.compute_template(
@@ -330,6 +340,8 @@ def run_screen(
         cfg,
         high=matrices["high"],
         low=matrices["low"],
+        continuity_segment=matrices["price_continuity_segment"],
+        continuity_break=matrices["price_continuity_break"],
     )
 
     log.info("computing point-in-time fundamentals")
@@ -346,7 +358,7 @@ def run_screen(
     # data. Fundamentals, sponsorship, group leadership and industry breadth
     # are retained as point-in-time ranking/context fields, but a missing or
     # lagging optional field must not hide a valid Stage-2 chart structure.
-    screen_pass = template["template_pass"]
+    screen_pass = rs["eligible"]
 
     window_m = pd.DataFrame(
         np.broadcast_to(window[:, None], (len(dates), len(symbols))),
@@ -491,6 +503,8 @@ def detect_setups(
                 sub["low"].to_numpy(dtype=float),
                 sub["close"].to_numpy(dtype=float),
                 sub["volume"].to_numpy(dtype=float),
+                sub["price_continuity_segment"].to_numpy(),
+                sub["price_continuity_break"].to_numpy(),
                 np.asarray(local_idx),
                 cfg,
                 trading_dates=trading_dates,
@@ -658,9 +672,60 @@ def _slice_matrices(matrices: dict, end: date) -> dict:
         "dates": matrices["dates"][mask],
         "symbols": matrices["symbols"],
     }
-    for field in ("open", "high", "low", "close", "volume"):
+    for field in (
+        "open", "high", "low", "close", "volume",
+        "price_continuity_segment", "price_continuity_break",
+    ):
         sliced[field] = matrices[field].loc[mask]
     return sliced
+
+
+def _first_touch_calibration_labels(
+    cfg: Config,
+    matrices: dict,
+    setups: pd.DataFrame,
+    candidate_context: dict[str, pd.DataFrame],
+    *,
+    state_start_idx: int,
+) -> tuple[
+    tuple[QualityCalibrationLabel, ...],
+    tuple[FillCalibrationLabel, ...],
+]:
+    """Build capacity-independent labels entirely in memory.
+
+    Future labels may be present in the returned tuple because the ranker
+    applies ``available_date <= information_date`` on every estimate. This
+    gives OOS and portfolio runs a causal walk-forward history without storing
+    a research/audit table or learning from portfolio selection.
+    """
+    calibration_cfg = replace(
+        cfg,
+        simulation_mode="independent",
+        market_filter_enable=False,
+        regime_entry_filter_enable=False,
+    )
+    result = simulate(
+        matrices["dates"],
+        matrices["symbols"],
+        matrices["open"],
+        matrices["high"],
+        matrices["low"],
+        matrices["close"],
+        setups,
+        calibration_cfg,
+        sim_start_idx=state_start_idx,
+        state_start_idx=state_start_idx,
+        volume_m=matrices["volume"],
+        candidate_context=candidate_context,
+        continuity_segment_m=matrices["price_continuity_segment"],
+        online_calibration=True,
+    )
+    log.info(
+        "first-touch calibration quality-labels %d fill-labels %d",
+        len(result.quality_labels),
+        len(result.fill_labels),
+    )
+    return result.quality_labels, result.fill_labels
 
 
 def _run_simulation(
@@ -677,12 +742,27 @@ def _run_simulation(
     candidate_context: dict[str, pd.DataFrame],
     state_start: date | None = None,
     commit: bool = True,
+    quality_labels: tuple[QualityCalibrationLabel, ...] = (),
+    fill_labels: tuple[FillCalibrationLabel, ...] = (),
+    label_sink: dict[str, tuple] | None = None,
 ) -> tuple[int, dict]:
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
     state_start_idx = int(
         dates.searchsorted(pd.Timestamp(state_start or start))
     )
+    if (
+        (state_start_idx < sim_start_idx or cfg.simulation_mode == "portfolio")
+        and not quality_labels
+        and not fill_labels
+    ):
+        quality_labels, fill_labels = _first_touch_calibration_labels(
+            cfg,
+            matrices,
+            setups,
+            candidate_context,
+            state_start_idx=state_start_idx,
+        )
     market_for_dates = market.reindex(dates)
     market_exposure_cap = (
         market_for_dates["entry_exposure_cap"].to_numpy()
@@ -712,7 +792,14 @@ def _run_simulation(
         regime_entry_allowed=regime_entry_allowed,
         volume_m=matrices["volume"],
         candidate_context=candidate_context,
+        continuity_segment_m=matrices["price_continuity_segment"],
+        quality_labels=quality_labels,
+        fill_labels=fill_labels,
+        online_calibration=not (quality_labels or fill_labels),
     )
+    if label_sink is not None:
+        label_sink["quality_labels"] = result.quality_labels
+        label_sink["fill_labels"] = result.fill_labels
     trades = result.trades
     breakout_events = result.breakout_events
     if not breakout_events.empty:
@@ -786,7 +873,6 @@ def run_sim(
             cfg,
             market_filter_enable=False,
             regime_entry_filter_enable=False,
-            bad_fundamentals_filter_enable=False,
         )
     regime = data_loader.load_regime_scores(conn, simulation_cfg)
     candidate_context = _candidate_context_matrices(
@@ -799,7 +885,6 @@ def run_sim(
             simulation_mode="independent",
             market_filter_enable=False,
             regime_entry_filter_enable=False,
-            bad_fundamentals_filter_enable=False,
             run_label=f"{cfg.run_label}_first_touch",
         )
         portfolio_cfg = replace(
@@ -807,6 +892,7 @@ def run_sim(
             simulation_mode="portfolio",
             run_label=f"{cfg.run_label}_portfolio",
         )
+        calibration_labels: dict[str, tuple] = {}
         try:
             first_touch = _run_simulation(
                 conn,
@@ -820,6 +906,7 @@ def run_sim(
                 end,
                 candidate_context=candidate_context,
                 commit=False,
+                label_sink=calibration_labels,
             )
             portfolio = _run_simulation(
                 conn,
@@ -833,6 +920,8 @@ def run_sim(
                 end,
                 candidate_context=candidate_context,
                 commit=False,
+                quality_labels=calibration_labels["quality_labels"],
+                fill_labels=calibration_labels["fill_labels"],
             )
             conn.commit()
             return first_touch, portfolio
@@ -897,9 +986,8 @@ def run_sensitivity(
         for phase, phase_start, phase_end in periods:
             phase_cfg = variant.apply(cfg, phase, phase_start, phase_end)
             detect_date = pd.to_datetime(all_setups["detect_date"]).dt.date
-            valid_until = pd.to_datetime(all_setups["valid_until"]).dt.date
             phase_setups = all_setups.loc[
-                (detect_date <= phase_end) & (valid_until >= phase_start)
+                detect_date <= phase_end
             ].reset_index(drop=True)
             phase_setups = _prepare_simulation_setups(phase_setups)
             phase_matrices = _slice_matrices(matrices, phase_end)
@@ -979,7 +1067,10 @@ def main() -> None:
     matrices = {"close": data_loader.pivot_field(prices, "close")}
     matrices["dates"] = matrices["close"].index
     matrices["symbols"] = matrices["close"].columns
-    for field in ("open", "high", "low", "volume", "raw_close"):
+    for field in (
+        "open", "high", "low", "volume", "raw_close",
+        "price_continuity_segment", "price_continuity_break",
+    ):
         matrices[field] = data_loader.pivot_field(prices, field)
     source_input_fingerprint = _source_input_fingerprint(matrices, universe)
 
