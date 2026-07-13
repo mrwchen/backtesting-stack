@@ -137,6 +137,7 @@ class Config:
     # portfolio simulation constraints
     portfolio_max_open_positions: int
     portfolio_max_gross_exposure_pct: float
+    min_slate_risk_utilization: float
     exposure_levels: tuple[float, ...]
     exposure_winners_to_step_up: int
     exposure_losses_to_reset: int
@@ -246,6 +247,7 @@ class Config:
             time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
+            min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.50")),
             exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
             exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "2")),
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
@@ -319,6 +321,12 @@ class Config:
             raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
         if cfg.portfolio_max_gross_exposure_pct <= 0:
             raise ValueError("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT must be > 0")
+        if not 0 < cfg.min_slate_risk_utilization <= 1:
+            raise ValueError("MIN_SLATE_RISK_UTILIZATION must be in (0, 1]")
+        if cfg.exposure_winners_to_step_up < 1:
+            raise ValueError("EXPOSURE_WINNERS_TO_STEP_UP must be >= 1")
+        if cfg.exposure_losses_to_reset < 1:
+            raise ValueError("EXPOSURE_LOSSES_TO_RESET must be >= 1")
         if not cfg.exposure_levels or any(level <= 0 or level > 1 for level in cfg.exposure_levels):
             raise ValueError("EXPOSURE_LEVELS must contain values in (0, 1]")
         if tuple(sorted(cfg.exposure_levels)) != cfg.exposure_levels:

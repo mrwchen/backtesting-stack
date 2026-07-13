@@ -29,7 +29,7 @@ import pandas as pd
 
 SetupType = Literal["vcp", "flat_base", "power_play", "tight_shelf"]
 Swing = tuple[int, float, Literal["H", "L"]]
-MODEL_VERSION = "minervini_daily_v2"
+MODEL_VERSION = "minervini_daily_v3"
 
 
 @dataclass(frozen=True)

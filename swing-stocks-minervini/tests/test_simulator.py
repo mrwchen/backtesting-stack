@@ -141,7 +141,7 @@ def test_progressive_exposure_steps_up_after_two_confirmed_winners():
             **_clean_cfg().__dict__, "simulation_mode": "portfolio",
             "partial_fraction": 0.0, "pivot_buffer_pct": 0.0,
             "max_buy_zone_pct": 0.02,
-            "exposure_levels": (0.25, 0.5, 0.75, 1.0),
+            "exposure_levels": (0.5, 0.75, 1.0),
             "portfolio_max_open_positions": 8,
         }
     )
@@ -155,7 +155,7 @@ def test_progressive_exposure_steps_up_after_two_confirmed_winners():
     assert result.equity.loc[
         result.equity["period_end_date"] == dates[11].date(),
         "feedback_exposure_level",
-    ].iloc[0] == 0.5
+    ].iloc[0] == 0.75
 
 
 def test_previous_close_open_winner_can_raise_next_session_exposure():
@@ -181,7 +181,7 @@ def test_previous_close_open_winner_can_raise_next_session_exposure():
             **_clean_cfg().__dict__,
             "simulation_mode": "portfolio",
             "partial_fraction": 0.0,
-            "exposure_levels": (0.1, 0.2),
+            "exposure_levels": (0.2, 0.4),
             "exposure_winners_to_step_up": 1,
             "portfolio_max_open_positions": 2,
         }
@@ -196,7 +196,91 @@ def test_previous_close_open_winner_can_raise_next_session_exposure():
     assert result.equity.loc[
         result.equity["period_end_date"] == dates[6].date(),
         "feedback_exposure_level",
-    ].iloc[0] == 0.2
+    ].iloc[0] == 0.4
+
+
+def test_fractional_winner_does_not_count_as_a_full_feedback_unit():
+    dates = pd.bdate_range("2024-01-01", periods=9)
+    aaa = [(98, 99, 97, 98)] * 5
+    aaa += [(99, 106, 98, 105.5)]
+    aaa += [(106, 107, 105, 106)] * 3
+    bbb = [(98, 99, 97, 98)] * 6
+    bbb += [(99, 101, 98, 100.5)]
+    bbb += [(101, 102, 100, 101)] * 2
+    dates, open_m, high_m, low_m, close_m = _multi_matrices(
+        {"AAA": aaa, "BBB": bbb}
+    )
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 8).assign(symbol="AAA", setup_id=1),
+            _setup_row(dates, 5, 100.0, 95.0, 8).assign(symbol="BBB", setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "exposure_levels": (0.055, 0.2),
+            "exposure_winners_to_step_up": 1,
+            "portfolio_max_open_positions": 2,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    assert result.trades.loc[result.trades["symbol"] == "AAA", "shares"].iloc[0] == 52
+    assert "BBB" not in result.trades["symbol"].values
+    assert result.breakout_events.set_index("symbol").loc["BBB", "decision"] == "portfolio_capacity"
+    assert result.equity.loc[
+        result.equity["period_end_date"] == dates[6].date(),
+        "feedback_exposure_level",
+    ].iloc[0] == 0.055
+
+
+def test_fractional_loss_does_not_reduce_exposure_by_a_full_step():
+    dates = pd.bdate_range("2024-01-01", periods=10)
+    aaa = [(98, 99, 97, 98)] * 5
+    aaa += [(99, 101, 98, 100.2), (101, 111, 100, 108)]
+    aaa += [(106, 107, 105, 106)] * 3
+    bbb = [(98, 99, 97, 98)] * 7
+    bbb += [(99, 101, 94, 95)]
+    bbb += [(95, 96, 94, 95)] * 2
+    dates, open_m, high_m, low_m, close_m = _multi_matrices(
+        {"AAA": aaa, "BBB": bbb}
+    )
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 9).assign(symbol="AAA", setup_id=1),
+            _setup_row(dates, 6, 100.0, 95.0, 9).assign(symbol="BBB", setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "exposure_levels": (0.15, 0.18),
+            "exposure_winners_to_step_up": 1,
+            "portfolio_max_open_positions": 2,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    bbb_trade = result.trades.loc[result.trades["symbol"] == "BBB"].iloc[0]
+    assert bbb_trade["shares"] == 69
+    assert bbb_trade["exit_reason"] == "stop_entry_day"
+    assert result.equity.loc[
+        result.equity["period_end_date"] == dates[8].date(),
+        "feedback_exposure_level",
+    ].iloc[0] == 0.18
 
 
 def test_breakout_partial_and_breakeven_stop():
@@ -670,11 +754,28 @@ def test_portfolio_mode_limits_gross_exposure():
 
     result = simulate(dates, frames[0].columns, *frames, setups, cfg)
 
-    # Three full 10.5k reservations and one reduced 8.4k reservation fit in
-    # the 40k gross budget. No fifth order may be nominated ex post.
-    assert result.metrics["num_positions"] == 4
-    assert sorted(result.trades["shares"].tolist()) == [80, 100, 100, 100]
+    # The whole pre-session slate shares the 40k gross budget proportionally.
+    # Seven orders remain above the 50% target floor; an eighth would not.
+    assert result.metrics["num_positions"] == 7
+    assert sorted(result.trades["shares"].tolist()) == [54, 54, 54, 54, 54, 55, 55]
+    decisions = result.breakout_events["decision"].value_counts().to_dict()
+    assert decisions == {"filled": 7, "portfolio_capacity": 5}
     assert result.equity["exposure_pct"].max() <= 0.4
+
+    reverse = list(reversed(frames[0].columns))
+    reversed_result = simulate(
+        dates,
+        pd.Index(reverse),
+        frames[0][reverse],
+        frames[1][reverse],
+        frames[2][reverse],
+        frames[3][reverse],
+        setups.iloc[::-1].reset_index(drop=True),
+        cfg,
+    )
+    expected = result.trades[["symbol", "shares"]].sort_values("symbol").reset_index(drop=True)
+    actual = reversed_result.trades[["symbol", "shares"]].sort_values("symbol").reset_index(drop=True)
+    pd.testing.assert_frame_equal(actual, expected)
 
 
 def test_portfolio_mode_prioritizes_quality_metrics():
@@ -712,6 +813,194 @@ def test_portfolio_mode_prioritizes_quality_metrics():
 
     assert result.metrics["num_positions"] == 1
     assert result.trades.iloc[0]["symbol"] == "ZZZ"
+
+
+def test_slate_minimum_rounds_an_odd_standalone_target_up():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    aaa = np.array([(350, 390, 340, 350)] * 5 + [(390, 401, 350, 400)] + [(400, 401, 399, 400)] * 2)
+    bbb = np.array([(95, 99, 94, 95)] * 5 + [(99, 101, 95, 100)] + [(100, 101, 99, 100)] * 2)
+    frames = [
+        pd.DataFrame({"AAA": aaa[:, field], "BBB": bbb[:, field]}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 400.0, 100.0, 7).assign(symbol="AAA", setup_id=1),
+            _setup_row(dates, 4, 100.0, 90.0, 7).assign(symbol="BBB", setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "max_buy_zone_pct": 0.0,
+            "portfolio_max_open_positions": 2,
+            "portfolio_max_gross_exposure_pct": 0.067,
+        }
+    )
+
+    result = simulate(dates, pd.Index(["AAA", "BBB"]), *frames, setups, cfg)
+
+    shares = result.trades.set_index("symbol")["shares"].to_dict()
+    # AAA's standalone risk target is exactly three shares. A 50% floor is
+    # therefore two shares, never floor(1.5) = one share.
+    assert shares == {"AAA": 2, "BBB": 59}
+
+
+def test_slate_cash_budget_includes_entry_commission():
+    n_symbols = 6
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99.5, 101, 99.5, 100)]
+        + [(100, 101, 99.5, 100)] * 2
+    )
+    frames = [
+        pd.DataFrame({f"S{i}": bars[:, field] for i in range(n_symbols)}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 99.0, 7).assign(
+                symbol=f"S{i}", setup_id=i + 1
+            )
+            for i in range(n_symbols)
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "max_buy_zone_pct": 0.0,
+            "commission_pct": 0.01,
+            "portfolio_max_open_positions": n_symbols,
+            "portfolio_max_gross_exposure_pct": 2.0,
+        }
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    total_shares = int(result.trades["shares"].sum())
+    assert total_shares == 990
+    assert total_shares * 100.0 * (1 + cfg.commission_pct) <= cfg.initial_equity
+
+
+def test_gross_cap_reserves_the_entry_commission_equity_reduction():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99.5, 101, 99.5, 100)]
+    bars += [(100, 101, 99.5, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 99.0, 7)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "max_buy_zone_pct": 0.0,
+            "commission_pct": 0.01,
+            "portfolio_max_open_positions": 1,
+            "portfolio_max_gross_exposure_pct": 1.0,
+            "exposure_levels": (0.20,),
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    assert result.trades.iloc[0]["shares"] == 199
+    entry_row = result.equity.loc[
+        result.equity["period_end_date"] == dates[5].date()
+    ].iloc[0]
+    assert entry_row["exposure_pct"] <= 0.20
+
+
+def test_capacity_feasible_slate_can_skip_a_large_candidate():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = {
+        "TOP": np.array([(95, 99, 94, 95)] * 5 + [(99, 101, 95, 100)] + [(100, 101, 99, 100)] * 2),
+        "LARGE": np.array([(98, 99, 97, 98)] * 5 + [(99.5, 101, 99.5, 100)] + [(100, 101, 99.5, 100)] * 2),
+        "SMALL": np.array([(45, 49, 44, 45)] * 5 + [(49, 51, 45, 50)] + [(50, 51, 49, 50)] * 2),
+    }
+    frames = [
+        pd.DataFrame({symbol: values[:, field] for symbol, values in bars.items()}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 90.0, 7).assign(symbol="TOP", setup_id=1, setup_score=90),
+            _setup_row(dates, 4, 100.0, 99.0, 7).assign(symbol="LARGE", setup_id=2, setup_score=80),
+            _setup_row(dates, 4, 50.0, 40.0, 7).assign(symbol="SMALL", setup_id=3, setup_score=70),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "max_buy_zone_pct": 0.0,
+            "portfolio_max_open_positions": 3,
+            "portfolio_max_gross_exposure_pct": 0.15,
+        }
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    assert set(result.trades["symbol"]) == {"TOP", "SMALL"}
+    decisions = result.breakout_events.set_index("symbol")["decision"].to_dict()
+    assert decisions["LARGE"] == "portfolio_capacity"
+    assert decisions["SMALL"] == "filled"
+
+
+def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(95, 99, 94, 95)] * 5
+        + [(99.5, 101, 99.5, 100)]
+        + [(100, 101, 99.5, 100)] * 2
+    )
+    frames = [
+        pd.DataFrame({"TOP": bars[:, field], "SAME": bars[:, field]}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 90.0, 7).assign(
+                symbol="TOP", setup_id=1, setup_score=90
+            ),
+            _setup_row(dates, 4, 100.0, 99.0, 7).assign(
+                symbol="SAME", setup_id=2, setup_score=80
+            ),
+            _setup_row(dates, 4, 100.0, 90.0, 7).assign(
+                symbol="SAME", setup_id=3, setup_score=70
+            ),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "max_buy_zone_pct": 0.0,
+            "portfolio_max_open_positions": 3,
+            "portfolio_max_gross_exposure_pct": 0.15,
+        }
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    same_trade = result.trades.loc[result.trades["symbol"] == "SAME"].iloc[0]
+    assert same_trade["setup_id"] == 3
+    decisions = result.breakout_events.set_index("setup_id")["decision"].to_dict()
+    assert decisions[2] == "portfolio_capacity"
+    assert decisions[3] == "filled"
 
 
 def test_portfolio_ranking_uses_context_inside_technical_score_bucket():
@@ -1401,10 +1690,10 @@ def test_exposure_cap_does_not_reduce_configured_portfolio_slots():
         market_exposure_cap=np.full(len(dates), 0.25),
     )
 
-    # All three configured slots may be nominated. The third order is reduced
-    # only by the single aggregate 25% gross reservation budget.
+    # All three configured slots share the single aggregate 25% reservation
+    # budget proportionally; no candidate becomes a residual dust order.
     assert result.trades["symbol"].nunique() == 3
-    assert sorted(result.trades["shares"].tolist()) == [38, 100, 100]
+    assert sorted(result.trades["shares"].tolist()) == [79, 79, 80]
     assert result.equity["exposure_pct"].max() <= 0.25
 
 

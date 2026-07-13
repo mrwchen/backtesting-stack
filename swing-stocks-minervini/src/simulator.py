@@ -9,11 +9,13 @@ same per-symbol rule: while a trade in a symbol is open, no second trade is
 opened in the same symbol.
 
 Entry:  before each session a deterministic, fully funded stop-buy slate is
-        built from information known at the previous close. Quantity and
-        portfolio capacity are reserved at the worst permitted buy-zone fill. Only
-        orders on that slate may fill; unused reservations are not reassigned
-        after observing the day's highs. The market exposure cap produced at
-        close t becomes effective for entries in session t+1.
+        built from information known at the previous close. Portfolio orders
+        are scaled together from their standalone target sizes and must retain
+        a configured minimum share of that target. Quantity and capacity are
+        reserved at the worst permitted buy-zone fill. Only orders on that
+        slate may fill; unused reservations are not reassigned after observing
+        the day's highs. The market exposure cap produced at close t becomes
+        effective for entries in session t+1.
 Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
         us), failed-breakout and time-stop exits, delayed profit protection,
@@ -56,6 +58,7 @@ class Position:
     initial_shares: int
     pivot: float
     max_high: float
+    feedback_risk_units: float
     next_stop: float | None = None
     realized_position_pnl: float = 0.0
     partial_done: bool = False
@@ -67,6 +70,19 @@ class PlannedOrder:
     setup_key: int
     setup: object
     shares: int
+    standalone_shares: int
+    worst_fill: float
+
+    @property
+    def feedback_risk_units(self) -> float:
+        return self.shares / self.standalone_shares
+
+
+@dataclass(frozen=True)
+class SlateCandidate:
+    setup_key: int
+    setup: object
+    standalone_shares: int
     worst_fill: float
 
 
@@ -141,11 +157,11 @@ def simulate(
     next_setup = 0
     next_position_id = 1
     exposure_index = 0 if portfolio_mode else len(cfg.exposure_levels) - 1
-    consecutive_winners = 0
-    consecutive_losses = 0
+    consecutive_winners = 0.0
+    consecutive_losses = 0.0
     peak_equity = cfg.initial_equity
     drawdown_reset_armed = True
-    closed_outcomes: list[tuple[int, float]] = []
+    closed_outcomes: list[tuple[int, float, float]] = []
     feedback_winner_positions: set[int] = set()
 
     def _num_attr(setup, name: str, default: float) -> float:
@@ -202,6 +218,144 @@ def simulate(
             str(getattr(setup, "symbol", "")),
             int(_num_attr(setup, "setup_id", 0.0)),
         )
+
+    def allocate_portfolio_slate(
+        candidates: list[SlateCandidate],
+        gross_budget: float,
+        cash_budget: float,
+    ) -> list[PlannedOrder] | None:
+        """Scale and integer-round a causal pre-session slate as one unit.
+
+        Every candidate first has a standalone target that uses only prior-close
+        equity and its own risk/position limits. The integer minimum allocation
+        is funded first, then one common scale distributes the remaining gross
+        and cash budgets across all residual targets. Integer remainders are
+        assigned deterministically without exceeding either budget. ``None``
+        means the tentative lower-ranked candidate cannot retain the configured
+        minimum target utilization.
+        """
+        if not candidates:
+            return []
+
+        gross_tolerance = 1e-9 * max(1.0, gross_budget)
+        cash_tolerance = 1e-9 * max(1.0, cash_budget)
+        minimum_shares = [
+            int(
+                np.ceil(
+                    cfg.min_slate_risk_utilization
+                    * candidate.standalone_shares
+                    - 1e-12
+                )
+            )
+            for candidate in candidates
+        ]
+        minimum_gross = sum(
+            shares * candidate.worst_fill
+            for shares, candidate in zip(minimum_shares, candidates)
+        )
+        minimum_cash = sum(
+            shares * candidate.worst_fill * (1 + cfg.commission_pct)
+            for shares, candidate in zip(minimum_shares, candidates)
+        )
+        if (
+            minimum_gross > gross_budget + gross_tolerance
+            or minimum_cash > cash_budget + cash_tolerance
+        ):
+            return None
+
+        residual_targets = [
+            candidate.standalone_shares - minimum
+            for candidate, minimum in zip(candidates, minimum_shares)
+        ]
+        residual_target_gross = sum(
+            shares * candidate.worst_fill
+            for shares, candidate in zip(residual_targets, candidates)
+        )
+        residual_target_cash = sum(
+            shares * candidate.worst_fill * (1 + cfg.commission_pct)
+            for shares, candidate in zip(residual_targets, candidates)
+        )
+        scale_limits = [1.0]
+        if residual_target_gross > 0:
+            scale_limits.append(
+                max(0.0, gross_budget - minimum_gross)
+                / residual_target_gross
+            )
+        if residual_target_cash > 0:
+            scale_limits.append(
+                max(0.0, cash_budget - minimum_cash)
+                / residual_target_cash
+            )
+        residual_scale = min(scale_limits)
+        exact_shares = [
+            minimum + residual * residual_scale
+            for minimum, residual in zip(minimum_shares, residual_targets)
+        ]
+        allocated = [int(np.floor(value + 1e-12)) for value in exact_shares]
+        used_gross = sum(
+            shares * candidate.worst_fill
+            for shares, candidate in zip(allocated, candidates)
+        )
+        used_cash = sum(
+            shares * candidate.worst_fill * (1 + cfg.commission_pct)
+            for shares, candidate in zip(allocated, candidates)
+        )
+
+        def add_one_share(index: int) -> bool:
+            nonlocal used_gross, used_cash
+            candidate = candidates[index]
+            gross_cost = candidate.worst_fill
+            cash_cost = gross_cost * (1 + cfg.commission_pct)
+            if (
+                used_gross + gross_cost > gross_budget + gross_tolerance
+                or used_cash + cash_cost > cash_budget + cash_tolerance
+            ):
+                return False
+            allocated[index] += 1
+            used_gross += gross_cost
+            used_cash += cash_cost
+            return True
+
+        rounding_caps = [
+            min(
+                candidate.standalone_shares,
+                int(np.ceil(exact - 1e-12)),
+            )
+            for candidate, exact in zip(candidates, exact_shares)
+        ]
+
+        # Largest-remainder rounding keeps the final slate close to the common
+        # residual scale. Stable candidate order breaks exact ties.
+        remainder_order = sorted(
+            range(len(candidates)),
+            key=lambda index: (
+                -(exact_shares[index] - np.floor(exact_shares[index])),
+                index,
+            ),
+        )
+        for index in remainder_order:
+            if allocated[index] >= rounding_caps[index]:
+                continue
+            add_one_share(index)
+
+        if any(
+            shares < 1
+            or shares / candidate.standalone_shares + 1e-12
+            < cfg.min_slate_risk_utilization
+            for shares, candidate in zip(allocated, candidates)
+        ):
+            return None
+
+        return [
+            PlannedOrder(
+                setup_key=candidate.setup_key,
+                setup=candidate.setup,
+                shares=shares,
+                standalone_shares=candidate.standalone_shares,
+                worst_fill=candidate.worst_fill,
+            )
+            for shares, candidate in zip(allocated, candidates)
+        ]
 
     def set_entry_decision(
         setup,
@@ -318,8 +472,14 @@ def simulate(
                 "holding_days": int(t - pos.entry_idx),
             }
         )
-        if leg == "final":
-            closed_outcomes.append((pos.position_id, pos.realized_position_pnl))
+        if portfolio_mode and leg == "final":
+            closed_outcomes.append(
+                (
+                    pos.position_id,
+                    pos.realized_position_pnl,
+                    pos.feedback_risk_units,
+                )
+            )
 
     def ratchet_stop_from_known_high(pos: Position) -> float | None:
         """Return tomorrow's causal stop from today's completed high.
@@ -346,13 +506,45 @@ def simulate(
         pending_floor = pos.stop if pos.next_stop is None else pos.next_stop
         pos.next_stop = max(pending_floor, candidate)
 
-    def register_feedback_winner() -> None:
+    def register_feedback_winner(risk_units: float) -> None:
         nonlocal exposure_index, consecutive_winners, consecutive_losses
-        consecutive_winners += 1
-        consecutive_losses = 0
-        if consecutive_winners >= cfg.exposure_winners_to_step_up:
+        if risk_units <= 0:
+            return
+        consecutive_winners += risk_units
+        consecutive_losses = 0.0
+        threshold = float(cfg.exposure_winners_to_step_up)
+        while consecutive_winners + 1e-12 >= threshold:
             exposure_index = min(exposure_index + 1, len(cfg.exposure_levels) - 1)
-            consecutive_winners = 0
+            consecutive_winners = max(0.0, consecutive_winners - threshold)
+
+    def register_feedback_loss(risk_units: float) -> None:
+        nonlocal exposure_index, consecutive_winners, consecutive_losses
+        if risk_units <= 0:
+            return
+        previous_losses = consecutive_losses
+        consecutive_losses += risk_units
+        consecutive_winners = 0.0
+        completed_before = int(np.floor(previous_losses + 1e-12))
+        completed_after = int(np.floor(consecutive_losses + 1e-12))
+        exposure_index = max(
+            0,
+            exposure_index - (completed_after - completed_before),
+        )
+        reset_threshold = float(cfg.exposure_losses_to_reset)
+        completed_resets = int(
+            np.floor((consecutive_losses + 1e-12) / reset_threshold)
+        )
+        if completed_resets > 0:
+            exposure_index = 0
+            consecutive_losses = max(
+                0.0,
+                consecutive_losses - completed_resets * reset_threshold,
+            )
+            if (
+                consecutive_losses < 1e-12
+                or reset_threshold - consecutive_losses < 1e-12
+            ):
+                consecutive_losses = 0.0
 
     def take_partial(pos: Position, t: int, day_open: float, target: float) -> bool:
         """Execute a real partial fill; a rounded zero-share leg changes nothing."""
@@ -419,8 +611,8 @@ def simulate(
         market_cap = exposure_cap_value(t - 1)
         if portfolio_mode and market_exposure_cap is not None and market_cap <= 0:
             exposure_index = 0
-            consecutive_winners = 0
-            consecutive_losses = 0
+            consecutive_winners = 0.0
+            consecutive_losses = 0.0
         # An open position may confirm portfolio feedback at yesterday's
         # close. Count each position only once and in stable position-id order;
         # no current-session high, close or exit can influence today's cap.
@@ -436,7 +628,7 @@ def simulate(
                     and previous_close >= pos.entry_price + r_unit
                 ):
                     feedback_winner_positions.add(pos.position_id)
-                    register_feedback_winner()
+                    register_feedback_winner(pos.feedback_risk_units)
         feedback_exposure_level = (
             cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0
         )
@@ -453,10 +645,18 @@ def simulate(
                 sizing_equity = sizing_base
                 start_gross = 0.0
             remaining_cash = max(0.0, cash)
-            remaining_gross = max(
+            aggregate_gross_cap = (
+                cfg.portfolio_max_gross_exposure_pct * entry_exposure_limit
+            )
+            gross_headroom = max(
                 0.0,
-                sizing_equity * cfg.portfolio_max_gross_exposure_pct
-                * entry_exposure_limit - start_gross,
+                sizing_equity * aggregate_gross_cap - start_gross,
+            )
+            # Entry commission immediately lowers portfolio equity. Reserve
+            # gross N against the post-commission denominator as well:
+            # start_gross + N <= cap * (equity - commission * N).
+            remaining_gross = gross_headroom / (
+                1 + aggregate_gross_cap * cfg.commission_pct
             )
             # Feedback/market exposure is one aggregate gross-notional cap.
             # Per-trade risk, max-position size and slot count remain the
@@ -477,6 +677,7 @@ def simulate(
             regime_entry_allowed, t
         )
         slate: list[PlannedOrder] = []
+        slate_candidates: list[SlateCandidate] = []
         selected_symbols: set[str] = set()
         unusable_setup_keys: set[int] = set()
         prioritized_setups = sorted(active_setups.values(), key=setup_priority)
@@ -494,22 +695,13 @@ def simulate(
                     else gate_decision,
                 )
         else:
-            for position, setup in enumerate(prioritized_setups):
+            for setup in prioritized_setups:
                 if (
                     setup.symbol in same_symbol_entry_blocks
                     or setup.symbol in selected_symbols
                 ):
                     set_entry_decision(setup, "existing_position")
                     continue
-                if portfolio_mode and remaining_slots <= 0:
-                    for skipped in prioritized_setups[position:]:
-                        set_entry_decision(
-                            skipped,
-                            "existing_position"
-                            if skipped.symbol in same_symbol_entry_blocks
-                            else "portfolio_capacity",
-                        )
-                    break
 
                 pivot = _num_attr(setup, "pivot", np.nan)
                 stop = _num_attr(setup, "stop_level", np.nan)
@@ -528,38 +720,48 @@ def simulate(
                     set_entry_decision(setup, "invalid_order_parameters")
                     continue
 
-                limits = [
+                standalone_limits = [
                     sizing_equity * cfg.risk_pct / risk_per_share,
                     sizing_equity * cfg.max_position_pct / worst_fill,
                 ]
-                if portfolio_mode:
-                    limits.extend(
-                        [
-                            remaining_gross / worst_fill,
-                            remaining_cash
-                            / (worst_fill * (1 + cfg.commission_pct)),
-                        ]
-                    )
-                shares = int(min(limits))
-                if shares < 1:
+                standalone_shares = int(min(standalone_limits))
+                if standalone_shares < 1:
                     set_entry_decision(setup, "size_below_one_share")
                     continue
 
-                slate.append(
-                    PlannedOrder(
-                        setup_key=setup_key,
-                        setup=setup,
-                        shares=shares,
-                        worst_fill=worst_fill,
-                    )
+                candidate = SlateCandidate(
+                    setup_key=setup_key,
+                    setup=setup,
+                    standalone_shares=standalone_shares,
+                    worst_fill=worst_fill,
                 )
-                selected_symbols.add(setup.symbol)
                 if portfolio_mode:
-                    remaining_slots -= 1
-                    remaining_gross -= shares * worst_fill
-                    remaining_cash -= (
-                        shares * worst_fill * (1 + cfg.commission_pct)
+                    if len(slate_candidates) >= remaining_slots:
+                        set_entry_decision(setup, "portfolio_capacity")
+                        continue
+                    tentative_candidates = [*slate_candidates, candidate]
+                    tentative_slate = allocate_portfolio_slate(
+                        tentative_candidates,
+                        remaining_gross,
+                        remaining_cash,
                     )
+                    if tentative_slate is None:
+                        set_entry_decision(setup, "portfolio_capacity")
+                        continue
+                    slate_candidates = tentative_candidates
+                    slate = tentative_slate
+                    selected_symbols.add(setup.symbol)
+                else:
+                    slate.append(
+                        PlannedOrder(
+                            setup_key=setup_key,
+                            setup=setup,
+                            shares=standalone_shares,
+                            standalone_shares=standalone_shares,
+                            worst_fill=worst_fill,
+                        )
+                    )
+                    selected_symbols.add(setup.symbol)
 
         # ---- exits ---------------------------------------------------------
         for sym in list(positions):
@@ -732,6 +934,7 @@ def simulate(
                 initial_shares=shares,
                 pivot=pivot,
                 max_high=fill,
+                feedback_risk_units=order.feedback_risk_units,
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
@@ -826,18 +1029,22 @@ def simulate(
         )
 
         if portfolio_mode:
-            for position_id, outcome in closed_outcomes:
+            winner_risk_units = 0.0
+            loser_risk_units = 0.0
+            for position_id, outcome, risk_units in sorted(closed_outcomes):
                 if outcome > 0:
                     if position_id not in feedback_winner_positions:
                         feedback_winner_positions.add(position_id)
-                        register_feedback_winner()
+                        winner_risk_units += risk_units
                 else:
-                    consecutive_losses += 1
-                    consecutive_winners = 0
-                    exposure_index = max(0, exposure_index - 1)
-                    if consecutive_losses >= cfg.exposure_losses_to_reset:
-                        exposure_index = 0
-                        consecutive_losses = 0
+                    loser_risk_units += risk_units
+            # Daily OHLC cannot establish the cross-symbol order of exits.
+            # Process all known units but resolve a mixed session adversely:
+            # winners first, losses last, so losses determine the next streak.
+            if winner_risk_units > 0:
+                register_feedback_winner(winner_risk_units)
+            if loser_risk_units > 0:
+                register_feedback_loss(loser_risk_units)
             closed_outcomes.clear()
             peak_equity = max(peak_equity, day_equity)
             drawdown = day_equity / peak_equity - 1.0 if peak_equity > 0 else 0.0
@@ -846,8 +1053,8 @@ def simulate(
                 and drawdown <= -cfg.exposure_drawdown_reset_pct
             ):
                 exposure_index = 0
-                consecutive_winners = 0
-                consecutive_losses = 0
+                consecutive_winners = 0.0
+                consecutive_losses = 0.0
                 drawdown_reset_armed = False
             elif drawdown > -0.5 * cfg.exposure_drawdown_reset_pct:
                 drawdown_reset_armed = True

@@ -5,7 +5,8 @@ The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
 The default run is `STAGE=all`, `SIMULATION_MODE=portfolio` and is labelled
-`minervini_sepa_daily_v1`. It uses a known 2020-2023 development window. The
+`minervini_sepa_daily_v2` (`MODEL_VERSION=minervini_daily_v3`). It uses a known
+2020-2023 development window. The
 2024-2026 period has already been inspected and must not be reported as a
 pristine out-of-sample test.
 
@@ -30,10 +31,24 @@ The pipeline has three functional stages:
    final tight area, so a breakout day cannot redefine its own higher pivot.
 3. **Simulation:** places a stop-buy from information available after setup day
    D for session D+1. Portfolio mode enforces cash, slots, per-trade risk and
-   one aggregate gross-exposure cap. Exposure feedback is not applied a second
-   time to position size. Positions can re-enter after a scheduled same-symbol
-   exit when conservative cash/capacity remains, without creating overlapping
-   lots. Stops ratchet causally from the next
+   one aggregate gross-exposure cap. Before the session, every candidate gets
+   its standalone risk-sized target; a ranked, capacity-feasible slate is then
+   built incrementally. Its integer minimum is funded first; one common scale
+   distributes the remaining budget before deterministic integer rounding. A
+   lower-ranked candidate that cannot retain the minimum may be skipped while a
+   later, less capital-intensive candidate can still qualify. Every nominated
+   order must retain at least `MIN_SLATE_RISK_UTILIZATION` (default 50%) of that
+   target.
+   Lower-ranked candidates that would create smaller residual orders are
+   rejected as portfolio capacity instead of becoming dust trades. Frozen
+   reservations are not recycled after observing which daily highs triggered.
+   Exposure feedback is weighted by the frozen allocated/standalone share
+   ratio, so a half-sized trade contributes 0.5 winner or loser risk units.
+   Mixed exit sessions process every risk unit but use the adverse ordering of
+   winners first and losses last because daily bars do not reveal cross-symbol
+   exit order. Positions can re-enter after a scheduled same-symbol exit when
+   conservative cash/capacity remains, without creating overlapping lots.
+   Stops ratchet causally from the next
    session: +2R protects break-even, +3R protects +1R and so on. The time stop
    requires both insufficient MFE and a close back at or below the pivot.
 

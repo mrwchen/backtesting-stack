@@ -7,6 +7,7 @@ import pytest
 from src import persistence
 from src.reproducibility import (
     SCREEN_CONFIG_FIELDS,
+    SIM_CONFIG_FIELDS,
     config_fingerprint,
     frame_fingerprint,
     matrix_fingerprint,
@@ -25,6 +26,15 @@ def test_config_fingerprint_ignores_run_identity_but_tracks_screen_inputs() -> N
     assert config_fingerprint(
         first, SCREEN_CONFIG_FIELDS, model_version="m1"
     ) != config_fingerprint(changed, SCREEN_CONFIG_FIELDS, model_version="m1")
+
+
+def test_sim_config_fingerprint_tracks_slate_risk_floor() -> None:
+    first = make_cfg(min_slate_risk_utilization=0.50)
+    changed = make_cfg(min_slate_risk_utilization=0.75)
+
+    assert config_fingerprint(
+        first, SIM_CONFIG_FIELDS, model_version="m1"
+    ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
 
 
 def test_frame_fingerprint_is_order_independent_and_content_sensitive() -> None:
