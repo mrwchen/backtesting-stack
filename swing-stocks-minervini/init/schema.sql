@@ -13,9 +13,7 @@ $$;
 GRANT CONNECT ON DATABASE postgres TO "market-data-account";
 GRANT USAGE ON SCHEMA public TO "market-data-account";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE ON TABLES TO "market-data-account";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT DELETE ON TABLES TO "market-data-account";
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "market-data-account";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO "market-data-account";
 
@@ -321,6 +319,6 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_equity_daily (
     PRIMARY KEY (run_id, period_end_date)
 );
 
--- Ensure the runtime account can use everything created above (existing objects).
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "market-data-account";
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "market-data-account";
+-- No schema-wide GRANT here: concurrent init containers share public and can
+-- otherwise update the same PostgreSQL ACL tuples. The default privileges
+-- above are applied when this script creates the service-owned objects.

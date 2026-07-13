@@ -80,6 +80,8 @@ def test_rebuilt_schema_has_typed_setups_and_no_legacy_vcp_columns():
     assert "vcp_score" not in schema
     assert "compression" not in schema.lower()
     assert "DROP TABLE IF EXISTS backtesting_minervini_stage_state" in schema
+    assert "ON ALL TABLES IN SCHEMA public" not in schema
+    assert "ON ALL SEQUENCES IN SCHEMA public" not in schema
 
 
 def test_runtime_schema_validation_fails_fast_on_legacy_result_tables(monkeypatch):
