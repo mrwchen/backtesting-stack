@@ -5,8 +5,8 @@ The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
 The default run is `STAGE=all`, `SIMULATION_MODE=portfolio` and is labelled
-`minervini_sepa_daily_v2` (`MODEL_VERSION=minervini_daily_v3`). It uses a known
-2020-2023 development window. The
+`minervini_sepa_daily_v3_feedback1` (`MODEL_VERSION=minervini_daily_v3`). It
+uses a known 2020-2023 development window. The
 2024-2026 period has already been inspected and must not be reported as a
 pristine out-of-sample test.
 
@@ -44,6 +44,8 @@ The pipeline has three functional stages:
    reservations are not recycled after observing which daily highs triggered.
    Exposure feedback is weighted by the frozen allocated/standalone share
    ratio, so a half-sized trade contributes 0.5 winner or loser risk units.
+   One accumulated winner risk unit raises exposure by one level; with the
+   typical 50-55% allocation this corresponds to roughly two confirmed winners.
    Mixed exit sessions process every risk unit but use the adverse ordering of
    winners first and losses last because daily bars do not reveal cross-symbol
    exit order. Positions can re-enter after a scheduled same-symbol exit when

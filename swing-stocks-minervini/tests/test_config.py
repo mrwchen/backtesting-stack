@@ -11,7 +11,9 @@ def test_default_slate_risk_floor_is_serialized_in_run_params(monkeypatch) -> No
     cfg = Config.from_env()
 
     assert cfg.min_slate_risk_utilization == 0.50
+    assert cfg.exposure_winners_to_step_up == 1
     assert json.loads(cfg.to_json())["min_slate_risk_utilization"] == 0.50
+    assert json.loads(cfg.to_json())["exposure_winners_to_step_up"] == 1
 
 
 @pytest.mark.parametrize("value", ["0", "-0.1", "1.01"])

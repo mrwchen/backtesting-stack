@@ -249,7 +249,7 @@ class Config:
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
             min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.50")),
             exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
-            exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "2")),
+            exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "1")),
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
             exposure_drawdown_reset_pct=float(_env("EXPOSURE_DRAWDOWN_RESET_PCT", "0.04")),
         )

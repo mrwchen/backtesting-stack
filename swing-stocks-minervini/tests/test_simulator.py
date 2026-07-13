@@ -142,6 +142,7 @@ def test_progressive_exposure_steps_up_after_two_confirmed_winners():
             "partial_fraction": 0.0, "pivot_buffer_pct": 0.0,
             "max_buy_zone_pct": 0.02,
             "exposure_levels": (0.5, 0.75, 1.0),
+            "exposure_winners_to_step_up": 2,
             "portfolio_max_open_positions": 8,
         }
     )
