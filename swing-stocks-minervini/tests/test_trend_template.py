@@ -14,7 +14,7 @@ def test_uptrend_passes_downtrend_fails():
     rs = pd.DataFrame({"UP": np.full(n, 90.0), "DOWN": np.full(n, 90.0)}, index=dates)
 
     cfg = make_cfg()
-    template = compute_template(close, rs, cfg)
+    template = compute_template(close, rs, cfg, high=close, low=close)
     last = template["template_pass"].iloc[-1]
 
     assert bool(last["UP"]) is True
@@ -28,7 +28,7 @@ def test_rs_criterion_gates_template():
     rs_low = pd.DataFrame({"UP": np.full(n, 50.0)}, index=dates)
 
     cfg = make_cfg(rs_min=70)
-    template = compute_template(close, rs_low, cfg)
+    template = compute_template(close, rs_low, cfg, high=close, low=close)
 
     assert bool(template["template_pass"].iloc[-1]["UP"]) is False
     assert bool(template["crit_price_above_ma50"].iloc[-1]["UP"]) is True
@@ -40,5 +40,21 @@ def test_no_pass_without_ma_history():
     close = pd.DataFrame({"UP": np.linspace(50, 150, n)}, index=dates)
     rs = pd.DataFrame({"UP": np.full(n, 90.0)}, index=dates)
 
-    template = compute_template(close, rs, make_cfg())
+    template = compute_template(close, rs, make_cfg(), high=close, low=close)
     assert not template["template_pass"].to_numpy().any()
+
+
+def test_52_week_distance_uses_session_highs_and_lows() -> None:
+    n = 300
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    close = pd.DataFrame({"UP": np.linspace(50, 150, n)}, index=dates)
+    high = close.copy()
+    low = close.copy()
+    high.iloc[-20, 0] = 220.0
+    low.iloc[-30, 0] = 30.0
+    rs = pd.DataFrame({"UP": np.full(n, 95.0)}, index=dates)
+
+    template = compute_template(close, rs, make_cfg(), high=high, low=low)
+
+    assert not bool(template["crit_near_52w_high"].iloc[-1, 0])
+    assert bool(template["crit_above_52w_low"].iloc[-1, 0])

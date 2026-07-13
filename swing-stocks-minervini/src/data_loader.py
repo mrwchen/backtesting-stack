@@ -17,12 +17,19 @@ import logging
 import os
 from datetime import date, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from . import db
 from .config import Config
 
 log = logging.getLogger(__name__)
+
+# Bump deliberately whenever a source query, identity rule, normalization, or
+# cached frame contract changes.  Keeping this token in every parquet filename
+# makes the exact cache contract visible and prevents an older, structurally
+# compatible-looking frame from silently changing a later backtest.
+CACHE_SCHEMA_VERSION = "minervini_source_v3"
 
 CANONICAL_IDENTITY_SQL = """
 SELECT DISTINCT ON (symbol)
@@ -46,6 +53,7 @@ SELECT p.symbol,
        p.adjusted_high::float8                  AS high,
        p.adjusted_low::float8                   AS low,
        p.adjusted_close::float8                 AS close,
+       p.raw_close::float8                      AS raw_close,
        COALESCE(p.adjusted_volume, p.raw_volume)::float8 AS volume
 FROM stock_core_market_metrics_daily p
 JOIN canonical_identity i
@@ -158,14 +166,35 @@ ORDER BY e.symbol, e.effective_date
 """
 
 
-def _cached(cfg: Config, name: str, loader, *, cache_empty: bool = True) -> pd.DataFrame:
-    path = os.path.join(cfg.cache_dir, f"{name}.parquet")
-    if not cfg.force_refresh and os.path.exists(path):
+def _cache_path(cfg: Config, name: str) -> str:
+    """Return a cache path whose contract version is explicit and deterministic."""
+    return os.path.join(cfg.cache_dir, f"{name}_{CACHE_SCHEMA_VERSION}.parquet")
+
+
+def _cached(
+    cfg: Config,
+    name: str,
+    loader,
+    *,
+    cache_empty: bool = True,
+    required_columns: tuple[str, ...] = (),
+    validate_source: bool = False,
+) -> pd.DataFrame:
+    path = _cache_path(cfg, name)
+    if not validate_source and not cfg.force_refresh and os.path.exists(path):
         cached = pd.read_parquet(path)
-        if cache_empty or not cached.empty:
+        missing = sorted(set(required_columns) - set(cached.columns))
+        if missing:
+            log.warning("cache invalid %s missing columns %s", path, ",".join(missing))
+        elif cache_empty or not cached.empty:
             log.info("cache hit: %s", path)
             return cached
     df = loader()
+    missing = sorted(set(required_columns) - set(df.columns))
+    if missing and not df.empty:
+        raise RuntimeError(
+            f"source {name} lacks required columns: {','.join(missing)}"
+        )
     if cache_empty or not df.empty:
         os.makedirs(cfg.cache_dir, exist_ok=True)
         df.to_parquet(path, index=False)
@@ -184,6 +213,42 @@ def effective_end(cfg: Config) -> date:
     return date.today()
 
 
+def _validate_prices(df: pd.DataFrame) -> pd.DataFrame:
+    """Reject ambiguous identities and remove unusable daily bars explicitly."""
+    if df.empty:
+        raise RuntimeError("stock_core_market_metrics_daily returned no price rows")
+    required = {"symbol", "date", "open", "high", "low", "close", "raw_close", "volume"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise RuntimeError("daily prices lack required columns: " + ",".join(missing))
+    duplicate = df.duplicated(["symbol", "date"], keep=False)
+    if duplicate.any():
+        examples = ",".join(
+            f"{row.symbol}:{pd.Timestamp(row.date).date()}"
+            for row in df.loc[duplicate, ["symbol", "date"]].head(5).itertuples(index=False)
+        )
+        raise RuntimeError("daily prices contain duplicate symbol/date rows: " + examples)
+    prices = df[["open", "high", "low", "close", "raw_close"]]
+    finite_positive = (
+        pd.Series(np.isfinite(prices.to_numpy(dtype=float)).all(axis=1), index=df.index)
+        & (df[["open", "high", "low", "close", "raw_close"]] > 0).all(axis=1)
+        & np.isfinite(pd.to_numeric(df["volume"], errors="coerce"))
+        & (df["volume"] >= 0)
+    )
+    coherent_range = (
+        (df["high"] >= df[["open", "close", "low"]].max(axis=1))
+        & (df["low"] <= df[["open", "close", "high"]].min(axis=1))
+    )
+    valid = finite_positive & coherent_range & df["symbol"].notna() & df["date"].notna()
+    dropped = int((~valid).sum())
+    if dropped:
+        log.warning("discarded %d invalid daily price rows", dropped)
+    clean = df.loc[valid].sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+    if clean.empty:
+        raise RuntimeError("no valid daily price rows remain after validation")
+    return clean
+
+
 def load_prices(conn, cfg: Config) -> pd.DataFrame:
     start, end = warmup_start(cfg), effective_end(cfg)
 
@@ -192,7 +257,23 @@ def load_prices(conn, cfg: Config) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"])
         return df.reset_index(drop=True)
 
-    return _cached(cfg, f"prices_identity_v2_{start}_{end}", _load)
+    return _validate_prices(
+        _cached(
+            cfg,
+            f"prices_identity_v3_{start}_{end}",
+            _load,
+            required_columns=(
+                "symbol",
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "raw_close",
+                "volume",
+            ),
+        )
+    )
 
 
 def load_universe(conn, cfg: Config) -> pd.DataFrame:
@@ -312,14 +393,41 @@ def load_sponsorship_events(conn, cfg: Config) -> pd.DataFrame:
     def _load():
         df = db.read_df(conn, SPONSORSHIP_SQL, {"end": end})
         if not df.empty:
+            required = {
+                "symbol",
+                "available_date",
+                "manager_count_delta",
+                "net_activity_delta",
+            }
+            missing = sorted(required - set(df.columns))
+            if missing:
+                raise RuntimeError(
+                    "stock_core_13f_sponsorship_identity_events lacks required columns: "
+                    + ",".join(missing)
+                )
+            if df["symbol"].isna().any() or df["available_date"].isna().any():
+                raise RuntimeError(
+                    "stock_core_13f_sponsorship_identity_events contains null identity dates"
+                )
             df["available_date"] = pd.to_datetime(df["available_date"])
         return df
 
-    events = _cached(cfg, f"sponsorship_identity_v2_{end}", _load, cache_empty=False)
-    if cfg.institutional_sponsorship_filter_enable and events.empty:
-        raise RuntimeError(
-            "stock_core_13f_sponsorship_identity_events is empty while the institutional sponsorship filter is enabled"
-        )
+    # This compact integration table is intentionally source-validated on each
+    # run.  Otherwise a previously cached non-empty frame could conceal an
+    # empty or partially deployed upstream table after a failed backfill.
+    events = _cached(
+        cfg,
+        f"sponsorship_identity_v3_{end}",
+        _load,
+        cache_empty=False,
+        required_columns=(
+            "symbol",
+            "available_date",
+            "manager_count_delta",
+            "net_activity_delta",
+        ),
+        validate_source=True,
+    )
     return events
 
 

@@ -36,14 +36,6 @@ def test_fixed_matrix_and_periods_are_deterministic() -> None:
         "market_on",
     ]
     assert len({variant.detection_key for variant in sensitivity.VARIANTS}) == 1
-    assert {
-        (
-            variant.vcp_score_min,
-            variant.dryup_ratio_min,
-            variant.dryup_ratio_max,
-        )
-        for variant in sensitivity.VARIANTS
-    } == {(60.0, 0.20, 0.85)}
     assert {variant.market_filter_enable for variant in sensitivity.VARIANTS} == {
         False,
         True,
@@ -81,9 +73,6 @@ def test_variants_differ_only_by_market_gate_and_run_identity() -> None:
     ]
     assert {item.start_date for item in actual} == {"2020-01-02"}
     assert {item.end_date for item in actual} == {"2023-12-31"}
-    assert {item.vcp_score_min for item in actual} == {60.0}
-    assert {item.dryup_ratio_min for item in actual} == {0.20}
-    assert {item.dryup_ratio_max for item in actual} == {0.85}
     assert [item.market_filter_enable for item in actual] == [False, True]
     ignored = {"run_label", "market_filter_enable"}
     assert {
@@ -159,7 +148,7 @@ def test_sensitivity_reuses_detection_and_runs_only_dev_gate_arms(monkeypatch) -
 
     def fake_detect(cfg, *args, **kwargs):
         detection_calls.append(
-            (cfg.vcp_score_min, cfg.dryup_ratio_min, cfg.dryup_ratio_max)
+            cfg.dryup_score_zero_ratio
         )
         return setups.copy()
 
@@ -195,7 +184,7 @@ def test_sensitivity_reuses_detection_and_runs_only_dev_gate_arms(monkeypatch) -
         date(2023, 12, 29),
     )
 
-    assert detection_calls == [(60.0, 0.20, 0.85)]
+    assert detection_calls == [1.25]
     assert len(simulation_calls) == 2
     assert {call[0] for call in simulation_calls} == {
         "matrix_dev_market_off",
@@ -232,7 +221,7 @@ def test_zero_setup_simulation_still_persists_a_run(monkeypatch) -> None:
     monkeypatch.setattr(
         runner.persistence,
         "create_run",
-        lambda conn, cfg, metrics, start, end: created.append((start, end)) or 7,
+        lambda conn, cfg, metrics, start, end, **kwargs: created.append((start, end)) or 7,
     )
     monkeypatch.setattr(runner.persistence, "write_trades", lambda *args: None)
     monkeypatch.setattr(
@@ -279,7 +268,7 @@ def test_run_simulation_passes_market_caps_only_to_enabled_arm(
         )
 
     monkeypatch.setattr(runner, "simulate", fake_simulate)
-    monkeypatch.setattr(runner.persistence, "create_run", lambda *args: 11)
+    monkeypatch.setattr(runner.persistence, "create_run", lambda *args, **kwargs: 11)
     monkeypatch.setattr(runner.persistence, "write_trades", lambda *args: None)
     monkeypatch.setattr(
         runner.persistence, "write_breakout_events", lambda *args: None
@@ -342,7 +331,7 @@ def test_runner_persists_same_day_breakout_event_without_confirmation(monkeypatc
             metrics={"initial_equity": 100000.0, "final_equity": 100000.0},
         ),
     )
-    monkeypatch.setattr(runner.persistence, "create_run", lambda *args: 9)
+    monkeypatch.setattr(runner.persistence, "create_run", lambda *args, **kwargs: 9)
     monkeypatch.setattr(runner.persistence, "write_trades", lambda *args: None)
     monkeypatch.setattr(
         runner.persistence,

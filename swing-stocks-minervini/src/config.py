@@ -79,14 +79,12 @@ class Config:
     regime_allowed_labels: tuple[str, ...]
 
     # IBKR group leadership filter
-    ibkr_group_filter_enable: bool
     ibkr_industry_rs_min: int
     ibkr_category_rs_min: int
     ibkr_stock_industry_rs_min: int
     ibkr_stock_category_rs_min: int
     ibkr_industry_min_symbols: int
     ibkr_category_min_symbols: int
-    ibkr_industry_breadth_filter_enable: bool
     ibkr_industry_breadth_on_threshold: float
     ibkr_industry_breadth_off_threshold: float
     ibkr_industry_breadth_min_symbols: int
@@ -99,7 +97,6 @@ class Config:
     acceleration_min: float
     quarterly_growth_streak_min: int
     quarterly_fundamental_stale_trading_days: int
-    institutional_sponsorship_filter_enable: bool
     institutional_min_managers: int
     institutional_net_activity_min: float
     institutional_activity_lookback_sessions: int
@@ -113,11 +110,9 @@ class Config:
     final_depth_max: float
     base_depth_max: float
     pivot_below_base_high_max: float
-    dryup_ratio_min: float
-    dryup_ratio_max: float
-    dryup_ratio_preferred: float
+    dryup_score_zero_ratio: float
     setup_valid_days: int
-    vcp_score_min: float
+    prior_advance_min: float
 
     # simulation and pre-session order sizing
     initial_equity: float
@@ -138,8 +133,6 @@ class Config:
     max_buy_zone_pct: float
     time_stop_sessions: int
     time_stop_min_r: float
-    profit_protection_trigger_r: float
-    profit_protection_lock_r: float
 
     # portfolio simulation constraints
     portfolio_max_open_positions: int
@@ -199,14 +192,12 @@ class Config:
             regime_allowed_labels=_env_str_tuple(
                 "REGIME_ALLOWED_LABELS", "RISK-ON,CONSTRUCTIVE,NEUTRAL"
             ),
-            ibkr_group_filter_enable=_env_bool("IBKR_GROUP_FILTER_ENABLE", True),
             ibkr_industry_rs_min=int(_env("IBKR_INDUSTRY_RS_MIN", "70")),
             ibkr_category_rs_min=int(_env("IBKR_CATEGORY_RS_MIN", "70")),
             ibkr_stock_industry_rs_min=int(_env("IBKR_STOCK_IN_INDUSTRY_RS_MIN", "70")),
             ibkr_stock_category_rs_min=int(_env("IBKR_STOCK_IN_CATEGORY_RS_MIN", "70")),
             ibkr_industry_min_symbols=int(_env("IBKR_INDUSTRY_MIN_SYMBOLS", "5")),
             ibkr_category_min_symbols=int(_env("IBKR_CATEGORY_MIN_SYMBOLS", "3")),
-            ibkr_industry_breadth_filter_enable=_env_bool("IBKR_INDUSTRY_BREADTH_FILTER_ENABLE", True),
             ibkr_industry_breadth_on_threshold=float(_env("IBKR_INDUSTRY_BREADTH_ON_THRESHOLD", "0.55")),
             ibkr_industry_breadth_off_threshold=float(_env("IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD", "0.45")),
             ibkr_industry_breadth_min_symbols=int(_env("IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS", "5")),
@@ -219,9 +210,6 @@ class Config:
             quarterly_fundamental_stale_trading_days=int(
                 _env("QUARTERLY_FUNDAMENTAL_STALE_TRADING_DAYS", "130")
             ),
-            institutional_sponsorship_filter_enable=_env_bool(
-                "INSTITUTIONAL_SPONSORSHIP_FILTER_ENABLE", True
-            ),
             institutional_min_managers=int(_env("INSTITUTIONAL_MIN_MANAGERS", "10")),
             institutional_net_activity_min=float(_env("INSTITUTIONAL_NET_ACTIVITY_MIN", "0")),
             institutional_activity_lookback_sessions=int(
@@ -229,17 +217,15 @@ class Config:
             ),
             swing_window=int(_env("SWING_WINDOW", "3")),
             base_min_days=int(_env("BASE_MIN_DAYS", "15")),
-            base_max_days=int(_env("BASE_MAX_DAYS", "75")),
+            base_max_days=int(_env("BASE_MAX_DAYS", "130")),
             contractions_min=int(_env("CONTRACTIONS_MIN", "2")),
             contractions_max=int(_env("CONTRACTIONS_MAX", "4")),
             final_depth_max=float(_env("FINAL_DEPTH_MAX", "0.10")),
             base_depth_max=float(_env("BASE_DEPTH_MAX", "0.35")),
-            pivot_below_base_high_max=float(_env("PIVOT_BELOW_BASE_HIGH_MAX", "0.05")),
-            dryup_ratio_min=float(_env("DRYUP_RATIO_MIN", "0.50")),
-            dryup_ratio_max=float(_env("DRYUP_RATIO_MAX", "0.70")),
-            dryup_ratio_preferred=float(_env("DRYUP_RATIO_PREFERRED", "0.65")),
-            setup_valid_days=int(_env("SETUP_VALID_DAYS", "15")),
-            vcp_score_min=float(_env("VCP_SCORE_MIN", "65")),
+            pivot_below_base_high_max=float(_env("PIVOT_BELOW_BASE_HIGH_MAX", "0.08")),
+            dryup_score_zero_ratio=float(_env("DRYUP_SCORE_ZERO_RATIO", "1.25")),
+            setup_valid_days=int(_env("SETUP_VALID_DAYS", "20")),
+            prior_advance_min=float(_env("PRIOR_ADVANCE_MIN", "0.25")),
             initial_equity=float(_env("INITIAL_EQUITY", "100000")),
             risk_pct=float(_env("RISK_PCT", "0.01")),
             stop_max_pct=float(_env("STOP_MAX_PCT", "0.08")),
@@ -253,13 +239,11 @@ class Config:
             failed_breakout_exit_enable=_env_bool("FAILED_BREAKOUT_EXIT_ENABLE", True),
             failed_breakout_days=int(_env("FAILED_BREAKOUT_DAYS", "10")),
             failed_breakout_min_r=float(_env("FAILED_BREAKOUT_MIN_R", "-0.5")),
-            bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", True),
+            bad_fundamentals_filter_enable=_env_bool("BAD_FUNDAMENTALS_FILTER_ENABLE", False),
             pivot_buffer_pct=float(_env("PIVOT_BUFFER_PCT", "0.001")),
             max_buy_zone_pct=float(_env("MAX_BUY_ZONE_PCT", "0.02")),
             time_stop_sessions=int(_env("TIME_STOP_SESSIONS", "10")),
             time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
-            profit_protection_trigger_r=float(_env("PROFIT_PROTECTION_TRIGGER_R", "2.0")),
-            profit_protection_lock_r=float(_env("PROFIT_PROTECTION_LOCK_R", "0.5")),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
             exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
@@ -313,12 +297,22 @@ class Config:
             <= cfg.market_confirmed_max_exposure_pct
         ):
             raise ValueError("under-pressure caps must not exceed confirmed cap")
-        if cfg.dryup_ratio_min < 0:
-            raise ValueError("DRYUP_RATIO_MIN must be >= 0")
-        if cfg.dryup_ratio_max <= cfg.dryup_ratio_min:
-            raise ValueError("DRYUP_RATIO_MAX must be > DRYUP_RATIO_MIN")
-        if not (cfg.dryup_ratio_min <= cfg.dryup_ratio_preferred <= cfg.dryup_ratio_max):
-            raise ValueError("DRYUP_RATIO_PREFERRED must be between DRYUP_RATIO_MIN and DRYUP_RATIO_MAX")
+        if cfg.swing_window < 1:
+            raise ValueError("SWING_WINDOW must be >= 1")
+        if not 10 <= cfg.base_min_days < cfg.base_max_days:
+            raise ValueError("BASE days must satisfy 10 <= MIN < MAX")
+        if not 2 <= cfg.contractions_min <= cfg.contractions_max:
+            raise ValueError("CONTRACTIONS must satisfy 2 <= MIN <= MAX")
+        if not 0 < cfg.final_depth_max <= cfg.base_depth_max < 1:
+            raise ValueError("depths must satisfy 0 < FINAL <= BASE < 1")
+        if not 0 < cfg.pivot_below_base_high_max < 1:
+            raise ValueError("PIVOT_BELOW_BASE_HIGH_MAX must be between 0 and 1")
+        if cfg.setup_valid_days < 1:
+            raise ValueError("SETUP_VALID_DAYS must be >= 1")
+        if cfg.dryup_score_zero_ratio <= 0:
+            raise ValueError("DRYUP_SCORE_ZERO_RATIO must be > 0")
+        if cfg.prior_advance_min <= 0:
+            raise ValueError("PRIOR_ADVANCE_MIN must be > 0")
         if cfg.failed_breakout_days < 1:
             raise ValueError("FAILED_BREAKOUT_DAYS must be >= 1")
         if cfg.portfolio_max_open_positions < 1:
@@ -329,8 +323,6 @@ class Config:
             raise ValueError("EXPOSURE_LEVELS must contain values in (0, 1]")
         if tuple(sorted(cfg.exposure_levels)) != cfg.exposure_levels:
             raise ValueError("EXPOSURE_LEVELS must be sorted ascending")
-        if not 0 <= cfg.vcp_score_min <= 100:
-            raise ValueError("VCP_SCORE_MIN must be between 0 and 100")
         return cfg
 
     def to_json(self) -> str:

@@ -1,0 +1,11 @@
+.git
+.gitignore
+.pytest_cache
+__pycache__
+**/__pycache__
+**/*.py[cod]
+cache
+tests
+README.md
+compose.yaml
+init

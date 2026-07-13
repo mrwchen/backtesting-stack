@@ -10,5 +10,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
+COPY backtest_models ./backtest_models
 
 CMD ["python", "-m", "src.runner"]

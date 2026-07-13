@@ -28,7 +28,22 @@ DROP TABLE IF EXISTS backtesting_minervini_setups CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_screen_daily CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_market_daily CASCADE;
 DROP TABLE IF EXISTS backtesting_minervini_rs_daily CASCADE;
+DROP TABLE IF EXISTS backtesting_minervini_stage_state CASCADE;
 \endif
+
+-- Functional stage contract. Setup/sim stages refuse to consume outputs that
+-- were produced by a different model or configuration fingerprint.
+CREATE TABLE IF NOT EXISTS backtesting_minervini_stage_state (
+    stage                   TEXT PRIMARY KEY,
+    model_version           TEXT NOT NULL,
+    config_fingerprint      TEXT NOT NULL,
+    input_fingerprint       TEXT NOT NULL,
+    output_fingerprint      TEXT NOT NULL,
+    start_date              DATE NOT NULL,
+    end_date                DATE NOT NULL,
+    updated_ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (stage IN ('screen', 'setup'))
+);
 
 -- ---------------------------------------------------------------------------
 -- Stage 1a: cross-sectional relative-strength ranking (full eligible universe)
@@ -150,37 +165,38 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_market_daily (
 );
 
 -- ---------------------------------------------------------------------------
--- Stage 2: detected VCP setups (pre-breakout bases with pivot and stop)
+-- Stage 2: causal pre-breakout setups with pivot and stop
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS backtesting_minervini_setups (
     setup_id            BIGSERIAL PRIMARY KEY,
     symbol              TEXT NOT NULL,
+    setup_type          TEXT NOT NULL,
     ibkr_industry       TEXT,
     ibkr_category       TEXT,
     detect_date         DATE NOT NULL,
-    pivot               NUMERIC(15,4) NOT NULL,
-    last_low            NUMERIC(15,4) NOT NULL,
-    stop_level          NUMERIC(15,4) NOT NULL,
+    pivot               NUMERIC(18,8) NOT NULL,
+    last_low            NUMERIC(18,8) NOT NULL,
+    stop_level          NUMERIC(18,8) NOT NULL,
     base_start_date     DATE NOT NULL,
     base_days           INTEGER NOT NULL,
     n_contractions      INTEGER NOT NULL,
+    contraction_depths  NUMERIC(10,6)[] NOT NULL,
     base_count          INTEGER NOT NULL,
     dryup_ratio         NUMERIC(10,4),
-    vcp_score           NUMERIC(8,4) NOT NULL,
-    depth_quality_score NUMERIC(8,4) NOT NULL,
-    final_tightness_score NUMERIC(8,4) NOT NULL,
-    contraction_smoothness_score NUMERIC(8,4) NOT NULL,
+    setup_score         NUMERIC(8,4) NOT NULL,
+    prior_advance_pct   NUMERIC(10,6) NOT NULL,
+    final_tightness_pct NUMERIC(10,6) NOT NULL,
+    structure_quality_score NUMERIC(8,4) NOT NULL,
     volume_dryup_score  NUMERIC(8,4) NOT NULL,
-    volume_slope_score  NUMERIC(8,4) NOT NULL,
-    tight_closes_score  NUMERIC(8,4) NOT NULL,
-    base_duration_score NUMERIC(8,4) NOT NULL,
+    tightness_score     NUMERIC(8,4) NOT NULL,
     pivot_proximity_score NUMERIC(8,4) NOT NULL,
-    overhead_supply_score NUMERIC(8,4) NOT NULL,
     prior_advance_score NUMERIC(8,4) NOT NULL,
-    weekly_structure_score NUMERIC(8,4) NOT NULL,
-    close               NUMERIC(15,4),
+    close               NUMERIC(18,8),
     valid_until         DATE NOT NULL,
-    created_ts          TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (setup_type IN ('vcp', 'flat_base', 'power_play', 'tight_shelf')),
+    CHECK (setup_score BETWEEN 0 AND 100),
+    CHECK (valid_until >= detect_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_bm_setups_detect
@@ -193,6 +209,8 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_runs (
     run_id              BIGSERIAL PRIMARY KEY,
     run_ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
     run_label           TEXT NOT NULL,
+    model_version       TEXT NOT NULL,
+    input_fingerprint   TEXT NOT NULL,
     start_date          DATE NOT NULL,
     end_date            DATE NOT NULL,
     params              JSONB NOT NULL,
@@ -214,6 +232,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     breakout_date           DATE NOT NULL,
     run_id                  BIGINT NOT NULL REFERENCES backtesting_minervini_runs (run_id) ON DELETE CASCADE,
     setup_id                BIGINT NOT NULL,
+    setup_type              TEXT NOT NULL,
     symbol                  TEXT NOT NULL,
     setup_detect_date       DATE NOT NULL,
     pivot                   NUMERIC(15,4) NOT NULL,
@@ -223,6 +242,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     entry_price             NUMERIC(15,4),
     decision                TEXT NOT NULL,
     PRIMARY KEY (breakout_date, event_id),
+    CHECK (setup_type IN ('vcp', 'flat_base', 'power_play', 'tight_shelf')),
     CHECK (decision IN (
         'market_gate_blocked', 'regime_gate_blocked',
         'existing_position', 'portfolio_capacity', 'invalid_order_parameters',
@@ -263,6 +283,7 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_trades (
     run_id              BIGINT NOT NULL REFERENCES backtesting_minervini_runs (run_id) ON DELETE CASCADE,
     position_id         INTEGER NOT NULL,
     setup_id            BIGINT,
+    setup_type          TEXT NOT NULL,
     symbol              TEXT NOT NULL,
     ibkr_industry       TEXT,
     ibkr_category       TEXT,
@@ -279,7 +300,8 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_trades (
     r_multiple          NUMERIC(18,6),
     holding_days        INTEGER NOT NULL,
     regime_composite    NUMERIC(18,6),
-    regime_label        TEXT
+    regime_label        TEXT,
+    CHECK (setup_type IN ('vcp', 'flat_base', 'power_play', 'tight_shelf'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_bm_trades_run

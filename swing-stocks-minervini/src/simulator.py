@@ -23,6 +23,10 @@ Exits:  initial stop (gap-aware, also checked on the entry bar itself —
 Sizing: independent mode uses fixed INITIAL_EQUITY as sizing base. Portfolio
         mode uses previous-close equity, cash, gross exposure and position
         count. Same-session exits never finance or make room for new entries.
+
+Add-ons are intentionally outside this engine. ``Position`` represents one
+entry price, one initial risk unit and one setup id; pyramiding would require a
+lot-aware position/trade schema rather than silently averaging unlike entries.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ log = logging.getLogger(__name__)
 class Position:
     position_id: int
     setup_id: int | None
+    setup_type: str
     symbol: str
     col: int
     entry_idx: int
@@ -110,10 +115,6 @@ def simulate(
             & (revenue_yoy < cfg.revenue_yoy_min)
         )
         setups = setups.loc[~bad_known_growth].copy()
-    if "dryup_ratio" in setups.columns:
-        dryup = pd.to_numeric(setups["dryup_ratio"], errors="coerce")
-        dryup_ok = dryup.isna() | dryup.between(cfg.dryup_ratio_min, cfg.dryup_ratio_max)
-        setups = setups.loc[dryup_ok].copy()
     setups["start_idx"] = dates.searchsorted(pd.to_datetime(setups["detect_date"])) + 1
     setups["end_idx"] = dates.searchsorted(
         pd.to_datetime(setups["valid_until"]), side="right"
@@ -129,9 +130,10 @@ def simulate(
     cash = cfg.initial_equity
     realized_pnl = 0.0
     positions: dict[str, Position] = {}
-    # At most one setup per symbol is active. A newly detected setup replaces
-    # an older base before the next session's slate is built.
-    active_setups: dict[str, object] = {}
+    # Multiple causal structures may coexist for one symbol. The pre-session
+    # ranking nominates at most one; a newer, weaker pivot cannot erase an
+    # older setup that is still valid.
+    active_setups: dict[int, object] = {}
     trades: list[dict] = []
     breakout_events: list[dict] = []
     equity_rows: list[dict] = []
@@ -142,7 +144,9 @@ def simulate(
     consecutive_winners = 0
     consecutive_losses = 0
     peak_equity = cfg.initial_equity
-    closed_outcomes: list[float] = []
+    drawdown_reset_armed = True
+    closed_outcomes: list[tuple[int, float]] = []
+    feedback_winner_positions: set[int] = set()
 
     def _num_attr(setup, name: str, default: float) -> float:
         value = getattr(setup, name, default)
@@ -170,19 +174,27 @@ def simulate(
         return max(0.0, (pivot - stop) / pivot)
 
     def setup_priority(setup) -> tuple:
-        dryup_value = _num_attr(setup, "dryup_ratio", cfg.dryup_ratio_preferred)
+        setup_score = _num_attr(setup, "setup_score", 0.0)
+        setup_score_bucket = int(np.floor(setup_score / 5.0))
+        dryup_value = _num_attr(
+            setup, "dryup_ratio", cfg.dryup_score_zero_ratio
+        )
         eps_yoy = min(_num_attr(setup, "eps_yoy", 0.0), 5.0)
         revenue_yoy = min(_num_attr(setup, "revenue_yoy", 0.0), 5.0)
         return (
             1 if cfg.bad_fundamentals_filter_enable and _known_bad_growth(setup) else 0,
-            -_num_attr(setup, "vcp_score", 0.0),
-            _setup_stop_pct(setup),
-            abs(dryup_value - cfg.dryup_ratio_preferred),
+            -setup_score_bucket,
+            -_num_attr(setup, "fundamental_score", 0.0),
             -_num_attr(setup, "rs_rating", 0.0),
             -_num_attr(setup, "stock_industry_rs_rating", 0.0),
             -_num_attr(setup, "stock_category_rs_rating", 0.0),
             -_num_attr(setup, "ibkr_industry_rs_rating", 0.0),
             -_num_attr(setup, "ibkr_category_rs_rating", 0.0),
+            -_num_attr(setup, "institutional_manager_count", 0.0),
+            -_num_attr(setup, "institutional_net_activity", 0.0),
+            -setup_score,
+            _setup_stop_pct(setup),
+            dryup_value,
             -_num_attr(setup, "n_contractions", 0.0),
             -eps_yoy,
             -revenue_yoy,
@@ -220,6 +232,7 @@ def simulate(
         breakout_events.append(
             {
                 "setup_id": setup_id,
+                "setup_type": getattr(setup, "setup_type", "unknown"),
                 "symbol": setup.symbol,
                 "setup_detect_date": pd.Timestamp(setup.detect_date).date(),
                 "breakout_date": dates[t].date(),
@@ -289,6 +302,7 @@ def simulate(
             {
                 "position_id": pos.position_id,
                 "setup_id": pos.setup_id,
+                "setup_type": pos.setup_type,
                 "symbol": pos.symbol,
                 "leg": leg,
                 "exit_reason": reason,
@@ -305,7 +319,40 @@ def simulate(
             }
         )
         if leg == "final":
-            closed_outcomes.append(pos.realized_position_pnl)
+            closed_outcomes.append((pos.position_id, pos.realized_position_pnl))
+
+    def ratchet_stop_from_known_high(pos: Position) -> float | None:
+        """Return tomorrow's causal stop from today's completed high.
+
+        The fixed ladder is deliberately simple and monotone: a completed
+        +2R high protects break-even, +3R protects +1R, +4R protects +2R and
+        each further completed whole R raises the floor by another R. The
+        caller stores this as ``next_stop`` so the new floor can never affect
+        the bar whose high first qualified it.
+        """
+        r_unit = pos.entry_price - pos.initial_stop
+        if r_unit <= 0 or not np.isfinite(pos.max_high):
+            return None
+        achieved_r = (pos.max_high - pos.entry_price) / r_unit
+        completed_r = int(np.floor(achieved_r + 1e-12))
+        if completed_r < 2:
+            return None
+        return pos.entry_price + (completed_r - 2) * r_unit
+
+    def arm_next_ratchet_stop(pos: Position) -> None:
+        candidate = ratchet_stop_from_known_high(pos)
+        if candidate is None:
+            return
+        pending_floor = pos.stop if pos.next_stop is None else pos.next_stop
+        pos.next_stop = max(pending_floor, candidate)
+
+    def register_feedback_winner() -> None:
+        nonlocal exposure_index, consecutive_winners, consecutive_losses
+        consecutive_winners += 1
+        consecutive_losses = 0
+        if consecutive_winners >= cfg.exposure_winners_to_step_up:
+            exposure_index = min(exposure_index + 1, len(cfg.exposure_levels) - 1)
+            consecutive_winners = 0
 
     def take_partial(pos: Position, t: int, day_open: float, target: float) -> bool:
         """Execute a real partial fill; a rounded zero-share leg changes nothing."""
@@ -324,11 +371,11 @@ def simulate(
         # ---- make newly known setups active; newest setup wins -------------
         while next_setup < len(setup_rows) and setup_rows[next_setup].start_idx <= t:
             setup = setup_rows[next_setup]
-            active_setups[setup.symbol] = setup
+            active_setups[int(setup.sim_setup_key)] = setup
             next_setup += 1
         active_setups = {
-            symbol: setup
-            for symbol, setup in active_setups.items()
+            setup_key: setup
+            for setup_key, setup in active_setups.items()
             if setup.end_idx >= t
         }
 
@@ -336,7 +383,8 @@ def simulate(
         # positions. This prevents an already broken or invalidated setup from
         # being resurrected at an OOS boundary.
         if t < sim_start_idx:
-            for symbol, setup in list(active_setups.items()):
+            for setup_key, setup in list(active_setups.items()):
+                symbol = setup.symbol
                 col = col_index[symbol]
                 day_high, day_low = h[t, col], lo[t, col]
                 trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
@@ -352,18 +400,43 @@ def simulate(
                     and day_low <= invalidation_level
                 )
                 if incomplete_range or broke_out or damaged_base:
-                    del active_setups[symbol]
+                    del active_setups[setup_key]
             continue
 
         # ---- pre-session order slate ---------------------------------------
         # Capture budgets before processing any event from session t. Exits at
         # the open or intraday therefore cannot be recycled into today's slate.
         start_symbols = set(positions)
+        # A next-open exit was decided at the previous close. A fresh setup in
+        # that symbol may therefore be nominated for a later intraday re-entry
+        # without ever holding two same-symbol positions. Its outgoing lot
+        # still consumes today's opening cash, gross budget and slot.
+        same_symbol_entry_blocks = {
+            symbol
+            for symbol, pos in positions.items()
+            if pos.exit_next_open_reason is None
+        }
         market_cap = exposure_cap_value(t - 1)
         if portfolio_mode and market_exposure_cap is not None and market_cap <= 0:
             exposure_index = 0
             consecutive_winners = 0
             consecutive_losses = 0
+        # An open position may confirm portfolio feedback at yesterday's
+        # close. Count each position only once and in stable position-id order;
+        # no current-session high, close or exit can influence today's cap.
+        if portfolio_mode and market_cap > 0 and t > 0:
+            for pos in sorted(positions.values(), key=lambda item: item.position_id):
+                if pos.position_id in feedback_winner_positions:
+                    continue
+                r_unit = pos.entry_price - pos.initial_stop
+                previous_close = c[t - 1, pos.col]
+                if (
+                    r_unit > 0
+                    and np.isfinite(previous_close)
+                    and previous_close >= pos.entry_price + r_unit
+                ):
+                    feedback_winner_positions.add(pos.position_id)
+                    register_feedback_winner()
         feedback_exposure_level = (
             cfg.exposure_levels[exposure_index] if portfolio_mode else 1.0
         )
@@ -385,14 +458,11 @@ def simulate(
                 sizing_equity * cfg.portfolio_max_gross_exposure_pct
                 * entry_exposure_limit - start_gross,
             )
-            scaled_slots = max(
-                1,
-                int(np.floor(
-                    cfg.portfolio_max_open_positions * entry_exposure_limit
-                )),
-            )
+            # Feedback/market exposure is one aggregate gross-notional cap.
+            # Per-trade risk, max-position size and slot count remain the
+            # strategy's configured values and are not scaled a second time.
             remaining_slots = max(
-                0, scaled_slots - len(start_symbols)
+                0, cfg.portfolio_max_open_positions - len(start_symbols)
             )
         else:
             sizing_equity = sizing_base
@@ -419,11 +489,16 @@ def simulate(
             for setup in prioritized_setups:
                 set_entry_decision(
                     setup,
-                    "existing_position" if setup.symbol in start_symbols else gate_decision,
+                    "existing_position"
+                    if setup.symbol in same_symbol_entry_blocks
+                    else gate_decision,
                 )
         else:
             for position, setup in enumerate(prioritized_setups):
-                if setup.symbol in start_symbols or setup.symbol in selected_symbols:
+                if (
+                    setup.symbol in same_symbol_entry_blocks
+                    or setup.symbol in selected_symbols
+                ):
                     set_entry_decision(setup, "existing_position")
                     continue
                 if portfolio_mode and remaining_slots <= 0:
@@ -431,7 +506,7 @@ def simulate(
                         set_entry_decision(
                             skipped,
                             "existing_position"
-                            if skipped.symbol in start_symbols
+                            if skipped.symbol in same_symbol_entry_blocks
                             else "portfolio_capacity",
                         )
                     break
@@ -454,12 +529,8 @@ def simulate(
                     continue
 
                 limits = [
-                    sizing_equity * cfg.risk_pct
-                    * entry_exposure_limit
-                    / risk_per_share,
-                    sizing_equity * cfg.max_position_pct
-                    * entry_exposure_limit
-                    / worst_fill,
+                    sizing_equity * cfg.risk_pct / risk_per_share,
+                    sizing_equity * cfg.max_position_pct / worst_fill,
                 ]
                 if portfolio_mode:
                     limits.extend(
@@ -582,15 +653,13 @@ def simulate(
             day_close = c[t, col]
             if np.isfinite(day_high):
                 pos.max_high = max(pos.max_high, float(day_high))
-            if (
-                r_unit > 0
-                and pos.max_high >= pos.entry_price + cfg.profit_protection_trigger_r * r_unit
-            ):
-                pos.next_stop = pos.entry_price + cfg.profit_protection_lock_r * r_unit
+            arm_next_ratchet_stop(pos)
             if (
                 r_unit > 0
                 and t - pos.entry_idx >= cfg.time_stop_sessions
                 and pos.max_high < pos.entry_price + cfg.time_stop_min_r * r_unit
+                and np.isfinite(day_close)
+                and day_close <= pos.pivot
             ):
                 pos.exit_next_open_reason = "time_stop"
                 continue
@@ -652,6 +721,7 @@ def simulate(
             new_position = Position(
                 position_id=next_position_id,
                 setup_id=getattr(setup, "setup_id", None),
+                setup_type=str(getattr(setup, "setup_type", "unknown")),
                 symbol=setup.symbol,
                 col=col,
                 entry_idx=t,
@@ -705,24 +775,15 @@ def simulate(
                         new_position.shares = 0
                 if new_position.shares > 0:
                     new_position.max_high = max(fill, float(day_high))
-                    if (
-                        r_unit > 0
-                        and new_position.max_high
-                        >= new_position.entry_price
-                        + cfg.profit_protection_trigger_r * r_unit
-                    ):
-                        new_position.next_stop = (
-                            new_position.entry_price
-                            + cfg.profit_protection_lock_r * r_unit
-                        )
+                    arm_next_ratchet_stop(new_position)
                     positions[setup.symbol] = new_position
 
         # ---- setup lifecycle ----------------------------------------------
         # A breakout without a fill is missed, not a future invitation to
         # chase. A stop-level breach destroys the base. Filled and statically
         # unusable setups are consumed as well.
-        for symbol, setup in list(active_setups.items()):
-            setup_key = int(setup.sim_setup_key)
+        for setup_key, setup in list(active_setups.items()):
+            symbol = setup.symbol
             col = col_index[symbol]
             incomplete_bar = not np.isfinite([o[t, col], h[t, col], lo[t, col]]).all()
             day_high = h[t, col]
@@ -746,7 +807,7 @@ def simulate(
                 or missed_breakout
                 or damaged_base
             ):
-                del active_setups[symbol]
+                del active_setups[setup_key]
 
         # ---- daily aggregate (research curve, not a cash-constrained account) --
         day_open_notional = open_notional(t)
@@ -765,13 +826,11 @@ def simulate(
         )
 
         if portfolio_mode:
-            for outcome in closed_outcomes:
+            for position_id, outcome in closed_outcomes:
                 if outcome > 0:
-                    consecutive_winners += 1
-                    consecutive_losses = 0
-                    if consecutive_winners >= cfg.exposure_winners_to_step_up:
-                        exposure_index = min(exposure_index + 1, len(cfg.exposure_levels) - 1)
-                        consecutive_winners = 0
+                    if position_id not in feedback_winner_positions:
+                        feedback_winner_positions.add(position_id)
+                        register_feedback_winner()
                 else:
                     consecutive_losses += 1
                     consecutive_winners = 0
@@ -781,10 +840,17 @@ def simulate(
                         consecutive_losses = 0
             closed_outcomes.clear()
             peak_equity = max(peak_equity, day_equity)
-            if peak_equity > 0 and day_equity / peak_equity - 1.0 <= -cfg.exposure_drawdown_reset_pct:
+            drawdown = day_equity / peak_equity - 1.0 if peak_equity > 0 else 0.0
+            if (
+                drawdown_reset_armed
+                and drawdown <= -cfg.exposure_drawdown_reset_pct
+            ):
                 exposure_index = 0
                 consecutive_winners = 0
                 consecutive_losses = 0
+                drawdown_reset_armed = False
+            elif drawdown > -0.5 * cfg.exposure_drawdown_reset_pct:
+                drawdown_reset_armed = True
 
     # ---- close remaining positions only when the final session is tradable ----
     last = len(dates) - 1
@@ -836,9 +902,9 @@ def simulate(
     breakout_events_df = pd.DataFrame(
         breakout_events,
         columns=[
-            "setup_id", "symbol", "setup_detect_date", "breakout_date",
-            "pivot", "trigger_price", "entry_filled", "entry_date",
-            "entry_price", "decision",
+            "setup_id", "setup_type", "symbol", "setup_detect_date",
+            "breakout_date", "pivot", "trigger_price", "entry_filled",
+            "entry_date", "entry_price", "decision",
         ],
     )
     return SimResult(

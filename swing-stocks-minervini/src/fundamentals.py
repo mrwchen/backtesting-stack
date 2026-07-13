@@ -183,8 +183,6 @@ def sponsorship_flags(
         (manager_count >= cfg.institutional_min_managers)
         & (net_activity >= cfg.institutional_net_activity_min)
     )
-    if not cfg.institutional_sponsorship_filter_enable:
-        passed.loc[:, :] = True
     return {
         "institutional_manager_count": manager_count,
         "institutional_net_activity": net_activity,

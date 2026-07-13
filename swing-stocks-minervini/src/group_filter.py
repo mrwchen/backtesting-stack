@@ -125,9 +125,6 @@ def compute_leadership(
         & stock_category_pass
     )
 
-    if not cfg.ibkr_group_filter_enable:
-        group_filter_pass = pd.DataFrame(True, index=rs_raw.index, columns=symbols)
-
     return {
         "ibkr_industry_rs_rating": industry_rs,
         "ibkr_category_rs_rating": category_rs,
@@ -177,12 +174,8 @@ def compute_industry_breadth(
             breadth_by_symbol[symbol] = breadth
             on_by_symbol[symbol] = gate
 
-    pass_by_symbol = on_by_symbol.copy()
-    if not cfg.ibkr_industry_breadth_filter_enable:
-        pass_by_symbol = pd.DataFrame(True, index=close.index, columns=symbols)
-
     return {
         "ibkr_industry_breadth": breadth_by_symbol,
         "ibkr_industry_breadth_on": on_by_symbol,
-        "ibkr_industry_breadth_pass": pass_by_symbol,
+        "ibkr_industry_breadth_pass": on_by_symbol.copy(),
     }

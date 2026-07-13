@@ -24,7 +24,9 @@ services:
       - shared_net
 
   minervini-backtester:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: python -m src.runner
     depends_on:
       init-minervini-schema:
@@ -46,19 +48,20 @@ services:
       PGPASSWORD: "market-data-account-pw"
 
       # -- Ablaufsteuerung --------------------------------------------------------
-      # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + Fundamentals),
-      # setup (VCP-Erkennung), sim (Trade-Simulation), all (alle drei nacheinander)
-      # oder sensitivity (eingefrorene Moderate-Marktfilter-Ablation nur 2020-2023).
+      # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + Ranking-Kontext),
+      # setup (Chart-Setup-Erkennung), sim (Trade-Simulation) oder all
+      # (alle drei nacheinander).
       # Stufen lesen ihre Eingaben aus der DB und sind einzeln wiederholbar.
-      STAGE: "sensitivity"
+      STAGE: "all"
       # Erster Tag des Auswertungsfensters (Screens/Setups/Trades werden ab hier geschrieben).
       # Indikatoren brauchen davor ~1 Jahr Warmup; Preishistorie beginnt 2020-01-02.
       START_DATE: "2020-01-02"
-      # Das Ablationsfenster endet fest vor dem bereits betrachteten OOS-Zeitraum.
+      # 2024-2026 wurden bereits analysiert und sind kein unberuehrtes OOS-Fenster.
+      # Der Default bleibt deshalb das bekannte Entwicklungsfenster bis Ende 2023.
       END_DATE: "2023-12-31"
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_daily_pivot_dev_market_ablation_v1"
+      RUN_LABEL: "minervini_sepa_daily_v1"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -76,23 +79,20 @@ services:
       # Simulationsmodus:
       # independent = jedes getriggerte Setup unabhaengig handeln (Research-Modus).
       # portfolio   = echte Cash-, Exposure- und Positionslimits anwenden.
-      # Fuer die Signal-Ablation werden Cash- und Slot-Effekte ausgeblendet.
-      # Die zwei festen Arme unterscheiden sich ausschliesslich darin, ob der
-      # am Vortag bekannte QQQ/VOO-Marktstatus neue Entries blockieren darf.
-      SIMULATION_MODE: "independent"
+      SIMULATION_MODE: "portfolio"
 
       # -- Universumsfilter (werden pro Tag, also as-of-date angewendet) ----------
-      # Mindest-Schlusskurs in USD; Aktien darunter sind nicht rankbar (Penny-Stock-Filter).
+      # Mindest-Rohschlusskurs in USD; dadurch erzeugen spaetere Splits keine
+      # rueckwirkenden Penny-Stock-Ausschluesse.
       MIN_PRICE: "5.0"
       # Mindest-Dollar-Umsatz pro Tag (Ø ueber 63 Handelstage, Kurs x Volumen) in USD;
       # filtert illiquide Titel aus RS-Ranking und Screen.
       MIN_DOLLAR_VOLUME: "2000000"
 
       # -- Relative Strength (IBD-Naeherung, Querschnitts-Perzentil 1-99) ---------
-      # Lookback-Perioden in Handelstagen fuer den RS-Rohscore
-      # (63/126/189/252 = ca. 3/6/9/12 Monate).
+      # Grenzen der vier disjunkten RS-Quartale in Handelstagen.
       RS_LOOKBACKS: "63,126,189,252"
-      # Gewichte der Lookbacks in gleicher Reihenfolge; 2,1,1,1 = letztes Quartal doppelt.
+      # 2,1,1,1 ergibt 40/20/20/20 mit hoechstem Gewicht auf dem juengsten Quartal.
       RS_WEIGHTS: "2,1,1,1"
       # Mindest-RS-Rating (1-99) fuer Kriterium 8 des Trend Templates.
       # Minervini: >= 70, bevorzugt 80-90+.
@@ -115,7 +115,7 @@ services:
       # true = Marktstatus begrenzt neue Entries und Portfolio-Exposure.
       # Offene Positionen laufen weiterhin in ihre regulaeren Exits.
       # true erzwingt bereits beim Laden die Vollstaendigkeitspruefung fuer QQQ
-      # und VOO. Der sensitivity-Workflow setzt den Wert je Arm auf off/on.
+      # und VOO.
       MARKET_FILTER_ENABLE: "true"
       MARKET_INDEX_SYMBOLS: "QQQ,VOO"
       MARKET_PRIMARY_INDEX: "QQQ"
@@ -149,9 +149,8 @@ services:
       REGIME_ALLOWED_LABELS: "RISK-ON,CONSTRUCTIVE,NEUTRAL"
 
       # -- IBKR-Gruppenfuehrung (Industry -> Category -> staerkste Aktien) -------
-      # true = Screen verlangt starke IBKR Industry, starke IBKR Category und
-      # Fuehrung der Aktie innerhalb dieser Gruppen.
-      IBKR_GROUP_FILTER_ENABLE: "true"
+      # Gruppenwerte bleiben Ranking-/Attributionsmerkmale, blockieren den
+      # Trend- und Chart-Setup-Funnel aber nicht hart.
       # Mindest-RS-Rating der IBKR Industry-Gruppe (1-99), berechnet aus dem
       # Median-RS der rankbaren Mitglieder.
       IBKR_INDUSTRY_RS_MIN: "70"
@@ -165,12 +164,10 @@ services:
       # als vergleichbare Gruppe gewertet wird.
       IBKR_INDUSTRY_MIN_SYMBOLS: "5"
       IBKR_CATEGORY_MIN_SYMBOLS: "3"
-      # Zusaetzlicher Breadth-Gate je IBKR Industry: Anteil der Aktien dieser
-      # Industry ueber ihrer 200d-MA. Nur aktive Industries duerfen screenen.
-      IBKR_INDUSTRY_BREADTH_FILTER_ENABLE: "true"
-      # Industry-Gate schaltet AN, wenn die Breadth mindestens 55 % erreicht.
+      # Industry-Breadth bleibt Diagnose-/Ranking-Kontext, kein Entry-Gate.
+      # Diagnosezustand schaltet AN, wenn die Breadth mindestens 55 % erreicht.
       IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
-      # Industry-Gate bleibt an bis die Breadth unter 45 % faellt.
+      # Diagnosezustand bleibt an bis die Breadth unter 45 % faellt.
       IBKR_INDUSTRY_BREADTH_OFF_THRESHOLD: "0.45"
       # Mindestzahl rankbarer Aktien je Industry fuer die Breadth-Berechnung.
       IBKR_INDUSTRY_BREADTH_MIN_SYMBOLS: "5"
@@ -183,7 +180,7 @@ services:
       REVENUE_YOY_MIN: "0.10"
       # true = Setups mit bekannt schwachem EPS- UND Umsatzwachstum werden in
       # der Simulation nicht gehandelt. Fehlende EPS-Daten bleiben erlaubt.
-      BAD_FUNDAMENTALS_FILTER_ENABLE: "true"
+      BAD_FUNDAMENTALS_FILTER_ENABLE: "false"
       # Wie viele der sechs Flags (EPS, Umsatz, Margen, Beschleunigung,
       # Wachstumsserie, Jahresstabilitaet) mindestens
       # bestehen muessen, damit fundamentals_pass = true.
@@ -192,20 +189,20 @@ services:
       ACCELERATION_MIN: "0.0"
       QUARTERLY_GROWTH_STREAK_MIN: "2"
       QUARTERLY_FUNDAMENTAL_STALE_TRADING_DAYS: "130"
-      INSTITUTIONAL_SPONSORSHIP_FILTER_ENABLE: "true"
+      # 13F-Sponsorship bleibt point-in-time Ranking-Kontext, kein harter Gate.
       INSTITUTIONAL_MIN_MANAGERS: "10"
       INSTITUTIONAL_NET_ACTIVITY_MIN: "0"
       INSTITUTIONAL_ACTIVITY_LOOKBACK_SESSIONS: "130"
 
-      # -- VCP-Erkennung (Volatility Contraction Pattern) --------------------------
+      # -- Chart-Setup-Erkennung (VCP, Flat Base, Power Play, Tight Shelf) --------
       # Swing-Fenster k: ein Hoch/Tief gilt als Swingpunkt, wenn es Extremum ueber
       # +-k Bars ist. Ein Swing ist erst k Bars spaeter bestaetigt (kein Look-Ahead).
       # Kleiner = mehr, feinere Swings; groesser = nur markante Swings.
       SWING_WINDOW: "3"
       # Minimale Basisdauer in Handelstagen (erstes Basishoch bis Erkennungstag).
       BASE_MIN_DAYS: "15"
-      # Maximale Basisdauer in Handelstagen; aeltere Strukturen gelten nicht mehr als Basis.
-      BASE_MAX_DAYS: "75"
+      # Maximale Basisdauer in Handelstagen; 130 erlaubt laengere, normale Basen.
+      BASE_MAX_DAYS: "130"
       # Minimale Anzahl Kontraktionen (Hoch->Tief-Wellen) in der Basis.
       CONTRACTIONS_MIN: "2"
       # Maximale Anzahl Kontraktionen, die betrachtet werden.
@@ -218,19 +215,18 @@ services:
       # beschaedigte Charts, keine Konsolidierung.
       BASE_DEPTH_MAX: "0.35"
       # Pivot (Hoch der letzten Kontraktion) darf hoechstens so weit unter dem
-      # Basishoch liegen (0.05 = 5 %), sonst droht Overhead-Supply beim Ausbruch.
-      PIVOT_BELOW_BASE_HIGH_MAX: "0.05"
-      # Volumen-Dry-up: Ø-Volumen der letzten 5 Tage geteilt durch 50d-Ø-Volumen.
-      # Fuer die Ablation ist das Moderate-Band 0.20-0.85 eingefroren.
-      DRYUP_RATIO_MIN: "0.20"
-      DRYUP_RATIO_MAX: "0.85"
-      # Zielbereich fuer die Portfolio-Priorisierung bei konkurrierenden Setups.
-      DRYUP_RATIO_PREFERRED: "0.65"
+      # Basishoch liegen (0.08 = 8 %), sonst droht Overhead-Supply beim Ausbruch.
+      PIVOT_BELOW_BASE_HIGH_MAX: "0.08"
+      # Volumen-Dry-up: Ø-Volumen der letzten 5 Tage geteilt durch das vorherige
+      # 50d-Volumen. Niedriger ist stets besser; das ist ein Rankingmerkmal,
+      # kein Gate. Ab diesem Ratio erhaelt die Komponente null Punkte.
+      DRYUP_SCORE_ZERO_RATIO: "1.25"
       # Wie viele globale Handelssessions ein erkanntes Setup fuer den Breakout
       # gueltig bleibt; Symbol-Halts pausieren die Frist nicht. Danach kann nur
       # eine neue Swing-Struktur wieder ein Setup bilden.
-      SETUP_VALID_DAYS: "15"
-      VCP_SCORE_MIN: "60"
+      SETUP_VALID_DAYS: "20"
+      # Materialer Kursanstieg vor dem Basisbeginn (0.25 = 25 %).
+      PRIOR_ADVANCE_MIN: "0.25"
 
       # -- Simulation --------------------------------------------------------------
       # Independent nutzt INITIAL_EQUITY ohne Cash-/Positionslimits. Portfolio
@@ -267,8 +263,6 @@ services:
       MAX_BUY_ZONE_PCT: "0.02"
       TIME_STOP_SESSIONS: "10"
       TIME_STOP_MIN_R: "1.0"
-      PROFIT_PROTECTION_TRIGGER_R: "2.0"
-      PROFIT_PROTECTION_LOCK_R: "0.5"
 
       # -- Portfolio-Constraints (nur SIMULATION_MODE=portfolio) -----------------
       # Maximal gleichzeitig offene Positionen. 8 ist bewusst konservativ, damit

@@ -18,6 +18,7 @@ RUNS_TABLE = "backtesting_minervini_runs"
 BREAKOUT_EVENTS_TABLE = "backtesting_minervini_breakout_events"
 TRADES_TABLE = "backtesting_minervini_trades"
 EQUITY_TABLE = "backtesting_minervini_equity_daily"
+STAGE_STATE_TABLE = "backtesting_minervini_stage_state"
 
 RS_COLUMNS = ["period_end_date", "symbol", "rs_raw", "rs_rating", "universe_size"]
 
@@ -41,27 +42,26 @@ SCREEN_COLUMNS = [
 ]
 
 SETUP_COLUMNS = [
-    "symbol", "ibkr_industry", "ibkr_category", "detect_date", "pivot", "last_low", "stop_level",
-    "base_start_date", "base_days", "n_contractions", "base_count",
-    "dryup_ratio", "vcp_score", "depth_quality_score", "final_tightness_score",
-    "contraction_smoothness_score", "volume_dryup_score", "volume_slope_score",
-    "tight_closes_score", "base_duration_score", "pivot_proximity_score",
-    "overhead_supply_score", "prior_advance_score", "weekly_structure_score",
-    "close", "valid_until",
+    "symbol", "setup_type", "ibkr_industry", "ibkr_category", "detect_date",
+    "pivot", "last_low", "stop_level", "base_start_date", "base_days",
+    "n_contractions", "contraction_depths", "base_count", "dryup_ratio",
+    "setup_score", "prior_advance_pct", "final_tightness_pct",
+    "structure_quality_score", "volume_dryup_score", "tightness_score",
+    "pivot_proximity_score", "prior_advance_score", "close", "valid_until",
 ]
 
 TRADE_COLUMNS = [
-    "run_id", "position_id", "setup_id", "symbol", "ibkr_industry", "ibkr_category",
-    "leg", "exit_reason",
+    "run_id", "position_id", "setup_id", "setup_type", "symbol",
+    "ibkr_industry", "ibkr_category", "leg", "exit_reason",
     "entry_date", "entry_price", "stop_price", "pivot", "shares",
     "exit_date", "exit_price", "pnl", "r_multiple", "holding_days",
     "regime_composite", "regime_label",
 ]
 
 BREAKOUT_EVENT_COLUMNS = [
-    "run_id", "setup_id", "symbol", "setup_detect_date", "breakout_date",
-    "pivot", "trigger_price", "entry_filled", "entry_date", "entry_price",
-    "decision",
+    "run_id", "setup_id", "setup_type", "symbol", "setup_detect_date",
+    "breakout_date", "pivot", "trigger_price", "entry_filled", "entry_date",
+    "entry_price", "decision",
 ]
 
 MARKET_COLUMNS = [
@@ -76,6 +76,78 @@ EQUITY_COLUMNS = [
     "run_id", "period_end_date", "equity", "open_positions", "exposure_pct",
     "feedback_exposure_level", "market_exposure_cap", "entry_exposure_limit",
 ]
+
+
+def write_stage_state(
+    conn,
+    *,
+    stage: str,
+    model_version: str,
+    config_fingerprint: str,
+    input_fingerprint: str,
+    output_fingerprint: str,
+    start,
+    end,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""INSERT INTO {STAGE_STATE_TABLE}
+                (stage, model_version, config_fingerprint, input_fingerprint,
+                 output_fingerprint, start_date, end_date, updated_ts)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (stage) DO UPDATE SET
+                    model_version = EXCLUDED.model_version,
+                    config_fingerprint = EXCLUDED.config_fingerprint,
+                    input_fingerprint = EXCLUDED.input_fingerprint,
+                    output_fingerprint = EXCLUDED.output_fingerprint,
+                    start_date = EXCLUDED.start_date,
+                    end_date = EXCLUDED.end_date,
+                    updated_ts = now()""",
+            (
+                stage,
+                model_version,
+                config_fingerprint,
+                input_fingerprint,
+                output_fingerprint,
+                start,
+                end,
+            ),
+        )
+    conn.commit()
+
+
+def require_stage_state(
+    conn,
+    *,
+    stage: str,
+    model_version: str,
+    config_fingerprint: str,
+    input_fingerprint: str | None,
+    start,
+    end,
+) -> str:
+    state = db.read_df(
+        conn,
+        f"""SELECT model_version, config_fingerprint, input_fingerprint,
+                   output_fingerprint, start_date, end_date
+            FROM {STAGE_STATE_TABLE} WHERE stage = %s""",
+        (stage,),
+    )
+    if state.empty:
+        raise RuntimeError(f"missing {stage} stage state; run the prerequisite stage")
+    row = state.iloc[0]
+    matches = (
+        row["model_version"] == model_version
+        and row["config_fingerprint"] == config_fingerprint
+        and row["start_date"] == start
+        and row["end_date"] == end
+        and (input_fingerprint is None or row["input_fingerprint"] == input_fingerprint)
+    )
+    if not matches:
+        raise RuntimeError(
+            f"{stage} stage state does not match the current model/configuration"
+        )
+    return str(row["output_fingerprint"])
 
 
 def write_rs(conn, df: pd.DataFrame, start, end) -> None:
@@ -98,14 +170,20 @@ def write_setups(conn, df: pd.DataFrame, start, end) -> None:
     if df.empty:
         log.warning("no setups detected in %s..%s", start, end)
         return
+    df = df.copy()
+    df["contraction_depths"] = df["contraction_depths"].map(
+        lambda values: "{" + ",".join(f"{float(value):.8g}" for value in values) + "}"
+    )
     db.copy_df(conn, df, SETUPS_TABLE, SETUP_COLUMNS)
 
 
-def read_screen_pass_days(conn, start, end) -> pd.DataFrame:
+def read_screen_stage_output(conn, start, end) -> pd.DataFrame:
+    columns = ", ".join(SCREEN_COLUMNS)
     return db.read_df(
         conn,
-        f"""SELECT symbol, period_end_date FROM {SCREEN_TABLE}
-            WHERE screen_pass AND period_end_date BETWEEN %s AND %s""",
+        f"""SELECT {columns} FROM {SCREEN_TABLE}
+            WHERE screen_pass AND period_end_date BETWEEN %s AND %s
+            ORDER BY period_end_date, symbol""",
         (start, end),
     )
 
@@ -113,12 +191,23 @@ def read_screen_pass_days(conn, start, end) -> pd.DataFrame:
 def read_setups(conn, start, end) -> pd.DataFrame:
     return db.read_df(
         conn,
-        f"""SELECT st.setup_id, st.symbol, st.detect_date, st.pivot, st.last_low,
-                   st.stop_level, st.base_days, st.n_contractions,
-                   st.dryup_ratio, st.vcp_score, st.close, st.valid_until,
+        f"""SELECT st.setup_id, st.symbol, st.setup_type, st.detect_date,
+                   st.pivot, st.last_low,
+                   st.stop_level, st.base_start_date, st.base_days,
+                   st.n_contractions, st.contraction_depths, st.base_count,
+                   st.dryup_ratio,
+                   st.setup_score, st.prior_advance_pct,
+                   st.final_tightness_pct, st.structure_quality_score,
+                   st.volume_dryup_score, st.tightness_score,
+                   st.pivot_proximity_score, st.prior_advance_score,
+                   st.close, st.valid_until,
                    sc.rs_rating, sc.ibkr_industry_rs_rating,
                    sc.ibkr_category_rs_rating, sc.stock_industry_rs_rating,
-                   sc.stock_category_rs_rating, sc.eps_yoy, sc.revenue_yoy
+                   sc.stock_category_rs_rating, sc.group_filter_pass,
+                   sc.ibkr_industry_breadth_pass, sc.fundamental_score,
+                   sc.fundamentals_pass, sc.institutional_manager_count,
+                   sc.institutional_net_activity,
+                   sc.institutional_sponsorship_pass, sc.eps_yoy, sc.revenue_yoy
             FROM {SETUPS_TABLE} st
             LEFT JOIN {SCREEN_TABLE} sc
               ON sc.symbol = st.symbol
@@ -129,17 +218,28 @@ def read_setups(conn, start, end) -> pd.DataFrame:
     )
 
 
-def create_run(conn, cfg: Config, metrics: dict, start, end) -> int:
+def create_run(
+    conn,
+    cfg: Config,
+    metrics: dict,
+    start,
+    end,
+    *,
+    model_version: str,
+    input_fingerprint: str,
+) -> int:
     with conn.cursor() as cur:
         cur.execute(
             f"""INSERT INTO {RUNS_TABLE}
-                (run_label, start_date, end_date, params, initial_equity, final_equity,
+                (run_label, model_version, input_fingerprint, start_date, end_date,
+                 params, initial_equity, final_equity,
                  total_return, cagr, max_drawdown, win_rate, profit_factor,
                  avg_r_multiple, num_positions, num_trade_legs, avg_exposure)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING run_id""",
             (
-                cfg.run_label, start, end, cfg.to_json(),
+                cfg.run_label, model_version, input_fingerprint, start, end,
+                cfg.to_json(),
                 metrics.get("initial_equity"), metrics.get("final_equity"),
                 metrics.get("total_return"), metrics.get("cagr"),
                 metrics.get("max_drawdown"), metrics.get("win_rate"),

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src import db
 
@@ -66,3 +67,35 @@ def test_breakout_events_schema_is_a_365_day_hypertable_created_only_in_init_sql
     assert "'backtesting_minervini_breakout_events'" in schema
     assert "chunk_time_interval => INTERVAL '365 days'" in schema
     assert "CREATE TABLE" not in source
+
+
+def test_rebuilt_schema_has_typed_setups_and_no_legacy_vcp_columns():
+    root = Path(__file__).parents[1]
+    schema = (root / "init" / "schema.sql").read_text(encoding="utf-8")
+
+    assert "setup_type          TEXT NOT NULL" in schema
+    assert "setup_score         NUMERIC" in schema
+    assert "model_version       TEXT NOT NULL" in schema
+    assert "input_fingerprint   TEXT NOT NULL" in schema
+    assert "vcp_score" not in schema
+    assert "compression" not in schema.lower()
+    assert "DROP TABLE IF EXISTS backtesting_minervini_stage_state" in schema
+
+
+def test_runtime_schema_validation_fails_fast_on_legacy_result_tables(monkeypatch):
+    rows = [
+        {"table_name": table, "column_name": column}
+        for table, columns in db.RESULT_SCHEMA_COLUMNS.items()
+        for column in columns
+        if not (table == "backtesting_minervini_setups" and column == "setup_score")
+    ]
+    rows.append(
+        {
+            "table_name": "backtesting_minervini_setups",
+            "column_name": "vcp_score",
+        }
+    )
+    monkeypatch.setattr(db, "read_df", lambda *_args, **_kwargs: pd.DataFrame(rows))
+
+    with pytest.raises(RuntimeError, match="DROP_ALL_MINERVINI_TABLES_ON_START=true"):
+        db.validate_result_schema(object())

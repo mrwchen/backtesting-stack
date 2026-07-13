@@ -8,6 +8,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+from backtest_models import minervini as model
 
 from . import (
     data_loader,
@@ -16,10 +17,10 @@ from . import (
     group_filter,
     market_filter,
     persistence,
+    reproducibility,
     rs_rating,
     sensitivity,
     trend_template,
-    vcp,
 )
 from .config import Config
 from .simulator import simulate
@@ -34,9 +35,31 @@ SETUP_CONTEXT_COLUMNS = [
     "ibkr_category_rs_rating",
     "stock_industry_rs_rating",
     "stock_category_rs_rating",
+    "group_filter_pass",
+    "ibkr_industry_breadth_pass",
+    "fundamental_score",
+    "fundamentals_pass",
+    "institutional_manager_count",
+    "institutional_net_activity",
+    "institutional_sponsorship_pass",
     "eps_yoy",
     "revenue_yoy",
 ]
+
+SCREEN_FINGERPRINT_COLUMNS = tuple(persistence.SCREEN_COLUMNS)
+SETUP_FINGERPRINT_COLUMNS = (
+    "symbol", "setup_type", "detect_date", "pivot", "last_low", "stop_level",
+    "base_start_date", "base_days", "n_contractions", "base_count",
+    "contraction_depths", "dryup_ratio", "setup_score", "prior_advance_pct",
+    "final_tightness_pct", "structure_quality_score",
+    "volume_dryup_score", "tightness_score", "pivot_proximity_score",
+    "prior_advance_score", "close", "valid_until",
+)
+SIMULATION_FINGERPRINT_COLUMNS = SETUP_FINGERPRINT_COLUMNS + tuple(
+    column
+    for column in SETUP_CONTEXT_COLUMNS
+    if column not in {"symbol", "period_end_date"}
+)
 
 
 class _UtcFormatter(logging.Formatter):
@@ -52,6 +75,131 @@ def _configure_logging(level: str) -> None:
         )
     )
     logging.basicConfig(level=level, handlers=[handler], force=True)
+
+
+def _fingerprint_available(
+    frame: pd.DataFrame,
+    preferred_columns: tuple[str, ...],
+) -> str:
+    columns = tuple(column for column in preferred_columns if column in frame.columns)
+    if not columns:
+        raise ValueError("cannot fingerprint a frame without stable model columns")
+    return reproducibility.frame_fingerprint(frame, columns)
+
+
+def _screen_config_fingerprint(cfg: Config) -> str:
+    return reproducibility.config_fingerprint(
+        cfg,
+        reproducibility.SCREEN_CONFIG_FIELDS,
+        model_version=model.MODEL_VERSION,
+    )
+
+
+def _setup_input_fingerprint(
+    screen_fingerprint: str,
+    source_fingerprint: str,
+) -> str:
+    return reproducibility.combine_fingerprints(
+        screen=screen_fingerprint,
+        source=source_fingerprint,
+    )
+
+
+def _setup_config_fingerprint(cfg: Config, setup_input_fingerprint: str) -> str:
+    return reproducibility.config_fingerprint(
+        cfg,
+        reproducibility.SETUP_CONFIG_FIELDS,
+        model_version=model.MODEL_VERSION,
+        upstream_fingerprint=setup_input_fingerprint,
+    )
+
+
+def _source_input_fingerprint(matrices: dict, universe: pd.DataFrame) -> str:
+    price_fingerprint = reproducibility.matrix_fingerprint(
+        matrices["dates"],
+        matrices["symbols"],
+        {
+            field: matrices[field]
+            for field in ("open", "high", "low", "close", "raw_close", "volume")
+        },
+    )
+    universe_columns = tuple(
+        column
+        for column in (
+            "symbol", "exchange", "cik", "ibkr_industry", "ibkr_category"
+        )
+        if column in universe.columns
+    )
+    universe_fingerprint = reproducibility.frame_fingerprint(
+        universe, universe_columns
+    )
+    return reproducibility.combine_fingerprints(
+        prices=price_fingerprint,
+        universe=universe_fingerprint,
+    )
+
+
+def _require_matching_fingerprint(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+    expected: str,
+    stage: str,
+) -> None:
+    actual = _fingerprint_available(frame, columns)
+    if actual != expected:
+        raise RuntimeError(
+            f"persisted {stage} output fingerprint does not match its stage state"
+        )
+
+
+def _simulation_input_fingerprint(
+    cfg: Config,
+    setups: pd.DataFrame,
+    matrices: dict,
+    market_exposure_cap: np.ndarray | None,
+    regime_entry_allowed: np.ndarray | None,
+    regime: pd.DataFrame,
+) -> str:
+    dates = matrices["dates"]
+    price_matrices = {
+        field: matrices[field]
+        for field in ("open", "high", "low", "close")
+    }
+    price_fingerprint = reproducibility.matrix_fingerprint(
+        dates,
+        matrices["symbols"],
+        price_matrices,
+    )
+    gate_frame = pd.DataFrame({"date": dates})
+    if market_exposure_cap is not None:
+        gate_frame["market_exposure_cap"] = market_exposure_cap
+    if regime_entry_allowed is not None:
+        gate_frame["regime_entry_allowed"] = regime_entry_allowed
+    gate_fingerprint = reproducibility.frame_fingerprint(
+        gate_frame, tuple(gate_frame.columns)
+    )
+    regime_columns = tuple(
+        column
+        for column in ("day", "regime_composite", "regime_label")
+        if column in regime.columns
+    )
+    regime_fingerprint = (
+        reproducibility.frame_fingerprint(regime, regime_columns)
+        if regime_columns
+        else reproducibility.combine_fingerprints(regime="empty")
+    )
+    source_fingerprint = reproducibility.combine_fingerprints(
+        setups=_fingerprint_available(setups, SIMULATION_FINGERPRINT_COLUMNS),
+        prices=price_fingerprint,
+        gates=gate_fingerprint,
+        regime=regime_fingerprint,
+    )
+    return reproducibility.config_fingerprint(
+        cfg,
+        reproducibility.SIM_CONFIG_FIELDS,
+        model_version=model.MODEL_VERSION,
+        upstream_fingerprint=source_fingerprint,
+    )
 
 
 def _market_data_config(cfg: Config) -> Config:
@@ -167,9 +315,20 @@ def run_screen(
     close_m, volume_m = matrices["close"], matrices["volume"]
 
     log.info("computing relative strength for %d symbols", len(symbols))
-    rs = rs_rating.compute_rs(close_m, volume_m, cfg)
+    rs = rs_rating.compute_rs(
+        close_m,
+        volume_m,
+        cfg,
+        raw_close=matrices["raw_close"],
+    )
     log.info("computing trend template")
-    template = trend_template.compute_template(close_m, rs["rs_rating"], cfg)
+    template = trend_template.compute_template(
+        close_m,
+        rs["rs_rating"],
+        cfg,
+        high=matrices["high"],
+        low=matrices["low"],
+    )
 
     log.info("computing point-in-time fundamentals")
     quarterly = data_loader.load_quarterly_fundamentals(conn, cfg)
@@ -181,13 +340,11 @@ def run_screen(
     leadership = group_filter.compute_leadership(rs["rs_raw"], universe, cfg)
     log.info("computing IBKR industry breadth gate")
     industry_breadth = group_filter.compute_industry_breadth(close_m, universe, cfg)
-    screen_pass = (
-        template["template_pass"]
-        & fundamental["fundamentals_pass"]
-        & sponsorship["institutional_sponsorship_pass"]
-        & leadership["group_filter_pass"]
-        & industry_breadth["ibkr_industry_breadth_pass"]
-    )
+    # Candidate generation is deliberately independent of optional quality
+    # data. Fundamentals, sponsorship, group leadership and industry breadth
+    # are retained as point-in-time ranking/context fields, but a missing or
+    # lagging optional field must not hide a valid Stage-2 chart structure.
+    screen_pass = template["template_pass"]
 
     window_m = pd.DataFrame(
         np.broadcast_to(window[:, None], (len(dates), len(symbols))),
@@ -273,11 +430,18 @@ def run_screen(
     market_df["period_end_date"] = market_df["period_end_date"].dt.date
     market_df["market_breadth_pct"] = (market_df["market_breadth"] * 100).round(4)
     persistence.write_market(conn, market_df, start, end)
+    window_cells = int(window.sum()) * len(symbols)
     log.info(
-        "screen done: %d rs rows, %d screen rows (%d screen passes, %d group passes, %d industry breadth passes)",
-        len(rs_df), len(screen_df), int(screen_df["screen_pass"].sum()),
-        int(screen_df["group_filter_pass"].sum()),
-        int(screen_df["ibkr_industry_breadth_pass"].sum()),
+        "screen funnel cells %d rankable %d trend %d fundamentals %d sponsorship %d group %d industry-breadth %d candidates %d persisted %d",
+        window_cells,
+        int((rs["eligible"] & window_m).to_numpy().sum()),
+        int((template["template_pass"] & window_m).to_numpy().sum()),
+        int((fundamental["fundamentals_pass"] & window_m).to_numpy().sum()),
+        int((sponsorship["institutional_sponsorship_pass"] & window_m).to_numpy().sum()),
+        int((leadership["group_filter_pass"] & window_m).to_numpy().sum()),
+        int((industry_breadth["ibkr_industry_breadth_pass"] & window_m).to_numpy().sum()),
+        int((screen_pass & window_m).to_numpy().sum()),
+        len(screen_df),
     )
     return screen_df.loc[screen_df["screen_pass"]].reset_index(drop=True)
 
@@ -291,7 +455,7 @@ def detect_setups(
 ) -> pd.DataFrame:
     if pass_days.empty:
         return pd.DataFrame(
-            columns=[field.name for field in fields(vcp.Setup)]
+            columns=[field.name for field in fields(model.Setup)]
             + ["ibkr_industry", "ibkr_category"]
         )
 
@@ -299,7 +463,7 @@ def detect_setups(
     pass_days["period_end_date"] = pd.to_datetime(pass_days["period_end_date"])
     pass_by_symbol = pass_days.groupby("symbol")["period_end_date"].apply(list)
 
-    all_setups: list[vcp.Setup] = []
+    all_setups: list[model.Setup] = []
     grouped = prices[prices["symbol"].isin(pass_by_symbol.index)].groupby("symbol")
     for symbol, sub in grouped:
         sub = sub.sort_values("date")
@@ -312,7 +476,7 @@ def detect_setups(
         if len(local_idx) == 0:
             continue
         all_setups.extend(
-            vcp.find_setups(
+            model.find_setups(
                 symbol,
                 dates_s,
                 sub["high"].to_numpy(dtype=float),
@@ -324,13 +488,23 @@ def detect_setups(
                 trading_dates=trading_dates,
             )
         )
-    log.info("detected %d VCP setups across %d symbols", len(all_setups), len(pass_by_symbol))
     setups_df = pd.DataFrame([vars(s) for s in all_setups])
     if setups_df.empty:
+        log.info("detected 0 setups across %d candidate symbols", len(pass_by_symbol))
         return pd.DataFrame(
-            columns=[field.name for field in fields(vcp.Setup)]
+            columns=[field.name for field in fields(model.Setup)]
             + ["ibkr_industry", "ibkr_category"]
         )
+    setup_counts = " ".join(
+        f"{setup_type} {count}"
+        for setup_type, count in setups_df["setup_type"].value_counts().sort_index().items()
+    )
+    log.info(
+        "detected %d setups across %d candidate symbols types %s",
+        len(setups_df),
+        len(pass_by_symbol),
+        setup_counts,
+    )
     setups_df = setups_df.merge(
         universe[["symbol", "ibkr_industry", "ibkr_category"]],
         on="symbol",
@@ -339,11 +513,73 @@ def detect_setups(
     return setups_df
 
 
+def _log_gold_control_coverage(
+    setups: pd.DataFrame,
+    start: date,
+    end: date,
+    source_fingerprint: str,
+) -> None:
+    """Report frozen chart-review controls without turning them into targets."""
+    applicable = [
+        case for case in model.GOLD_CASES if start <= case.reference_date <= end
+    ]
+    if not applicable:
+        log.info("gold controls applicable 0")
+        return
+    detected = setups.copy()
+    if detected.empty:
+        detected_dates = pd.Series(dtype="datetime64[ns]")
+    else:
+        detected_dates = pd.to_datetime(detected["detect_date"])
+    covered: list[model.GoldCase] = []
+    for case in applicable:
+        reference = pd.Timestamp(case.reference_date)
+        in_window = (
+            (detected["symbol"] == case.symbol)
+            & detected_dates.between(
+                reference - pd.Timedelta(days=case.lookback_days),
+                reference + pd.Timedelta(days=case.forward_days),
+            )
+        ) if not detected.empty else pd.Series(dtype=bool)
+        case_setups = detected.loc[in_window] if len(in_window) else detected.iloc[0:0]
+        if not case_setups.empty:
+            covered.append(case)
+        setup_types = (
+            ",".join(sorted(case_setups["setup_type"].unique()))
+            if not case_setups.empty
+            else "none"
+        )
+        log.info(
+            "gold control %s %s reference %s window %d %d observed %d types %s source %s",
+            case.symbol,
+            case.role,
+            case.reference_date,
+            case.lookback_days,
+            case.forward_days,
+            len(case_setups),
+            setup_types,
+            source_fingerprint[:12],
+        )
+    for role in ("positive", "negative"):
+        role_cases = [case for case in applicable if case.role == role]
+        role_covered = [case for case in covered if case.role == role]
+        missing = ",".join(case.symbol for case in role_cases if case not in role_covered)
+        log.info(
+            "gold controls %s applicable %d observed %d missing %s",
+            role,
+            len(role_cases),
+            len(role_covered),
+            missing or "none",
+        )
+
+
 def run_setup(
     conn, cfg: Config, prices: pd.DataFrame, pass_days: pd.DataFrame,
     universe: pd.DataFrame, trading_dates: pd.DatetimeIndex, start, end,
+    *, source_fingerprint: str,
 ) -> pd.DataFrame:
     setups_df = detect_setups(cfg, prices, pass_days, universe, trading_dates)
+    _log_gold_control_coverage(setups_df, start, end, source_fingerprint)
     persistence.write_setups(conn, setups_df, start, end)
     return setups_df
 
@@ -361,8 +597,8 @@ def _prepare_simulation_setups(
     available_context = [
         column for column in SETUP_CONTEXT_COLUMNS if column in screen_passes.columns
     ]
-    if len(available_context) == len(SETUP_CONTEXT_COLUMNS):
-        context = screen_passes[SETUP_CONTEXT_COLUMNS].rename(
+    if {"symbol", "period_end_date"}.issubset(available_context):
+        context = screen_passes[available_context].rename(
             columns={"period_end_date": "detect_date"}
         )
         context = context.copy()
@@ -416,6 +652,14 @@ def _run_simulation(
         if cfg.regime_entry_filter_enable
         else None
     )
+    input_fingerprint = _simulation_input_fingerprint(
+        cfg,
+        setups,
+        matrices,
+        market_exposure_cap,
+        regime_entry_allowed,
+        regime,
+    )
     result = simulate(
         dates, matrices["symbols"],
         matrices["open"], matrices["high"], matrices["low"], matrices["close"],
@@ -423,7 +667,15 @@ def _run_simulation(
         market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
     )
-    run_id = persistence.create_run(conn, cfg, result.metrics, start, end)
+    run_id = persistence.create_run(
+        conn,
+        cfg,
+        result.metrics,
+        start,
+        end,
+        model_version=model.MODEL_VERSION,
+        input_fingerprint=input_fingerprint,
+    )
     trades = result.trades
     breakout_events = result.breakout_events
     if not breakout_events.empty:
@@ -468,14 +720,23 @@ def _run_simulation(
 
 def run_sim(
     conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
-    market: pd.DataFrame, start, end,
+    market: pd.DataFrame, start, end, *, setups: pd.DataFrame | None = None,
 ) -> tuple[int, dict]:
-    setups = persistence.read_setups(conn, start, end)
+    if setups is None:
+        setups = persistence.read_setups(conn, start, end)
     if setups.empty:
         log.warning("no setups in %s..%s -> persisting zero-signal run", start, end)
     regime = data_loader.load_regime_scores(conn, cfg)
     return _run_simulation(
-        conn, cfg, matrices, universe, market, setups, regime, start, end
+        conn,
+        cfg,
+        matrices,
+        universe,
+        market,
+        setups,
+        regime,
+        start,
+        end,
     )
 
 
@@ -492,7 +753,7 @@ def run_sensitivity(
 ) -> None:
     periods = sensitivity.phases(start, end)
     regime = data_loader.load_regime_scores(conn, cfg)
-    detection_cache: dict[tuple[float, float, float], pd.DataFrame] = {}
+    detection_cache: dict[str, pd.DataFrame] = {}
 
     log.info(
         "sensitivity start development-only market-filter ablation variants %d periods %d end-limit %s screen-pass-days %d symbols %d",
@@ -527,14 +788,11 @@ def run_sensitivity(
             phase_matrices = _slice_matrices(matrices, phase_end)
 
             log.info(
-                "sensitivity variant %s period %s %s %s score %.0f dryup %.2f %.2f market-filter %s setups %d",
+                "sensitivity variant %s period %s %s %s market-filter %s setups %d",
                 variant.name,
                 phase,
                 phase_start,
                 phase_end,
-                variant.vcp_score_min,
-                variant.dryup_ratio_min,
-                variant.dryup_ratio_max,
                 "on" if variant.market_filter_enable else "off",
                 len(phase_setups),
             )
@@ -572,7 +830,16 @@ def main() -> None:
             date.fromisoformat(cfg.start_date), date.fromisoformat(cfg.end_date)
         )
 
+    if cfg.stage == "all":
+        stages = ("screen", "setup", "sim")
+    elif cfg.stage == "sensitivity":
+        stages = ("screen", "sensitivity")
+    else:
+        stages = (cfg.stage,)
+
     conn = db.get_conn()
+    db.acquire_pipeline_lock(conn)
+    db.validate_result_schema(conn)
     prices = data_loader.load_prices(conn, cfg)
     universe = data_loader.load_universe(conn, cfg)
     prices = prices[prices["symbol"].isin(set(universe["symbol"]))]
@@ -585,8 +852,9 @@ def main() -> None:
     matrices = {"close": data_loader.pivot_field(prices, "close")}
     matrices["dates"] = matrices["close"].index
     matrices["symbols"] = matrices["close"].columns
-    for field in ("open", "high", "low", "volume"):
+    for field in ("open", "high", "low", "volume", "raw_close"):
         matrices[field] = data_loader.pivot_field(prices, field)
+    source_input_fingerprint = _source_input_fingerprint(matrices, universe)
 
     dates = matrices["dates"]
     window = np.asarray(dates >= pd.Timestamp(cfg.start_date))
@@ -594,33 +862,143 @@ def main() -> None:
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
 
-    index_bars = data_loader.load_market_indexes(conn, _market_data_config(cfg))
-    market = market_filter.compute_market_model(matrices["close"], index_bars, cfg)
-    log.info(
-        "Market model latest %s breadth %.1f%% entry cap %.0f%% active %d %d days",
-        market["market_status"].iloc[-1],
-        100 * market["market_breadth"].iloc[-1],
-        100 * market["entry_exposure_cap"].iloc[-1],
-        int(market.loc[window, "market_on"].sum()), int(window.sum()),
-    )
-
-    if cfg.stage == "all":
-        stages = ("screen", "setup", "sim")
-    elif cfg.stage == "sensitivity":
-        stages = ("screen", "sensitivity")
+    if {"screen", "sim", "sensitivity"}.intersection(stages):
+        index_bars = data_loader.load_market_indexes(
+            conn, _market_data_config(cfg)
+        )
+        market = market_filter.compute_market_model(
+            matrices["close"], index_bars, cfg
+        )
+        log.info(
+            "Market model latest %s breadth %.1f%% entry cap %.0f%% active %d %d days",
+            market["market_status"].iloc[-1],
+            100 * market["market_breadth"].iloc[-1],
+            100 * market["entry_exposure_cap"].iloc[-1],
+            int(market.loc[window, "market_on"].sum()), int(window.sum()),
+        )
     else:
-        stages = (cfg.stage,)
+        market = pd.DataFrame(index=matrices["dates"])
     pass_days = None
+    setups = None
+    screen_output_fingerprint = None
+    setup_output_fingerprint = None
+    setup_input_fingerprint = None
+    screen_config_fingerprint = _screen_config_fingerprint(cfg)
     if "screen" in stages:
         pass_days = run_screen(conn, cfg, matrices, market, universe, window)
+        screen_output_fingerprint = _fingerprint_available(
+            pass_days, SCREEN_FINGERPRINT_COLUMNS
+        )
+        persistence.write_stage_state(
+            conn,
+            stage="screen",
+            model_version=model.MODEL_VERSION,
+            config_fingerprint=screen_config_fingerprint,
+            input_fingerprint=source_input_fingerprint,
+            output_fingerprint=screen_output_fingerprint,
+            start=start,
+            end=end,
+        )
     if "setup" in stages:
         if pass_days is None:
-            pass_days = persistence.read_screen_pass_days(conn, start, end)
-        run_setup(
-            conn, cfg, prices, pass_days, universe, matrices["dates"], start, end
+            screen_output_fingerprint = persistence.require_stage_state(
+                conn,
+                stage="screen",
+                model_version=model.MODEL_VERSION,
+                config_fingerprint=screen_config_fingerprint,
+                input_fingerprint=source_input_fingerprint,
+                start=start,
+                end=end,
+            )
+            pass_days = persistence.read_screen_stage_output(conn, start, end)
+            _require_matching_fingerprint(
+                pass_days,
+                SCREEN_FINGERPRINT_COLUMNS,
+                screen_output_fingerprint,
+                "screen",
+            )
+        assert screen_output_fingerprint is not None
+        setups = run_setup(
+            conn,
+            cfg,
+            prices,
+            pass_days,
+            universe,
+            matrices["dates"],
+            start,
+            end,
+            source_fingerprint=source_input_fingerprint,
+        )
+        setup_input_fingerprint = _setup_input_fingerprint(
+            screen_output_fingerprint, source_input_fingerprint
+        )
+        setup_config_fingerprint = _setup_config_fingerprint(
+            cfg, setup_input_fingerprint
+        )
+        setup_output_fingerprint = _fingerprint_available(
+            setups, SETUP_FINGERPRINT_COLUMNS
+        )
+        persistence.write_stage_state(
+            conn,
+            stage="setup",
+            model_version=model.MODEL_VERSION,
+            config_fingerprint=setup_config_fingerprint,
+            input_fingerprint=setup_input_fingerprint,
+            output_fingerprint=setup_output_fingerprint,
+            start=start,
+            end=end,
         )
     if "sim" in stages:
-        run_sim(conn, cfg, matrices, universe, market, start, end)
+        if screen_output_fingerprint is None:
+            screen_output_fingerprint = persistence.require_stage_state(
+                conn,
+                stage="screen",
+                model_version=model.MODEL_VERSION,
+                config_fingerprint=screen_config_fingerprint,
+                input_fingerprint=source_input_fingerprint,
+                start=start,
+                end=end,
+            )
+            pass_days = persistence.read_screen_stage_output(conn, start, end)
+            _require_matching_fingerprint(
+                pass_days,
+                SCREEN_FINGERPRINT_COLUMNS,
+                screen_output_fingerprint,
+                "screen",
+            )
+        setup_input_fingerprint = _setup_input_fingerprint(
+            screen_output_fingerprint, source_input_fingerprint
+        )
+        setup_config_fingerprint = _setup_config_fingerprint(
+            cfg, setup_input_fingerprint
+        )
+        if setup_output_fingerprint is None:
+            setup_output_fingerprint = persistence.require_stage_state(
+                conn,
+                stage="setup",
+                model_version=model.MODEL_VERSION,
+                config_fingerprint=setup_config_fingerprint,
+                input_fingerprint=setup_input_fingerprint,
+                start=start,
+                end=end,
+            )
+        setups = persistence.read_setups(conn, start, end)
+        _require_matching_fingerprint(
+            setups,
+            SETUP_FINGERPRINT_COLUMNS,
+            setup_output_fingerprint,
+            "setup",
+        )
+        run_sim(
+            conn,
+            cfg,
+            matrices,
+            universe,
+            market,
+            start,
+            end,
+            setups=setups,
+        )
     if "sensitivity" in stages:
         assert pass_days is not None
         run_sensitivity(

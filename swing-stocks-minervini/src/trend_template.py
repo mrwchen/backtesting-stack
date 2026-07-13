@@ -16,12 +16,19 @@ import pandas as pd
 from .config import Config
 
 
-def compute_template(close: pd.DataFrame, rs_rating: pd.DataFrame, cfg: Config) -> dict:
+def compute_template(
+    close: pd.DataFrame,
+    rs_rating: pd.DataFrame,
+    cfg: Config,
+    *,
+    high: pd.DataFrame,
+    low: pd.DataFrame,
+) -> dict:
     ma50 = close.rolling(50, min_periods=50).mean()
     ma150 = close.rolling(150, min_periods=150).mean()
     ma200 = close.rolling(200, min_periods=200).mean()
-    low52 = close.rolling(252, min_periods=200).min()
-    high52 = close.rolling(252, min_periods=200).max()
+    low52 = low.rolling(252, min_periods=200).min()
+    high52 = high.rolling(252, min_periods=200).max()
 
     crit = {
         "crit_price_above_ma150_200": (close > ma150) & (close > ma200),

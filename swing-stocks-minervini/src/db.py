@@ -11,6 +11,40 @@ import psycopg2
 
 log = logging.getLogger(__name__)
 
+RESULT_SCHEMA_COLUMNS = {
+    "backtesting_minervini_stage_state": {
+        "stage", "model_version", "config_fingerprint", "input_fingerprint",
+        "output_fingerprint", "start_date", "end_date",
+    },
+    "backtesting_minervini_screen_daily": {
+        "period_end_date", "symbol", "screen_pass", "fundamental_score",
+        "institutional_manager_count", "ibkr_industry_rs_rating",
+    },
+    "backtesting_minervini_rs_daily": {
+        "period_end_date", "symbol", "rs_raw", "rs_rating",
+    },
+    "backtesting_minervini_market_daily": {
+        "period_end_date", "market_status", "entry_exposure_cap",
+    },
+    "backtesting_minervini_setups": {
+        "setup_id", "symbol", "setup_type", "detect_date", "pivot",
+        "contraction_depths", "setup_score", "structure_quality_score",
+        "prior_advance_pct", "valid_until",
+    },
+    "backtesting_minervini_runs": {
+        "run_id", "model_version", "input_fingerprint", "params",
+    },
+    "backtesting_minervini_breakout_events": {
+        "run_id", "setup_id", "setup_type", "breakout_date", "decision",
+    },
+    "backtesting_minervini_trades": {
+        "run_id", "position_id", "setup_type", "entry_date", "exit_date",
+    },
+    "backtesting_minervini_equity_daily": {
+        "run_id", "period_end_date", "equity", "entry_exposure_limit",
+    },
+}
+
 
 def get_conn():
     return psycopg2.connect(
@@ -22,6 +56,48 @@ def get_conn():
         application_name="backtesting_minervini",
         connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "15")),
     )
+
+
+def acquire_pipeline_lock(conn) -> None:
+    """Serialize writers because functional result tables are not run-scoped."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_lock(hashtext(%s)::bigint)",
+            ("backtesting_minervini_pipeline",),
+        )
+        acquired = bool(cur.fetchone()[0])
+    if not acquired:
+        raise RuntimeError("another Minervini pipeline writer is already running")
+
+
+def validate_result_schema(conn) -> None:
+    """Fail before data loading when the incompatible result schema was not dropped."""
+    tables = tuple(RESULT_SCHEMA_COLUMNS)
+    actual = read_df(
+        conn,
+        """SELECT table_name, column_name
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ANY (%s)""",
+        (list(tables),),
+    )
+    actual_by_table = {
+        table: set(actual.loc[actual["table_name"] == table, "column_name"])
+        if not actual.empty else set()
+        for table in tables
+    }
+    missing = [
+        f"{table}.{column}"
+        for table, columns in RESULT_SCHEMA_COLUMNS.items()
+        for column in sorted(columns - actual_by_table[table])
+    ]
+    legacy = "vcp_score" in actual_by_table["backtesting_minervini_setups"]
+    if missing or legacy:
+        detail = ",".join(missing[:12]) or "legacy vcp_score column"
+        raise RuntimeError(
+            "Minervini result schema is incompatible; run once with "
+            f"DROP_ALL_MINERVINI_TABLES_ON_START=true; details {detail}"
+        )
 
 
 def read_df(conn, sql: str, params: dict | tuple | None = None) -> pd.DataFrame:

@@ -5,6 +5,7 @@ from src import data_loader
 from src.data_loader import (
     _normalize_quarterly_fundamental_events,
     _require_quarterly_fundamental_events,
+    _validate_prices,
 )
 
 from .util import make_cfg
@@ -87,12 +88,64 @@ def test_all_stock_inputs_use_the_same_full_security_identity():
         assert ".cik" in query
 
 
+def test_prices_expose_raw_close_without_replacing_adjusted_technical_fields():
+    assert "p.adjusted_close::float8                 AS close" in data_loader.PRICES_SQL
+    assert "p.raw_close::float8                      AS raw_close" in data_loader.PRICES_SQL
+
+
+def test_price_validation_rejects_ambiguous_duplicate_identity_dates():
+    prices = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA"],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-02"]),
+            "open": [10.0, 10.0],
+            "high": [11.0, 11.0],
+            "low": [9.0, 9.0],
+            "close": [10.5, 10.5],
+            "raw_close": [10.5, 10.5],
+            "volume": [1000.0, 1000.0],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="duplicate symbol/date"):
+        _validate_prices(prices)
+
+
+def test_price_validation_discards_non_causal_or_missing_nominal_bars():
+    prices = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "BBB"],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02"]),
+            "open": [10.0, 10.0, 20.0],
+            "high": [11.0, 9.0, 21.0],
+            "low": [9.0, 8.0, 19.0],
+            "close": [10.5, 10.5, 20.5],
+            "raw_close": [10.5, 10.5, None],
+            "volume": [1000.0, 1000.0, 1000.0],
+        }
+    )
+
+    clean = _validate_prices(prices)
+
+    assert clean[["symbol", "date"]].to_dict("records") == [
+        {"symbol": "AAA", "date": pd.Timestamp("2024-01-02")}
+    ]
+
+
+def test_cache_path_contains_explicit_contract_version(tmp_path):
+    cfg = make_cfg(cache_dir=str(tmp_path))
+    path = data_loader._cache_path(cfg, "prices_2020_2023")
+
+    assert data_loader.CACHE_SCHEMA_VERSION in path
+    assert path.endswith(".parquet")
+
+
 def test_sponsorship_loader_reads_compact_identity_events_and_refreshes_cache_version():
     assert "stock_core_13f_sponsorship_identity_events" in data_loader.SPONSORSHIP_SQL
     assert "stock_core_13f_sponsorship_events e" not in data_loader.SPONSORSHIP_SQL
 
 
-def test_sponsorship_loader_uses_v2_cache_for_compact_source(tmp_path, monkeypatch):
+def test_sponsorship_loader_uses_v3_source_validated_cache(tmp_path, monkeypatch):
     observed = {}
 
     def read_df(_conn, query, _params):
@@ -109,6 +162,7 @@ def test_sponsorship_loader_uses_v2_cache_for_compact_source(tmp_path, monkeypat
     monkeypatch.setattr(data_loader.db, "read_df", read_df)
     def cached(_cfg, name, loader, **_kwargs):
         observed["cache_name"] = name
+        observed["cache_kwargs"] = _kwargs
         return loader()
 
     monkeypatch.setattr(data_loader, "_cached", cached)
@@ -120,7 +174,37 @@ def test_sponsorship_loader_uses_v2_cache_for_compact_source(tmp_path, monkeypat
 
     assert len(result) == 1
     assert "stock_core_13f_sponsorship_identity_events" in observed["query"]
-    assert observed["cache_name"] == "sponsorship_identity_v2_2023-12-31"
+    assert observed["cache_name"] == "sponsorship_identity_v3_2023-12-31"
+    assert observed["cache_kwargs"]["validate_source"] is True
+
+
+def test_sponsorship_live_empty_source_cannot_be_hidden_by_cache(tmp_path, monkeypatch):
+    calls = 0
+
+    def source_changes(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return pd.DataFrame(
+                {
+                    "symbol": ["AAA"],
+                    "available_date": ["2023-12-29"],
+                    "manager_count_delta": [1.0],
+                    "net_activity_delta": [1.0],
+                }
+            )
+        return pd.DataFrame()
+
+    monkeypatch.setattr(data_loader.db, "read_df", source_changes)
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", lambda *_args, **_kwargs: None)
+    cfg = make_cfg(
+        cache_dir=str(tmp_path),
+        end_date="2023-12-31",
+    )
+
+    assert len(data_loader.load_sponsorship_events(object(), cfg)) == 1
+    assert data_loader.load_sponsorship_events(object(), cfg).empty
+    assert calls == 2
 
 
 def test_market_index_loader_fails_without_every_configured_proxy(tmp_path, monkeypatch):

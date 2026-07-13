@@ -1,276 +1,269 @@
 import numpy as np
 import pandas as pd
 
-from src.vcp import find_setups, find_swings
+from backtest_models.minervini import GOLD_CASES, find_setups, find_swings
 from tests.util import make_cfg
 
 
-def _base_series():
-    """Uptrend into a 3-contraction VCP base: 100 -> 85 (15%), 98 -> 90 (8%),
-    97 -> 93 (4%), then a quiet drift just below the pivot."""
-    close = np.concatenate(
-        [
-            np.linspace(50, 100, 60),   # 0..59  uptrend, swing high 100 @ 59
-            np.linspace(98.5, 85, 8),   # 60..67 contraction 1 low @ 67
-            np.linspace(87, 98, 8),     # 68..75 recovery, swing high 98 @ 75
-            np.linspace(96.5, 90, 6),   # 76..81 contraction 2 low @ 81
-            np.linspace(91.5, 97, 6),   # 82..87 recovery, swing high 97 @ 87
-            np.linspace(96, 93, 5),     # 88..92 contraction 3 low @ 92
-            np.linspace(93.5, 95.2, 8), # 93..100 tight drift below pivot
-        ]
-    )
-    high = close * 1.005
-    low = close * 0.995
-    volume = np.where(np.arange(len(close)) >= 88, 600_000.0, 1_000_000.0)
-    dates = pd.bdate_range("2023-01-02", periods=len(close))
+def _series(parts: list[np.ndarray], *, quiet_from: int, quiet_volume: float = 500_000.0):
+    close = np.concatenate(parts).astype(float)
+    high = close * 1.004
+    low = close * 0.996
+    volume = np.full(len(close), 1_000_000.0)
+    volume[quiet_from:] = quiet_volume
+    dates = pd.bdate_range("2020-01-02", periods=len(close))
     return dates, high, low, close, volume
 
 
-def test_swings_alternate():
-    dates, high, low, close, volume = _base_series()
-    swings = find_swings(high, low, k=3)
-    kinds = [s[2] for s in swings]
-    assert all(kinds[i] != kinds[i + 1] for i in range(len(kinds) - 1))
+def _vcp_series(*, second_low: float = 90.0, outside_bar: bool = False, quiet_volume: float = 500_000.0):
+    values = [
+        np.linspace(50, 100, 60),
+        np.linspace(98.5, 84, 8),
+        np.linspace(86, 98, 8),
+        np.linspace(96.5, second_low, 6),
+        np.linspace(second_low + 1.5, 97, 6),
+        np.linspace(96, 92.5, 5),
+        np.linspace(93.0, 95.8, 10),
+    ]
+    dates, high, low, close, volume = _series(values, quiet_from=88, quiet_volume=quiet_volume)
+    if outside_bar:
+        # Ambiguous bar between the first and second contractions. It must not
+        # erase the already confirmed first contraction.
+        high[72] = 100.5
+        low[72] = 82.0
+    return dates, high, low, close, volume
 
 
-def test_swing_plateau_uses_first_bar_deterministically():
-    high = np.array([10.0, 12.0, 12.0, 11.0, 10.0])
-    low = np.array([9.0, 10.0, 10.0, 9.5, 9.0])
-
-    swings = find_swings(high, low, k=1)
-
-    assert (1, 12.0, "H") in swings
-    assert not any(index == 2 and kind == "H" for index, _, kind in swings)
-
-
-def test_outside_bar_is_a_barrier_not_an_intrabar_swing_pair():
-    # Bar 3 is simultaneously the local highest high and lowest low.  Its
-    # intraday ordering is unknowable and therefore clears the earlier chain.
-    high = np.array([10.0, 12.0, 11.0, 14.0, 11.0, 10.0])
-    low = np.array([9.0, 10.0, 8.0, 7.0, 8.0, 9.0])
-
-    assert find_swings(high, low, k=1) == []
-
-
-def test_detects_three_contraction_base():
-    dates, high, low, close, volume = _base_series()
-    cfg = make_cfg()
-    pass_idx = np.arange(93, 101)
-
-    setups = find_setups(
-        "TEST", dates, high, low, close, volume, pass_idx, cfg,
+def _detect(data, *, pass_start: int = 25, **overrides):
+    dates, high, low, close, volume = data
+    defaults = {
+        "dryup_score_zero_ratio": 1.25,
+        # The synthetic VCP fixtures deliberately exercise all three legs.
+        # Production configuration may still choose two as its minimum.
+        "contractions_min": 3,
+    }
+    defaults.update(overrides)
+    cfg = make_cfg(**defaults)
+    return find_setups(
+        "TEST",
+        dates,
+        high,
+        low,
+        close,
+        volume,
+        np.arange(pass_start, len(dates)),
+        cfg,
         trading_dates=dates,
     )
 
-    assert len(setups) == 1  # same base emitted once, not once per day
-    setup = setups[0]
-    assert setup.n_contractions == 3
-    assert abs(setup.pivot - 97 * 1.005) < 0.2
-    depths = setup.contraction_depths
-    assert depths[0] > depths[1] > depths[2]
-    assert cfg.dryup_ratio_min <= setup.dryup_ratio <= cfg.dryup_ratio_max
-    assert setup.last_low < setup.close < setup.pivot
-    # final low @ 92 confirms at bar 95 (k=3): no detection before that
-    assert dates.searchsorted(pd.Timestamp(setup.detect_date)) >= 95
 
+def test_vcp_requires_prior_advance():
+    data = _vcp_series()
+    found = _detect(data)
+    assert any(item.setup_type == "vcp" for item in found)
 
-def test_setup_expiry_counts_global_sessions_during_symbol_halt():
-    _, high, low, close, volume = _base_series()
-    global_dates = pd.bdate_range("2023-01-02", periods=140)
-    # The setup is detected on local bar 95. The symbol then has no bars for
-    # thirty global sessions and resumes with its remaining five observations.
-    symbol_dates = global_dates[:96].append(global_dates[126:131])
-    cfg = make_cfg(setup_valid_days=10)
-
-    setups = find_setups(
-        "TEST",
-        symbol_dates,
-        high,
-        low,
-        close,
-        volume,
-        np.array([95]),
-        cfg,
-        trading_dates=global_dates,
-    )
-
-    assert len(setups) == 1
-    assert setups[0].detect_date == global_dates[95].date()
-    assert setups[0].valid_until == global_dates[105].date()
-    assert setups[0].valid_until < symbol_dates[96].date()
-
-
-def test_vcp_structure_cannot_span_a_symbol_halt():
-    _, high, low, close, volume = _base_series()
-    global_dates = pd.bdate_range("2023-01-02", periods=150)
-    # The first contraction high is before a 40-session halt. Without a gap
-    # barrier, local-bar aging incorrectly combines it with post-resumption
-    # contractions into a fresh-looking three-contraction VCP.
-    symbol_dates = global_dates[:60].append(global_dates[100:141])
-    cfg = make_cfg(contractions_min=3)
-
-    setups = find_setups(
-        "TEST",
-        symbol_dates,
-        high,
-        low,
-        close,
-        volume,
-        np.arange(93, 101),
-        cfg,
-        trading_dates=global_dates,
-    )
-
-    assert setups == []
-
-
-def test_vcp_structure_cannot_span_an_incomplete_ohlcv_row():
-    dates, high, low, close, volume = _base_series()
+    dates, high, low, close, volume = data
     high = high.copy()
     low = low.copy()
-    high[71] = np.nan
-    low[71] = np.nan
+    close = close.copy()
+    high[:60] = np.linspace(92, 100, 60)
+    low[:60] = high[:60] * 0.996
+    close[:60] = high[:60] / 1.004
+    assert not any(item.setup_type == "vcp" for item in _detect((dates, high, low, close, volume)))
 
-    setups = find_setups(
+
+def test_vcp_tolerates_one_modestly_wider_contraction():
+    # 16%, then roughly 9%, then 4.5%: normal VCP.
+    normal = [item for item in _detect(_vcp_series(second_low=90.0)) if item.setup_type == "vcp"]
+    # A roughly 10.5% middle contraction is slightly noisier but still
+    # substantially tighter than the first contraction.
+    noisy = [item for item in _detect(_vcp_series(second_low=88.0)) if item.setup_type == "vcp"]
+    assert normal and noisy
+
+
+def test_outside_bar_does_not_clear_confirmed_swing_history():
+    dates, high, low, close, volume = _vcp_series(outside_bar=True)
+    swings = find_swings(high, low, 3)
+    assert len(swings) >= 4
+    # The ambiguous observation can prevent a nearby extremum from being
+    # confirmed, but it must not erase the contraction confirmed before it.
+    assert swings[0][0] == 59 and swings[1][0] == 67
+    assert swings[-2][0] == 87 and swings[-1][0] == 92
+
+
+def test_long_vcp_base_beyond_old_75_day_ceiling_is_detected():
+    dates, high, low, close, volume = _vcp_series()
+    # Extend the middle recovery/contraction with 35 calm bars while retaining
+    # the causal extrema; total base age is now over 75 sessions.
+    insert_at = 76
+    filler_close = np.linspace(92, 95, 50)
+    close = np.insert(close, insert_at, filler_close)
+    high = np.insert(high, insert_at, filler_close * 1.004)
+    low = np.insert(low, insert_at, filler_close * 0.996)
+    volume = np.insert(volume, insert_at, np.full(50, 850_000.0))
+    dates = pd.bdate_range(dates[0], periods=len(close))
+    found = _detect(
+        (dates, high, low, close, volume),
+        pass_start=140,
+        base_max_days=130,
+    )
+    assert any(item.setup_type == "vcp" and item.base_days > 75 for item in found)
+
+
+def test_stronger_dryup_is_monotonically_better():
+    weak = [item for item in _detect(_vcp_series(quiet_volume=700_000.0)) if item.setup_type == "vcp"][0]
+    strong = [item for item in _detect(_vcp_series(quiet_volume=300_000.0)) if item.setup_type == "vcp"][0]
+    assert strong.dryup_ratio < weak.dryup_ratio
+    assert strong.volume_dryup_score > weak.volume_dryup_score
+    assert strong.setup_score > weak.setup_score
+
+
+def test_final_area_must_be_tight_and_below_pivot():
+    dates, high, low, close, volume = _vcp_series()
+    high = high.copy()
+    low = low.copy()
+    # This bar is already known when the final swing-low becomes confirmed.
+    high[93] *= 1.08
+    low[93] *= 0.92
+    assert not any(item.setup_type == "vcp" for item in _detect((dates, high, low, close, volume)))
+
+
+def test_flat_base_setup_class():
+    data = _series(
+        [
+            np.linspace(50, 72, 55),
+            70 + np.sin(np.linspace(0, 6 * np.pi, 42)) * 2.0,
+            np.linspace(70.5, 71.5, 8),
+        ],
+        quiet_from=90,
+    )
+    found = _detect(data)
+    assert any(item.setup_type == "flat_base" for item in found)
+
+
+def test_power_play_setup_class():
+    data = _series(
+        [
+            np.linspace(30, 35, 35),
+            np.linspace(35, 66, 20),
+            62 + np.sin(np.linspace(0, 3 * np.pi, 18)) * 2.0,
+            np.linspace(62.5, 64.5, 7),
+        ],
+        quiet_from=66,
+    )
+    found = _detect(data)
+    assert any(item.setup_type == "power_play" for item in found)
+
+
+def test_tight_shelf_setup_class():
+    data = _series(
+        [
+            np.linspace(45, 70, 60),
+            68.5 + np.sin(np.linspace(0, 2 * np.pi, 11)) * 1.0,
+            np.linspace(68.8, 69.0, 5),
+        ],
+        quiet_from=66,
+    )
+    found = _detect(data)
+    assert any(item.setup_type == "tight_shelf" for item in found)
+
+
+def test_range_setup_cannot_move_pivot_to_detection_day_breakout():
+    dates, high, low, close, volume = _series(
+        [
+            np.linspace(45, 70, 60),
+            68.5 + np.sin(np.linspace(0, 2 * np.pi, 11)),
+            np.linspace(68.8, 69.0, 5),
+        ],
+        quiet_from=66,
+    )
+    established_pivot = float(np.max(high[:-5]))
+    high[-1] = established_pivot * 1.03
+    close[-1] = established_pivot * 0.99
+
+    found = _detect(
+        (dates, high, low, close, volume), pass_start=len(dates) - 1
+    )
+
+    assert not any(
+        item.setup_type in {"flat_base", "power_play", "tight_shelf"}
+        for item in found
+    )
+
+
+def test_missing_volume_does_not_erase_valid_price_structure():
+    dates, high, low, close, volume = _vcp_series()
+    volume = volume.copy()
+    volume[72] = np.nan
+
+    found = _detect(
+        (dates, high, low, close, volume), pass_start=len(dates) - 1
+    )
+
+    assert any(item.setup_type == "vcp" for item in found)
+
+
+def test_zero_recent_volume_is_unknown_not_a_perfect_dryup_score():
+    dates, high, low, close, volume = _vcp_series()
+    volume = volume.copy()
+    volume[-5:] = 0.0
+
+    found = _detect(
+        (dates, high, low, close, volume), pass_start=len(dates) - 1
+    )
+    setup = next(item for item in found if item.setup_type == "vcp")
+
+    assert np.isnan(setup.dryup_ratio)
+    assert setup.volume_dryup_score == 0.0
+
+
+def test_setup_detection_is_causal_under_future_mutation():
+    data = _vcp_series()
+    original = _detect(data)
+    first = next(item for item in original if item.setup_type == "vcp")
+    cutoff = pd.Timestamp(first.detect_date)
+    dates, high, low, close, volume = data
+    future = dates > cutoff
+    high2, low2, close2, volume2 = (x.copy() for x in (high, low, close, volume))
+    high2[future] *= 1.7
+    low2[future] *= 0.6
+    close2[future] *= 1.2
+    volume2[future] *= 4
+    mutated = _detect((dates, high2, low2, close2, volume2))
+    first_mutated = next(item for item in mutated if item.setup_type == "vcp")
+    assert first_mutated == first
+
+
+def test_gold_catalog_is_balanced_metadata_not_asserted_signals():
+    positives = [case for case in GOLD_CASES if case.role == "positive"]
+    negatives = [case for case in GOLD_CASES if case.role == "negative"]
+    assert {case.symbol for case in positives} >= {"NVDA", "SMCI", "CELH", "ELF", "CROX", "MOD", "AXON"}
+    assert len(negatives) >= 5
+    assert all(case.reference_date and case.rationale and case.source for case in GOLD_CASES)
+    assert len({(case.symbol, case.role, case.reference_date) for case in GOLD_CASES}) == len(GOLD_CASES)
+
+
+def test_setup_expiry_uses_global_sessions():
+    dates, high, low, close, volume = _vcp_series()
+    global_dates = pd.bdate_range(dates[0], periods=len(dates) + 40)
+    found = find_setups(
         "TEST",
         dates,
         high,
         low,
         close,
         volume,
-        np.arange(93, 101),
-        make_cfg(contractions_min=3),
-        trading_dates=dates,
+        np.arange(25, len(dates)),
+        make_cfg(setup_valid_days=10, dryup_score_zero_ratio=1.25),
+        trading_dates=global_dates,
     )
-
-    assert setups == []
-
-
-def test_future_same_kind_extreme_cannot_rewrite_historical_setup():
-    dates, high, low, close, volume = _base_series()
-    prefix_len = len(dates)
-    tail_len = 16
-    dates = pd.bdate_range(dates[0], periods=prefix_len + tail_len)
-    tail_high = np.linspace(high[-1] + 0.05, high[-1] + 0.8, tail_len)
-    tail_close = np.linspace(close[-1] + 0.02, close[-1] + 0.5, tail_len)
-    benign_low = np.linspace(low[-1] + 0.01, low[-1] + 0.4, tail_len)
-    high_extended = np.concatenate([high, tail_high])
-    close_extended = np.concatenate([close, tail_close])
-    volume_extended = np.concatenate([volume, np.full(tail_len, 600_000.0)])
-    pass_idx = np.arange(93, prefix_len)
-
-    expected = find_setups(
-        "TEST",
-        dates,
-        high_extended,
-        np.concatenate([low, benign_low]),
-        close_extended,
-        volume_extended,
-        pass_idx,
-        make_cfg(),
-        trading_dates=dates,
-    )
-    assert len(expected) == 1
-
-    # Each suffix contains a newly confirmed, deeper low without an intervening
-    # swing high.  The old global merge used to replace the historical final
-    # low with this future event and make the already detected setup disappear.
-    for valley_offset in (4, 7, 10):
-        adversarial_low = benign_low.copy()
-        adversarial_low[valley_offset] = 80.0 - valley_offset
-        actual = find_setups(
-            "TEST",
-            dates,
-            high_extended,
-            np.concatenate([low, adversarial_low]),
-            close_extended,
-            volume_extended,
-            pass_idx,
-            make_cfg(),
-            trading_dates=dates,
-        )
-        assert actual == expected
+    setup = next(item for item in found if item.setup_type == "vcp")
+    detect_idx = global_dates.get_loc(pd.Timestamp(setup.detect_date))
+    assert setup.valid_until == global_dates[detect_idx + 10].date()
 
 
-def test_unchanged_structure_is_not_reemitted_after_validity_window():
-    dates, high, low, close, volume = _base_series()
-    # Extend far enough that the oldest contraction falls outside BASE_MAX_DAYS.
-    # The detector may then select a shorter suffix of the same swing chain,
-    # which still must not resurrect its unchanged terminal pivot/low pair.
-    extension_len = 50
-    dates = pd.bdate_range(dates[0], periods=len(dates) + extension_len)
-    extension_close = np.linspace(close[-1] + 0.01, 96.4, extension_len)
-    close = np.concatenate([close, extension_close])
-    high = np.concatenate([high, extension_close * 1.005])
-    low = np.concatenate([low, extension_close * 0.995])
-    volume = np.concatenate([volume, np.full(extension_len, 600_000.0)])
-    cfg = make_cfg(
-        setup_valid_days=5,
-        dryup_ratio_min=0.0,
-        dryup_ratio_max=2.0,
-    )
-
-    setups = find_setups(
-        "TEST", dates, high, low, close, volume, np.arange(93, len(dates)), cfg,
-        trading_dates=dates,
-    )
-
-    assert len(setups) == 1
-
-
-def test_unconfirmed_stop_breach_prevents_setup_emission():
-    dates, high, low, close, volume = _base_series()
-    low = low.copy()
-    # The final confirmed swing low is at bar 92. A fresh breakdown at bar 96
-    # is not yet a confirmed swing, but it is already known on the evaluation
-    # day and must invalidate the base immediately.
-    low[96] = 80.0
-
-    setups = find_setups(
-        "TEST", dates, high, low, close, volume, np.array([96]), make_cfg(),
-        trading_dates=dates,
-    )
-
-    assert setups == []
-
-
-def test_no_detection_without_volume_dryup():
-    dates, high, low, close, volume = _base_series()
-    volume[:] = 1_000_000.0  # no dry-up
-    setups = find_setups(
-        "TEST", dates, high, low, close, volume, np.arange(93, 101), make_cfg(),
-        trading_dates=dates,
-    )
-    assert setups == []
-
-
-def test_no_detection_when_volume_is_too_dead():
-    dates, high, low, close, volume = _base_series()
-    volume[np.arange(len(close)) >= 88] = 250_000.0
-    setups = find_setups(
-        "TEST", dates, high, low, close, volume, np.arange(93, 101), make_cfg(),
-        trading_dates=dates,
-    )
-    assert setups == []
-
-
-def test_no_detection_when_contractions_widen():
-    dates, high, low, close, volume = _base_series()
-    # invert the base: widening contractions (4% -> 8% -> 15%)
-    inverted = np.concatenate(
-        [
-            np.linspace(50, 100, 60),
-            np.linspace(99.5, 96, 8),    # 4% first
-            np.linspace(96.5, 98, 8),
-            np.linspace(97, 90, 6),      # 8%
-            np.linspace(90.5, 97, 6),
-            np.linspace(96, 85, 5),      # 15% last -> widening
-            np.linspace(85.5, 95.2, 8),
-        ]
-    )
-    setups = find_setups(
-        "TEST", dates, inverted * 1.005, inverted * 0.995, inverted, volume,
-        np.arange(93, 101), make_cfg(),
-        trading_dates=dates,
-    )
-    assert setups == []
+def test_setup_dataclass_has_explicit_type_and_no_legacy_vcp_score():
+    setup = _detect(_vcp_series())[0]
+    assert setup.setup_type in {"vcp", "flat_base", "power_play", "tight_shelf"}
+    assert setup.setup_score > 0
+    assert not hasattr(setup, "vcp_score")

@@ -1,1 +1,1 @@
-# Makes the project root importable (src package) when running pytest.
+"""Make the service-local packages importable when running pytest."""

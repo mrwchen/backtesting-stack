@@ -14,18 +14,11 @@ DEVELOPMENT_END_DATE = date(2023, 12, 31)
 @dataclass(frozen=True)
 class SensitivityVariant:
     name: str
-    vcp_score_min: float
-    dryup_ratio_min: float
-    dryup_ratio_max: float
     market_filter_enable: bool
 
     @property
-    def detection_key(self) -> tuple[float, float, float]:
-        return (
-            self.vcp_score_min,
-            self.dryup_ratio_min,
-            self.dryup_ratio_max,
-        )
+    def detection_key(self) -> str:
+        return "shared_model"
 
     def apply(self, cfg: Config, phase: str, start: date, end: date) -> Config:
         return replace(
@@ -33,16 +26,13 @@ class SensitivityVariant:
             start_date=start.isoformat(),
             end_date=end.isoformat(),
             run_label=f"{cfg.run_label}_{phase}_{self.name}",
-            vcp_score_min=self.vcp_score_min,
-            dryup_ratio_min=self.dryup_ratio_min,
-            dryup_ratio_max=self.dryup_ratio_max,
             market_filter_enable=self.market_filter_enable,
         )
 
 
 VARIANTS = (
-    SensitivityVariant("market_off", 60.0, 0.20, 0.85, False),
-    SensitivityVariant("market_on", 60.0, 0.20, 0.85, True),
+    SensitivityVariant("market_off", False),
+    SensitivityVariant("market_on", True),
 )
 
 

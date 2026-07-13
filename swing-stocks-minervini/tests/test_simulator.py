@@ -50,7 +50,7 @@ def _clean_cfg():
         slippage_pct=0.0, commission_pct=0.0, risk_pct=0.01,
         partial_at_r=2.0, partial_fraction=0.5, breakeven_after_partial=True,
         pivot_buffer_pct=0.0, max_buy_zone_pct=0.05,
-        time_stop_sessions=999, profit_protection_trigger_r=999.0,
+        time_stop_sessions=999,
         exposure_levels=(1.0,),
     )
 
@@ -74,7 +74,9 @@ def test_new_default_rule_rejects_entry_above_two_percent_buy_zone():
 def test_time_stop_exits_next_open_after_no_one_r_progress():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.2)]
-    bars += [(100.2, 102, 99, 100.5)] * 3
+    bars += [(100.2, 102, 99, 100.5)]
+    bars += [(100.2, 102, 99, 99.8)]  # minimum age and back below pivot
+    bars += [(99.5, 101, 99, 100.0)]
     bars += [(100.0, 101, 99, 100.0)]
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
     setups = _setup_row(dates, 4, 100.0, 95.0, 9)
@@ -89,9 +91,30 @@ def test_time_stop_exits_next_open_after_no_one_r_progress():
     )
     assert result.trades.iloc[0]["exit_reason"] == "time_stop"
     assert result.trades.iloc[0]["exit_date"] == dates[8].date()
+    assert result.trades.iloc[0]["exit_price"] == 99.5
 
 
-def test_progressive_exposure_steps_up_only_after_two_closed_winners():
+def test_time_stop_does_not_exit_slow_trade_while_close_holds_pivot():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.2)]
+    bars += [(100.2, 102, 99, 100.2)] * 4
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 9)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__, "partial_fraction": 0.0,
+            "time_stop_sessions": 2, "time_stop_min_r": 1.0,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    assert result.trades.iloc[0]["exit_reason"] == "eod"
+
+
+def test_progressive_exposure_steps_up_after_two_confirmed_winners():
     dates = pd.bdate_range("2024-01-01", periods=14)
     symbols = ["AAA", "BBB", "CCC"]
     fields = {
@@ -101,7 +124,7 @@ def test_progressive_exposure_steps_up_only_after_two_closed_winners():
     for symbol, entry in (("AAA", 5), ("BBB", 8), ("CCC", 11)):
         fields[symbol][entry] = (99.0, 101.0, 98.0, 100.2)
         fields[symbol][entry + 1] = (101.0, 111.0, 100.0, 108.0)
-        fields[symbol][entry + 2] = (102.0, 103.0, 101.0, 102.0)
+        fields[symbol][entry + 2 :] = (106.0, 107.0, 105.0, 106.0)
     frames = [
         pd.DataFrame({symbol: fields[symbol][:, field] for symbol in symbols}, index=dates)
         for field in range(4)
@@ -117,8 +140,7 @@ def test_progressive_exposure_steps_up_only_after_two_closed_winners():
         **{
             **_clean_cfg().__dict__, "simulation_mode": "portfolio",
             "partial_fraction": 0.0, "pivot_buffer_pct": 0.0,
-            "max_buy_zone_pct": 0.02, "profit_protection_trigger_r": 2.0,
-            "profit_protection_lock_r": 0.5,
+            "max_buy_zone_pct": 0.02,
             "exposure_levels": (0.25, 0.5, 0.75, 1.0),
             "portfolio_max_open_positions": 8,
         }
@@ -127,11 +149,54 @@ def test_progressive_exposure_steps_up_only_after_two_closed_winners():
     final_legs = result.trades[result.trades["leg"] == "final"].set_index("symbol")
     assert final_legs.loc["AAA", "pnl"] > 0
     assert final_legs.loc["BBB", "pnl"] > 0
+    # Feedback changes only aggregate gross capacity. It must not scale the
+    # otherwise identical per-trade risk budget a second time.
     assert final_legs.loc["CCC", "shares"] > final_legs.loc["BBB", "shares"]
     assert result.equity.loc[
         result.equity["period_end_date"] == dates[11].date(),
         "feedback_exposure_level",
     ].iloc[0] == 0.5
+
+
+def test_previous_close_open_winner_can_raise_next_session_exposure():
+    dates = pd.bdate_range("2024-01-01", periods=9)
+    aaa = [(98, 99, 97, 98)] * 5
+    aaa += [(99, 106, 98, 105.5)]  # entry; close confirms more than +1R
+    aaa += [(106, 107, 105, 106)] * 3
+    bbb = [(98, 99, 97, 98)] * 6
+    bbb += [(99, 101, 98, 100.5)]
+    bbb += [(101, 102, 100, 101)] * 2
+    dates, open_m, high_m, low_m, close_m = _multi_matrices(
+        {"AAA": aaa, "BBB": bbb}
+    )
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 8).assign(symbol="AAA", setup_id=1),
+            _setup_row(dates, 5, 100.0, 95.0, 8).assign(symbol="BBB", setup_id=2),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "exposure_levels": (0.1, 0.2),
+            "exposure_winners_to_step_up": 1,
+            "portfolio_max_open_positions": 2,
+        }
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    bbb_trade = result.trades.loc[result.trades["symbol"] == "BBB"].iloc[0]
+    assert bbb_trade["entry_date"] == dates[6].date()
+    assert result.equity.loc[
+        result.equity["period_end_date"] == dates[6].date(),
+        "feedback_exposure_level",
+    ].iloc[0] == 0.2
 
 
 def test_breakout_partial_and_breakeven_stop():
@@ -142,7 +207,9 @@ def test_breakout_partial_and_breakeven_stop():
     bars += [(100.5, 101, 99, 100)]  # day 7: low 99 <= BE stop 100 -> stopped out
     bars += [(100, 100.5, 99.5, 100)] * 12
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
-    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15)
+    setups = _setup_row(
+        dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15
+    ).assign(setup_type="vcp")
 
     result = simulate(
         dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
@@ -157,6 +224,7 @@ def test_breakout_partial_and_breakeven_stop():
     assert partial["shares"] == 50 and final["shares"] == 50
     assert partial["exit_reason"] == "partial_target"
     assert partial["exit_price"] == 110.0 and partial["pnl"] == 500.0
+    # The partial-specific break-even stop is hit intraday on the next bar.
     assert final["exit_reason"] == "stop" and final["exit_price"] == 100.0
     assert final["pnl"] == 0.0
     assert result.metrics["final_equity"] == 100500.0
@@ -169,7 +237,9 @@ def test_no_entry_on_excessive_gap():
     bars += [(99, 101, 98, 100)]    # a later pullback cannot revive the setup
     bars += [(107, 108, 106, 107)] * 9
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
-    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15)
+    setups = _setup_row(
+        dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15
+    ).assign(setup_type="vcp")
 
     result = simulate(
         dates, close_m.columns, open_m, high_m, low_m, close_m, setups,
@@ -186,7 +256,9 @@ def test_stop_hit_on_entry_day_exits_same_day():
     bars += [(99, 101, 94, 95)]  # breakout over 100 AND low breaches stop 95
     bars += [(95, 96, 94, 95)] * 10
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
-    setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15)
+    setups = _setup_row(
+        dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=15
+    ).assign(setup_type="vcp")
 
     result = simulate(
         dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
@@ -199,6 +271,7 @@ def test_stop_hit_on_entry_day_exits_same_day():
     assert trades.iloc[0]["pnl"] == 100 * (95.0 - 100.0)
     assert result.metrics["final_equity"] == 99500.0
     event = result.breakout_events.iloc[0]
+    assert event["setup_type"] == "vcp"
     assert event["decision"] == "filled"
     assert event["entry_date"] == event["breakout_date"] == dates[5].date()
 
@@ -273,19 +346,17 @@ def test_same_day_fill_does_not_depend_on_breakout_close() -> None:
     assert result.breakout_events.iloc[0]["entry_filled"]
 
 
-def test_entry_day_high_arms_profit_protection_for_next_session() -> None:
+def test_entry_day_two_r_high_arms_break_even_ratchet_for_next_session() -> None:
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 111, 98, 108)]  # entry 100, reaches 2R on entry day
-    bars += [(103, 104, 102, 103)]  # next stop is 102.5 and is hit
-    bars += [(103, 104, 102, 103)]
+    bars += [(101, 102, 99, 101)]  # break-even stop 100 becomes active and is hit
+    bars += [(106, 107, 104, 106)]
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
     setups = _setup_row(dates, detect_idx=4, pivot=100.0, stop=95.0, valid_idx=7)
     cfg = make_cfg(
         **{
             **_clean_cfg().__dict__,
             "partial_fraction": 0.0,
-            "profit_protection_trigger_r": 2.0,
-            "profit_protection_lock_r": 0.5,
         }
     )
 
@@ -294,7 +365,32 @@ def test_entry_day_high_arms_profit_protection_for_next_session() -> None:
     )
 
     assert result.trades.iloc[0]["exit_reason"] == "stop"
-    assert result.trades.iloc[0]["exit_price"] == 102.5
+    assert result.trades.iloc[0]["exit_price"] == 100.0
+
+
+@pytest.mark.parametrize(
+    ("qualified_high", "expected_stop"),
+    [(111.0, 100.0), (116.0, 105.0), (121.0, 110.0)],
+)
+def test_progressive_stop_ladder_is_armed_from_completed_high_for_next_day(
+    qualified_high, expected_stop
+):
+    next_open = expected_stop + 1.0
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, qualified_high, 98, qualified_high - 1.0)]
+    bars += [(next_open, next_open + 1.0, expected_stop - 1.0, next_open)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 6)
+    cfg = make_cfg(
+        **{**_clean_cfg().__dict__, "partial_fraction": 0.0}
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, cfg
+    )
+
+    assert result.trades.iloc[0]["exit_reason"] == "stop"
+    assert result.trades.iloc[0]["exit_price"] == expected_stop
 
 
 def test_market_blocked_breakout_is_recorded_once_and_consumed() -> None:
@@ -437,17 +533,17 @@ def test_full_portfolio_records_held_symbol_and_capacity_breakouts() -> None:
             {
                 "setup_id": 1, "symbol": "AAA", "detect_date": dates[0].date(),
                 "pivot": 100.0, "last_low": 95.0, "stop_level": 95.0,
-                "valid_until": dates[1].date(), "vcp_score": 90.0,
+                "valid_until": dates[1].date(), "setup_score": 90.0,
             },
             {
                 "setup_id": 2, "symbol": "AAA", "detect_date": dates[2].date(),
                 "pivot": 105.0, "last_low": 100.0, "stop_level": 100.0,
-                "valid_until": dates[4].date(), "vcp_score": 80.0,
+                "valid_until": dates[4].date(), "setup_score": 80.0,
             },
             {
                 "setup_id": 3, "symbol": "BBB", "detect_date": dates[2].date(),
                 "pivot": 100.0, "last_low": 95.0, "stop_level": 95.0,
-                "valid_until": dates[4].date(), "vcp_score": 95.0,
+                "valid_until": dates[4].date(), "setup_score": 95.0,
             },
         ]
     )
@@ -616,6 +712,47 @@ def test_portfolio_mode_prioritizes_quality_metrics():
 
     assert result.metrics["num_positions"] == 1
     assert result.trades.iloc[0]["symbol"] == "ZZZ"
+
+
+def test_portfolio_ranking_uses_context_inside_technical_score_bucket():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.0)]
+        + [(100, 101, 99, 100.0)] * 2
+    )
+    frames = [
+        pd.DataFrame({"TECH": bars[:, field], "LEADER": bars[:, field]}, index=dates)
+        for field in range(4)
+    ]
+    technical_only = _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+        symbol="TECH", setup_id=1, setup_score=74.0,
+        fundamental_score=0, rs_rating=70,
+    )
+    contextual_leader = _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+        symbol="LEADER", setup_id=2, setup_score=71.0,
+        fundamental_score=6, rs_rating=99,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+        }
+    )
+
+    result = simulate(
+        dates,
+        frames[0].columns,
+        frames[0],
+        frames[1],
+        frames[2],
+        frames[3],
+        pd.concat([technical_only, contextual_leader], ignore_index=True),
+        cfg,
+    )
+
+    assert result.trades["symbol"].unique().tolist() == ["LEADER"]
 
 
 def test_pre_session_slate_does_not_nominate_an_ex_post_trigger():
@@ -797,7 +934,7 @@ def test_same_day_exit_does_not_release_a_slot_or_revive_missed_setup():
     assert result.trades.iloc[0]["exit_reason"] == "stop"
 
 
-def test_new_setup_supersedes_an_older_setup_for_the_same_symbol():
+def test_new_setup_does_not_erase_a_better_older_setup_for_the_same_symbol():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 97, 100)]
     bars += [(109, 111, 100, 110)]
@@ -817,10 +954,74 @@ def test_new_setup_supersedes_an_older_setup_for_the_same_symbol():
         _clean_cfg(),
     )
 
-    assert len(result.trades) == 1
-    assert result.trades.iloc[0]["setup_id"] == 2
-    assert result.trades.iloc[0]["pivot"] == 110.0
-    assert result.trades.iloc[0]["entry_date"] == dates[6].date()
+    assert result.metrics["num_positions"] == 1
+    assert result.trades["setup_id"].unique().tolist() == [1]
+    assert result.trades.iloc[0]["pivot"] == 100.0
+    assert result.trades.iloc[0]["entry_date"] == dates[5].date()
+
+
+def test_new_setup_can_reenter_symbol_after_prior_position_is_closed():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]       # first setup fills
+    bars += [(96, 99, 94, 96)]         # first position stops
+    bars += [(104, 106, 103, 105)]     # new setup fills next session
+    bars += [(106, 107, 105, 106)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    first = _setup_row(dates, 4, 100.0, 95.0, 6).assign(setup_id=1)
+    second = _setup_row(dates, 6, 105.0, 100.0, 9).assign(setup_id=2)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        pd.concat([first, second], ignore_index=True),
+        _clean_cfg(),
+    )
+
+    final_trades = result.trades.loc[result.trades["leg"] == "final"]
+    assert final_trades["setup_id"].tolist() == [1, 2]
+    assert final_trades["position_id"].tolist() == [1, 2]
+    assert final_trades.iloc[1]["entry_date"] == dates[7].date()
+
+
+def test_known_next_open_exit_allows_later_same_session_reentry():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.2)]      # first setup fills
+    bars += [(100.2, 102, 99, 100.2)]
+    bars += [(100.2, 102, 99, 99.8)]    # schedules time stop next open
+    bars += [(104, 106, 103, 105)]       # old exits open; new setup fills later
+    bars += [(106, 107, 105, 106)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    first = _setup_row(dates, 4, 100.0, 95.0, 7).assign(setup_id=1)
+    second = _setup_row(dates, 7, 105.0, 100.0, 9).assign(setup_id=2)
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "partial_fraction": 0.0,
+            "time_stop_sessions": 2,
+            "time_stop_min_r": 1.0,
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        pd.concat([first, second], ignore_index=True),
+        cfg,
+    )
+
+    final_trades = result.trades.loc[result.trades["leg"] == "final"]
+    assert final_trades["setup_id"].tolist() == [1, 2]
+    assert final_trades.iloc[0]["exit_reason"] == "time_stop"
+    assert final_trades.iloc[0]["exit_date"] == dates[8].date()
+    assert final_trades.iloc[1]["entry_date"] == dates[8].date()
 
 
 def test_setup_is_consumed_when_its_base_invalidation_level_breaks():
@@ -930,7 +1131,7 @@ def test_zero_share_partial_does_not_raise_stop_on_entry_bar():
     assert result.trades.iloc[0]["exit_price"] == 105.0
 
 
-def test_dead_dryup_setup_is_skipped():
+def test_strong_volume_dryup_has_no_artificial_lower_rejection():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]
     bars += [(101, 102, 100.5, 101.5)] * 6
@@ -943,11 +1144,11 @@ def test_dead_dryup_setup_is_skipped():
         dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
     )
 
-    assert result.trades.empty
-    assert result.metrics["final_equity"] == 100000.0
+    assert result.metrics["num_positions"] == 1
+    assert result.metrics["final_equity"] > result.metrics["initial_equity"]
 
 
-def test_known_bad_growth_setup_is_skipped():
+def test_known_bad_growth_setup_is_skipped_only_when_explicit_gate_is_enabled():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]
     bars += [(101, 102, 100.5, 101.5)] * 6
@@ -957,7 +1158,14 @@ def test_known_bad_growth_setup_is_skipped():
     )
 
     result = simulate(
-        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        make_cfg(**{**_clean_cfg().__dict__, "bad_fundamentals_filter_enable": True}),
     )
 
     assert result.trades.empty
@@ -1143,12 +1351,61 @@ def test_market_exposure_cap_limits_portfolio_order_size():
         market_exposure_cap=market_cap,
     )
 
-    assert result.trades.iloc[0]["shares"] == 25
+    # The 25% cap is aggregate gross capacity. It must not shrink the normal
+    # 1%-risk order itself while that order fits below the portfolio cap.
+    assert result.trades.iloc[0]["shares"] == 100
     entry_equity = result.equity.loc[
         result.equity["period_end_date"] == dates[5].date()
     ].iloc[0]
     assert entry_equity["market_exposure_cap"] == 0.25
     assert entry_equity["entry_exposure_limit"] == 0.25
+
+
+def test_exposure_cap_does_not_reduce_configured_portfolio_slots():
+    n_symbols = 3
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100)]
+        + [(101, 102, 100, 101)] * 2
+    )
+    frames = [
+        pd.DataFrame({f"S{i}": bars[:, field] for i in range(n_symbols)}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+                symbol=f"S{i}", setup_id=i + 1
+            )
+            for i in range(n_symbols)
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "partial_fraction": 0.0,
+            "portfolio_max_open_positions": 3,
+            "exposure_levels": (1.0,),
+        }
+    )
+
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        cfg,
+        market_exposure_cap=np.full(len(dates), 0.25),
+    )
+
+    # All three configured slots may be nominated. The third order is reduced
+    # only by the single aggregate 25% gross reservation budget.
+    assert result.trades["symbol"].nunique() == 3
+    assert sorted(result.trades["shares"].tolist()) == [38, 100, 100]
+    assert result.equity["exposure_pct"].max() <= 0.25
 
 
 def test_regime_gate_blocks_entries_but_not_exits():
@@ -1300,10 +1557,12 @@ def test_partial_metrics_are_aggregated_at_position_granularity():
     )
 
     assert result.trades["shares"].tolist() == [25, 75]
-    assert result.trades["r_multiple"].tolist() == [2.0, -1.0]
-    assert result.metrics["win_rate"] == 0.0
-    assert result.metrics["profit_factor"] == 0.0
-    assert result.metrics["avg_r_multiple"] == -0.25
+    # The +2R high arms a break-even-or-better ratchet for the next day even
+    # when partial-specific break-even behavior is disabled.
+    assert result.trades["r_multiple"].tolist() == [2.0, 0.0]
+    assert result.metrics["win_rate"] == 1.0
+    assert result.metrics["profit_factor"] is None
+    assert result.metrics["avg_r_multiple"] == 0.5
 
 
 def test_active_setup_is_consumed_by_a_missing_symbol_session():
