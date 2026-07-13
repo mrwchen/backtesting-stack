@@ -149,7 +149,9 @@ class Config:
             start_date=_env("START_DATE", "2020-01-02"),
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
-            run_label=_env("RUN_LABEL", "minervini_sepa_daily_v6_validated_slate"),
+            run_label=_env(
+                "RUN_LABEL", "minervini_sepa_daily_v6_full_history_validation"
+            ),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),

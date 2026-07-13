@@ -11,10 +11,15 @@ def test_combined_mode_is_an_explicit_valid_runtime_mode(monkeypatch) -> None:
     assert Config.from_env().simulation_mode == "both"
 
 
-def test_default_run_label_identifies_v6_validated_slate(monkeypatch) -> None:
+def test_default_run_label_identifies_v6_full_history_validation(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("RUN_LABEL", raising=False)
 
-    assert Config.from_env().run_label == "minervini_sepa_daily_v6_validated_slate"
+    assert (
+        Config.from_env().run_label
+        == "minervini_sepa_daily_v6_full_history_validation"
+    )
 
 
 def test_v6_has_no_fundamental_entry_gate_configuration(monkeypatch) -> None:

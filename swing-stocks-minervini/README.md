@@ -5,13 +5,14 @@ The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
 The v6 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
-`minervini_sepa_daily_v6_validated_slate`
+`minervini_sepa_daily_v6_full_history_validation`
 (`MODEL_VERSION=minervini_daily_v6`). One invocation persists two separate
 runs in one database transaction: an unfiltered, true first-touch `independent`
 research run and the market-gated `portfolio` run with the configured cash,
-slot and exposure controls. It uses the known 2020-2023 development window. The 2024-2026 period
-has already been inspected and must not be reported as a pristine
-out-of-sample test.
+slot and exposure controls. The configured run spans 2020-01-02 through
+2026-07-10. Keep 2020-2023 as the calibration/development segment and report
+2024-2026 separately: that later period has already been inspected and is a
+retrospective validation window, not a pristine out-of-sample test.
 
 ## Model
 
@@ -221,6 +222,12 @@ state:
 cd /home/wei/backtesting-stack/swing-stocks-minervini
 docker compose up --build
 ```
+
+Keep `START_DATE=2020-01-02` for this full-history validation. Starting the
+process only in 2024 would remove the completed 2022-2023 first-touch labels
+that the fixed quality review needs at the 2024 boundary. Aggregate run metrics
+cover the complete history; evaluate 2024-2026 separately when judging the
+validated ranker.
 
 `DROP_ALL_MINERVINI_TABLES_ON_START` remains `false`. Setting it to `true` would
 delete all previous Minervini runs, trades, events, setups and stage state and
