@@ -137,7 +137,7 @@ def simulate(
     c = close_m.to_numpy()
     if continuity_segment_m is None:
         raise ValueError(
-            "v6 simulation requires continuity_segment_m"
+            "v7 simulation requires continuity_segment_m"
         )
     if (
         not continuity_segment_m.index.equals(dates)
@@ -190,6 +190,7 @@ def simulate(
         quality_labels=quality_labels,
         fill_labels=fill_labels,
         dryup_zero_ratio=cfg.dryup_score_zero_ratio,
+        neutral_rank_salt=cfg.neutral_rank_salt,
     )
 
     setups = setups[setups["symbol"].isin(col_index)].copy()
@@ -200,7 +201,7 @@ def simulate(
     setups["sim_setup_key"] = np.arange(len(setups), dtype=int)
     if "price_continuity_segment" not in setups.columns:
         raise ValueError(
-            "v6 setups require price_continuity_segment"
+            "v7 setups require price_continuity_segment"
         )
     setup_segments = pd.to_numeric(
         setups["price_continuity_segment"], errors="coerce"

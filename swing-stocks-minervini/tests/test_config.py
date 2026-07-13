@@ -11,18 +11,42 @@ def test_combined_mode_is_an_explicit_valid_runtime_mode(monkeypatch) -> None:
     assert Config.from_env().simulation_mode == "both"
 
 
-def test_default_run_label_identifies_v6_full_history_validation(
+def test_portfolio_ranking_sensitivity_and_salt_are_serialized(monkeypatch) -> None:
+    monkeypatch.setenv("SIMULATION_MODE", "both")
+    monkeypatch.setenv("PORTFOLIO_RANKING_SENSITIVITY_ENABLE", "true")
+    monkeypatch.setenv("NEUTRAL_RANK_SALT", "fixed-test-salt")
+
+    cfg = Config.from_env()
+    params = json.loads(cfg.to_json())
+
+    assert cfg.portfolio_ranking_sensitivity_enable is True
+    assert cfg.neutral_rank_salt == "fixed-test-salt"
+    assert params["portfolio_ranking_sensitivity_enable"] is True
+    assert params["neutral_rank_salt"] == "fixed-test-salt"
+
+
+def test_portfolio_ranking_sensitivity_rejects_independent_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SIMULATION_MODE", "independent")
+    monkeypatch.setenv("PORTFOLIO_RANKING_SENSITIVITY_ENABLE", "true")
+
+    with pytest.raises(ValueError, match="requires SIMULATION_MODE"):
+        Config.from_env()
+
+
+def test_default_run_label_identifies_v7_class_local_32salt(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("RUN_LABEL", raising=False)
 
     assert (
         Config.from_env().run_label
-        == "minervini_sepa_daily_v6_full_history_validation"
+        == "minervini_sepa_daily_v7_class_local_32salt"
     )
 
 
-def test_v6_has_no_fundamental_entry_gate_configuration(monkeypatch) -> None:
+def test_v7_has_no_fundamental_entry_gate_configuration(monkeypatch) -> None:
     monkeypatch.setenv("BAD_FUNDAMENTALS_FILTER_ENABLE", "true")
 
     cfg = Config.from_env()

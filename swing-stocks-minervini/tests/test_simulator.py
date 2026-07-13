@@ -1515,6 +1515,9 @@ def test_pre_session_slate_does_not_nominate_an_ex_post_trigger():
             **_clean_cfg().__dict__,
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 1,
+            # This causal-invariance fixture needs AAA to own the pre-session
+            # slot; the explicit salt makes that neutral nomination stable.
+            "neutral_rank_salt": "causal-nomination-aaa",
         }
     )
 

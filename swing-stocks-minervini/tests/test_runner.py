@@ -300,6 +300,226 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
     assert conn.rollbacks == 0
 
 
+def test_ranking_sensitivity_reuses_one_first_touch_for_all_frozen_salts(
+    monkeypatch, caplog
+) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=2)
+    matrices = _matrices(dates)
+    conn = _TransactionConnection()
+    calls = []
+    quality_labels = (
+        QualityCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            raw_quality_score=75.0,
+            realized_r_multiple=1.5,
+            walk_forward_quality_score=0.25,
+        ),
+    )
+    fill_labels = (
+        FillCalibrationLabel(
+            setup_type="vcp",
+            information_date=dates[0],
+            available_date=dates[1],
+            readiness_signal=80.0,
+            filled=True,
+        ),
+    )
+
+    def fake_run(*args, **kwargs):
+        phase_cfg = args[1]
+        calls.append((phase_cfg, kwargs))
+        if kwargs.get("label_sink") is not None:
+            kwargs["label_sink"]["quality_labels"] = quality_labels
+            kwargs["label_sink"]["fill_labels"] = fill_labels
+        salt_number = max(0, len(calls) - 2)
+        return len(calls), {
+            "total_return": salt_number / 100,
+            "cagr": salt_number / 200,
+            "max_drawdown": salt_number / 300,
+            "profit_factor": 1.0 + salt_number / 100,
+            "avg_r_multiple": salt_number / 1000,
+        }
+
+    monkeypatch.setattr(runner, "_run_simulation", fake_run)
+    monkeypatch.setattr(
+        runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
+    )
+    cfg = make_cfg(
+        simulation_mode="both",
+        portfolio_ranking_sensitivity_enable=True,
+        neutral_rank_salt="outer-salt-must-not-affect-calibration",
+        run_label="ensemble",
+    )
+
+    with caplog.at_level("INFO", logger="runner"):
+        first_touch, portfolio = runner.run_sim(
+            conn,
+            cfg,
+            matrices,
+            pd.DataFrame(),
+            pd.DataFrame(index=dates),
+            _screen_passes(dates),
+            dates[0].date(),
+            dates[-1].date(),
+            setups=pd.DataFrame(
+                {
+                    "symbol": ["AAA"],
+                    "detect_date": [dates[0].date()],
+                    "valid_until": [dates[-1].date()],
+                }
+            ),
+        )
+
+    assert first_touch[0] == 1
+    assert len(portfolio) == 32
+    assert len(calls) == 33
+    assert calls[0][0].run_label == "ensemble_first_touch"
+    assert calls[0][0].simulation_mode == "independent"
+    assert calls[0][0].neutral_rank_salt == "v7-neutral-00"
+    assert calls[0][1]["label_sink"] is not None
+    assert calls[0][1].get("commit", True) is True
+    assert [call[0].neutral_rank_salt for call in calls[1:]] == list(
+        runner.ranking_sensitivity.NEUTRAL_RANK_SALTS
+    )
+    assert [call[0].run_label for call in calls[1:]] == [
+        f"ensemble_portfolio_salt_{index:02d}" for index in range(32)
+    ]
+    for _, kwargs in calls[1:]:
+        assert kwargs["quality_labels"] is quality_labels
+        assert kwargs["fill_labels"] is fill_labels
+        assert kwargs["calibration_labels_supplied"] is True
+        assert kwargs.get("commit", True) is True
+    assert sum(
+        "portfolio ranking sensitivity summary" in record.message
+        for record in caplog.records
+    ) == 5
+    assert not any("best" in record.message.lower() for record in caplog.records)
+
+
+def test_portfolio_only_ranking_sensitivity_builds_calibration_once(
+    monkeypatch,
+) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=2)
+    matrices = _matrices(dates)
+    calibration_calls = 0
+    calibration_salts = []
+    portfolio_calls = []
+    quality_labels = (object(),)
+    fill_labels = (object(),)
+
+    def fake_calibration(*_args, **_kwargs):
+        nonlocal calibration_calls
+        calibration_calls += 1
+        calibration_salts.append(_args[0].neutral_rank_salt)
+        return quality_labels, fill_labels
+
+    def fake_run(*args, **kwargs):
+        portfolio_calls.append((args[1], kwargs))
+        return len(portfolio_calls), {
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "max_drawdown": 0.0,
+            "profit_factor": 1.0,
+            "avg_r_multiple": 0.0,
+        }
+
+    monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_calibration)
+    monkeypatch.setattr(runner, "_run_simulation", fake_run)
+    monkeypatch.setattr(
+        runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
+    )
+
+    first_touch, portfolio = runner.run_sim(
+        _TransactionConnection(),
+        make_cfg(
+            simulation_mode="portfolio",
+            portfolio_ranking_sensitivity_enable=True,
+            neutral_rank_salt="outer-salt-must-not-affect-calibration",
+        ),
+        matrices,
+        pd.DataFrame(),
+        pd.DataFrame(index=dates),
+        _screen_passes(dates),
+        dates[0].date(),
+        dates[-1].date(),
+        setups=pd.DataFrame(
+            {
+                "symbol": ["AAA"],
+                "detect_date": [dates[0].date()],
+                "valid_until": [dates[-1].date()],
+            }
+        ),
+    )
+
+    assert first_touch is None
+    assert len(portfolio) == 32
+    assert calibration_calls == 1
+    assert calibration_salts == ["v7-neutral-00"]
+    assert len(portfolio_calls) == 32
+    for _, kwargs in portfolio_calls:
+        assert kwargs["quality_labels"] is quality_labels
+        assert kwargs["fill_labels"] is fill_labels
+        assert kwargs["calibration_labels_supplied"] is True
+
+
+def test_ranking_sensitivity_has_no_completion_summary_after_partial_failure(
+    monkeypatch, caplog
+) -> None:
+    calls = 0
+
+    def fake_run(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if kwargs.get("label_sink") is not None:
+            kwargs["label_sink"]["quality_labels"] = ()
+            kwargs["label_sink"]["fill_labels"] = ()
+        elif calls == 7:
+            raise RuntimeError("salt arm failed")
+        return calls, {
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "max_drawdown": 0.0,
+            "profit_factor": 1.0,
+            "avg_r_multiple": 0.0,
+        }
+
+    dates = pd.bdate_range("2024-01-02", periods=2)
+    matrices = _matrices(dates)
+    monkeypatch.setattr(runner, "_run_simulation", fake_run)
+    monkeypatch.setattr(
+        runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
+    )
+
+    with caplog.at_level("INFO", logger="runner"):
+        with pytest.raises(RuntimeError, match="salt arm failed"):
+            runner.run_sim(
+                _TransactionConnection(),
+                make_cfg(
+                    simulation_mode="both",
+                    portfolio_ranking_sensitivity_enable=True,
+                ),
+                matrices,
+                pd.DataFrame(),
+                pd.DataFrame(index=dates),
+                _screen_passes(dates),
+                dates[0].date(),
+                dates[-1].date(),
+                setups=pd.DataFrame(
+                    {
+                        "symbol": ["AAA"],
+                        "detect_date": [dates[0].date()],
+                        "valid_until": [dates[-1].date()],
+                    }
+                ),
+            )
+
+    assert calls == 7
+    assert not any(" summary " in record.message for record in caplog.records)
+    assert not any(" sensitivity done " in record.message for record in caplog.records)
+
+
 def test_both_mode_rolls_back_both_arms_when_second_arm_fails(monkeypatch) -> None:
     dates = pd.bdate_range("2024-01-02", periods=2)
     matrices = _matrices(dates)

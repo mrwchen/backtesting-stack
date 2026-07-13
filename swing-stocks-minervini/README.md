@@ -4,15 +4,31 @@ Daily, causal research implementation of a Minervini/SEPA-style stock process.
 The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
-The v6 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
-`minervini_sepa_daily_v6_full_history_validation`
-(`MODEL_VERSION=minervini_daily_v6`). One invocation persists two separate
-runs in one database transaction: an unfiltered, true first-touch `independent`
-research run and the market-gated `portfolio` run with the configured cash,
-slot and exposure controls. The configured run spans 2020-01-02 through
+The v7 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
+`minervini_sepa_daily_v7_class_local_32salt`
+(`MODEL_VERSION=minervini_daily_v7`). With
+`PORTFOLIO_RANKING_SENSITIVITY_ENABLE=true`, one invocation persists one
+unfiltered, true first-touch `independent` research run and 32 complete,
+market-gated `portfolio` paths with the configured cash, slot and exposure
+controls. The configured run spans 2020-01-02 through
 2026-07-10. Keep 2020-2023 as the calibration/development segment and report
 2024-2026 separately: that later period has already been inspected and is a
 retrospective validation window, not a pristine out-of-sample test.
+
+The 32 neutral-ranking salts are frozen in source control (`v7-neutral-00`
+through `v7-neutral-31`); the canonical single-run default is
+`v7-neutral-00`. First-touch quality/fill labels are built exactly once and
+reused unchanged by every path. Each portfolio path is independently
+persisted in the existing result tables with a deterministic
+`_portfolio_salt_NN` run-label suffix and its actual salt in `params`, so its
+fingerprint and full equity/event path can be reproduced. Runtime never
+selects a best salt. Only after all 32 paths complete, logs report the median,
+adverse decile (p10 for return/quality metrics, p90 for drawdown) and worst
+value of the core metrics. Arms commit separately to avoid one oversized
+database transaction; absence of the final summary therefore identifies an
+incomplete matrix. If an arm fails, already committed paths remain as partial
+results. A retry creates new run IDs rather than overwriting them; compare only
+a complete 32-salt matrix identified by its base label and completion summary.
 
 ## Model
 
@@ -66,7 +82,7 @@ The pipeline has three functional stages:
    pattern geometry may cross a segment boundary.
 3. **Simulation:** places a stop-buy from information available after setup day
    D for session D+1. For each order session, all active candidates receive a
-   fresh snapshot using observations through t-1 only. The v6 rank keeps three
+   fresh snapshot using observations through t-1 only. The v7 rank keeps three
    different questions separate: a base quality estimate is a setup-class-
    calibrated expected R-multiple, `fill_probability` estimates a near-term
    trigger, and `slate_priority` is used for pre-session order planning. Pivot
@@ -88,9 +104,17 @@ The pipeline has three functional stages:
    history. This proves ranking information, not profitability; all groups may
    still have negative mean R. The causal posterior remains visible as the
    persisted diagnostic `quality_score`, but effective ranking quality and
-   `slate_priority` stay neutral until validation. Neutral ties use a stable
-   session hash rather than raw quality, fill probability or ticker order.
-   Negative quality never acts as an entry gate.
+   `slate_priority` stay neutral until validation. Validated quality,
+   fill-weighted slate priority and `quality_rank` order candidates only within
+   the same setup class. Across classes, candidates are neutrally interleaved
+   with a causal session-and-salt hash; incomparable class posteriors are never
+   placed on one global scale. Consequently, an unvalidated zero prior cannot
+   systematically outrank a validated negative class. Neutral ties use the
+   same stable salted hash rather than raw quality, fill probability or ticker
+   order. Within a validated class, `quality_score * fill_probability` retains
+   its expected-order-contribution meaning: for a negative expected R, a lower
+   fill probability is less adverse and therefore ranks higher. Negative
+   quality never acts as an entry gate.
    Current RS, refreshed volume dry-up, setup age, point-in-time fundamentals,
    the trend-template result and structural components are soft quality
    features, not ex-post filters or entry gates. The trend-template contribution
@@ -107,11 +131,16 @@ The pipeline has three functional stages:
    no later than that session's t-1 information date, so its own selected trades
    never train the model. A portfolio-only or OOS run builds the same first-touch
    calibration in memory; when OOS state starts before the reporting window,
-   that hidden pass includes the pre-roll development sessions. No calibration
-   or audit-only table is written. The `portfolio` half enforces the configured
-   market state, cash, slots, per-trade risk and one aggregate gross-exposure cap. Before the
-   session, every portfolio candidate gets its standalone risk-sized target; a
-   priority-ranked, capacity-feasible slate is then built incrementally. Its integer
+   that hidden pass includes the pre-roll development sessions. In the 32-salt
+   matrix this first-touch pass always uses canonical `v7-neutral-00`, then all
+   paths consume the same frozen label tuples. The paths are correlated
+   robustness scenarios, not independent samples or a confidence interval. No
+   calibration or audit-only table is written. The `portfolio` half enforces
+   the configured market state, cash, slots, per-trade risk and one aggregate
+   gross-exposure cap. Before the session, every portfolio candidate gets its
+   standalone risk-sized target; a
+   class-locally ranked, neutrally interleaved, capacity-feasible slate is then
+   built incrementally. Its integer
    minimum is funded first; one common scale distributes the remaining budget
    before deterministic integer rounding. A lower-ranked candidate that cannot
    retain the minimum may be skipped while a later, less capital-intensive
@@ -196,7 +225,7 @@ All service-owned tables use the prefix `backtesting_minervini_`:
 | `screen_daily` | every rankable symbol/session, including trend failures, plus fundamental, sponsorship and group diagnostics |
 | `market_daily` | causal market status, breadth and exposure cap |
 | `setups` | typed chart setups, continuity segment, pivot, stop and component scores |
-| `runs` | model/input identity, mode, parameters and aggregate metrics; two rows for the default `both` run |
+| `runs` | model/input identity, mode, parameters and aggregate metrics; one first-touch row plus 32 salted portfolio rows for the default sensitivity run |
 | `breakout_events` | first pivot touch and fill/rejection decision plus scalar t-1 quality/fill/slate snapshot |
 | `trades` | completed trade legs and entry-time attribution |
 | `equity_daily` | portfolio equity, open positions and exposure state |
@@ -207,14 +236,15 @@ Python validates and uses the schema but does not create or migrate it.
 
 Each breakout event stores the ordinary scalar research fields
 `snapshot_date`, `quality_score`, `fill_probability`, `slate_priority`,
-`setup_age_sessions`, `distance_to_pivot_pct` and `quality_rank`. There is no
+`setup_age_sessions`, `distance_to_pivot_pct` and class-local `quality_rank`.
+There is no
 JSON snapshot payload and no audit-only table.
 
 ## Run
 
-The v6 model change does not alter the v5 result-table structure. It requires no
-migration and no table drop. Existing v5 run rows therefore remain available as
-a comparison baseline. Rebuild the image and run the complete functional
+The v7 model change does not alter the v6 result-table structure. It requires no
+migration and no table drop. Existing v5/v6 run rows therefore remain available
+as comparison baselines. Rebuild the image and run the complete functional
 pipeline so model-version fingerprints replace current stage state and setup
 state:
 
@@ -231,7 +261,7 @@ validated ranker.
 
 `DROP_ALL_MINERVINI_TABLES_ON_START` remains `false`. Setting it to `true` would
 delete all previous Minervini runs, trades, events, setups and stage state and
-is not needed for v6. The Docker build context is the service directory, which
+is not needed for v7. The Docker build context is the service directory, which
 contains both the runtime code and its service-owned `backtest_models` package.
 
 All runtime parameters are documented in `compose.yaml`. The daily screen table

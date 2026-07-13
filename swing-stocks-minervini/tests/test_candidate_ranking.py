@@ -851,18 +851,19 @@ def test_cold_start_round_robin_rotates_classes_without_cross_class_raw_comparis
     ]
 
     day_60 = ranker.rank(setups, 60)
-    day_61 = ranker.rank(setups, 61)
-
     assert {item.setup_type for item in day_60[:3]} == {
         "flat_base",
         "power_play",
         "vcp",
     }
-    assert day_60[0].setup_type != day_61[0].setup_type
+    assert {
+        ranker.rank(setups, session_idx)[0].setup_type
+        for session_idx in range(60, 80)
+    } == {"flat_base", "power_play", "vcp"}
     assert all(item.quality_rank == 1 for item in day_60)
 
 
-def test_slate_order_and_pure_quality_rank_are_deliberately_distinct():
+def test_cross_class_order_ignores_incomparable_quality_and_slate_values():
     dates, symbols, close, _, _, _ = _matrices()
     close.loc[dates[59], "AAA"] = 90.0
     close.loc[dates[59], "BBB"] = 99.0
@@ -913,10 +914,197 @@ def test_slate_order_and_pure_quality_rank_are_deliberately_distinct():
 
     slate = ranker.rank([vcp_setup, power_setup], 60)
 
-    assert [item.setup_type for item in slate] == ["power_play", "vcp"]
-    assert [item.quality_rank for item in slate] == [2, 1]
-    assert slate[1].quality_score > slate[0].quality_score
-    assert slate[0].slate_priority > slate[1].slate_priority
+    by_type = {item.setup_type: item for item in slate}
+    assert by_type["vcp"].quality_score > by_type["power_play"].quality_score
+    assert by_type["power_play"].slate_priority > by_type["vcp"].slate_priority
+    # A quality rank is meaningful only relative to the same setup class.
+    assert [item.quality_rank for item in slate] == [1, 1]
+
+    # Reversing both classes' outcome scales must not change their neutral
+    # cross-class order for the same session and salt.
+    reversed_ranker = CandidateRanker(
+        dates,
+        symbols,
+        close,
+        continuity_segment=continuity,
+        quality_prior_strength=0.1,
+        fill_prior_strength=0.1,
+        quality_labels=[
+            *_validated_quality_labels(
+                "vcp",
+                vcp_probe.raw_quality_score,
+                group_outcomes=(-0.5, 0.0, 0.5, 1.0),
+                start_quarter="2022Q1",
+            ),
+            *_validated_quality_labels(
+                "power_play",
+                power_probe.raw_quality_score,
+                group_outcomes=(0.5, 1.5, 2.5, 3.5),
+                start_quarter="2022Q1",
+            ),
+        ],
+        fill_labels=ranker.fill_labels,
+    )
+    reversed_slate = reversed_ranker.rank([power_setup, vcp_setup], 60)
+
+    assert [item.setup_type for item in reversed_slate] == [
+        item.setup_type for item in slate
+    ]
+
+
+def test_validated_quality_orders_and_ranks_only_inside_its_setup_class():
+    dates, symbols, close, _, _, _ = _matrices()
+    continuity = _segments(dates, symbols)
+    high = _setup(dates, symbol="AAA", setup_type="vcp", setup_id=1)
+    low = _setup(
+        dates,
+        symbol="BBB",
+        setup_type="vcp",
+        setup_id=2,
+        rs_rating=1.0,
+        dryup_ratio=1.25,
+        fundamental_score=0.0,
+        structure_quality_score=0.0,
+        tightness_score=0.0,
+        prior_advance_score=0.0,
+    )
+    ranker = CandidateRanker(
+        dates,
+        symbols,
+        close,
+        continuity_segment=continuity,
+        quality_prior_strength=0.1,
+        quality_labels=_validated_quality_labels(
+            "vcp",
+            50.0,
+            group_outcomes=(-1.5, -0.5, 0.5, 1.5),
+            start_quarter="2022Q1",
+        ),
+    )
+
+    slate = ranker.rank([low, high], 60)
+
+    assert all(item.quality_model_validated for item in slate)
+    assert [item.symbol for item in slate] == ["AAA", "BBB"]
+    assert [item.quality_rank for item in slate] == [1, 2]
+    assert slate[0].quality_score > slate[1].quality_score
+
+
+def test_unvalidated_neutral_does_not_globally_beat_validated_negative_quality():
+    dates, symbols, close, _, _, _ = _matrices()
+    continuity = _segments(dates, symbols)
+    vcp = _setup(dates, symbol="AAA", setup_type="vcp", setup_id=1)
+    unvalidated = _setup(
+        dates, symbol="BBB", setup_type="power_play", setup_id=2
+    )
+    probe = CandidateRanker(
+        dates, symbols, close, continuity_segment=continuity
+    ).snapshot(vcp, 60)
+    labels = _validated_quality_labels(
+        "vcp",
+        probe.raw_quality_score,
+        group_outcomes=(-1.5, -1.0, -0.5, -0.1),
+        start_quarter="2022Q1",
+    )
+    ranker = CandidateRanker(
+        dates,
+        symbols,
+        close,
+        continuity_segment=continuity,
+        quality_labels=labels,
+    )
+
+    first_types = set()
+    for session_idx in range(60, 75):
+        slate = ranker.rank([unvalidated, vcp], session_idx)
+        by_type = {item.setup_type: item for item in slate}
+        assert by_type["vcp"].quality_model_validated
+        assert by_type["vcp"].quality_score < 0.0
+        assert not by_type["power_play"].quality_model_validated
+        assert by_type["power_play"].quality_score == 0.0
+        first_types.add(slate[0].setup_type)
+
+    # The neutral class may lead on a rotated day, but it has no permanent
+    # priority merely because zero is numerically above the negative estimate.
+    assert first_types == {"power_play", "vcp"}
+
+
+def test_neutral_rank_salt_changes_candidate_hash_and_class_rotation():
+    dates, _, _, _, _, _ = _matrices()
+    symbols = pd.Index(["A1", "A2", "B1", "C1"])
+    close = pd.DataFrame(99.0, index=dates, columns=symbols)
+    continuity = _segments(dates, symbols)
+    setups = [
+        _setup(dates, symbol="A1", setup_type="flat_base", setup_id=1),
+        _setup(dates, symbol="A2", setup_type="flat_base", setup_id=2),
+        _setup(dates, symbol="B1", setup_type="power_play", setup_id=3),
+        _setup(dates, symbol="C1", setup_type="vcp", setup_id=4),
+    ]
+
+    orders = []
+    for salt_number in range(16):
+        ranker = CandidateRanker(
+            dates,
+            symbols,
+            close,
+            continuity_segment=continuity,
+            neutral_rank_salt=f"robustness-{salt_number}",
+        )
+        orders.append(
+            tuple((item.setup_type, item.symbol) for item in ranker.rank(setups, 60))
+        )
+
+    assert len(set(orders)) > 1
+    assert len({order[0][0] for order in orders}) > 1
+    assert len(
+        {
+            tuple(symbol for setup_type, symbol in order if setup_type == "flat_base")
+            for order in orders
+        }
+    ) > 1
+
+
+def test_cross_class_hash_order_is_input_and_deletion_stable():
+    dates, _, _, _, _, _ = _matrices()
+    symbols = pd.Index(["A1", "B1", "C1", "D1"])
+    close = pd.DataFrame(99.0, index=dates, columns=symbols)
+    ranker = CandidateRanker(
+        dates,
+        symbols,
+        close,
+        continuity_segment=_segments(dates, symbols),
+        neutral_rank_salt="deletion-stability",
+    )
+    setups = [
+        _setup(dates, symbol="A1", setup_type="flat_base", setup_id=1),
+        _setup(dates, symbol="B1", setup_type="power_play", setup_id=2),
+        _setup(dates, symbol="C1", setup_type="vcp", setup_id=3),
+        _setup(dates, symbol="D1", setup_type="tight_shelf", setup_id=4),
+    ]
+
+    complete = ranker.rank(setups, 60)
+    reversed_input = ranker.rank(list(reversed(setups)), 60)
+    without_research_only = ranker.rank(
+        [setup for setup in setups if setup.setup_type != "tight_shelf"], 60
+    )
+
+    assert complete == reversed_input
+    assert [
+        item.setup_type
+        for item in complete
+        if item.setup_type != "tight_shelf"
+    ] == [item.setup_type for item in without_research_only]
+
+
+def test_neutral_rank_salt_must_be_a_nonempty_string():
+    dates, symbols, close, _, _, _ = _matrices()
+    kwargs = {
+        "continuity_segment": _segments(dates, symbols),
+    }
+    with pytest.raises(ValueError, match="must not be empty"):
+        CandidateRanker(dates, symbols, close, neutral_rank_salt="", **kwargs)
+    with pytest.raises(TypeError, match="must be a string"):
+        CandidateRanker(dates, symbols, close, neutral_rank_salt=7, **kwargs)
 
 
 def test_trend_is_a_soft_quality_feature_and_never_a_hard_gate():

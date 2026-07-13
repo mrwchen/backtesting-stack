@@ -17,6 +17,7 @@ from . import (
     group_filter,
     market_filter,
     persistence,
+    ranking_sensitivity,
     reproducibility,
     rs_rating,
     sensitivity,
@@ -744,6 +745,7 @@ def _run_simulation(
     commit: bool = True,
     quality_labels: tuple[QualityCalibrationLabel, ...] = (),
     fill_labels: tuple[FillCalibrationLabel, ...] = (),
+    calibration_labels_supplied: bool = False,
     label_sink: dict[str, tuple] | None = None,
 ) -> tuple[int, dict]:
     dates = matrices["dates"]
@@ -753,6 +755,7 @@ def _run_simulation(
     )
     if (
         (state_start_idx < sim_start_idx or cfg.simulation_mode == "portfolio")
+        and not calibration_labels_supplied
         and not quality_labels
         and not fill_labels
     ):
@@ -795,7 +798,8 @@ def _run_simulation(
         continuity_segment_m=matrices["price_continuity_segment"],
         quality_labels=quality_labels,
         fill_labels=fill_labels,
-        online_calibration=not (quality_labels or fill_labels),
+        online_calibration=not calibration_labels_supplied
+        and not (quality_labels or fill_labels),
     )
     if label_sink is not None:
         label_sink["quality_labels"] = result.quality_labels
@@ -858,11 +862,137 @@ def _run_simulation(
     return run_id, result.metrics
 
 
+def _log_portfolio_ranking_sensitivity_summary(
+    metrics_by_salt: list[dict],
+) -> None:
+    for metric, values in ranking_sensitivity.summarize(metrics_by_salt).items():
+        log.info(
+            "portfolio ranking sensitivity summary %s samples %d missing %d median %.6f adverse-quantile %.6f worst %.6f",
+            metric,
+            values["count"],
+            values["missing_count"],
+            values["median"],
+            values["adverse_quantile"],
+            values["worst"],
+        )
+
+
+def _run_portfolio_ranking_sensitivity(
+    conn,
+    cfg: Config,
+    matrices: dict,
+    universe: pd.DataFrame,
+    market: pd.DataFrame,
+    setups: pd.DataFrame,
+    regime: pd.DataFrame,
+    start: date,
+    end: date,
+    *,
+    candidate_context: dict[str, pd.DataFrame],
+) -> tuple[tuple[int, dict] | None, tuple[tuple[int, dict], ...]]:
+    """Run every frozen salt as a complete portfolio path.
+
+    Calibration is generated exactly once and then passed unchanged to every
+    arm. Each arm commits independently so the 32 full equity/event paths do
+    not accumulate in one oversized database transaction. No arm is selected
+    as a winner; only distribution summaries are logged.
+    """
+    if cfg.simulation_mode not in ("portfolio", "both"):
+        raise ValueError(
+            "portfolio ranking sensitivity requires SIMULATION_MODE portfolio or both"
+        )
+
+    log.info(
+        "portfolio ranking sensitivity start salts %d label %s",
+        len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
+        cfg.run_label,
+    )
+    first_touch: tuple[int, dict] | None = None
+    if cfg.simulation_mode == "both":
+        label_sink: dict[str, tuple] = {}
+        first_touch_cfg = replace(
+            cfg,
+            simulation_mode="independent",
+            market_filter_enable=False,
+            regime_entry_filter_enable=False,
+            neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
+            run_label=f"{cfg.run_label}_first_touch",
+        )
+        first_touch = _run_simulation(
+            conn,
+            first_touch_cfg,
+            matrices,
+            universe,
+            market,
+            setups,
+            regime,
+            start,
+            end,
+            candidate_context=candidate_context,
+            label_sink=label_sink,
+        )
+        quality_labels = label_sink["quality_labels"]
+        fill_labels = label_sink["fill_labels"]
+    else:
+        state_start_idx = int(matrices["dates"].searchsorted(pd.Timestamp(start)))
+        calibration_cfg = replace(
+            cfg,
+            neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
+        )
+        quality_labels, fill_labels = _first_touch_calibration_labels(
+            calibration_cfg,
+            matrices,
+            setups,
+            candidate_context,
+            state_start_idx=state_start_idx,
+        )
+
+    portfolio_results: list[tuple[int, dict]] = []
+    for salt_index, salt in enumerate(ranking_sensitivity.NEUTRAL_RANK_SALTS):
+        portfolio_cfg = replace(
+            cfg,
+            simulation_mode="portfolio",
+            neutral_rank_salt=salt,
+            run_label=f"{cfg.run_label}_portfolio_salt_{salt_index:02d}",
+        )
+        portfolio_results.append(
+            _run_simulation(
+                conn,
+                portfolio_cfg,
+                matrices,
+                universe,
+                market,
+                setups,
+                regime,
+                start,
+                end,
+                candidate_context=candidate_context,
+                quality_labels=quality_labels,
+                fill_labels=fill_labels,
+                calibration_labels_supplied=True,
+            )
+        )
+
+    _log_portfolio_ranking_sensitivity_summary(
+        [metrics for _, metrics in portfolio_results]
+    )
+    log.info(
+        "portfolio ranking sensitivity done salts %d persisted-runs %d",
+        len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
+        len(portfolio_results) + int(first_touch is not None),
+    )
+    return first_touch, tuple(portfolio_results)
+
+
 def run_sim(
     conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
     market: pd.DataFrame, screen_daily: pd.DataFrame, start, end, *,
     setups: pd.DataFrame | None = None,
-) -> tuple[int, dict] | tuple[tuple[int, dict], tuple[int, dict]]:
+) -> (
+    tuple[int, dict]
+    | tuple[tuple[int, dict], tuple[int, dict]]
+    | tuple[tuple[int, dict] | None, tuple[tuple[int, dict], ...]]
+):
     if setups is None:
         setups = persistence.read_setups(conn, start, end)
     if setups.empty:
@@ -878,6 +1008,20 @@ def run_sim(
     candidate_context = _candidate_context_matrices(
         screen_daily, matrices["dates"], matrices["symbols"]
     )
+
+    if cfg.portfolio_ranking_sensitivity_enable:
+        return _run_portfolio_ranking_sensitivity(
+            conn,
+            cfg,
+            matrices,
+            universe,
+            market,
+            setups,
+            regime,
+            start,
+            end,
+            candidate_context=candidate_context,
+        )
 
     if cfg.simulation_mode == "both":
         first_touch_cfg = replace(
@@ -922,6 +1066,7 @@ def run_sim(
                 commit=False,
                 quality_labels=calibration_labels["quality_labels"],
                 fill_labels=calibration_labels["fill_labels"],
+                calibration_labels_supplied=True,
             )
             conn.commit()
             return first_touch, portfolio

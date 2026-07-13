@@ -13,8 +13,10 @@ The three public estimates deliberately have different meanings:
     Setup-type-specific posterior probability that an order touches.  This is
     the only model that may use the readiness/pivot-distance signal.
 ``slate_priority``
-    ``quality_score * fill_probability``.  It is an expected-R contribution,
-    not another independently tuned score.
+    ``quality_score * fill_probability``.  It is an expected-R contribution
+    used only to order candidates *inside the same setup class*.  Estimates
+    from different setup classes are deliberately never compared as if they
+    shared one return scale.
 
 Both calibrators are deterministic, dependency-free kernel smoothers with
 explicit neutral priors.  Every label carries the date on which its outcome
@@ -341,6 +343,7 @@ class CandidateRanker:
         dryup_recent_sessions: int = 5,
         dryup_baseline_sessions: int = 50,
         dryup_zero_ratio: float = 1.25,
+        neutral_rank_salt: str = "v7-neutral-00",
     ) -> None:
         self.dates = pd.DatetimeIndex(dates)
         self.symbols = pd.Index(symbols)
@@ -370,6 +373,11 @@ class CandidateRanker:
         self.dryup_recent_sessions = int(dryup_recent_sessions)
         self.dryup_baseline_sessions = int(dryup_baseline_sessions)
         self.dryup_zero_ratio = self._positive("dryup_zero_ratio", dryup_zero_ratio)
+        if not isinstance(neutral_rank_salt, str):
+            raise TypeError("neutral_rank_salt must be a string")
+        if not neutral_rank_salt:
+            raise ValueError("neutral_rank_salt must not be empty")
+        self.neutral_rank_salt = neutral_rank_salt
         self.quality_prior_r_multiple = self._finite(
             "quality_prior_r_multiple", quality_prior_r_multiple
         )
@@ -1152,8 +1160,7 @@ class CandidateRanker:
             context_values=context_values,
         )
 
-    @staticmethod
-    def _neutral_tie_key(snapshot: CandidateSnapshot) -> int:
+    def _neutral_tie_key(self, snapshot: CandidateSnapshot) -> int:
         """Stable session lottery for candidates lacking validated quality.
 
         Cryptographic hashing avoids Python's process-randomized ``hash`` and
@@ -1162,6 +1169,7 @@ class CandidateRanker:
         """
         identity = "\x1f".join(
             (
+                self.neutral_rank_salt,
                 _day(snapshot.session_date).date().isoformat(),
                 snapshot.setup_type,
                 snapshot.symbol,
@@ -1174,7 +1182,31 @@ class CandidateRanker:
             )
         ).encode("utf-8")
         digest = blake2b(
-            identity, digest_size=8, person=b"minervini-v6"
+            identity, digest_size=8, person=b"minervini-v7"
+        ).digest()
+        return int.from_bytes(digest, byteorder="big", signed=False)
+
+    def _class_tie_key(
+        self,
+        setup_type: str,
+        session_date: pd.Timestamp,
+    ) -> int:
+        """Return a reproducible neutral class-order key for one session.
+
+        The salt makes robustness ensembles possible without changing any
+        signal, setup or execution rule.  Each class is hashed independently,
+        making the relative order deletion-stable when a research-only class
+        is filtered after ranking.  All inputs are known before the session.
+        """
+        identity = "\x1f".join(
+            (
+                self.neutral_rank_salt,
+                _day(session_date).date().isoformat(),
+                setup_type,
+            )
+        ).encode("utf-8")
+        digest = blake2b(
+            identity, digest_size=8, person=b"minervini-v7"
         ).digest()
         return int.from_bytes(digest, byteorder="big", signed=False)
 
@@ -1185,9 +1217,11 @@ class CandidateRanker:
     ) -> tuple[CandidateSnapshot, ...]:
         """Return candidates in slate order and attach their pure-quality rank.
 
-        The returned order follows ``slate_priority`` because that is what the
-        order allocator consumes. ``quality_rank`` deliberately ignores fill
-        probability and therefore remains an honest rank of expected R.
+        Inside a setup class the returned order follows ``slate_priority``.
+        Across setup classes it is a neutral, deterministic round-robin; class
+        posteriors are never put on an unjustified common scale.
+        ``quality_rank`` is likewise class-local and deliberately ignores fill
+        probability, so it remains an honest rank of expected R within class.
         """
         if isinstance(active_setups, Mapping):
             snapshots = [
@@ -1196,83 +1230,77 @@ class CandidateRanker:
             ]
         else:
             snapshots = [self.snapshot(setup, session_idx) for setup in active_setups]
-        quality_order = sorted(
-            snapshots,
-            key=lambda item: (
-                -item.quality_score,
-                item.setup_type,
-                -item.raw_quality_score if item.quality_model_validated else 0.0,
-                self._neutral_tie_key(item)
-                if not item.quality_model_validated
-                else 0,
-                item.symbol,
-                item.setup_id if item.setup_id is not None else 2**63 - 1,
-                item.setup_key,
-            ),
-        )
         quality_ranks: dict[int, int] = {}
-        previous_quality: float | None = None
-        current_rank = 0
-        for position, snapshot in enumerate(quality_order, start=1):
-            if previous_quality is None or snapshot.quality_score != previous_quality:
-                current_rank = position
-                previous_quality = snapshot.quality_score
-            quality_ranks[id(snapshot)] = current_rank
-
-        # Equal posterior estimates contain no evidence for a cross-class
-        # preference. A lexical setup-type tie break would silently create one.
-        # Interleave every exact posterior tie by class and rotate the first
-        # class by session. Inside an unvalidated class a stable session hash
-        # provides an input-order-independent neutral lottery; raw quality and
-        # fill may break ties only after quality validation has passed.
-        posterior_groups: dict[
-            tuple[float, float], list[CandidateSnapshot]
-        ] = {}
+        by_type: dict[str, list[CandidateSnapshot]] = {}
         for snapshot in snapshots:
-            posterior_groups.setdefault(
-                (snapshot.slate_priority, snapshot.quality_score), []
-            ).append(snapshot)
-        slate_order: list[CandidateSnapshot] = []
-        for group_number, posterior in enumerate(
-            sorted(posterior_groups, key=lambda value: (-value[0], -value[1]))
-        ):
-            by_type: dict[str, list[CandidateSnapshot]] = {}
-            for snapshot in posterior_groups[posterior]:
-                by_type.setdefault(snapshot.setup_type, []).append(snapshot)
-            for candidates in by_type.values():
-                candidates.sort(
-                    key=lambda item: (
-                        (
-                            -item.raw_quality_score
-                            if item.quality_model_validated
-                            else 0.0
-                        ),
-                        (
-                            -item.fill_probability
-                            if item.quality_model_validated
-                            else 0.0
-                        ),
-                        (
-                            self._neutral_tie_key(item)
-                            if not item.quality_model_validated
-                            else 0
-                        ),
-                        item.symbol,
-                        item.setup_id if item.setup_id is not None else 2**63 - 1,
-                        item.setup_key,
-                    )
+            by_type.setdefault(snapshot.setup_type, []).append(snapshot)
+
+        # Quality evidence is valid only within its own setup class.  Assign
+        # class-local quality ranks and build a class-local slate.  An
+        # unvalidated class stays entirely neutral: neither raw quality nor
+        # fill probability is allowed to become a hidden ordering feature.
+        for candidates in by_type.values():
+            validation_states = {
+                candidate.quality_model_validated for candidate in candidates
+            }
+            if len(validation_states) != 1:  # pragma: no cover - defensive invariant
+                raise RuntimeError(
+                    "quality validation state differs inside one setup class/session"
                 )
-            setup_types = sorted(by_type)
-            # Calendar-date rotation is stable even when a separate OOS run
-            # loads a different amount of warm-up history before this session.
-            session_ordinal = _day(self.dates[session_idx]).date().toordinal()
-            rotation = (session_ordinal + group_number) % len(setup_types)
-            setup_types = setup_types[rotation:] + setup_types[:rotation]
-            for index in range(max(len(values) for values in by_type.values())):
-                for setup_type in setup_types:
-                    candidates = by_type[setup_type]
-                    if index < len(candidates):
-                        slate_order.append(candidates[index])
+            validated = validation_states.pop()
+            quality_order = sorted(
+                candidates,
+                key=lambda item: (
+                    -item.quality_score if validated else 0.0,
+                    self._neutral_tie_key(item),
+                    item.symbol,
+                    item.setup_id if item.setup_id is not None else 2**63 - 1,
+                    item.setup_key,
+                ),
+            )
+            previous_quality: float | None = None
+            current_rank = 0
+            for position, snapshot in enumerate(quality_order, start=1):
+                if (
+                    previous_quality is None
+                    or snapshot.quality_score != previous_quality
+                ):
+                    current_rank = position
+                    previous_quality = snapshot.quality_score
+                quality_ranks[id(snapshot)] = current_rank
+
+            candidates.sort(
+                key=lambda item: (
+                    -item.slate_priority if validated else 0.0,
+                    -item.quality_score if validated else 0.0,
+                    self._neutral_tie_key(item),
+                    item.symbol,
+                    item.setup_id if item.setup_id is not None else 2**63 - 1,
+                    item.setup_key,
+                )
+            )
+
+        # Interleave setup classes without comparing their calibrated values.
+        # In particular, an unvalidated neutral prior no longer automatically
+        # beats a validated negative estimate.  Which class leads is selected
+        # only by the deterministic neutral class ordering.
+        slate_order: list[CandidateSnapshot] = []
+        setup_types = tuple(
+            sorted(
+                by_type,
+                key=lambda setup_type: (
+                    self._class_tie_key(
+                        setup_type, self.dates[session_idx]
+                    ),
+                    setup_type,
+                ),
+            )
+        )
+        for index in range(max((len(values) for values in by_type.values()), default=0)):
+            for setup_type in setup_types:
+                candidates = by_type[setup_type]
+                if index < len(candidates):
+                    slate_order.append(candidates[index])
         return tuple(
             replace(snapshot, quality_rank=quality_ranks[id(snapshot)])
             for snapshot in slate_order

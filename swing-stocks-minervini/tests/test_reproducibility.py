@@ -4,7 +4,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src import persistence
+from src import persistence, ranking_sensitivity
 from src.reproducibility import (
     SCREEN_CONFIG_FIELDS,
     SIM_CONFIG_FIELDS,
@@ -44,6 +44,28 @@ def test_sim_config_fingerprint_tracks_daily_order_limit() -> None:
     assert config_fingerprint(
         first, SIM_CONFIG_FIELDS, model_version="m1"
     ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
+
+
+def test_sim_config_fingerprint_tracks_neutral_rank_salt() -> None:
+    first = make_cfg(neutral_rank_salt="v7-neutral-00")
+    changed = make_cfg(neutral_rank_salt="v7-neutral-01")
+
+    assert config_fingerprint(
+        first, SIM_CONFIG_FIELDS, model_version="m1"
+    ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
+
+
+def test_all_frozen_neutral_salts_have_unique_simulation_fingerprints() -> None:
+    fingerprints = {
+        config_fingerprint(
+            make_cfg(neutral_rank_salt=salt),
+            SIM_CONFIG_FIELDS,
+            model_version="m1",
+        )
+        for salt in ranking_sensitivity.NEUTRAL_RANK_SALTS
+    }
+
+    assert len(fingerprints) == 32
 
 
 def test_frame_fingerprint_is_order_independent_and_content_sensitive() -> None:

@@ -45,6 +45,7 @@ SIM_CONFIG_FIELDS = (
     "time_stop_min_r", "portfolio_max_open_positions",
     "portfolio_max_daily_orders",
     "portfolio_max_gross_exposure_pct", "min_slate_risk_utilization",
+    "neutral_rank_salt",
     "exposure_levels",
     "exposure_winners_to_step_up", "exposure_losses_to_reset",
     "exposure_drawdown_reset_pct", "market_filter_enable",

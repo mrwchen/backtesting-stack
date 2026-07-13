@@ -41,6 +41,8 @@ class Config:
     force_refresh: bool
     log_level: str
     simulation_mode: str  # independent | portfolio | both
+    portfolio_ranking_sensitivity_enable: bool
+    neutral_rank_salt: str
 
     # universe filters
     min_price: float
@@ -150,12 +152,16 @@ class Config:
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
             run_label=_env(
-                "RUN_LABEL", "minervini_sepa_daily_v6_full_history_validation"
+                "RUN_LABEL", "minervini_sepa_daily_v7_class_local_32salt"
             ),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             simulation_mode=_env("SIMULATION_MODE", "independent").lower(),
+            portfolio_ranking_sensitivity_enable=_env_bool(
+                "PORTFOLIO_RANKING_SENSITIVITY_ENABLE", False
+            ),
+            neutral_rank_salt=_env("NEUTRAL_RANK_SALT", "v7-neutral-00"),
             min_price=float(_env("MIN_PRICE", "5.0")),
             min_dollar_volume=float(_env("MIN_DOLLAR_VOLUME", "2000000")),
             rs_lookbacks=_env_int_tuple("RS_LOOKBACKS", "63,126,189,252"),
@@ -257,6 +263,16 @@ class Config:
             raise ValueError(f"unsupported STAGE={cfg.stage!r}")
         if cfg.simulation_mode not in ("independent", "portfolio", "both"):
             raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
+        if (
+            cfg.portfolio_ranking_sensitivity_enable
+            and cfg.simulation_mode == "independent"
+        ):
+            raise ValueError(
+                "PORTFOLIO_RANKING_SENSITIVITY_ENABLE requires "
+                "SIMULATION_MODE portfolio or both"
+            )
+        if not isinstance(cfg.neutral_rank_salt, str) or not cfg.neutral_rank_salt:
+            raise ValueError("NEUTRAL_RANK_SALT must be a non-empty string")
         if not cfg.market_index_symbols:
             raise ValueError("MARKET_INDEX_SYMBOLS must contain at least one symbol")
         if cfg.market_primary_index not in cfg.market_index_symbols:
