@@ -240,10 +240,10 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     symbol                  TEXT NOT NULL,
     setup_detect_date       DATE NOT NULL,
     snapshot_date           DATE NOT NULL,
-    -- quality_score is a causal expected R-multiple, not a 0..100 score.
+    -- Diagnostic causal expected R-multiple, not a 0..100 score.
     quality_score           NUMERIC NOT NULL,
     fill_probability        NUMERIC NOT NULL,
-    -- Pre-session order priority: quality_score * fill_probability.
+    -- Zero until quality validation; afterwards quality * fill probability.
     slate_priority          NUMERIC NOT NULL,
     setup_age_sessions      INTEGER NOT NULL,
     distance_to_pivot_pct   NUMERIC,

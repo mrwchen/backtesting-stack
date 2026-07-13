@@ -1,7 +1,16 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.candidate_ranking import (
+    QUALITY_VALIDATION_MIN_DAYS_PER_GROUP,
+    QUALITY_VALIDATION_MIN_LABELS,
+    QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER,
+    QUALITY_VALIDATION_QUARTERS_PER_REVIEW,
+    QualityCalibrationLabel,
+)
 from src.simulator import simulate as _simulate
 from tests.util import make_cfg
 
@@ -88,6 +97,51 @@ def _clean_cfg():
         time_stop_sessions=999,
         exposure_levels=(1.0,),
     )
+
+
+def _monotone_oof_quality_labels(
+    _dates: pd.DatetimeIndex,
+    setup_type: str,
+) -> tuple[QualityCalibrationLabel, ...]:
+    """Return the last completed two-year review epoch for 2024 fixtures."""
+    days_per_quarter = QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER // 4
+    assert days_per_quarter >= QUALITY_VALIDATION_MIN_DAYS_PER_GROUP
+    raw_scores = (12.5, 37.5, 62.5, 87.5)
+    oof_scores = (-1.5, -0.5, 0.5, 1.5)
+    labels = []
+    for quarter in pd.period_range(
+        "2022Q1", periods=QUALITY_VALIDATION_QUARTERS_PER_REVIEW, freq="Q"
+    ):
+        available_days = pd.bdate_range(
+            quarter.start_time + pd.Timedelta(days=14),
+            quarter.end_time - pd.Timedelta(days=7),
+        ).normalize()
+        completion_days = available_days[
+            np.linspace(
+                0,
+                len(available_days) - 1,
+                num=days_per_quarter,
+                dtype=int,
+            )
+        ]
+        for completion_date in completion_days:
+            for group, (raw_score, oof_score) in enumerate(
+                zip(raw_scores, oof_scores)
+            ):
+                labels.append(
+                    QualityCalibrationLabel(
+                        setup_type=setup_type,
+                        information_date=(
+                            completion_date - pd.offsets.BDay(3 + group)
+                        ),
+                        available_date=completion_date,
+                        raw_quality_score=raw_score,
+                        realized_r_multiple=oof_score,
+                        walk_forward_quality_score=oof_score,
+                    )
+                )
+    assert len(labels) == QUALITY_VALIDATION_MIN_LABELS
+    return tuple(labels)
 
 
 def test_new_default_rule_rejects_entry_above_two_percent_buy_zone():
@@ -788,6 +842,104 @@ def test_portfolio_mode_limits_simultaneous_positions():
     assert result.equity["open_positions"].max() == 3
 
 
+def test_portfolio_daily_order_limit_caps_pre_session_slate():
+    n_symbols = 5
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.0)]
+        + [(100, 101, 99, 100.0)] * 2
+    )
+    frames = [
+        pd.DataFrame(
+            {f"S{i}": bars[:, field] for i in range(n_symbols)},
+            index=dates,
+        )
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+                symbol=f"S{i}", setup_id=i + 1, setup_type="vcp"
+            )
+            for i in range(n_symbols)
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": n_symbols,
+            "portfolio_max_daily_orders": 2,
+            "portfolio_max_gross_exposure_pct": 2.0,
+            "exposure_levels": (1.0,),
+        }
+    )
+
+    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+
+    assert result.metrics["num_positions"] == 2
+    assert result.breakout_events["decision"].value_counts().to_dict() == {
+        "portfolio_capacity": 3,
+        "filled": 2,
+    }
+
+
+def test_negative_diagnostic_quality_does_not_block_portfolio_order(monkeypatch):
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.0)]
+    bars += [(100, 101, 99, 100.0)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 7).assign(setup_type="vcp")
+
+    from src import simulator as simulator_module
+
+    original_rank = simulator_module.CandidateRanker.rank
+
+    def rank_with_negative_diagnostic(self, *args, **kwargs):
+        return tuple(
+            replace(
+                snapshot,
+                walk_forward_quality_score=-1.0,
+                quality_score=-1.0,
+                quality_effective_samples=100.0,
+            )
+            for snapshot in original_rank(self, *args, **kwargs)
+        )
+
+    monkeypatch.setattr(
+        simulator_module.CandidateRanker,
+        "rank",
+        rank_with_negative_diagnostic,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+            "portfolio_max_daily_orders": 1,
+            "exposure_levels": (1.0,),
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        cfg,
+    )
+
+    assert result.metrics["num_positions"] == 1
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
+    assert result.breakout_events.iloc[0]["quality_score"] == -1.0
+    assert result.breakout_events.iloc[0]["slate_priority"] == 0.0
+
+
 def test_portfolio_mode_limits_gross_exposure():
     n_symbols = 12
     dates = pd.bdate_range("2024-01-01", periods=12)
@@ -815,6 +967,7 @@ def test_portfolio_mode_limits_gross_exposure():
             **cfg.__dict__,
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 10,
+            "portfolio_max_daily_orders": 10,
             "portfolio_max_gross_exposure_pct": 0.4,
             "min_slate_risk_utilization": 0.50,
         }
@@ -846,7 +999,7 @@ def test_portfolio_mode_limits_gross_exposure():
     pd.testing.assert_frame_equal(actual, expected)
 
 
-def test_portfolio_mode_prioritizes_quality_metrics():
+def test_portfolio_mode_prioritizes_validated_quality_metrics():
     dates = pd.bdate_range("2024-01-01", periods=12)
     bars = np.array(
         [(98, 99, 97, 98)] * 5
@@ -877,6 +1030,7 @@ def test_portfolio_mode_prioritizes_quality_metrics():
     result = simulate(
         dates, frames[0].columns, frames[0], frames[1], frames[2], frames[3],
         pd.concat([weak, strong], ignore_index=True), cfg,
+        quality_labels=_monotone_oof_quality_labels(dates, "unknown"),
     )
 
     assert result.metrics["num_positions"] == 1
@@ -946,11 +1100,18 @@ def test_slate_cash_budget_includes_entry_commission():
             "max_buy_zone_pct": 0.0,
             "commission_pct": 0.01,
             "portfolio_max_open_positions": n_symbols,
+            "portfolio_max_daily_orders": n_symbols,
             "portfolio_max_gross_exposure_pct": 2.0,
         }
     )
 
-    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        cfg,
+    )
 
     total_shares = int(result.trades["shares"].sum())
     assert total_shares == 990
@@ -1031,7 +1192,14 @@ def test_capacity_feasible_slate_can_skip_a_large_candidate():
         }
     )
 
-    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        cfg,
+        quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
+    )
 
     assert set(result.trades["symbol"]) == {"TOP", "SMALL"}
     decisions = result.breakout_events.set_index("symbol")["decision"].to_dict()
@@ -1082,7 +1250,14 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
         }
     )
 
-    result = simulate(dates, frames[0].columns, *frames, setups, cfg)
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        cfg,
+        quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
+    )
 
     same_trade = result.trades.loc[result.trades["symbol"] == "SAME"].iloc[0]
     assert same_trade["setup_id"] == 3
@@ -1091,7 +1266,7 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
     assert decisions[3] == "filled"
 
 
-def test_portfolio_ranking_uses_continuous_dynamic_context():
+def test_validated_portfolio_ranking_uses_continuous_dynamic_context():
     dates = pd.bdate_range("2024-01-01", periods=8)
     bars = np.array(
         [(98, 99, 97, 98)] * 5
@@ -1127,6 +1302,7 @@ def test_portfolio_ranking_uses_continuous_dynamic_context():
         frames[3],
         pd.concat([technical_only, contextual_leader], ignore_index=True),
         cfg,
+        quality_labels=_monotone_oof_quality_labels(dates, "unknown"),
     )
 
     assert result.trades["symbol"].unique().tolist() == ["LEADER"]
@@ -1172,16 +1348,17 @@ def test_current_session_context_cannot_change_same_session_selection():
         setups,
         cfg,
         candidate_context={"rs_rating": rs},
+        quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
     )
 
     assert result.trades["symbol"].unique().tolist() == ["AAA"]
     events = result.breakout_events.set_index("symbol")
     assert events.loc["AAA", "snapshot_date"] == dates[4].date()
     assert events.loc["AAA", "quality_rank"] == 1
-    assert events.loc["BBB", "quality_rank"] == 1
+    assert events.loc["BBB", "quality_rank"] == 2
 
 
-def test_prior_day_dynamic_context_can_change_portfolio_rank():
+def test_prior_day_dynamic_context_can_change_validated_portfolio_rank():
     dates = pd.bdate_range("2024-01-01", periods=8)
     bars = np.array(
         [(98, 99, 97, 98)] * 5
@@ -1221,6 +1398,7 @@ def test_prior_day_dynamic_context_can_change_portfolio_rank():
             setups,
             cfg,
             candidate_context={"rs_rating": rs},
+            quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
         )
         return str(result.trades.iloc[0]["symbol"])
 

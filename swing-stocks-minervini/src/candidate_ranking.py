@@ -1,11 +1,14 @@
-"""Causal v5 candidate quality, fill and slate-priority estimates.
+"""Causal candidate quality, fill and slate-priority estimates.
 
 The three public estimates deliberately have different meanings:
 
 ``quality_score``
     Setup-type-specific posterior expected R-multiple.  Its raw signal uses
     technical and point-in-time fundamental information only.  Pivot distance
-    and readiness are explicitly excluded.
+    and readiness are explicitly excluded.  The posterior is exposed only
+    after its stored, purged walk-forward predictions demonstrate a robust
+    monotone outcome lift within the same setup class; before that it is the
+    explicit neutral prior.
 ``fill_probability``
     Setup-type-specific posterior probability that an order touches.  This is
     the only model that may use the readiness/pivot-distance signal.
@@ -25,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from bisect import bisect_right
 from dataclasses import dataclass, field, replace
+from hashlib import blake2b
 from math import isfinite
 from typing import Any
 
@@ -95,6 +99,24 @@ DEFAULT_QUALITY_WEIGHTS: dict[str, dict[str, float]] = {
     },
 }
 
+# Quality validation uses non-overlapping, two-year calendar review epochs.
+# Each of the eight outcome-availability quarters is an independent regime
+# block, while completion dates are equal-weight clusters inside a block.  A
+# review happens once at the next epoch boundary and remains frozen for the
+# full following epoch; results are therefore never repeatedly peeked as
+# individual trades close.  These are predeclared model-contract constants,
+# not parameters tuned on the current backtest.
+QUALITY_VALIDATION_GROUPS = 4
+QUALITY_VALIDATION_QUARTERS_PER_REVIEW = 8
+QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER = 40
+QUALITY_VALIDATION_MIN_DAYS_PER_GROUP = 5
+QUALITY_VALIDATION_BLOCK_CONFIDENCE_T = 2.365
+QUALITY_VALIDATION_EPOCH_ANCHOR_YEAR = 2000
+QUALITY_VALIDATION_MIN_LABELS = (
+    QUALITY_VALIDATION_QUARTERS_PER_REVIEW
+    * QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER
+)
+
 
 def _day(value: Any) -> pd.Timestamp:
     """Return a timezone-neutral normalized timestamp for causal comparisons."""
@@ -113,7 +135,10 @@ class QualityCalibrationLabel:
     ``raw_quality_score`` must be the raw score from the entry-decision
     snapshot, not a value recomputed at exit.  One independently executable
     first-touch setup contributes one quality label only after its complete
-    R-multiple is known.  Portfolio selection must not define this training
+    R-multiple is known.  ``walk_forward_quality_score`` is the base posterior
+    that was produced at that original snapshot using only outcomes already
+    available then.  It is therefore a purged out-of-sample prediction rather
+    than an in-sample refit.  Portfolio selection must not define this training
     set, otherwise the calibrator would learn its own selection bias.
     """
 
@@ -122,6 +147,7 @@ class QualityCalibrationLabel:
     available_date: pd.Timestamp
     raw_quality_score: float
     realized_r_multiple: float
+    walk_forward_quality_score: float
     weight: float = 1.0
 
     def __post_init__(self) -> None:
@@ -130,6 +156,7 @@ class QualityCalibrationLabel:
         raw_quality_score = float(self.raw_quality_score)
         realized_r_multiple = float(self.realized_r_multiple)
         weight = float(self.weight)
+        walk_forward_quality_score = float(self.walk_forward_quality_score)
         if available_date <= information_date:
             raise ValueError("quality label must become available after its snapshot")
         if not isfinite(raw_quality_score) or not 0.0 <= raw_quality_score <= 100.0:
@@ -138,12 +165,17 @@ class QualityCalibrationLabel:
             raise ValueError("realized_r_multiple must be finite")
         if not isfinite(weight) or weight <= 0.0:
             raise ValueError("label weight must be finite and positive")
+        if not isfinite(walk_forward_quality_score):
+            raise ValueError("walk_forward_quality_score must be finite")
         object.__setattr__(self, "setup_type", str(self.setup_type))
         object.__setattr__(self, "information_date", information_date)
         object.__setattr__(self, "available_date", available_date)
         object.__setattr__(self, "raw_quality_score", raw_quality_score)
         object.__setattr__(self, "realized_r_multiple", realized_r_multiple)
         object.__setattr__(self, "weight", weight)
+        object.__setattr__(
+            self, "walk_forward_quality_score", walk_forward_quality_score
+        )
 
 
 @dataclass(frozen=True)
@@ -186,7 +218,7 @@ class FillCalibrationLabel:
 
 @dataclass(frozen=True)
 class CandidateSnapshot:
-    """All information and v5 estimates available before one order session."""
+    """All information and causal estimates available before one order session."""
 
     setup_key: int
     setup_id: int | None
@@ -212,12 +244,15 @@ class CandidateSnapshot:
     prior_advance_score: float | None
     raw_quality_score: float
     quality_feature_coverage: float
+    walk_forward_quality_score: float
     quality_score: float
+    quality_model_validated: bool
     fill_probability: float
     slate_priority: float
     quality_rank: int | None
     quality_calibration_count: int
     quality_effective_samples: float
+    quality_validation_count: int
     fill_calibration_count: int
     fill_effective_samples: float
     context_values: tuple[tuple[str, float | None], ...]
@@ -234,6 +269,13 @@ class _Estimate:
     effective_samples: float
 
 
+@dataclass(frozen=True)
+class _QualityValidation:
+    passed: bool
+    count: int
+    review_epoch_start: int | None
+
+
 @dataclass
 class _BinnedCalibrationState:
     """Incremental as-of aggregates for one setup class."""
@@ -248,6 +290,11 @@ class _BinnedCalibrationState:
     weighted_targets: np.ndarray = field(
         default_factory=lambda: np.zeros(101, dtype=float)
     )
+    validation_scores: list[float] = field(default_factory=list)
+    validation_targets: list[float] = field(default_factory=list)
+    validation_weights: list[float] = field(default_factory=list)
+    validation_dates: list[pd.Timestamp] = field(default_factory=list)
+    validation_result: _QualityValidation | None = None
 
     def reset(self) -> None:
         self.as_of = None
@@ -256,6 +303,11 @@ class _BinnedCalibrationState:
         self.weights.fill(0.0)
         self.weighted_signals.fill(0.0)
         self.weighted_targets.fill(0.0)
+        self.validation_scores.clear()
+        self.validation_targets.clear()
+        self.validation_weights.clear()
+        self.validation_dates.clear()
+        self.validation_result = None
 
 
 class CandidateRanker:
@@ -396,6 +448,7 @@ class CandidateRanker:
             label.raw_quality_score,
             label.realized_r_multiple,
             label.weight,
+            label.walk_forward_quality_score,
         )
 
     @classmethod
@@ -589,10 +642,152 @@ class CandidateRanker:
             state.weighted_targets[index] += (
                 label.weight * label.realized_r_multiple
             )
+            state.validation_scores.append(label.walk_forward_quality_score)
+            state.validation_targets.append(label.realized_r_multiple)
+            state.validation_weights.append(label.weight)
+            state.validation_dates.append(label.available_date)
             state.next_label += 1
             state.count += 1
         state.as_of = information_date
         return state
+
+    @staticmethod
+    def _quarter_ordinal(value: Any) -> int:
+        date = _day(value)
+        return date.year * 4 + date.quarter - 1
+
+    @classmethod
+    def _completed_review_epoch(
+        cls, information_date: pd.Timestamp
+    ) -> tuple[int, int] | None:
+        """Return the latest fixed eight-quarter epoch completed before ``t``."""
+        anchor = QUALITY_VALIDATION_EPOCH_ANCHOR_YEAR * 4
+        current_quarter = cls._quarter_ordinal(information_date)
+        completed_epochs = (current_quarter - anchor) // (
+            QUALITY_VALIDATION_QUARTERS_PER_REVIEW
+        )
+        if completed_epochs <= 0:
+            return None
+        start = anchor + (
+            completed_epochs - 1
+        ) * QUALITY_VALIDATION_QUARTERS_PER_REVIEW
+        return start, start + QUALITY_VALIDATION_QUARTERS_PER_REVIEW - 1
+
+    @staticmethod
+    def _quarter_group_means(
+        scores: np.ndarray,
+        targets: np.ndarray,
+        weights: np.ndarray,
+        dates: np.ndarray,
+    ) -> tuple[float, ...] | None:
+        """Return score-group means with completion dates as equal clusters."""
+        if len(scores) < QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER:
+            return None
+        quantiles = np.linspace(
+            0.0, 1.0, QUALITY_VALIDATION_GROUPS + 1, dtype=float
+        )[1:-1]
+        boundaries = np.quantile(scores, quantiles, method="linear")
+        # Never split equal predictions into artificial ordered groups.
+        if len(np.unique(boundaries)) != QUALITY_VALIDATION_GROUPS - 1:
+            return None
+        group_ids = np.searchsorted(boundaries, scores, side="right")
+        means: list[float] = []
+        for group_id in range(QUALITY_VALIDATION_GROUPS):
+            group_mask = group_ids == group_id
+            group_dates = dates[group_mask]
+            unique_dates = np.unique(group_dates)
+            if len(unique_dates) < QUALITY_VALIDATION_MIN_DAYS_PER_GROUP:
+                return None
+            group_targets = targets[group_mask]
+            group_weights = weights[group_mask]
+            daily_means = []
+            for date in unique_dates:
+                day_mask = group_dates == date
+                daily_means.append(
+                    float(
+                        np.average(
+                            group_targets[day_mask], weights=group_weights[day_mask]
+                        )
+                    )
+                )
+            # A day with many correlated exits remains one observation.
+            means.append(float(np.mean(daily_means)))
+        return tuple(means)
+
+    @classmethod
+    def _quality_validation(
+        cls,
+        state: _BinnedCalibrationState,
+        information_date: pd.Timestamp,
+    ) -> _QualityValidation:
+        """Review one frozen, non-overlapping two-year OOF epoch.
+
+        Each outcome-availability quarter supplies four local score groups.
+        Quarter-level top-minus-bottom lifts are the independent observations
+        for the confidence bound, and aggregate group means must be monotone.
+        No group itself must be profitable.
+        """
+        epoch = cls._completed_review_epoch(information_date)
+        epoch_start = epoch[0] if epoch is not None else None
+        if (
+            state.validation_result is not None
+            and state.validation_result.review_epoch_start == epoch_start
+        ):
+            return state.validation_result
+        if epoch is None:
+            result = _QualityValidation(False, 0, None)
+            state.validation_result = result
+            return result
+
+        quarter_ordinals = np.asarray(
+            [cls._quarter_ordinal(date) for date in state.validation_dates],
+            dtype=int,
+        )
+        epoch_mask = (quarter_ordinals >= epoch[0]) & (
+            quarter_ordinals <= epoch[1]
+        )
+        count = int(np.sum(epoch_mask))
+        if count < QUALITY_VALIDATION_MIN_LABELS:
+            result = _QualityValidation(False, count, epoch_start)
+            state.validation_result = result
+            return result
+
+        scores = np.asarray(state.validation_scores, dtype=float)[epoch_mask]
+        targets = np.asarray(state.validation_targets, dtype=float)[epoch_mask]
+        weights = np.asarray(state.validation_weights, dtype=float)[epoch_mask]
+        dates = np.asarray(state.validation_dates, dtype="datetime64[D]")[epoch_mask]
+        selected_quarters = quarter_ordinals[epoch_mask]
+        block_means: list[tuple[float, ...]] = []
+        for quarter in range(epoch[0], epoch[1] + 1):
+            block_mask = selected_quarters == quarter
+            means = cls._quarter_group_means(
+                scores[block_mask],
+                targets[block_mask],
+                weights[block_mask],
+                dates[block_mask],
+            )
+            if means is None:
+                result = _QualityValidation(False, count, epoch_start)
+                state.validation_result = result
+                return result
+            block_means.append(means)
+
+        blocks = np.asarray(block_means, dtype=float)
+        aggregate_means = np.mean(blocks, axis=0)
+        monotone = bool(np.all(np.diff(aggregate_means) >= 0.0))
+        block_lifts = blocks[:, -1] - blocks[:, 0]
+        mean_lift = float(np.mean(block_lifts))
+        block_standard_error = float(
+            np.std(block_lifts, ddof=1) / np.sqrt(len(block_lifts))
+        )
+        robust_lift = (
+            mean_lift
+            - QUALITY_VALIDATION_BLOCK_CONFIDENCE_T * block_standard_error
+            > 0.0
+        )
+        result = _QualityValidation(monotone and robust_lift, count, epoch_start)
+        state.validation_result = result
+        return result
 
     def _fill_state(
         self, setup_type: str, information_date: pd.Timestamp
@@ -617,7 +812,7 @@ class CandidateRanker:
 
     def _quality_estimate(
         self, setup_type: str, raw_score: float, information_date: pd.Timestamp
-    ) -> _Estimate:
+    ) -> tuple[_Estimate, _QualityValidation]:
         state = self._quality_state(setup_type, information_date)
         estimate = self._state_estimate(
             state,
@@ -629,7 +824,7 @@ class CandidateRanker:
         value = estimate.value
         if not isfinite(value):
             raise RuntimeError("quality calibration produced a non-finite estimate")
-        return estimate
+        return estimate, self._quality_validation(state, information_date)
 
     def _fill_estimate(
         self, setup_type: str, readiness_signal: float, information_date: pd.Timestamp
@@ -660,6 +855,7 @@ class CandidateRanker:
             raw_quality_score=snapshot.raw_quality_score,
             realized_r_multiple=realized_r_multiple,
             weight=weight,
+            walk_forward_quality_score=snapshot.walk_forward_quality_score,
         )
         self._quality_labels.append(label)
         labels = self._quality_by_type.setdefault(label.setup_type, [])
@@ -883,13 +1079,25 @@ class CandidateRanker:
             / total_weight
         )
         readiness_signal = readiness if readiness is not None else 50.0
-        quality_estimate = self._quality_estimate(
+        quality_estimate, quality_validation = self._quality_estimate(
             setup_type, raw_quality_score, information_date
         )
         fill_estimate = self._fill_estimate(
             setup_type, readiness_signal, information_date
         )
-        slate_priority = quality_estimate.value * fill_estimate.value
+        exposed_quality_score = (
+            quality_estimate.value
+            if quality_validation.passed
+            else self.quality_prior_r_multiple
+        )
+        # Fill probability must not create a hidden ordering while outcome
+        # quality is unvalidated.  With a validated model the product regains
+        # its expected-R-contribution meaning.
+        slate_priority = (
+            exposed_quality_score * fill_estimate.value
+            if quality_validation.passed
+            else 0.0
+        )
         if not isfinite(slate_priority):
             raise RuntimeError("slate priority produced a non-finite estimate")
 
@@ -930,16 +1138,45 @@ class CandidateRanker:
             prior_advance_score=prior_advance,
             raw_quality_score=raw_quality_score,
             quality_feature_coverage=observed_weight / total_weight,
-            quality_score=quality_estimate.value,
+            walk_forward_quality_score=quality_estimate.value,
+            quality_score=exposed_quality_score,
+            quality_model_validated=quality_validation.passed,
             fill_probability=fill_estimate.value,
             slate_priority=slate_priority,
             quality_rank=None,
             quality_calibration_count=quality_estimate.count,
             quality_effective_samples=quality_estimate.effective_samples,
+            quality_validation_count=quality_validation.count,
             fill_calibration_count=fill_estimate.count,
             fill_effective_samples=fill_estimate.effective_samples,
             context_values=context_values,
         )
+
+    @staticmethod
+    def _neutral_tie_key(snapshot: CandidateSnapshot) -> int:
+        """Stable session lottery for candidates lacking validated quality.
+
+        Cryptographic hashing avoids Python's process-randomized ``hash`` and
+        removes persistent lexical symbol preference.  Every input is known
+        before the order session and the result is independent of input order.
+        """
+        identity = "\x1f".join(
+            (
+                _day(snapshot.session_date).date().isoformat(),
+                snapshot.setup_type,
+                snapshot.symbol,
+                (
+                    "missing"
+                    if snapshot.pivot is None
+                    else format(snapshot.pivot, ".8f")
+                ),
+                str(snapshot.setup_age_sessions),
+            )
+        ).encode("utf-8")
+        digest = blake2b(
+            identity, digest_size=8, person=b"minervini-v6"
+        ).digest()
+        return int.from_bytes(digest, byteorder="big", signed=False)
 
     def rank(
         self,
@@ -964,7 +1201,10 @@ class CandidateRanker:
             key=lambda item: (
                 -item.quality_score,
                 item.setup_type,
-                -item.raw_quality_score,
+                -item.raw_quality_score if item.quality_model_validated else 0.0,
+                self._neutral_tie_key(item)
+                if not item.quality_model_validated
+                else 0,
                 item.symbol,
                 item.setup_id if item.setup_id is not None else 2**63 - 1,
                 item.setup_key,
@@ -981,9 +1221,10 @@ class CandidateRanker:
 
         # Equal posterior estimates contain no evidence for a cross-class
         # preference. A lexical setup-type tie break would silently create one.
-        # Interleave every exact posterior tie by class, rotate the first class
-        # by session, and use raw quality only within its own class. This covers
-        # cold start and neutral/shrunk ties without an outcome-tuned threshold.
+        # Interleave every exact posterior tie by class and rotate the first
+        # class by session. Inside an unvalidated class a stable session hash
+        # provides an input-order-independent neutral lottery; raw quality and
+        # fill may break ties only after quality validation has passed.
         posterior_groups: dict[
             tuple[float, float], list[CandidateSnapshot]
         ] = {}
@@ -1001,15 +1242,31 @@ class CandidateRanker:
             for candidates in by_type.values():
                 candidates.sort(
                     key=lambda item: (
-                        -item.raw_quality_score,
-                        -item.fill_probability,
+                        (
+                            -item.raw_quality_score
+                            if item.quality_model_validated
+                            else 0.0
+                        ),
+                        (
+                            -item.fill_probability
+                            if item.quality_model_validated
+                            else 0.0
+                        ),
+                        (
+                            self._neutral_tie_key(item)
+                            if not item.quality_model_validated
+                            else 0
+                        ),
                         item.symbol,
                         item.setup_id if item.setup_id is not None else 2**63 - 1,
                         item.setup_key,
                     )
                 )
             setup_types = sorted(by_type)
-            rotation = (session_idx + group_number) % len(setup_types)
+            # Calendar-date rotation is stable even when a separate OOS run
+            # loads a different amount of warm-up history before this session.
+            session_ordinal = _day(self.dates[session_idx]).date().toordinal()
+            rotation = (session_ordinal + group_number) % len(setup_types)
             setup_types = setup_types[rotation:] + setup_types[:rotation]
             for index in range(max(len(values) for values in by_type.values())):
                 for setup_type in setup_types:

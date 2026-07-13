@@ -29,7 +29,7 @@ import pandas as pd
 
 SetupType = Literal["vcp", "flat_base", "power_play", "tight_shelf"]
 Swing = tuple[int, float, Literal["H", "L"]]
-MODEL_VERSION = "minervini_daily_v5"
+MODEL_VERSION = "minervini_daily_v6"
 
 # Classification is score-first.  The order is only a deterministic tie
 # breaker for nested patterns with identical quality: a contraction structure
@@ -228,6 +228,65 @@ def _power_play_thrust_volume_ratio(
         return None
     leaders = np.partition(valid, -min(3, len(valid)))[-min(3, len(valid)) :]
     return float(np.mean(leaders) / baseline)
+
+
+def _power_play_has_leadership_structure(
+    t: int,
+    pivot: float,
+    high: np.ndarray,
+    close: np.ndarray,
+    segment_start: int,
+) -> bool:
+    """Return whether a Power Play is a causal Stage-2 continuation.
+
+    Doubling from a crash low is not leadership.  The pivot must still be near
+    the highest price seen in the trailing year and price must be above its
+    medium-term trend.  Mature histories additionally have to satisfy the
+    classic 50/150/200-session moving-average order; the 200-session average
+    must be rising once enough prior observations exist to measure that.
+
+    Young issues are intentionally allowed after 50 sessions.  In that case
+    only the moving averages that can be computed from the current continuity
+    segment are applied.  Every slice ends at ``t`` (or earlier), so the check
+    cannot see breakout-day or future observations.
+    """
+    available = t - segment_start + 1
+    if available < 50 or pivot <= 0:
+        return False
+
+    history_start = max(segment_start, t - 251)
+    trailing_highs = high[history_start : t + 1]
+    if not np.isfinite(trailing_highs).all():
+        return False
+    trailing_high = float(np.max(trailing_highs))
+    if trailing_high <= 0 or pivot < 0.85 * trailing_high:
+        return False
+
+    sma50 = float(np.mean(close[t - 49 : t + 1]))
+    if not np.isfinite(sma50) or float(close[t]) <= sma50:
+        return False
+
+    sma150: float | None = None
+    if available >= 150:
+        sma150 = float(np.mean(close[t - 149 : t + 1]))
+        if not np.isfinite(sma150) or sma50 <= sma150:
+            return False
+
+    if available >= 200:
+        assert sma150 is not None
+        sma200 = float(np.mean(close[t - 199 : t + 1]))
+        if (
+            not np.isfinite(sma200)
+            or float(close[t]) <= sma200
+            or sma150 <= sma200
+        ):
+            return False
+        if available >= 220:
+            prior_sma200 = float(np.mean(close[t - 219 : t - 19]))
+            if not np.isfinite(prior_sma200) or sma200 <= prior_sma200:
+                return False
+
+    return True
 
 
 def _close_dispersion(
@@ -436,9 +495,11 @@ def _range_candidate(
 ) -> dict[str, Any] | None:
     if setup_type == "power_play":
         # A Power Play is the exceptional case: at least a 100% thrust in no
-        # more than 40 sessions, followed by roughly two to six weeks of rest.
+        # more than 40 sessions, followed by 10 to 30 elapsed sessions of rest.
+        # ``length`` is the number of observations, while ``base_days`` is the
+        # session distance from base start to detection, hence the +1 bounds.
         lengths, max_depth, required_advance = (
-            range(10, 31),
+            range(11, 32),
             0.20,
             max(1.00, rules.prior_advance_min),
         )
@@ -472,6 +533,14 @@ def _range_candidate(
         last_low = float(np.min(l))
         depth = (pivot - last_low) / pivot if pivot > 0 else np.inf
         if depth > max_depth:
+            continue
+        if setup_type == "power_play" and not _power_play_has_leadership_structure(
+            t,
+            pivot,
+            high,
+            close,
+            segment_start,
+        ):
             continue
         prior = _prior_advance(
             high,
@@ -607,44 +676,6 @@ def _same_structure(left: dict[str, Any], right: dict[str, Any]) -> bool:
     overlap = max(0, min(left_end, right_end) - max(left_start, right_start) + 1)
     shorter = min(left_end - left_start + 1, right_end - right_start + 1)
     return shorter > 0 and overlap / shorter >= 0.60
-
-
-def _materially_improved(
-    candidate: dict[str, Any],
-    prior: dict[str, Any],
-    session_positions: np.ndarray,
-) -> bool:
-    """Allow a repeated structure only after new causal evidence improves it.
-
-    Expiry by itself is never evidence. A genuinely higher resistance anchor
-    is a new actionable structure. Otherwise at least ten fresh sessions and
-    a material improvement in tightness or volume contraction are required.
-    """
-    candidate_pivot = float(candidate["pivot"])
-    prior_pivot = float(prior["pivot"])
-    if (
-        int(candidate["pivot_idx"]) > int(prior["pivot_idx"])
-        and candidate_pivot >= prior_pivot * 1.01
-    ):
-        return True
-
-    fresh_sessions = int(
-        session_positions[int(candidate["structure_end"])]
-        - session_positions[int(prior["structure_end"])]
-    )
-    if fresh_sessions < 10:
-        return False
-    tighter = float(candidate["tightness"]) <= 0.80 * float(prior["tightness"])
-    new_dryup = float(candidate["dryup"])
-    prior_dryup = float(prior["dryup"])
-    dryer = (
-        np.isfinite(new_dryup)
-        and (
-            not np.isfinite(prior_dryup)
-            or new_dryup <= 0.80 * prior_dryup
-        )
-    )
-    return bool(tighter or dryer)
 
 
 def _classification_key(candidate: dict[str, Any]) -> tuple[float, int, float, int, int, str]:
@@ -835,18 +866,12 @@ def find_setups(
             reverse=True,
         )
         for found in representatives:
-            matching_history = [
-                prior
-                for prior in emission_history
-                if _same_structure(found, prior)
-            ]
-            if matching_history:
-                latest = max(
-                    matching_history,
-                    key=lambda prior: int(prior["structure_end"]),
-                )
-                if not _materially_improved(found, latest, session_positions):
-                    continue
+            if any(_same_structure(found, prior) for prior in emission_history):
+                # A base is one causal structure, not a fresh setup every time
+                # its tightness or volume score changes. A clearly higher
+                # pivot falls outside ``_same_structure`` and remains eligible
+                # as a genuinely new continuation base.
+                continue
             setup_type: SetupType = found["setup_type"]
             emission_history = [
                 prior

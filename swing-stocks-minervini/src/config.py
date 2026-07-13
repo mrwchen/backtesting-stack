@@ -134,6 +134,7 @@ class Config:
 
     # portfolio simulation constraints
     portfolio_max_open_positions: int
+    portfolio_max_daily_orders: int
     portfolio_max_gross_exposure_pct: float
     min_slate_risk_utilization: float
     exposure_levels: tuple[float, ...]
@@ -148,7 +149,7 @@ class Config:
             start_date=_env("START_DATE", "2020-01-02"),
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
-            run_label=_env("RUN_LABEL", "minervini_sepa_daily_v5_quality_slate"),
+            run_label=_env("RUN_LABEL", "minervini_sepa_daily_v6_validated_slate"),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
@@ -242,8 +243,9 @@ class Config:
             time_stop_sessions=int(_env("TIME_STOP_SESSIONS", "10")),
             time_stop_min_r=float(_env("TIME_STOP_MIN_R", "1.0")),
             portfolio_max_open_positions=int(_env("PORTFOLIO_MAX_OPEN_POSITIONS", "8")),
+            portfolio_max_daily_orders=int(_env("PORTFOLIO_MAX_DAILY_ORDERS", "3")),
             portfolio_max_gross_exposure_pct=float(_env("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "1.0")),
-            min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.10")),
+            min_slate_risk_utilization=float(_env("MIN_SLATE_RISK_UTILIZATION", "0.50")),
             exposure_levels=_env_float_tuple("EXPOSURE_LEVELS", "0.25,0.50,0.75,1.00"),
             exposure_winners_to_step_up=int(_env("EXPOSURE_WINNERS_TO_STEP_UP", "2")),
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
@@ -313,6 +315,8 @@ class Config:
             raise ValueError("FAILED_BREAKOUT_DAYS must be >= 1")
         if cfg.portfolio_max_open_positions < 1:
             raise ValueError("PORTFOLIO_MAX_OPEN_POSITIONS must be >= 1")
+        if not 1 <= cfg.portfolio_max_daily_orders <= 3:
+            raise ValueError("PORTFOLIO_MAX_DAILY_ORDERS must be between 1 and 3")
         if cfg.portfolio_max_gross_exposure_pct <= 0:
             raise ValueError("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT must be > 0")
         if not 0 < cfg.min_slate_risk_utilization <= 1:

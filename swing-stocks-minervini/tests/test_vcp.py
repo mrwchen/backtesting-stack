@@ -240,7 +240,86 @@ def test_power_play_setup_class():
     volume[24:40] = 2_000_000.0
     data = dates, high, low, close, volume
     found = _detect(data)
+    power_plays = [item for item in found if item.setup_type == "power_play"]
+    assert power_plays
+    assert all(10 <= item.base_days <= 30 for item in power_plays)
+
+
+def test_power_play_uses_ten_to_thirty_elapsed_sessions(monkeypatch):
+    monkeypatch.setattr(
+        minervini, "_power_play_has_leadership_structure", lambda *args: True
+    )
+    monkeypatch.setattr(minervini, "_prior_advance", lambda *args, **kwargs: 1.20)
+    monkeypatch.setattr(
+        minervini, "_power_play_thrust_volume_ratio", lambda *args, **kwargs: 2.0
+    )
+    rules = minervini._Rules.from_config(make_cfg())
+
+    def candidate(*, start: int, t: int, reject_earlier_start: bool):
+        n = t + 1
+        close = np.full(n, 98.0)
+        base = np.linspace(98.0, 99.0, t - start + 1)
+        base[1] = 100.0
+        close[start : t + 1] = base
+        high = close * 1.004
+        low = close * 0.996
+        if reject_earlier_start:
+            high[start - 1] = 130.0
+            low[start - 1] = 129.0
+        return minervini._range_candidate(
+            "power_play",
+            t,
+            high,
+            low,
+            close,
+            np.full(n, 1_000_000.0),
+            np.arange(n),
+            0,
+            rules,
+        )
+
+    minimum = candidate(start=60, t=70, reject_earlier_start=True)
+    maximum = candidate(start=40, t=70, reject_earlier_start=False)
+
+    assert minimum is not None and minimum["base_days"] == 10
+    assert maximum is not None and maximum["base_days"] == 30
+
+
+def test_power_play_requires_mature_causal_leadership_structure():
+    data = _series(
+        [
+            np.linspace(20, 30, 200),
+            np.linspace(30, 66, 20),
+            62 + np.sin(np.linspace(0, 3 * np.pi, 18)) * 2.0,
+            np.linspace(62.5, 64.5, 7),
+        ],
+        quiet_from=237,
+    )
+    dates, high, low, close, volume = data
+    volume[210:220] = 3_000_000.0
+
+    found = _detect((dates, high, low, close, volume))
+
     assert any(item.setup_type == "power_play" for item in found)
+
+
+def test_power_play_rejects_crash_low_v_bottom_rebound():
+    data = _series(
+        [
+            np.linspace(50, 100, 200),
+            np.linspace(100, 35, 10),
+            np.linspace(35, 75, 20),
+            72 + np.sin(np.linspace(0, 3 * np.pi, 18)) * 2.0,
+            np.linspace(72.5, 73.5, 7),
+        ],
+        quiet_from=247,
+    )
+    dates, high, low, close, volume = data
+    volume[220:230] = 3_000_000.0
+
+    found = _detect((dates, high, low, close, volume))
+
+    assert not any(item.setup_type == "power_play" for item in found)
 
 
 def test_tight_shelf_setup_class():
@@ -416,6 +495,57 @@ def test_structure_expiry_alone_does_not_reemit_it(monkeypatch):
 
     assert [setup.detect_date for setup in found] == [
         pd.Timestamp("2020-02-13").date(),
+    ]
+
+
+def test_tighter_and_dryer_same_base_is_still_emitted_only_once(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type != "power_play":
+            return None
+        candidate = _synthetic_candidate(
+            "power_play", t=t, pivot_idx=10, pivot=100.0, score=80.0
+        )
+        if t == 39:
+            candidate["tightness"] = 0.01
+            candidate["dryup"] = 0.20
+            candidate["score"] = (95.0, 25.0, 15.0, 20.0, 15.0)
+        return candidate
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        lambda _t: None,
+        [28, 39],
+        setup_valid_days=2,
+    )
+
+    assert [setup.detect_date for setup in found] == [
+        pd.Timestamp("2020-02-11").date(),
+    ]
+
+
+def test_clearly_higher_pivot_is_a_new_structure(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type != "power_play":
+            return None
+        return _synthetic_candidate(
+            "power_play",
+            t=t,
+            pivot_idx=10 if t == 30 else 11,
+            pivot=100.0 if t == 30 else 104.0,
+            score=80.0,
+        )
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        lambda _t: None,
+        [30, 31],
+    )
+
+    assert [(setup.detect_date, setup.pivot) for setup in found] == [
+        (pd.Timestamp("2020-02-13").date(), 100.0),
+        (pd.Timestamp("2020-02-14").date(), 104.0),
     ]
 
 

@@ -37,6 +37,15 @@ def test_sim_config_fingerprint_tracks_slate_risk_floor() -> None:
     ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
 
 
+def test_sim_config_fingerprint_tracks_daily_order_limit() -> None:
+    first = make_cfg(portfolio_max_daily_orders=3)
+    changed = make_cfg(portfolio_max_daily_orders=2)
+
+    assert config_fingerprint(
+        first, SIM_CONFIG_FIELDS, model_version="m1"
+    ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
+
+
 def test_frame_fingerprint_is_order_independent_and_content_sensitive() -> None:
     frame = pd.DataFrame(
         {

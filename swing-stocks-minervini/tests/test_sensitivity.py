@@ -322,6 +322,7 @@ def test_oos_run_preloads_hidden_first_touch_labels_without_online_duplication(
             available_date=dates[1],
             raw_quality_score=70.0,
             realized_r_multiple=1.25,
+            walk_forward_quality_score=0.20,
         ),
     )
     fill_labels = (

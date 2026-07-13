@@ -9,7 +9,8 @@ simultaneous positions, with at most one open position per symbol.
 Entry:  before each session a deterministic, fully funded stop-buy slate is
         built from information known at the previous close. Portfolio orders
         are scaled together from their standalone target sizes and must retain
-        a configured minimum share of that target. Quantity and capacity are
+        a configured minimum share of that target. The portfolio slate also
+        has an explicit daily order-count cap. Quantity and capacity are
         reserved at the worst permitted buy-zone fill. Only orders on that
         slate may fill; unused reservations are not reassigned after observing
         the day's highs. The market exposure cap produced at close t becomes
@@ -136,7 +137,7 @@ def simulate(
     c = close_m.to_numpy()
     if continuity_segment_m is None:
         raise ValueError(
-            "v5 simulation requires continuity_segment_m"
+            "v6 simulation requires continuity_segment_m"
         )
     if (
         not continuity_segment_m.index.equals(dates)
@@ -199,7 +200,7 @@ def simulate(
     setups["sim_setup_key"] = np.arange(len(setups), dtype=int)
     if "price_continuity_segment" not in setups.columns:
         raise ValueError(
-            "v5 setups require price_continuity_segment"
+            "v6 setups require price_continuity_segment"
         )
     setup_segments = pd.to_numeric(
         setups["price_continuity_segment"], errors="coerce"
@@ -407,7 +408,10 @@ def simulate(
             "entry_date": entry_date,
             "entry_price": entry_price,
             "snapshot_date": snapshot.information_date.date(),
-            "quality_score": round(snapshot.quality_score, 8),
+            # Persist the causal diagnostic posterior even while the ranking
+            # contract is fail-closed. ``snapshot.quality_score`` is the
+            # effective ranking value and remains neutral until validation.
+            "quality_score": round(snapshot.walk_forward_quality_score, 8),
             "fill_probability": round(snapshot.fill_probability, 8),
             "slate_priority": round(snapshot.slate_priority, 8),
             "setup_age_sessions": snapshot.setup_age_sessions,
@@ -698,12 +702,6 @@ def simulate(
                     ineligible[snapshot.setup_key] = (
                         "setup_class_research_only"
                     )
-                elif (
-                    snapshot.quality_score < 0.0
-                    and snapshot.quality_effective_samples
-                    >= ranker.quality_prior_strength
-                ):
-                    ineligible[snapshot.setup_key] = "non_positive_quality"
         for setup_key, decision in ineligible.items():
             set_entry_decision(active_setups[setup_key], decision)
         eligible_snapshots = [
@@ -788,11 +786,15 @@ def simulate(
             remaining_slots = max(
                 0, cfg.portfolio_max_open_positions - len(start_symbols)
             )
+            daily_order_limit = min(
+                remaining_slots,
+                cfg.portfolio_max_daily_orders,
+            )
         else:
             sizing_equity = sizing_base
             remaining_cash = float("inf")
             remaining_gross = float("inf")
-            remaining_slots = len(active_setups)
+            daily_order_limit = len(active_setups)
 
         # The market cap for row t is calculated with close[t], hence only t-1
         # may govern an intraday stop order in session t. regime_entry_allowed
@@ -860,7 +862,7 @@ def simulate(
                     snapshot=current_snapshots[setup_key],
                 )
                 if portfolio_mode:
-                    if len(slate_candidates) >= remaining_slots:
+                    if len(slate_candidates) >= daily_order_limit:
                         set_entry_decision(setup, "portfolio_capacity")
                         continue
                     tentative_candidates = [*slate_candidates, candidate]

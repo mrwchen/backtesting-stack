@@ -4,9 +4,9 @@ Daily, causal research implementation of a Minervini/SEPA-style stock process.
 The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
-The v5 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
-`minervini_sepa_daily_v5_quality_slate`
-(`MODEL_VERSION=minervini_daily_v5`). One invocation persists two separate
+The v6 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
+`minervini_sepa_daily_v6_validated_slate`
+(`MODEL_VERSION=minervini_daily_v6`). One invocation persists two separate
 runs in one database transaction: an unfiltered, true first-touch `independent`
 research run and the market-gated `portfolio` run with the configured cash,
 slot and exposure controls. It uses the known 2020-2023 development window. The 2024-2026 period
@@ -41,8 +41,10 @@ The pipeline has three functional stages:
    nested classifications collapse deterministically to the strongest label
    instead of producing type-dependent duplicates. Genuinely distinct pivots
    on the same detection day remain separate research candidates. An identical
-   structure is not re-emitted merely because its validity window elapsed; it
-   needs a materially improved pivot or chart structure. `tight_shelf` remains
+   structure is emitted once per continuity segment: expiry, later tightness or
+   later volume dry-up do not turn the same resistance anchor into a new setup.
+   A clearly higher, distinct continuation pivot can form a new base.
+   `tight_shelf` remains
    visible in the first-touch research sample but is not a portfolio order
    class. `power_play` is deliberately exceptional rather than a short generic
    base: it requires at least a 100% prior advance within 40 sessions, a 10-30
@@ -51,18 +53,43 @@ The pipeline has three functional stages:
    median (with at least 20 valid observations), final tightness no greater
    than 8% and final-close dispersion no greater than 4%. If the whole base is
    deeper than 10%, its final range must also be materially narrower than its
-   early range. None of these rules uses the breakout day's close or volume.
+   early range. A Power Play must also remain within 15% of its causally known
+   trailing high over up to 252 sessions and close above its 50-session
+   average. Young issues need at least 50 continuous sessions; as 150 and 200
+   sessions become available, the check progressively adds the 50/150/200
+   Stage-2 order and a rising 200-session average. This prevents a mechanical
+   doubling from a crash low from being classified as leadership without
+   excluding every young post-IPO leader. None of these rules uses the
+   breakout day's close or volume.
    Every setup is bound to one positive `price_continuity_segment` and no
    pattern geometry may cross a segment boundary.
 3. **Simulation:** places a stop-buy from information available after setup day
    D for session D+1. For each order session, all active candidates receive a
-   fresh snapshot using observations through t-1 only. The v5 rank keeps three
-   different questions separate: `quality_score` is a setup-class-calibrated
-   expected R-multiple, `fill_probability` estimates a near-term trigger, and
-   `slate_priority` is their product for pre-session order planning. Pivot
+   fresh snapshot using observations through t-1 only. The v6 rank keeps three
+   different questions separate: a base quality estimate is a setup-class-
+   calibrated expected R-multiple, `fill_probability` estimates a near-term
+   trigger, and `slate_priority` is used for pre-session order planning. Pivot
    readiness therefore cannot masquerade as trade quality. Calibration is
    walk-forward: a session may use only labels from trades completed before its
    information date, with causal priors/shrinkage when class history is sparse.
+   Every completed label also retains the forecast that was genuinely available
+   at its own entry. Per setup class, only those purged walk-forward forecasts
+   may validate the quality model. Validation is fail-closed, class-local and
+   evaluated only at fixed, non-overlapping two-year boundaries anchored at
+   2000Q1. Each review epoch needs all eight quarters with at least 40 fully
+   OOF-labelled outcomes per quarter. Every quarter forms four local forecast
+   groups with at least five distinct completion dates per group; outcomes from
+   the same completion date are first collapsed to one equal-weight cluster.
+   The eight quarter-level top-minus-bottom lifts are the independent evidence.
+   Aggregate group means must be monotonic and the block-level lift must retain
+   a positive lower bound using `t=2.365`. A result is frozen for the following
+   two-year epoch, so closing another trade cannot repeatedly retest the same
+   history. This proves ranking information, not profitability; all groups may
+   still have negative mean R. The causal posterior remains visible as the
+   persisted diagnostic `quality_score`, but effective ranking quality and
+   `slate_priority` stay neutral until validation. Neutral ties use a stable
+   session hash rather than raw quality, fill probability or ticker order.
+   Negative quality never acts as an entry gate.
    Current RS, refreshed volume dry-up, setup age, point-in-time fundamentals,
    the trend-template result and structural components are soft quality
    features, not ex-post filters or entry gates. The trend-template contribution
@@ -88,8 +115,9 @@ The pipeline has three functional stages:
    before deterministic integer rounding. A lower-ranked candidate that cannot
    retain the minimum may be skipped while a later, less capital-intensive
    candidate can still qualify. Every nominated order must retain at least
-   `MIN_SLATE_RISK_UTILIZATION` (default 10%) of that target, so the
-   initial 25% exposure tier can reserve several conditional orders.
+   `MIN_SLATE_RISK_UTILIZATION` (default 50%) of that target. At most
+   `PORTFOLIO_MAX_DAILY_ORDERS` (default 3) new orders are nominated per
+   session, independent of the larger limit for already open positions.
    Lower-ranked candidates that would create smaller residual orders are
    rejected as portfolio capacity instead of becoming dust trades. Frozen
    reservations are not recycled after observing which daily highs triggered.
@@ -183,21 +211,21 @@ JSON snapshot payload and no audit-only table.
 
 ## Run
 
-The v5 rebuild is intentionally incompatible with every earlier result schema.
-There is no migration and no backward-compatibility path. The first v5
-run must drop and recreate all `backtesting_minervini_*` tables through the init
-container:
+The v6 model change does not alter the v5 result-table structure. It requires no
+migration and no table drop. Existing v5 run rows therefore remain available as
+a comparison baseline. Rebuild the image and run the complete functional
+pipeline so model-version fingerprints replace current stage state and setup
+state:
 
 ```bash
 cd /home/wei/backtesting-stack/swing-stocks-minervini
-DROP_ALL_MINERVINI_TABLES_ON_START=true docker compose up --build
+docker compose up --build
 ```
 
-`DROP_ALL_MINERVINI_TABLES_ON_START` defaults to `false`; do not keep the
-destructive override enabled after the one-time reset. This reset deletes all
-previous Minervini runs, trades, events, setups and stage state. The Docker
-build context is the service directory, which contains both the runtime code
-and its service-owned `backtest_models` package.
+`DROP_ALL_MINERVINI_TABLES_ON_START` remains `false`. Setting it to `true` would
+delete all previous Minervini runs, trades, events, setups and stage state and
+is not needed for v6. The Docker build context is the service directory, which
+contains both the runtime code and its service-owned `backtest_models` package.
 
 All runtime parameters are documented in `compose.yaml`. The daily screen table
 always stores every rankable symbol/session, including failed trend-template

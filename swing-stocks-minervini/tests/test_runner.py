@@ -225,6 +225,7 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
             available_date=dates[1],
             raw_quality_score=75.0,
             realized_r_multiple=1.5,
+            walk_forward_quality_score=0.25,
         ),
     )
     fill_labels = (
