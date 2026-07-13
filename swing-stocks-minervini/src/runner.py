@@ -27,24 +27,14 @@ from .simulator import simulate
 
 log = logging.getLogger("runner")
 
-SETUP_CONTEXT_COLUMNS = [
-    "symbol",
-    "period_end_date",
+CANDIDATE_CONTEXT_COLUMNS = (
+    "trend_template_pass",
     "rs_rating",
-    "ibkr_industry_rs_rating",
-    "ibkr_category_rs_rating",
-    "stock_industry_rs_rating",
-    "stock_category_rs_rating",
-    "group_filter_pass",
-    "ibkr_industry_breadth_pass",
     "fundamental_score",
-    "fundamentals_pass",
-    "institutional_manager_count",
-    "institutional_net_activity",
-    "institutional_sponsorship_pass",
+    "fundamental_coverage",
     "eps_yoy",
     "revenue_yoy",
-]
+)
 
 SCREEN_FINGERPRINT_COLUMNS = tuple(persistence.SCREEN_COLUMNS)
 SETUP_FINGERPRINT_COLUMNS = (
@@ -55,11 +45,7 @@ SETUP_FINGERPRINT_COLUMNS = (
     "volume_dryup_score", "tightness_score", "pivot_proximity_score",
     "prior_advance_score", "close", "valid_until",
 )
-SIMULATION_FINGERPRINT_COLUMNS = SETUP_FINGERPRINT_COLUMNS + tuple(
-    column
-    for column in SETUP_CONTEXT_COLUMNS
-    if column not in {"symbol", "period_end_date"}
-)
+SIMULATION_FINGERPRINT_COLUMNS = SETUP_FINGERPRINT_COLUMNS
 
 
 class _UtcFormatter(logging.Formatter):
@@ -156,19 +142,33 @@ def _simulation_input_fingerprint(
     cfg: Config,
     setups: pd.DataFrame,
     matrices: dict,
+    universe: pd.DataFrame,
     market_exposure_cap: np.ndarray | None,
     regime_entry_allowed: np.ndarray | None,
     regime: pd.DataFrame,
+    candidate_context: dict[str, pd.DataFrame],
 ) -> str:
     dates = matrices["dates"]
     price_matrices = {
         field: matrices[field]
-        for field in ("open", "high", "low", "close")
+        for field in ("open", "high", "low", "close", "volume")
     }
     price_fingerprint = reproducibility.matrix_fingerprint(
         dates,
         matrices["symbols"],
         price_matrices,
+    )
+    context_fingerprint = reproducibility.matrix_fingerprint(
+        dates,
+        matrices["symbols"],
+        {
+            f"candidate_{field}": candidate_context[field]
+            for field in CANDIDATE_CONTEXT_COLUMNS
+        },
+    )
+    attribution_columns = ("symbol", "ibkr_industry", "ibkr_category")
+    attribution_fingerprint = reproducibility.frame_fingerprint(
+        universe, attribution_columns
     )
     gate_frame = pd.DataFrame({"date": dates})
     if market_exposure_cap is not None:
@@ -191,6 +191,8 @@ def _simulation_input_fingerprint(
     source_fingerprint = reproducibility.combine_fingerprints(
         setups=_fingerprint_available(setups, SIMULATION_FINGERPRINT_COLUMNS),
         prices=price_fingerprint,
+        candidate_context=context_fingerprint,
+        entry_attribution=attribution_fingerprint,
         gates=gate_fingerprint,
         regime=regime_fingerprint,
     )
@@ -359,7 +361,10 @@ def run_screen(
     start, end = dates[window][0].date(), dates[window][-1].date()
     persistence.write_rs(conn, rs_df, start, end)
 
-    persist_mask = screen_pass if cfg.screen_persist == "passed" else rs["eligible"]
+    # The simulation rank is rebuilt for every session, including sessions on
+    # which the trend template is false. Persist the complete rankable daily
+    # population so a later STAGE=sim has the same causal context as STAGE=all.
+    persist_mask = rs["eligible"]
     screen_df = _long_frame(
         persist_mask & window_m, dates, symbols,
         {
@@ -395,6 +400,9 @@ def run_screen(
             "streak_pass": fundamental["streak_pass"],
             "stability_pass": fundamental["stability_pass"],
             "fundamental_score": fundamental["fundamental_score"],
+            # Match NUMERIC(7,6) exactly so STAGE=all and a later STAGE=sim
+            # build byte-for-byte equivalent ranking inputs.
+            "fundamental_coverage": fundamental["fundamental_coverage"].round(6),
             "fundamentals_pass": fundamental["fundamentals_pass"],
             "institutional_manager_count": sponsorship["institutional_manager_count"],
             "institutional_net_activity": sponsorship["institutional_net_activity"],
@@ -443,7 +451,7 @@ def run_screen(
         int((screen_pass & window_m).to_numpy().sum()),
         len(screen_df),
     )
-    return screen_df.loc[screen_df["screen_pass"]].reset_index(drop=True)
+    return screen_df.reset_index(drop=True)
 
 
 def detect_setups(
@@ -584,32 +592,64 @@ def run_setup(
     return setups_df
 
 
-def _prepare_simulation_setups(
-    setups: pd.DataFrame,
-    screen_passes: pd.DataFrame,
-) -> pd.DataFrame:
+def _prepare_simulation_setups(setups: pd.DataFrame) -> pd.DataFrame:
     prepared = setups.copy()
     if "setup_id" not in prepared:
         # Sensitivity setups stay in memory because the shared setup table is
         # not run-scoped. Negative identifiers cannot be mistaken for its
         # positive BIGSERIAL values when events are inspected later.
         prepared["setup_id"] = -np.arange(1, len(prepared) + 1, dtype=np.int64)
-    available_context = [
-        column for column in SETUP_CONTEXT_COLUMNS if column in screen_passes.columns
-    ]
-    if {"symbol", "period_end_date"}.issubset(available_context):
-        context = screen_passes[available_context].rename(
-            columns={"period_end_date": "detect_date"}
-        )
-        context = context.copy()
-        context["detect_date"] = pd.to_datetime(context["detect_date"]).dt.date
-        prepared = prepared.merge(
-            context,
-            on=["symbol", "detect_date"],
-            how="left",
-            validate="many_to_one",
-        )
     return prepared
+
+
+def _screen_pass_rows(screen_daily: pd.DataFrame) -> pd.DataFrame:
+    if "screen_pass" not in screen_daily.columns:
+        raise ValueError("daily screen rows are missing screen_pass")
+    return screen_daily.loc[
+        screen_daily["screen_pass"].fillna(False).astype(bool)
+    ].reset_index(drop=True)
+
+
+def _candidate_context_matrices(
+    screen_daily: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    symbols: pd.Index,
+) -> dict[str, pd.DataFrame]:
+    """Return exact daily as-of inputs for pre-session candidate snapshots.
+
+    Rows are observations for their own completed session. ``CandidateRanker``
+    applies the causal one-session lag when it builds the next session's order
+    slate. Missing symbol/session observations deliberately remain NaN; in
+    particular, an absent trend-template pass must never be forward-filled.
+    """
+    required = {"period_end_date", "symbol", *CANDIDATE_CONTEXT_COLUMNS}
+    missing = sorted(required - set(screen_daily.columns))
+    if missing:
+        raise ValueError(
+            "daily screen rows are missing candidate fields: "
+            + ", ".join(missing)
+        )
+
+    context = screen_daily.loc[:, sorted(required)].copy()
+    context["period_end_date"] = pd.to_datetime(
+        context["period_end_date"]
+    ).dt.normalize()
+    duplicate = context.duplicated(["period_end_date", "symbol"], keep=False)
+    if duplicate.any():
+        raise ValueError(
+            "daily screen rows contain duplicate symbol/session candidate context"
+        )
+
+    aligned: dict[str, pd.DataFrame] = {}
+    exact_dates = pd.DatetimeIndex(dates)
+    exact_symbols = pd.Index(symbols)
+    for field in CANDIDATE_CONTEXT_COLUMNS:
+        values = context.pivot(
+            index="period_end_date", columns="symbol", values=field
+        )
+        values = values.reindex(index=exact_dates, columns=exact_symbols)
+        aligned[field] = values.apply(pd.to_numeric, errors="coerce").astype(float)
+    return aligned
 
 
 def _slice_matrices(matrices: dict, end: date) -> dict:
@@ -634,7 +674,9 @@ def _run_simulation(
     start: date,
     end: date,
     *,
+    candidate_context: dict[str, pd.DataFrame],
     state_start: date | None = None,
+    commit: bool = True,
 ) -> tuple[int, dict]:
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
@@ -656,9 +698,11 @@ def _run_simulation(
         cfg,
         setups,
         matrices,
+        universe,
         market_exposure_cap,
         regime_entry_allowed,
         regime,
+        candidate_context,
     )
     result = simulate(
         dates, matrices["symbols"],
@@ -666,15 +710,8 @@ def _run_simulation(
         setups, cfg, sim_start_idx=sim_start_idx, state_start_idx=state_start_idx,
         market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
-    )
-    run_id = persistence.create_run(
-        conn,
-        cfg,
-        result.metrics,
-        start,
-        end,
-        model_version=model.MODEL_VERSION,
-        input_fingerprint=input_fingerprint,
+        volume_m=matrices["volume"],
+        candidate_context=candidate_context,
     )
     trades = result.trades
     breakout_events = result.breakout_events
@@ -688,9 +725,25 @@ def _run_simulation(
             universe[["symbol", "ibkr_industry", "ibkr_category"]], on="symbol", how="left"
         )
         trades = _attach_regime_attribution(trades, regime)
-    persistence.write_trades(conn, run_id, trades)
-    persistence.write_breakout_events(conn, run_id, breakout_events)
-    persistence.write_equity(conn, run_id, result.equity)
+    try:
+        run_id = persistence.create_run(
+            conn,
+            cfg,
+            result.metrics,
+            start,
+            end,
+            model_version=model.MODEL_VERSION,
+            input_fingerprint=input_fingerprint,
+        )
+        persistence.write_trades(conn, run_id, trades)
+        persistence.write_breakout_events(conn, run_id, breakout_events)
+        persistence.write_equity(conn, run_id, result.equity)
+        if commit:
+            conn.commit()
+    except Exception:
+        if commit:
+            conn.rollback()
+        raise
     decisions = (
         " ".join(
             f"{decision} {count}"
@@ -720,16 +773,76 @@ def _run_simulation(
 
 def run_sim(
     conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
-    market: pd.DataFrame, start, end, *, setups: pd.DataFrame | None = None,
-) -> tuple[int, dict]:
+    market: pd.DataFrame, screen_daily: pd.DataFrame, start, end, *,
+    setups: pd.DataFrame | None = None,
+) -> tuple[int, dict] | tuple[tuple[int, dict], tuple[int, dict]]:
     if setups is None:
         setups = persistence.read_setups(conn, start, end)
     if setups.empty:
         log.warning("no setups in %s..%s -> persisting zero-signal run", start, end)
-    regime = data_loader.load_regime_scores(conn, cfg)
+    simulation_cfg = cfg
+    if cfg.simulation_mode == "independent":
+        simulation_cfg = replace(
+            cfg,
+            market_filter_enable=False,
+            regime_entry_filter_enable=False,
+            bad_fundamentals_filter_enable=False,
+        )
+    regime = data_loader.load_regime_scores(conn, simulation_cfg)
+    candidate_context = _candidate_context_matrices(
+        screen_daily, matrices["dates"], matrices["symbols"]
+    )
+
+    if cfg.simulation_mode == "both":
+        first_touch_cfg = replace(
+            cfg,
+            simulation_mode="independent",
+            market_filter_enable=False,
+            regime_entry_filter_enable=False,
+            bad_fundamentals_filter_enable=False,
+            run_label=f"{cfg.run_label}_first_touch",
+        )
+        portfolio_cfg = replace(
+            cfg,
+            simulation_mode="portfolio",
+            run_label=f"{cfg.run_label}_portfolio",
+        )
+        try:
+            first_touch = _run_simulation(
+                conn,
+                first_touch_cfg,
+                matrices,
+                universe,
+                market,
+                setups,
+                regime,
+                start,
+                end,
+                candidate_context=candidate_context,
+                commit=False,
+            )
+            portfolio = _run_simulation(
+                conn,
+                portfolio_cfg,
+                matrices,
+                universe,
+                market,
+                setups,
+                regime,
+                start,
+                end,
+                candidate_context=candidate_context,
+                commit=False,
+            )
+            conn.commit()
+            return first_touch, portfolio
+        except Exception:
+            conn.rollback()
+            raise
+
     return _run_simulation(
         conn,
-        cfg,
+        simulation_cfg,
         matrices,
         universe,
         market,
@@ -737,6 +850,7 @@ def run_sim(
         regime,
         start,
         end,
+        candidate_context=candidate_context,
     )
 
 
@@ -744,24 +858,29 @@ def run_sensitivity(
     conn,
     cfg: Config,
     prices: pd.DataFrame,
-    screen_passes: pd.DataFrame,
+    screen_daily: pd.DataFrame,
     matrices: dict,
     universe: pd.DataFrame,
     market: pd.DataFrame,
     start: date,
     end: date,
 ) -> None:
+    if cfg.simulation_mode == "both":
+        raise ValueError(
+            "sensitivity requires SIMULATION_MODE independent or portfolio"
+        )
     periods = sensitivity.phases(start, end)
     regime = data_loader.load_regime_scores(conn, cfg)
     detection_cache: dict[str, pd.DataFrame] = {}
+    setup_pass_days = _screen_pass_rows(screen_daily)
 
     log.info(
         "sensitivity start development-only market-filter ablation variants %d periods %d end-limit %s screen-pass-days %d symbols %d",
         len(sensitivity.VARIANTS),
         len(periods),
         sensitivity.DEVELOPMENT_END_DATE,
-        len(screen_passes),
-        screen_passes["symbol"].nunique(),
+        len(setup_pass_days),
+        setup_pass_days["symbol"].nunique(),
     )
     for variant in sensitivity.VARIANTS:
         if variant.detection_key not in detection_cache:
@@ -769,7 +888,7 @@ def run_sensitivity(
             detection_cache[variant.detection_key] = detect_setups(
                 detection_cfg,
                 prices,
-                screen_passes,
+                setup_pass_days,
                 universe,
                 matrices["dates"],
             )
@@ -782,10 +901,13 @@ def run_sensitivity(
             phase_setups = all_setups.loc[
                 (detect_date <= phase_end) & (valid_until >= phase_start)
             ].reset_index(drop=True)
-            phase_setups = _prepare_simulation_setups(
-                phase_setups, screen_passes
-            )
+            phase_setups = _prepare_simulation_setups(phase_setups)
             phase_matrices = _slice_matrices(matrices, phase_end)
+            candidate_context = _candidate_context_matrices(
+                screen_daily,
+                phase_matrices["dates"],
+                phase_matrices["symbols"],
+            )
 
             log.info(
                 "sensitivity variant %s period %s %s %s market-filter %s setups %d",
@@ -806,6 +928,7 @@ def run_sensitivity(
                 regime,
                 phase_start,
                 phase_end,
+                candidate_context=candidate_context,
                 state_start=start,
             )
 
@@ -822,6 +945,10 @@ def main() -> None:
     log.info("Stage %s start %s end %s label %s", cfg.stage, cfg.start_date, cfg.end_date, cfg.run_label)
 
     if cfg.stage == "sensitivity":
+        if cfg.simulation_mode == "both":
+            raise ValueError(
+                "sensitivity requires SIMULATION_MODE independent or portfolio"
+            )
         if cfg.end_date is None:
             raise ValueError(
                 "development-only market-filter ablation requires END_DATE=2023-12-31"
@@ -922,7 +1049,7 @@ def main() -> None:
             conn,
             cfg,
             prices,
-            pass_days,
+            _screen_pass_rows(pass_days),
             universe,
             matrices["dates"],
             start,
@@ -966,6 +1093,7 @@ def main() -> None:
                 screen_output_fingerprint,
                 "screen",
             )
+        assert pass_days is not None
         setup_input_fingerprint = _setup_input_fingerprint(
             screen_output_fingerprint, source_input_fingerprint
         )
@@ -995,6 +1123,7 @@ def main() -> None:
             matrices,
             universe,
             market,
+            pass_days,
             start,
             end,
             setups=setups,

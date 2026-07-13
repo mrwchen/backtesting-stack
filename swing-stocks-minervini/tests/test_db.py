@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src import db
+from src import db, persistence
 
 
 class _Cursor:
@@ -56,6 +56,38 @@ def test_copy_df_writes_infinite_numbers_as_null_csv_fields():
     assert conn.cursor_obj.copied_csv == "2026-07-03,AAA,\n2026-07-04,BBB,\n"
 
 
+def test_copy_df_can_participate_in_a_caller_owned_transaction():
+    conn = _Connection()
+
+    db.copy_df(
+        conn,
+        pd.DataFrame({"symbol": ["AAA"]}),
+        "backtesting_minervini_trades",
+        ["symbol"],
+        commit=False,
+    )
+
+    assert conn.committed is False
+
+
+def test_screen_stage_reader_returns_all_daily_rows(monkeypatch):
+    captured = {}
+
+    def fake_read_df(conn, query, params):
+        captured["query"] = query
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(persistence.db, "read_df", fake_read_df)
+
+    persistence.read_screen_stage_output(
+        object(), pd.Timestamp("2024-01-01").date(), pd.Timestamp("2024-01-31").date()
+    )
+
+    assert "WHERE screen_pass" not in captured["query"]
+    assert "WHERE period_end_date BETWEEN" in captured["query"]
+
+
 def test_breakout_events_schema_is_a_365_day_hypertable_created_only_in_init_sql():
     root = Path(__file__).parents[1]
     schema = (root / "init" / "schema.sql").read_text(encoding="utf-8")
@@ -67,6 +99,37 @@ def test_breakout_events_schema_is_a_365_day_hypertable_created_only_in_init_sql
     assert "'backtesting_minervini_breakout_events'" in schema
     assert "chunk_time_interval => INTERVAL '365 days'" in schema
     assert "CREATE TABLE" not in source
+
+
+def test_breakout_events_schema_and_copy_contract_include_candidate_snapshot():
+    root = Path(__file__).parents[1]
+    schema = (root / "init" / "schema.sql").read_text(encoding="utf-8")
+    definitions = {
+        "snapshot_date": "snapshot_date           DATE NOT NULL",
+        "dynamic_setup_score": "dynamic_setup_score     NUMERIC NOT NULL",
+        "readiness_score": "readiness_score         NUMERIC",
+        "context_score": "context_score           NUMERIC NOT NULL",
+        "setup_age_sessions": "setup_age_sessions      INTEGER NOT NULL",
+        "distance_to_pivot_pct": "distance_to_pivot_pct   NUMERIC",
+        "candidate_rank": "candidate_rank          INTEGER",
+    }
+
+    for column, definition in definitions.items():
+        assert definition in schema
+        assert column in persistence.BREAKOUT_EVENT_COLUMNS
+    assert definitions.keys() <= db.RESULT_SCHEMA_COLUMNS[
+        "backtesting_minervini_breakout_events"
+    ]
+    assert "CHECK (snapshot_date < breakout_date)" in schema
+    assert "CHECK (dynamic_setup_score BETWEEN 0 AND 100)" in schema
+    assert "CHECK (readiness_score IS NULL OR readiness_score BETWEEN 0 AND 100)" in schema
+    assert "CHECK (context_score BETWEEN 0 AND 100)" in schema
+    assert "'trend_template_not_passed', 'bad_fundamentals'" in schema
+    assert "JSON" not in "\n".join(
+        line
+        for line in schema.splitlines()
+        if any(column in line for column in definitions)
+    ).upper()
 
 
 def test_rebuilt_schema_has_typed_setups_and_no_legacy_vcp_columns():
@@ -82,6 +145,26 @@ def test_rebuilt_schema_has_typed_setups_and_no_legacy_vcp_columns():
     assert "DROP TABLE IF EXISTS backtesting_minervini_stage_state" in schema
     assert "ON ALL TABLES IN SCHEMA public" not in schema
     assert "ON ALL SEQUENCES IN SCHEMA public" not in schema
+
+
+def test_read_setups_does_not_freeze_detect_date_screen_context(monkeypatch):
+    captured = {}
+
+    def fake_read_df(_conn, query, params):
+        captured["query"] = query
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(db, "read_df", fake_read_df)
+
+    persistence.read_setups(object(), "2024-01-01", "2024-12-31")
+
+    query = captured["query"].lower()
+    assert "left join" not in query
+    assert "backtesting_minervini_screen_daily" not in query
+    assert "fundamental_score" not in query
+    assert "rs_rating" not in query
+    assert captured["params"] == ("2024-01-01", "2024-12-31")
 
 
 def test_runtime_schema_validation_fails_fast_on_legacy_result_tables(monkeypatch):

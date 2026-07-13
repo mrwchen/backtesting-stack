@@ -29,7 +29,18 @@ import pandas as pd
 
 SetupType = Literal["vcp", "flat_base", "power_play", "tight_shelf"]
 Swing = tuple[int, float, Literal["H", "L"]]
-MODEL_VERSION = "minervini_daily_v3"
+MODEL_VERSION = "minervini_daily_v4"
+
+# Classification is score-first.  The order is only a deterministic tie
+# breaker for nested patterns with identical quality: a contraction structure
+# carries more shape information than a short range, while a flat base is the
+# broadest classification.
+_CLASSIFICATION_SPECIFICITY: dict[SetupType, int] = {
+    "vcp": 4,
+    "power_play": 3,
+    "tight_shelf": 2,
+    "flat_base": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -347,7 +358,12 @@ def _vcp_candidate(
         )
         return {
             "setup_type": "vcp",
-            "identity": ("vcp", selected[-1][0][0], selected[-1][1][0]),
+            # The confirmed resistance bar is stable while this structure
+            # matures and is shared by classifications that use the same
+            # pivot.  Setup type is deliberately not part of the identity.
+            "identity": (int(selected[-1][0][0]), round(pivot, 8)),
+            "pivot_idx": int(selected[-1][0][0]),
+            "structure_end": t,
             "base_start": base_start,
             "base_days": base_days,
             "pivot": pivot,
@@ -396,6 +412,7 @@ def _range_candidate(
         if len(resistance) < 3 or not np.isfinite(resistance).all():
             continue
         pivot = float(np.max(resistance))
+        pivot_idx = start + int(np.argmax(resistance))
         last_low = float(np.min(l))
         depth = (pivot - last_low) / pivot if pivot > 0 else np.inf
         if depth > max_depth:
@@ -439,7 +456,11 @@ def _range_candidate(
         )
         return {
             "setup_type": setup_type,
-            "identity": (setup_type, start, round(pivot, 4)),
+            # Anchor identity to established resistance, not the sliding range
+            # start or the chosen setup label.
+            "identity": (pivot_idx, round(pivot, 8)),
+            "pivot_idx": pivot_idx,
+            "structure_end": t,
             "base_start": start,
             "base_days": int(session_positions[t] - session_positions[start]),
             "pivot": pivot,
@@ -451,6 +472,74 @@ def _range_candidate(
             "score": score,
         }
     return None
+
+
+def _same_structure(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Return whether two causal candidates describe one price structure.
+
+    An exact resistance anchor is definitive.  Different detectors can choose
+    neighbouring resistance bars, so near-equal pivots are also considered the
+    same structure when their observed base intervals substantially overlap.
+    """
+    if left["identity"] == right["identity"]:
+        return True
+    left_pivot = float(left["pivot"])
+    right_pivot = float(right["pivot"])
+    if left_pivot <= 0 or right_pivot <= 0:
+        return False
+    relative_pivot_gap = abs(left_pivot - right_pivot) / min(
+        left_pivot, right_pivot
+    )
+    if relative_pivot_gap > 0.03 + 1e-12:
+        return False
+
+    left_start = int(left["base_start"])
+    right_start = int(right["base_start"])
+    left_end = int(left["structure_end"])
+    right_end = int(right["structure_end"])
+    overlap = max(0, min(left_end, right_end) - max(left_start, right_start) + 1)
+    shorter = min(left_end - left_start + 1, right_end - right_start + 1)
+    return shorter > 0 and overlap / shorter >= 0.60
+
+
+def _classification_key(candidate: dict[str, Any]) -> tuple[float, int, float, int, int, str]:
+    """Return a total, deterministic order for competing classifications."""
+    total = float(candidate["score"][0])
+    if not np.isfinite(total):
+        total = float("-inf")
+    setup_type: SetupType = candidate["setup_type"]
+    prior = float(candidate["prior"])
+    if not np.isfinite(prior):
+        prior = float("-inf")
+    return (
+        total,
+        _CLASSIFICATION_SPECIFICITY[setup_type],
+        prior,
+        int(candidate["base_days"]),
+        -int(candidate["pivot_idx"]),
+        setup_type,
+    )
+
+
+def _collapse_overlapping_classifications(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep one best label per mutually overlapping structure cluster.
+
+    Complete-linkage prevents a bridge candidate from merging two pivots that
+    do not overlap each other. Sorting first makes cluster construction and the
+    returned representatives independent of detector call order.
+    """
+    components: list[list[dict[str, Any]]] = []
+    ordered = sorted(candidates, key=_classification_key, reverse=True)
+    for candidate in ordered:
+        for component in components:
+            if all(_same_structure(candidate, member) for member in component):
+                component.append(candidate)
+                break
+        else:
+            components.append([candidate])
+    return [max(component, key=_classification_key) for component in components]
 
 
 def _validate_inputs(
@@ -507,8 +596,7 @@ def find_setups(
 
     setups: list[Setup] = []
     swings: list[Swing] = []
-    emitted_identities: set[tuple[Any, ...]] = set()
-    last_emission: dict[SetupType, tuple[int, float]] = {}
+    recent_emissions: list[tuple[int, dict[str, Any]]] = []
     base_count = 0
     previous_pivot: float | None = None
     segment_start = 0
@@ -537,52 +625,88 @@ def find_setups(
             _range_candidate("tight_shelf", t, high, low, close, volume, session_positions, segment_start, rules),
             _range_candidate("flat_base", t, high, low, close, volume, session_positions, segment_start, rules),
         ]
-        # Prefer the semantically strongest classification on a given day.
-        found = next((candidate for candidate in candidates if candidate is not None), None)
-        if found is None or found["identity"] in emitted_identities:
+        observed = [candidate for candidate in candidates if candidate is not None]
+        if not observed:
             continue
-        setup_type: SetupType = found["setup_type"]
-        recent = last_emission.get(setup_type)
-        if recent is not None:
-            recent_t, recent_pivot = recent
-            if session_positions[t] - session_positions[recent_t] <= 20 and abs(found["pivot"] / recent_pivot - 1.0) <= 0.03:
-                continue
-        emitted_identities.add(found["identity"])
-        last_emission[setup_type] = (t, found["pivot"])
 
-        if previous_pivot is None or found["pivot"] >= previous_pivot * 1.25:
-            base_count = 1
-        else:
-            base_count += 1
-        previous_pivot = found["pivot"]
-        detect_session = int(trading_dates.searchsorted(dates[t]))
-        valid_session = min(detect_session + rules.setup_valid_days, len(trading_dates) - 1)
-        total, contraction, volume_score, tight_score, proximity_score = found["score"]
-        prior_score = 25.0 * float(np.clip(found["prior"] / 0.60, 0.0, 1.0))
-        setups.append(
-            Setup(
-                symbol=symbol,
-                setup_type=setup_type,
-                detect_date=dates[t].date(),
-                pivot=round(float(found["pivot"]), 8),
-                last_low=round(float(found["last_low"]), 8),
-                stop_level=round(max(float(found["last_low"]), float(found["pivot"]) * (1.0 - rules.stop_max_pct)), 8),
-                base_start_date=dates[int(found["base_start"])].date(),
-                base_days=int(found["base_days"]),
-                n_contractions=len(found["depths"]) if setup_type == "vcp" else 0,
-                contraction_depths=found["depths"],
-                base_count=base_count,
-                dryup_ratio=round(float(found["dryup"]), 4),
-                setup_score=round(float(total), 4),
-                prior_advance_pct=round(float(found["prior"]), 4),
-                final_tightness_pct=round(float(found["tightness"]), 4),
-                structure_quality_score=round(float(contraction), 4),
-                volume_dryup_score=round(float(volume_score), 4),
-                tightness_score=round(float(tight_score), 4),
-                pivot_proximity_score=round(float(proximity_score), 4),
-                prior_advance_score=round(float(prior_score), 4),
-                close=round(float(close[t]), 8),
-                valid_until=trading_dates[valid_session].date(),
-            )
+        # Suppression is candidate-local and setup-type agnostic. Therefore a
+        # repeated Power Play cannot hide a distinct valid VCP (or vice versa),
+        # while one recent price structure cannot be re-emitted under a new
+        # label merely because another detector chose a neighbouring pivot bar.
+        recent_emissions = [
+            emission
+            for emission in recent_emissions
+            if session_positions[t] - session_positions[emission[0]]
+            < rules.setup_valid_days
+        ]
+        eligible: list[dict[str, Any]] = []
+        for candidate in observed:
+            if any(_same_structure(candidate, prior) for _, prior in recent_emissions):
+                continue
+            eligible.append(candidate)
+        if not eligible:
+            continue
+
+        # Collapse only alternate labels of the same structure. Distinct pivots
+        # on the same day remain separate first-touch research candidates; the
+        # portfolio layer can still nominate at most one per symbol.
+        representatives = sorted(
+            _collapse_overlapping_classifications(eligible),
+            key=_classification_key,
+            reverse=True,
         )
+        for found in representatives:
+            setup_type: SetupType = found["setup_type"]
+            recent_emissions.append((t, found))
+
+            if previous_pivot is None or found["pivot"] >= previous_pivot * 1.25:
+                base_count = 1
+            else:
+                base_count += 1
+            previous_pivot = found["pivot"]
+            detect_session = int(trading_dates.searchsorted(dates[t]))
+            valid_session = min(
+                detect_session + rules.setup_valid_days,
+                len(trading_dates) - 1,
+            )
+            total, contraction, volume_score, tight_score, proximity_score = (
+                found["score"]
+            )
+            prior_score = 25.0 * float(
+                np.clip(found["prior"] / 0.60, 0.0, 1.0)
+            )
+            setups.append(
+                Setup(
+                    symbol=symbol,
+                    setup_type=setup_type,
+                    detect_date=dates[t].date(),
+                    pivot=round(float(found["pivot"]), 8),
+                    last_low=round(float(found["last_low"]), 8),
+                    stop_level=round(
+                        max(
+                            float(found["last_low"]),
+                            float(found["pivot"]) * (1.0 - rules.stop_max_pct),
+                        ),
+                        8,
+                    ),
+                    base_start_date=dates[int(found["base_start"])].date(),
+                    base_days=int(found["base_days"]),
+                    n_contractions=(
+                        len(found["depths"]) if setup_type == "vcp" else 0
+                    ),
+                    contraction_depths=found["depths"],
+                    base_count=base_count,
+                    dryup_ratio=round(float(found["dryup"]), 4),
+                    setup_score=round(float(total), 4),
+                    prior_advance_pct=round(float(found["prior"]), 4),
+                    final_tightness_pct=round(float(found["tightness"]), 4),
+                    structure_quality_score=round(float(contraction), 4),
+                    volume_dryup_score=round(float(volume_score), 4),
+                    tightness_score=round(float(tight_score), 4),
+                    pivot_proximity_score=round(float(proximity_score), 4),
+                    prior_advance_score=round(float(prior_score), 4),
+                    close=round(float(close[t]), 8),
+                    valid_until=trading_dates[valid_session].date(),
+                )
+            )
     return setups

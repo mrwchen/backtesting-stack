@@ -394,6 +394,38 @@ def test_stop_buy_fills_when_high_exactly_touches_trigger() -> None:
     assert event["decision"] == "filled"
 
 
+def test_breakout_event_contains_previous_session_candidate_snapshot() -> None:
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setups = _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+        setup_type="vcp",
+        structure_quality_score=20.0,
+        tightness_score=15.0,
+        prior_advance_score=18.0,
+        dryup_ratio=0.6,
+        rs_rating=90.0,
+        fundamental_score=4.0,
+    )
+
+    result = simulate(
+        dates, close_m.columns, open_m, high_m, low_m, close_m, setups, _clean_cfg()
+    )
+
+    event = result.breakout_events.iloc[0]
+    assert event["snapshot_date"] == dates[4].date()
+    assert event["candidate_rank"] == 1
+    assert event["setup_age_sessions"] == 0
+    assert event["distance_to_pivot_pct"] == pytest.approx(0.02)
+    for column in (
+        "dynamic_setup_score",
+        "readiness_score",
+        "context_score",
+    ):
+        assert np.isfinite(event[column])
+
+
 def test_breakout_without_setup_id_fails_instead_of_hiding_event() -> None:
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100)] * 2
@@ -933,9 +965,21 @@ def test_capacity_feasible_slate_can_skip_a_large_candidate():
     ]
     setups = pd.concat(
         [
-            _setup_row(dates, 4, 100.0, 90.0, 7).assign(symbol="TOP", setup_id=1, setup_score=90),
-            _setup_row(dates, 4, 100.0, 99.0, 7).assign(symbol="LARGE", setup_id=2, setup_score=80),
-            _setup_row(dates, 4, 50.0, 40.0, 7).assign(symbol="SMALL", setup_id=3, setup_score=70),
+            _setup_row(dates, 4, 100.0, 90.0, 7).assign(
+                symbol="TOP", setup_id=1, setup_type="vcp",
+                structure_quality_score=25.0, tightness_score=20.0,
+                prior_advance_score=25.0, dryup_ratio=0.4, rs_rating=99,
+            ),
+            _setup_row(dates, 4, 100.0, 99.0, 7).assign(
+                symbol="LARGE", setup_id=2, setup_type="vcp",
+                structure_quality_score=10.0, tightness_score=10.0,
+                prior_advance_score=10.0, dryup_ratio=0.6, rs_rating=70,
+            ),
+            _setup_row(dates, 4, 50.0, 40.0, 7).assign(
+                symbol="SMALL", setup_id=3, setup_type="vcp",
+                structure_quality_score=0.0, tightness_score=0.0,
+                prior_advance_score=0.0, dryup_ratio=0.9, rs_rating=50,
+            ),
         ],
         ignore_index=True,
     )
@@ -972,13 +1016,19 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
     setups = pd.concat(
         [
             _setup_row(dates, 4, 100.0, 90.0, 7).assign(
-                symbol="TOP", setup_id=1, setup_score=90
+                symbol="TOP", setup_id=1, setup_type="vcp",
+                structure_quality_score=25.0, tightness_score=20.0,
+                prior_advance_score=25.0, dryup_ratio=0.4, rs_rating=99,
             ),
             _setup_row(dates, 4, 100.0, 99.0, 7).assign(
-                symbol="SAME", setup_id=2, setup_score=80
+                symbol="SAME", setup_id=2, setup_type="vcp",
+                structure_quality_score=12.5, tightness_score=10.0,
+                prior_advance_score=12.5, dryup_ratio=0.6, rs_rating=80,
             ),
             _setup_row(dates, 4, 100.0, 90.0, 7).assign(
-                symbol="SAME", setup_id=3, setup_score=70
+                symbol="SAME", setup_id=3, setup_type="vcp",
+                structure_quality_score=0.0, tightness_score=0.0,
+                prior_advance_score=0.0, dryup_ratio=1.0, rs_rating=40,
             ),
         ],
         ignore_index=True,
@@ -1003,7 +1053,7 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
     assert decisions[3] == "filled"
 
 
-def test_portfolio_ranking_uses_context_inside_technical_score_bucket():
+def test_portfolio_ranking_uses_continuous_dynamic_context():
     dates = pd.bdate_range("2024-01-01", periods=8)
     bars = np.array(
         [(98, 99, 97, 98)] * 5
@@ -1042,6 +1092,184 @@ def test_portfolio_ranking_uses_context_inside_technical_score_bucket():
     )
 
     assert result.trades["symbol"].unique().tolist() == ["LEADER"]
+
+
+def test_current_session_context_cannot_change_same_session_selection():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100)]
+        + [(100, 101, 99, 100)] * 2
+    )
+    frames = [
+        pd.DataFrame({"AAA": bars[:, field], "BBB": bars[:, field]}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+                symbol=symbol, setup_id=setup_id, setup_type="vcp",
+                structure_quality_score=15.0, tightness_score=12.0,
+                prior_advance_score=15.0, dryup_ratio=0.6,
+            )
+            for setup_id, symbol in enumerate(("AAA", "BBB"), start=1)
+        ],
+        ignore_index=True,
+    )
+    rs = pd.DataFrame(50.0, index=dates, columns=frames[0].columns)
+    rs.loc[dates[4], ["AAA", "BBB"]] = [99.0, 1.0]
+    rs.loc[dates[5], ["AAA", "BBB"]] = [1.0, 99.0]
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+        }
+    )
+
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        cfg,
+        candidate_context={"rs_rating": rs},
+    )
+
+    assert result.trades["symbol"].unique().tolist() == ["AAA"]
+    events = result.breakout_events.set_index("symbol")
+    assert events.loc["AAA", "snapshot_date"] == dates[4].date()
+    assert events.loc["AAA", "candidate_rank"] == 1
+    assert events.loc["BBB", "candidate_rank"] == 2
+
+
+def test_prior_day_dynamic_context_can_change_portfolio_rank():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    bars = np.array(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100)]
+        + [(100, 101, 99, 100)] * 2
+    )
+    frames = [
+        pd.DataFrame({"AAA": bars[:, field], "BBB": bars[:, field]}, index=dates)
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+                symbol=symbol, setup_id=setup_id, setup_type="vcp",
+                structure_quality_score=15.0, tightness_score=12.0,
+                prior_advance_score=15.0, dryup_ratio=0.6,
+            )
+            for setup_id, symbol in enumerate(("AAA", "BBB"), start=1)
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+        }
+    )
+
+    def selected_with_previous_rs(aaa: float, bbb: float) -> str:
+        rs = pd.DataFrame(50.0, index=dates, columns=frames[0].columns)
+        rs.loc[dates[4], ["AAA", "BBB"]] = [aaa, bbb]
+        result = simulate(
+            dates,
+            frames[0].columns,
+            *frames,
+            setups,
+            cfg,
+            candidate_context={"rs_rating": rs},
+        )
+        return str(result.trades.iloc[0]["symbol"])
+
+    assert selected_with_previous_rs(99.0, 1.0) == "AAA"
+    assert selected_with_previous_rs(1.0, 99.0) == "BBB"
+
+
+def test_temporary_pre_period_eligibility_failure_does_not_destroy_structure():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 2, 100.0, 95.0, 7).assign(
+        setup_id=1,
+        setup_type="vcp",
+    )
+    trend = pd.DataFrame(True, index=dates, columns=close_m.columns)
+    # This completed-session failure governs session 4, before the measured
+    # period. It blocks that day but does not damage the chart structure.
+    trend.iloc[3, 0] = False
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        make_cfg(**{**_clean_cfg().__dict__, "simulation_mode": "portfolio"}),
+        sim_start_idx=5,
+        state_start_idx=0,
+        candidate_context={"trend_template_pass": trend},
+    )
+
+    assert result.metrics["num_positions"] == 1
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
+
+
+def test_portfolio_records_trend_ineligible_first_touch_instead_of_hiding_it():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 7).assign(setup_id=1)
+    trend = pd.DataFrame(True, index=dates, columns=close_m.columns)
+    trend.iloc[4, 0] = False
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        make_cfg(**{**_clean_cfg().__dict__, "simulation_mode": "portfolio"}),
+        candidate_context={"trend_template_pass": trend},
+    )
+
+    assert result.trades.empty
+    assert len(result.breakout_events) == 1
+    assert result.breakout_events.iloc[0]["decision"] == "trend_template_not_passed"
+
+
+def test_independent_first_touch_is_not_filtered_by_daily_trend_context():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100)]
+    bars += [(100, 101, 99, 100)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 7).assign(setup_id=1)
+    trend = pd.DataFrame(False, index=dates, columns=close_m.columns)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+        candidate_context={"trend_template_pass": trend},
+    )
+
+    assert result.metrics["num_positions"] == 1
+    assert result.breakout_events.iloc[0]["decision"] == "filled"
 
 
 def test_pre_session_slate_does_not_nominate_an_ex_post_trigger():
@@ -1223,7 +1451,7 @@ def test_same_day_exit_does_not_release_a_slot_or_revive_missed_setup():
     assert result.trades.iloc[0]["exit_reason"] == "stop"
 
 
-def test_new_setup_does_not_erase_a_better_older_setup_for_the_same_symbol():
+def test_independent_first_touch_keeps_coexisting_setups_for_same_symbol():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 97, 100)]
     bars += [(109, 111, 100, 110)]
@@ -1243,10 +1471,12 @@ def test_new_setup_does_not_erase_a_better_older_setup_for_the_same_symbol():
         _clean_cfg(),
     )
 
-    assert result.metrics["num_positions"] == 1
-    assert result.trades["setup_id"].unique().tolist() == [1]
-    assert result.trades.iloc[0]["pivot"] == 100.0
-    assert result.trades.iloc[0]["entry_date"] == dates[5].date()
+    assert result.metrics["num_positions"] == 2
+    events = result.breakout_events.sort_values("setup_id").reset_index(drop=True)
+    assert events["setup_id"].tolist() == [1, 2]
+    assert events["decision"].tolist() == ["filled", "filled"]
+    assert events["entry_date"].tolist() == [dates[5].date(), dates[6].date()]
+    assert set(result.trades["setup_id"]) == {1, 2}
 
 
 def test_new_setup_can_reenter_symbol_after_prior_position_is_closed():
@@ -1437,7 +1667,7 @@ def test_strong_volume_dryup_has_no_artificial_lower_rejection():
     assert result.metrics["final_equity"] > result.metrics["initial_equity"]
 
 
-def test_known_bad_growth_setup_is_skipped_only_when_explicit_gate_is_enabled():
+def test_portfolio_records_known_bad_growth_touch_when_gate_is_enabled():
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.5)]
     bars += [(101, 102, 100.5, 101.5)] * 6
@@ -1454,11 +1684,18 @@ def test_known_bad_growth_setup_is_skipped_only_when_explicit_gate_is_enabled():
         low_m,
         close_m,
         setups,
-        make_cfg(**{**_clean_cfg().__dict__, "bad_fundamentals_filter_enable": True}),
+        make_cfg(
+            **{
+                **_clean_cfg().__dict__,
+                "simulation_mode": "portfolio",
+                "bad_fundamentals_filter_enable": True,
+            }
+        ),
     )
 
     assert result.trades.empty
     assert result.metrics["final_equity"] == 100000.0
+    assert result.breakout_events.iloc[0]["decision"] == "bad_fundamentals"
 
 
 def test_failed_breakout_exits_next_open():

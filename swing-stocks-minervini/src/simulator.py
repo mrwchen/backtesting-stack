@@ -1,12 +1,10 @@
-"""Event-driven daily simulation for independent and portfolio research modes.
+"""Event-driven daily simulation for first-touch and portfolio research modes.
 
-In independent mode there is deliberately NO portfolio logic — no cash
-constraint, no position limit, no exposure cap and no compounding. Every stock
-whose setup triggers is taken, so the results measure the strategy itself
-across the whole universe. In portfolio mode entries compete for cash, gross
-exposure and a maximum number of simultaneous positions. Both modes keep the
-same per-symbol rule: while a trade in a symbol is open, no second trade is
-opened in the same symbol.
+In independent mode there is deliberately NO interaction between setups: no
+cash constraint, position limit, exposure cap, compounding or same-symbol
+blocking. Every causal first touch is its own research position. In portfolio
+mode entries compete for cash, gross exposure and a maximum number of
+simultaneous positions, with at most one open position per symbol.
 
 Entry:  before each session a deterministic, fully funded stop-buy slate is
         built from information known at the previous close. Portfolio orders
@@ -38,6 +36,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from .candidate_ranking import CandidateRanker, CandidateSnapshot
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -72,6 +71,7 @@ class PlannedOrder:
     shares: int
     standalone_shares: int
     worst_fill: float
+    snapshot: CandidateSnapshot
 
     @property
     def feedback_risk_units(self) -> float:
@@ -84,6 +84,7 @@ class SlateCandidate:
     setup: object
     standalone_shares: int
     worst_fill: float
+    snapshot: CandidateSnapshot
 
 
 @dataclass
@@ -107,10 +108,14 @@ def simulate(
     state_start_idx: int | None = None,
     market_exposure_cap: np.ndarray | None = None,
     regime_entry_allowed: np.ndarray | None = None,
+    volume_m: pd.DataFrame | None = None,
+    candidate_context: dict[str, pd.DataFrame] | None = None,
 ) -> SimResult:
     state_start_idx = sim_start_idx if state_start_idx is None else state_start_idx
     if not 0 <= state_start_idx <= sim_start_idx < len(dates):
         raise ValueError("state_start_idx and sim_start_idx are outside the date range")
+    if cfg.simulation_mode not in ("independent", "portfolio"):
+        raise ValueError("simulate requires independent or portfolio mode")
     portfolio_mode = cfg.simulation_mode == "portfolio"
     o = open_m.to_numpy()
     h = high_m.to_numpy()
@@ -119,18 +124,19 @@ def simulate(
     c_ffill = close_m.ffill().to_numpy()
     ma_trail = close_m.rolling(cfg.trail_ma_days, min_periods=cfg.trail_ma_days).mean().to_numpy()
     col_index = {s: i for i, s in enumerate(symbols)}
+    context = dict(candidate_context or {})
+    rs_matrix = context.pop("rs_rating", None)
+    ranker = CandidateRanker(
+        dates,
+        symbols,
+        close_m,
+        volume=volume_m,
+        rs_rating=rs_matrix,
+        context=context,
+        dryup_zero_ratio=cfg.dryup_score_zero_ratio,
+    )
 
     setups = setups[setups["symbol"].isin(col_index)].copy()
-    if cfg.bad_fundamentals_filter_enable and {"eps_yoy", "revenue_yoy"}.issubset(setups.columns):
-        eps_yoy = pd.to_numeric(setups["eps_yoy"], errors="coerce")
-        revenue_yoy = pd.to_numeric(setups["revenue_yoy"], errors="coerce")
-        bad_known_growth = (
-            eps_yoy.notna()
-            & revenue_yoy.notna()
-            & (eps_yoy < cfg.eps_yoy_min)
-            & (revenue_yoy < cfg.revenue_yoy_min)
-        )
-        setups = setups.loc[~bad_known_growth].copy()
     setups["start_idx"] = dates.searchsorted(pd.to_datetime(setups["detect_date"])) + 1
     setups["end_idx"] = dates.searchsorted(
         pd.to_datetime(setups["valid_until"]), side="right"
@@ -145,10 +151,10 @@ def simulate(
     sizing_base = cfg.initial_equity
     cash = cfg.initial_equity
     realized_pnl = 0.0
-    positions: dict[str, Position] = {}
-    # Multiple causal structures may coexist for one symbol. The pre-session
-    # ranking nominates at most one; a newer, weaker pivot cannot erase an
-    # older setup that is still valid.
+    positions: dict[object, Position] = {}
+    # Multiple causal structures may coexist for one symbol. Portfolio mode
+    # nominates at most one per symbol; independent mode keeps every causal
+    # first-touch path separate.
     active_setups: dict[int, object] = {}
     trades: list[dict] = []
     breakout_events: list[dict] = []
@@ -163,6 +169,8 @@ def simulate(
     drawdown_reset_armed = True
     closed_outcomes: list[tuple[int, float, float]] = []
     feedback_winner_positions: set[int] = set()
+    current_snapshots: dict[int, CandidateSnapshot] = {}
+    current_candidate_ranks: dict[int, int] = {}
 
     def _num_attr(setup, name: str, default: float) -> float:
         value = getattr(setup, name, default)
@@ -172,51 +180,14 @@ def simulate(
             return default
         return default if np.isnan(out) else out
 
-    def _known_bad_growth(setup) -> bool:
-        eps_yoy = _num_attr(setup, "eps_yoy", np.nan)
-        revenue_yoy = _num_attr(setup, "revenue_yoy", np.nan)
+    def _known_bad_growth(snapshot: CandidateSnapshot) -> bool:
+        eps_yoy = snapshot.eps_yoy
+        revenue_yoy = snapshot.revenue_yoy
         return (
-            np.isfinite(eps_yoy)
-            and np.isfinite(revenue_yoy)
+            eps_yoy is not None
+            and revenue_yoy is not None
             and eps_yoy < cfg.eps_yoy_min
             and revenue_yoy < cfg.revenue_yoy_min
-        )
-
-    def _setup_stop_pct(setup) -> float:
-        pivot = _num_attr(setup, "pivot", np.nan)
-        stop = _num_attr(setup, "stop_level", np.nan)
-        if not np.isfinite(pivot) or pivot <= 0 or not np.isfinite(stop):
-            return cfg.stop_max_pct
-        return max(0.0, (pivot - stop) / pivot)
-
-    def setup_priority(setup) -> tuple:
-        setup_score = _num_attr(setup, "setup_score", 0.0)
-        setup_score_bucket = int(np.floor(setup_score / 5.0))
-        dryup_value = _num_attr(
-            setup, "dryup_ratio", cfg.dryup_score_zero_ratio
-        )
-        eps_yoy = min(_num_attr(setup, "eps_yoy", 0.0), 5.0)
-        revenue_yoy = min(_num_attr(setup, "revenue_yoy", 0.0), 5.0)
-        return (
-            1 if cfg.bad_fundamentals_filter_enable and _known_bad_growth(setup) else 0,
-            -setup_score_bucket,
-            -_num_attr(setup, "fundamental_score", 0.0),
-            -_num_attr(setup, "rs_rating", 0.0),
-            -_num_attr(setup, "stock_industry_rs_rating", 0.0),
-            -_num_attr(setup, "stock_category_rs_rating", 0.0),
-            -_num_attr(setup, "ibkr_industry_rs_rating", 0.0),
-            -_num_attr(setup, "ibkr_category_rs_rating", 0.0),
-            -_num_attr(setup, "institutional_manager_count", 0.0),
-            -_num_attr(setup, "institutional_net_activity", 0.0),
-            -setup_score,
-            _setup_stop_pct(setup),
-            dryup_value,
-            -_num_attr(setup, "n_contractions", 0.0),
-            -eps_yoy,
-            -revenue_yoy,
-            int(getattr(setup, "start_idx", 0)),
-            str(getattr(setup, "symbol", "")),
-            int(_num_attr(setup, "setup_id", 0.0)),
         )
 
     def allocate_portfolio_slate(
@@ -353,6 +324,7 @@ def simulate(
                 shares=shares,
                 standalone_shares=candidate.standalone_shares,
                 worst_fill=candidate.worst_fill,
+                snapshot=candidate.snapshot,
             )
             for shares, candidate in zip(allocated, candidates)
         ]
@@ -367,11 +339,30 @@ def simulate(
         setup_id = getattr(setup, "setup_id", None)
         if setup_id is None or pd.isna(setup_id):
             return
+        setup_key = int(getattr(setup, "sim_setup_key"))
+        snapshot = current_snapshots.get(setup_key)
+        if snapshot is None:
+            raise RuntimeError("entry decision has no causal candidate snapshot")
         entry_decisions[int(setup_id)] = {
             "setup_id": int(setup_id),
             "entry_decision": decision,
             "entry_date": entry_date,
             "entry_price": entry_price,
+            "snapshot_date": snapshot.information_date.date(),
+            "dynamic_setup_score": round(snapshot.ranking_score, 4),
+            "readiness_score": (
+                round(snapshot.readiness_score, 4)
+                if snapshot.readiness_score is not None
+                else None
+            ),
+            "context_score": round(snapshot.context_score, 4),
+            "setup_age_sessions": snapshot.setup_age_sessions,
+            "distance_to_pivot_pct": (
+                round(snapshot.distance_to_pivot_pct, 6)
+                if snapshot.distance_to_pivot_pct is not None
+                else None
+            ),
+            "candidate_rank": current_candidate_ranks.get(setup_key),
         }
 
     def record_breakout_event(setup, t: int, trigger: float) -> None:
@@ -389,6 +380,13 @@ def simulate(
                 "setup_type": getattr(setup, "setup_type", "unknown"),
                 "symbol": setup.symbol,
                 "setup_detect_date": pd.Timestamp(setup.detect_date).date(),
+                "snapshot_date": decision_row["snapshot_date"],
+                "dynamic_setup_score": decision_row["dynamic_setup_score"],
+                "readiness_score": decision_row["readiness_score"],
+                "context_score": decision_row["context_score"],
+                "setup_age_sessions": decision_row["setup_age_sessions"],
+                "distance_to_pivot_pct": decision_row["distance_to_pivot_pct"],
+                "candidate_rank": decision_row["candidate_rank"],
                 "breakout_date": dates[t].date(),
                 "pivot": round(float(setup.pivot), 4),
                 "trigger_price": round(trigger, 4),
@@ -560,7 +558,7 @@ def simulate(
         return True
 
     for t in range(state_start_idx, len(dates)):
-        # ---- make newly known setups active; newest setup wins -------------
+        # ---- make newly known causal structures active --------------------
         while next_setup < len(setup_rows) and setup_rows[next_setup].start_idx <= t:
             setup = setup_rows[next_setup]
             active_setups[int(setup.sim_setup_key)] = setup
@@ -595,19 +593,61 @@ def simulate(
                     del active_setups[setup_key]
             continue
 
+        # Re-score every active structure from information available at the
+        # previous close. Portfolio eligibility is a daily decision, not a
+        # mutation of the underlying chart structure. A blocked first touch is
+        # therefore still recorded and a later requalification remains possible
+        # if price has not touched the pivot or invalidated the base.
+        ranked_snapshots = list(ranker.rank(active_setups, t))
+        current_snapshots = {
+            snapshot.setup_key: snapshot for snapshot in ranked_snapshots
+        }
+        current_candidate_ranks = {
+            snapshot.setup_key: rank
+            for rank, snapshot in enumerate(ranked_snapshots, start=1)
+        }
+        ineligible: dict[int, str] = {}
+        if portfolio_mode:
+            trend_context_enabled = "trend_template_pass" in ranker.context
+            for snapshot in ranked_snapshots:
+                trend_value = snapshot.context_value("trend_template_pass")
+                if trend_context_enabled and (
+                    trend_value is None or trend_value < 0.5
+                ):
+                    ineligible[snapshot.setup_key] = "trend_template_not_passed"
+                elif (
+                    cfg.bad_fundamentals_filter_enable
+                    and _known_bad_growth(snapshot)
+                ):
+                    ineligible[snapshot.setup_key] = "bad_fundamentals"
+        for setup_key, decision in ineligible.items():
+            set_entry_decision(active_setups[setup_key], decision)
+        eligible_snapshots = [
+            snapshot
+            for snapshot in ranked_snapshots
+            if snapshot.setup_key not in ineligible
+        ]
+        prioritized_setups = [
+            active_setups[snapshot.setup_key] for snapshot in eligible_snapshots
+        ]
+
         # ---- pre-session order slate ---------------------------------------
         # Capture budgets before processing any event from session t. Exits at
         # the open or intraday therefore cannot be recycled into today's slate.
-        start_symbols = set(positions)
+        start_symbols = {position.symbol for position in positions.values()}
         # A next-open exit was decided at the previous close. A fresh setup in
         # that symbol may therefore be nominated for a later intraday re-entry
         # without ever holding two same-symbol positions. Its outgoing lot
         # still consumes today's opening cash, gross budget and slot.
-        same_symbol_entry_blocks = {
-            symbol
-            for symbol, pos in positions.items()
-            if pos.exit_next_open_reason is None
-        }
+        same_symbol_entry_blocks = (
+            {
+                pos.symbol
+                for pos in positions.values()
+                if pos.exit_next_open_reason is None
+            }
+            if portfolio_mode
+            else set()
+        )
         market_cap = exposure_cap_value(t - 1)
         if portfolio_mode and market_exposure_cap is not None and market_cap <= 0:
             exposure_index = 0
@@ -680,7 +720,6 @@ def simulate(
         slate_candidates: list[SlateCandidate] = []
         selected_symbols: set[str] = set()
         unusable_setup_keys: set[int] = set()
-        prioritized_setups = sorted(active_setups.values(), key=setup_priority)
         if not entries_allowed:
             gate_decision = (
                 "market_gate_blocked"
@@ -696,7 +735,7 @@ def simulate(
                 )
         else:
             for setup in prioritized_setups:
-                if (
+                if portfolio_mode and (
                     setup.symbol in same_symbol_entry_blocks
                     or setup.symbol in selected_symbols
                 ):
@@ -734,6 +773,7 @@ def simulate(
                     setup=setup,
                     standalone_shares=standalone_shares,
                     worst_fill=worst_fill,
+                    snapshot=current_snapshots[setup_key],
                 )
                 if portfolio_mode:
                     if len(slate_candidates) >= remaining_slots:
@@ -759,9 +799,9 @@ def simulate(
                             shares=standalone_shares,
                             standalone_shares=standalone_shares,
                             worst_fill=worst_fill,
+                            snapshot=current_snapshots[setup_key],
                         )
                     )
-                    selected_symbols.add(setup.symbol)
 
         # ---- exits ---------------------------------------------------------
         for sym in list(positions):
@@ -979,7 +1019,10 @@ def simulate(
                 if new_position.shares > 0:
                     new_position.max_high = max(fill, float(day_high))
                     arm_next_ratchet_stop(new_position)
-                    positions[setup.symbol] = new_position
+                    position_key: object = (
+                        setup.symbol if portfolio_mode else order.setup_key
+                    )
+                    positions[position_key] = new_position
 
         # ---- setup lifecycle ----------------------------------------------
         # A breakout without a fill is missed, not a future invitation to
@@ -1110,6 +1153,9 @@ def simulate(
         breakout_events,
         columns=[
             "setup_id", "setup_type", "symbol", "setup_detect_date",
+            "snapshot_date", "dynamic_setup_score", "readiness_score",
+            "context_score", "setup_age_sessions", "distance_to_pivot_pct",
+            "candidate_rank",
             "breakout_date", "pivot", "trigger_price", "entry_filled",
             "entry_date", "entry_price", "decision",
         ],

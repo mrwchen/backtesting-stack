@@ -18,7 +18,8 @@ RESULT_SCHEMA_COLUMNS = {
     },
     "backtesting_minervini_screen_daily": {
         "period_end_date", "symbol", "screen_pass", "fundamental_score",
-        "institutional_manager_count", "ibkr_industry_rs_rating",
+        "fundamental_coverage", "institutional_manager_count",
+        "ibkr_industry_rs_rating",
     },
     "backtesting_minervini_rs_daily": {
         "period_end_date", "symbol", "rs_raw", "rs_rating",
@@ -36,6 +37,9 @@ RESULT_SCHEMA_COLUMNS = {
     },
     "backtesting_minervini_breakout_events": {
         "run_id", "setup_id", "setup_type", "breakout_date", "decision",
+        "snapshot_date", "dynamic_setup_score", "readiness_score",
+        "context_score", "setup_age_sessions", "distance_to_pivot_pct",
+        "candidate_rank",
     },
     "backtesting_minervini_trades": {
         "run_id", "position_id", "setup_type", "entry_date", "exit_date",
@@ -108,8 +112,15 @@ def read_df(conn, sql: str, params: dict | tuple | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def copy_df(conn, df: pd.DataFrame, table: str, columns: list[str]) -> int:
-    """Bulk-insert df[columns] into table via COPY. Empty strings become NULL."""
+def copy_df(
+    conn,
+    df: pd.DataFrame,
+    table: str,
+    columns: list[str],
+    *,
+    commit: bool = True,
+) -> int:
+    """Bulk-insert via COPY; callers may compose several writes atomically."""
     if df.empty:
         return 0
     buf = io.StringIO()
@@ -121,7 +132,8 @@ def copy_df(conn, df: pd.DataFrame, table: str, columns: list[str]) -> int:
         cur.copy_expert(
             f"COPY {table} ({col_list}) FROM STDIN WITH (FORMAT csv, NULL '')", buf
         )
-    conn.commit()
+    if commit:
+        conn.commit()
     log.info("wrote %d rows into %s", len(df), table)
     return len(df)
 

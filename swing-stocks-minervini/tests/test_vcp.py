@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+import backtest_models.minervini as minervini
 from backtest_models.minervini import GOLD_CASES, find_setups, find_swings
 from tests.util import make_cfg
 
@@ -57,9 +58,70 @@ def _detect(data, *, pass_start: int = 25, **overrides):
     )
 
 
+def _synthetic_candidate(
+    setup_type: str,
+    *,
+    t: int,
+    pivot_idx: int,
+    pivot: float,
+    score: float,
+    base_start: int = 5,
+):
+    return {
+        "setup_type": setup_type,
+        "identity": (pivot_idx, round(pivot, 8)),
+        "pivot_idx": pivot_idx,
+        "structure_end": t,
+        "base_start": base_start,
+        "base_days": t - base_start,
+        "pivot": pivot,
+        "last_low": pivot * 0.94,
+        "depths": (0.06, 0.03) if setup_type == "vcp" else (0.06,),
+        "dryup": 0.5,
+        "prior": 0.8,
+        "tightness": 0.03,
+        "score": (score, 20.0, 8.0, 12.0, 10.0),
+    }
+
+
+def _patched_detection(
+    monkeypatch,
+    range_factory,
+    vcp_factory,
+    pass_idx,
+    **config_overrides,
+):
+    calls: list[str] = []
+
+    def range_candidate(setup_type, t, *args):
+        calls.append(setup_type)
+        return range_factory(setup_type, t)
+
+    def vcp_candidate(t, *args):
+        calls.append("vcp")
+        return vcp_factory(t)
+
+    monkeypatch.setattr(minervini, "_range_candidate", range_candidate)
+    monkeypatch.setattr(minervini, "_vcp_candidate", vcp_candidate)
+    dates = pd.bdate_range("2020-01-02", periods=40)
+    close = np.full(len(dates), 95.0)
+    found = find_setups(
+        "TEST",
+        dates,
+        close * 1.01,
+        close * 0.99,
+        close,
+        np.full(len(dates), 1_000_000.0),
+        np.asarray(pass_idx),
+        make_cfg(**config_overrides),
+        trading_dates=dates,
+    )
+    return found, calls
+
+
 def test_vcp_requires_prior_advance():
     data = _vcp_series()
-    found = _detect(data)
+    found = _detect(data, pass_start=95)
     assert any(item.setup_type == "vcp" for item in found)
 
     dates, high, low, close, volume = data
@@ -69,15 +131,18 @@ def test_vcp_requires_prior_advance():
     high[:60] = np.linspace(92, 100, 60)
     low[:60] = high[:60] * 0.996
     close[:60] = high[:60] / 1.004
-    assert not any(item.setup_type == "vcp" for item in _detect((dates, high, low, close, volume)))
+    assert not any(
+        item.setup_type == "vcp"
+        for item in _detect((dates, high, low, close, volume), pass_start=95)
+    )
 
 
 def test_vcp_tolerates_one_modestly_wider_contraction():
     # 16%, then roughly 9%, then 4.5%: normal VCP.
-    normal = [item for item in _detect(_vcp_series(second_low=90.0)) if item.setup_type == "vcp"]
+    normal = [item for item in _detect(_vcp_series(second_low=90.0), pass_start=95) if item.setup_type == "vcp"]
     # A roughly 10.5% middle contraction is slightly noisier but still
     # substantially tighter than the first contraction.
-    noisy = [item for item in _detect(_vcp_series(second_low=88.0)) if item.setup_type == "vcp"]
+    noisy = [item for item in _detect(_vcp_series(second_low=88.0), pass_start=95) if item.setup_type == "vcp"]
     assert normal and noisy
 
 
@@ -104,15 +169,23 @@ def test_long_vcp_base_beyond_old_75_day_ceiling_is_detected():
     dates = pd.bdate_range(dates[0], periods=len(close))
     found = _detect(
         (dates, high, low, close, volume),
-        pass_start=140,
+        pass_start=145,
         base_max_days=130,
     )
     assert any(item.setup_type == "vcp" and item.base_days > 75 for item in found)
 
 
 def test_stronger_dryup_is_monotonically_better():
-    weak = [item for item in _detect(_vcp_series(quiet_volume=700_000.0)) if item.setup_type == "vcp"][0]
-    strong = [item for item in _detect(_vcp_series(quiet_volume=300_000.0)) if item.setup_type == "vcp"][0]
+    weak = [
+        item
+        for item in _detect(_vcp_series(quiet_volume=700_000.0), pass_start=95)
+        if item.setup_type == "vcp"
+    ][0]
+    strong = [
+        item
+        for item in _detect(_vcp_series(quiet_volume=300_000.0), pass_start=95)
+        if item.setup_type == "vcp"
+    ][0]
     assert strong.dryup_ratio < weak.dryup_ratio
     assert strong.volume_dryup_score > weak.volume_dryup_score
     assert strong.setup_score > weak.setup_score
@@ -137,7 +210,9 @@ def test_flat_base_setup_class():
         ],
         quiet_from=90,
     )
-    found = _detect(data)
+    # Before this point the same chart is causally a shorter tight shelf.  Start
+    # on the first day where only the mature flat-base classification applies.
+    found = _detect(data, pass_start=73)
     assert any(item.setup_type == "flat_base" for item in found)
 
 
@@ -166,6 +241,198 @@ def test_tight_shelf_setup_class():
     )
     found = _detect(data)
     assert any(item.setup_type == "tight_shelf" for item in found)
+
+
+def test_all_setup_classes_are_evaluated_and_best_quality_label_wins(monkeypatch):
+    scores = {
+        "power_play": 61.0,
+        "vcp": 84.0,
+        "tight_shelf": 73.0,
+        "flat_base": 55.0,
+    }
+
+    def candidate(setup_type, t):
+        return _synthetic_candidate(
+            setup_type,
+            t=t,
+            pivot_idx=10,
+            pivot=100.0,
+            score=scores[setup_type],
+        )
+
+    found, calls = _patched_detection(
+        monkeypatch,
+        candidate,
+        lambda t: candidate("vcp", t),
+        [30],
+    )
+
+    assert calls == ["power_play", "vcp", "tight_shelf", "flat_base"]
+    assert [setup.setup_type for setup in found] == ["vcp"]
+
+
+def test_suppressed_first_candidate_does_not_hide_distinct_valid_class(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type != "power_play":
+            return None
+        return _synthetic_candidate(
+            "power_play", t=t, pivot_idx=10, pivot=100.0, score=95.0
+        )
+
+    def vcp_candidate(t):
+        if t != 31:
+            return None
+        return _synthetic_candidate(
+            "vcp", t=t, pivot_idx=24, pivot=120.0, score=75.0, base_start=20
+        )
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        vcp_candidate,
+        [30, 31],
+    )
+
+    assert [(setup.detect_date, setup.setup_type) for setup in found] == [
+        (pd.Timestamp("2020-02-13").date(), "power_play"),
+        (pd.Timestamp("2020-02-14").date(), "vcp"),
+    ]
+
+
+def test_recent_overlapping_structure_is_not_reemitted_under_new_label(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type == "power_play" and t == 30:
+            return _synthetic_candidate(
+                "power_play", t=t, pivot_idx=10, pivot=100.0, score=80.0
+            )
+        return None
+
+    def vcp_candidate(t):
+        if t == 31:
+            return _synthetic_candidate(
+                "vcp", t=t, pivot_idx=11, pivot=101.0, score=95.0, base_start=8
+            )
+        return None
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        vcp_candidate,
+        [30, 31],
+    )
+
+    assert [setup.setup_type for setup in found] == ["power_play"]
+
+
+def test_nested_nearby_pivots_collapse_to_one_deterministic_classification():
+    candidates = [
+        _synthetic_candidate(
+            "power_play", t=30, pivot_idx=10, pivot=100.0, score=70.0
+        ),
+        _synthetic_candidate(
+            "vcp", t=30, pivot_idx=11, pivot=101.0, score=82.0, base_start=8
+        ),
+        _synthetic_candidate(
+            "tight_shelf", t=30, pivot_idx=12, pivot=99.5, score=74.0, base_start=15
+        ),
+    ]
+
+    collapsed = minervini._collapse_overlapping_classifications(candidates)
+
+    assert len(collapsed) == 1
+    assert collapsed[0]["setup_type"] == "vcp"
+
+
+def test_distinct_same_day_structures_are_both_emitted(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type != "power_play":
+            return None
+        return _synthetic_candidate(
+            "power_play", t=t, pivot_idx=10, pivot=100.0, score=90.0
+        )
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        lambda t: _synthetic_candidate(
+            "vcp", t=t, pivot_idx=24, pivot=120.0, score=80.0, base_start=20
+        ),
+        [30],
+    )
+
+    assert [(setup.setup_type, setup.pivot) for setup in found] == [
+        ("power_play", 100.0),
+        ("vcp", 120.0),
+    ]
+
+
+def test_bridge_candidate_does_not_merge_nonoverlapping_endpoint_pivots():
+    candidates = [
+        _synthetic_candidate(
+            "vcp", t=30, pivot_idx=10, pivot=100.0, score=90.0
+        ),
+        _synthetic_candidate(
+            "power_play", t=30, pivot_idx=11, pivot=102.0, score=80.0
+        ),
+        _synthetic_candidate(
+            "tight_shelf", t=30, pivot_idx=12, pivot=104.0, score=70.0
+        ),
+    ]
+
+    collapsed = minervini._collapse_overlapping_classifications(candidates)
+
+    assert len(collapsed) == 2
+    assert {candidate["pivot"] for candidate in collapsed} == {100.0, 104.0}
+
+
+def test_structure_reemission_has_no_session_gap_after_validity(monkeypatch):
+    def range_candidate(setup_type, t):
+        if setup_type != "power_play":
+            return None
+        return _synthetic_candidate(
+            "power_play", t=t, pivot_idx=10, pivot=100.0, score=80.0
+        )
+
+    found, _ = _patched_detection(
+        monkeypatch,
+        range_candidate,
+        lambda _t: None,
+        [30, 32],
+        setup_valid_days=2,
+    )
+
+    assert [setup.detect_date for setup in found] == [
+        pd.Timestamp("2020-02-13").date(),
+        pd.Timestamp("2020-02-17").date(),
+    ]
+    assert found[0].valid_until == found[1].detect_date
+
+
+def test_equal_quality_classification_uses_specificity_not_input_order():
+    power_play = _synthetic_candidate(
+        "power_play", t=30, pivot_idx=10, pivot=100.0, score=80.0
+    )
+    vcp = _synthetic_candidate(
+        "vcp", t=30, pivot_idx=10, pivot=100.0, score=80.0
+    )
+
+    forward = minervini._collapse_overlapping_classifications([power_play, vcp])
+    reverse = minervini._collapse_overlapping_classifications([vcp, power_play])
+
+    assert forward[0]["setup_type"] == "vcp"
+    assert reverse[0]["setup_type"] == "vcp"
+
+
+def test_structure_overlap_is_symmetric_at_pivot_tolerance_boundary():
+    low = _synthetic_candidate(
+        "vcp", t=30, pivot_idx=10, pivot=100.0, score=80.0
+    )
+    high = _synthetic_candidate(
+        "tight_shelf", t=30, pivot_idx=11, pivot=103.0, score=79.0
+    )
+
+    assert minervini._same_structure(low, high)
+    assert minervini._same_structure(high, low)
 
 
 def test_range_setup_cannot_move_pivot_to_detection_day_breakout():
@@ -219,7 +486,7 @@ def test_zero_recent_volume_is_unknown_not_a_perfect_dryup_score():
 
 def test_setup_detection_is_causal_under_future_mutation():
     data = _vcp_series()
-    original = _detect(data)
+    original = _detect(data, pass_start=95)
     first = next(item for item in original if item.setup_type == "vcp")
     cutoff = pd.Timestamp(first.detect_date)
     dates, high, low, close, volume = data
@@ -229,7 +496,7 @@ def test_setup_detection_is_causal_under_future_mutation():
     low2[future] *= 0.6
     close2[future] *= 1.2
     volume2[future] *= 4
-    mutated = _detect((dates, high2, low2, close2, volume2))
+    mutated = _detect((dates, high2, low2, close2, volume2), pass_start=95)
     first_mutated = next(item for item in mutated if item.setup_type == "vcp")
     assert first_mutated == first
 
@@ -253,7 +520,7 @@ def test_setup_expiry_uses_global_sessions():
         low,
         close,
         volume,
-        np.arange(25, len(dates)),
+        np.arange(95, len(dates)),
         make_cfg(setup_valid_days=10, dryup_score_zero_ratio=1.25),
         trading_dates=global_dates,
     )

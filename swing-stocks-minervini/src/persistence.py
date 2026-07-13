@@ -35,7 +35,8 @@ SCREEN_COLUMNS = [
     "crit_ma50_above_ma150_200", "crit_price_above_ma50", "crit_above_52w_low",
     "crit_near_52w_high", "crit_rs_rating", "trend_template_pass",
     "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
-    "streak_pass", "stability_pass", "fundamental_score", "fundamentals_pass",
+    "streak_pass", "stability_pass", "fundamental_score",
+    "fundamental_coverage", "fundamentals_pass",
     "institutional_manager_count", "institutional_net_activity",
     "institutional_sponsorship_pass", "screen_pass", "eps_yoy", "revenue_yoy",
     "eps_acceleration", "revenue_acceleration", "margin_delta", "growth_streak",
@@ -60,6 +61,8 @@ TRADE_COLUMNS = [
 
 BREAKOUT_EVENT_COLUMNS = [
     "run_id", "setup_id", "setup_type", "symbol", "setup_detect_date",
+    "snapshot_date", "dynamic_setup_score", "readiness_score", "context_score",
+    "setup_age_sessions", "distance_to_pivot_pct", "candidate_rank",
     "breakout_date", "pivot", "trigger_price", "entry_filled", "entry_date",
     "entry_price", "decision",
 ]
@@ -182,7 +185,7 @@ def read_screen_stage_output(conn, start, end) -> pd.DataFrame:
     return db.read_df(
         conn,
         f"""SELECT {columns} FROM {SCREEN_TABLE}
-            WHERE screen_pass AND period_end_date BETWEEN %s AND %s
+            WHERE period_end_date BETWEEN %s AND %s
             ORDER BY period_end_date, symbol""",
         (start, end),
     )
@@ -191,29 +194,16 @@ def read_screen_stage_output(conn, start, end) -> pd.DataFrame:
 def read_setups(conn, start, end) -> pd.DataFrame:
     return db.read_df(
         conn,
-        f"""SELECT st.setup_id, st.symbol, st.setup_type, st.detect_date,
-                   st.pivot, st.last_low,
-                   st.stop_level, st.base_start_date, st.base_days,
-                   st.n_contractions, st.contraction_depths, st.base_count,
-                   st.dryup_ratio,
-                   st.setup_score, st.prior_advance_pct,
-                   st.final_tightness_pct, st.structure_quality_score,
-                   st.volume_dryup_score, st.tightness_score,
-                   st.pivot_proximity_score, st.prior_advance_score,
-                   st.close, st.valid_until,
-                   sc.rs_rating, sc.ibkr_industry_rs_rating,
-                   sc.ibkr_category_rs_rating, sc.stock_industry_rs_rating,
-                   sc.stock_category_rs_rating, sc.group_filter_pass,
-                   sc.ibkr_industry_breadth_pass, sc.fundamental_score,
-                   sc.fundamentals_pass, sc.institutional_manager_count,
-                   sc.institutional_net_activity,
-                   sc.institutional_sponsorship_pass, sc.eps_yoy, sc.revenue_yoy
-            FROM {SETUPS_TABLE} st
-            LEFT JOIN {SCREEN_TABLE} sc
-              ON sc.symbol = st.symbol
-             AND sc.period_end_date = st.detect_date
-            WHERE st.detect_date BETWEEN %s AND %s
-            ORDER BY st.detect_date, st.symbol""",
+        f"""SELECT setup_id, symbol, setup_type, detect_date,
+                   pivot, last_low, stop_level, base_start_date, base_days,
+                   n_contractions, contraction_depths, base_count, dryup_ratio,
+                   setup_score, prior_advance_pct, final_tightness_pct,
+                   structure_quality_score, volume_dryup_score,
+                   tightness_score, pivot_proximity_score,
+                   prior_advance_score, close, valid_until
+            FROM {SETUPS_TABLE}
+            WHERE detect_date BETWEEN %s AND %s
+            ORDER BY detect_date, symbol, setup_id""",
         (start, end),
     )
 
@@ -249,7 +239,6 @@ def create_run(
             ),
         )
         run_id = cur.fetchone()[0]
-    conn.commit()
     return run_id
 
 
@@ -258,7 +247,7 @@ def write_trades(conn, run_id: int, trades: pd.DataFrame) -> None:
         return
     trades = trades.copy()
     trades["run_id"] = run_id
-    db.copy_df(conn, trades, TRADES_TABLE, TRADE_COLUMNS)
+    db.copy_df(conn, trades, TRADES_TABLE, TRADE_COLUMNS, commit=False)
 
 
 def write_breakout_events(conn, run_id: int, events: pd.DataFrame) -> None:
@@ -266,7 +255,13 @@ def write_breakout_events(conn, run_id: int, events: pd.DataFrame) -> None:
         return
     events = events.copy()
     events["run_id"] = run_id
-    db.copy_df(conn, events, BREAKOUT_EVENTS_TABLE, BREAKOUT_EVENT_COLUMNS)
+    db.copy_df(
+        conn,
+        events,
+        BREAKOUT_EVENTS_TABLE,
+        BREAKOUT_EVENT_COLUMNS,
+        commit=False,
+    )
 
 
 def write_equity(conn, run_id: int, equity: pd.DataFrame) -> None:
@@ -274,4 +269,4 @@ def write_equity(conn, run_id: int, equity: pd.DataFrame) -> None:
         return
     equity = equity.copy()
     equity["run_id"] = run_id
-    db.copy_df(conn, equity, EQUITY_TABLE, EQUITY_COLUMNS)
+    db.copy_df(conn, equity, EQUITY_TABLE, EQUITY_COLUMNS, commit=False)

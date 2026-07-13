@@ -59,13 +59,15 @@ def quarterly_flags(
     frame["diluted_eps"] = eps
     frame["eps_yoy"] = _safe_yoy(eps, prior_eps)
     frame["revenue_yoy"] = _safe_yoy(revenue, prior_revenue)
+    eps_observed = eps.notna() & prior_eps.notna()
+    revenue_observed = revenue.notna() & frame["revenue_yoy"].notna()
     frame["eps_pass"] = (
         (eps > 0)
         & (((prior_eps <= 0) & prior_eps.notna()) | (frame["eps_yoy"] >= cfg.eps_yoy_min - 1e-12))
-    ).astype(float)
+    ).astype(float).where(eps_observed)
     frame["revenue_pass"] = (
         (revenue > 0) & (frame["revenue_yoy"] >= cfg.revenue_yoy_min - 1e-12)
-    ).astype(float)
+    ).astype(float).where(revenue_observed)
 
     operating_margin = pd.to_numeric(frame["quarterly_operating_margin"], errors="coerce")
     prior_operating_margin = pd.to_numeric(
@@ -76,11 +78,15 @@ def quarterly_flags(
     frame["margin_delta"] = (operating_margin - prior_operating_margin).combine_first(
         net_margin - prior_net_margin
     )
-    frame["margin_pass"] = (frame["margin_delta"] >= cfg.margin_expansion_min).astype(float)
+    margin_observed = frame["margin_delta"].notna()
+    frame["margin_pass"] = (
+        frame["margin_delta"] >= cfg.margin_expansion_min
+    ).astype(float).where(margin_observed)
 
     eps_acceleration = pd.Series(np.nan, index=frame.index, dtype=float)
     revenue_acceleration = pd.Series(np.nan, index=frame.index, dtype=float)
     streaks = pd.Series(0.0, index=frame.index, dtype=float)
+    streak_observed = pd.Series(False, index=frame.index, dtype=bool)
     stability = pd.Series(np.nan, index=frame.index, dtype=float)
     for _symbol, indexes in frame.groupby("symbol", sort=False).groups.items():
         period_state: dict[pd.Timestamp, dict[str, float | bool]] = {}
@@ -100,6 +106,10 @@ def quarterly_flags(
             period_state[period] = {
                 "eps_yoy": frame.at[index, "eps_yoy"],
                 "revenue_yoy": frame.at[index, "revenue_yoy"],
+                "growth_observed": bool(
+                    pd.notna(frame.at[index, "eps_pass"])
+                    and pd.notna(frame.at[index, "revenue_pass"])
+                ),
                 "growth_pass": bool(
                     frame.at[index, "eps_pass"] == 1.0
                     and frame.at[index, "revenue_pass"] == 1.0
@@ -107,31 +117,45 @@ def quarterly_flags(
                 "eps": frame.at[index, "diluted_eps"],
             }
             streak = 0
+            streak_is_known = False
             for candidate in sorted(
                 (candidate for candidate in period_state if candidate <= period), reverse=True
             ):
-                if not period_state[candidate]["growth_pass"]:
+                state = period_state[candidate]
+                if not state["growth_observed"]:
+                    break
+                if not state["growth_pass"]:
+                    streak_is_known = True
                     break
                 streak += 1
+                if streak >= cfg.quarterly_growth_streak_min:
+                    streak_is_known = True
+                    break
             streaks.at[index] = streak
+            streak_observed.at[index] = streak_is_known
             last_four = [
                 period_state[candidate]["eps"]
                 for candidate in sorted(
                     (candidate for candidate in period_state if candidate <= period), reverse=True
                 )[:4]
             ]
-            if len(last_four) == 4:
+            if len(last_four) == 4 and np.isfinite(
+                np.asarray(last_four, dtype=float)
+            ).all():
                 stability.at[index] = float(
                     np.count_nonzero(np.asarray(last_four, dtype=float) > 0) >= 3
                 )
     frame["eps_acceleration"] = eps_acceleration
     frame["revenue_acceleration"] = revenue_acceleration
+    acceleration_observed = eps_acceleration.notna() | revenue_acceleration.notna()
     frame["acceleration_pass"] = (
         (eps_acceleration >= cfg.acceleration_min)
         | (revenue_acceleration >= cfg.acceleration_min)
-    ).astype(float)
+    ).astype(float).where(acceleration_observed)
     frame["growth_streak"] = streaks
-    frame["streak_pass"] = (streaks >= cfg.quarterly_growth_streak_min).astype(float)
+    frame["streak_pass"] = (
+        streaks >= cfg.quarterly_growth_streak_min
+    ).astype(float).where(streak_observed)
     frame["stability_pass"] = stability
 
     matrix_columns = (
@@ -145,20 +169,25 @@ def quarterly_flags(
         )
         for column in matrix_columns
     }
-    for column in (
+    flag_columns = (
         "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
         "streak_pass", "stability_pass",
-    ):
-        result[column] = result[column] == 1.0
-    score = sum(
-        result[column].astype(int)
-        for column in (
-            "eps_pass", "revenue_pass", "margin_pass", "acceleration_pass",
-            "streak_pass", "stability_pass",
-        )
     )
-    result["fundamental_score"] = score
-    result["fundamentals_pass"] = score >= cfg.fundamentals_min_pass
+    observed_flags = sum(
+        result[column].notna().astype(int) for column in flag_columns
+    )
+    passed_flags = sum(
+        result[column].eq(1.0).astype(int) for column in flag_columns
+    )
+    for column in flag_columns:
+        result[column] = result[column] == 1.0
+    # Preserve the scalar as an integer count of observed passes. The separate
+    # [0, 1] coverage supplies its denominator, so CandidateRanker can compare
+    # quality among known criteria and blend unknown criteria with a neutral
+    # prior instead of silently counting them as failures.
+    result["fundamental_score"] = passed_flags.where(observed_flags > 0)
+    result["fundamental_coverage"] = observed_flags / float(len(flag_columns))
+    result["fundamentals_pass"] = passed_flags >= cfg.fundamentals_min_pass
     return result
 
 

@@ -48,8 +48,9 @@ services:
       PGPASSWORD: "market-data-account-pw"
 
       # -- Ablaufsteuerung --------------------------------------------------------
-      # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + Ranking-Kontext),
-      # setup (Chart-Setup-Erkennung), sim (Trade-Simulation) oder all
+      # Welche Pipeline-Stufe laeuft: screen (RS + Trend Template + taeglicher
+      # as-of Kontext), setup (eifrige Chart-Setup-Erkennung aller vier Klassen),
+      # sim (dynamisches t-1 Ranking + Trade-Simulation) oder all
       # (alle drei nacheinander).
       # Stufen lesen ihre Eingaben aus der DB und sind einzeln wiederholbar.
       STAGE: "all"
@@ -61,7 +62,7 @@ services:
       END_DATE: "2023-12-31"
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_sepa_daily_v2"
+      RUN_LABEL: "minervini_sepa_daily_v4_dynamic_rank"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -70,16 +71,15 @@ services:
       # Zusaetzliche Kalendertage Preishistorie VOR START_DATE, damit 200d-MA,
       # 52-Wochen-Fenster und RS-Lookbacks am Starttag bereits warm sind.
       WARMUP_CALENDAR_DAYS: "550"
-      # Welche Zeilen in screen_daily persistiert werden:
-      # passed = nur Tage/Symbole, die den kompletten Screen bestehen (kompakt);
-      # universe = alle rankbaren Symbole inkl. Fail-Flags (gross, gut fuer Analyse in Grafana).
-      SCREEN_PERSIST: "passed"
       # Log-Detailgrad: DEBUG, INFO, WARNING, ERROR.
       LOG_LEVEL: "INFO"
       # Simulationsmodus:
-      # independent = jedes getriggerte Setup unabhaengig handeln (Research-Modus).
+      # independent = jeder kausale First Touch ohne Portfoliointeraktion.
       # portfolio   = echte Cash-, Exposure- und Positionslimits anwenden.
-      SIMULATION_MODE: "portfolio"
+      # both        = zwei atomar persistierte Runs: zuerst ungefilterter
+      #               True-First-Touch ohne Markt-, Regime- oder Fundamental-
+      #               Gate, danach Portfolio mit der konfigurierten Logik.
+      SIMULATION_MODE: "both"
 
       # -- Universumsfilter (werden pro Tag, also as-of-date angewendet) ----------
       # Mindest-Rohschlusskurs in USD; dadurch erzeugen spaetere Splits keine
@@ -115,7 +115,8 @@ services:
       # true = Marktstatus begrenzt neue Entries und Portfolio-Exposure.
       # Offene Positionen laufen weiterhin in ihre regulaeren Exits.
       # true erzwingt bereits beim Laden die Vollstaendigkeitspruefung fuer QQQ
-      # und VOO.
+      # und VOO. Bei SIMULATION_MODE=both bleibt der erste First-Touch-Run
+      # bewusst ungefiltert; der zweite Portfolio-Run verwendet dieses Gate.
       MARKET_FILTER_ENABLE: "true"
       MARKET_INDEX_SYMBOLS: "QQQ,VOO"
       MARKET_PRIMARY_INDEX: "QQQ"
@@ -148,9 +149,10 @@ services:
       # Defensive-Regime wird standardmaessig blockiert.
       REGIME_ALLOWED_LABELS: "RISK-ON,CONSTRUCTIVE,NEUTRAL"
 
-      # -- IBKR-Gruppenfuehrung (Industry -> Category -> staerkste Aktien) -------
-      # Gruppenwerte bleiben Ranking-/Attributionsmerkmale, blockieren den
-      # Trend- und Chart-Setup-Funnel aber nicht hart.
+      # -- IBKR-Gruppendiagnostik und Entry-Attribution --------------------------
+      # Die aktuelle IBKR-Taxonomie und daraus abgeleitete Gruppenwerte sind
+      # Diagnose-/Attributionsmerkmale. Sie gehen weder in das dynamische
+      # Candidate-Ranking ein noch blockieren sie Trend- oder Setup-Funnel.
       # Mindest-RS-Rating der IBKR Industry-Gruppe (1-99), berechnet aus dem
       # Median-RS der rankbaren Mitglieder.
       IBKR_INDUSTRY_RS_MIN: "70"
@@ -164,7 +166,7 @@ services:
       # als vergleichbare Gruppe gewertet wird.
       IBKR_INDUSTRY_MIN_SYMBOLS: "5"
       IBKR_CATEGORY_MIN_SYMBOLS: "3"
-      # Industry-Breadth bleibt Diagnose-/Ranking-Kontext, kein Entry-Gate.
+      # Industry-Breadth bleibt reine Diagnose/Attribution, kein Rank oder Gate.
       # Diagnosezustand schaltet AN, wenn die Breadth mindestens 55 % erreicht.
       IBKR_INDUSTRY_BREADTH_ON_THRESHOLD: "0.55"
       # Diagnosezustand bleibt an bis die Breadth unter 45 % faellt.
@@ -189,12 +191,16 @@ services:
       ACCELERATION_MIN: "0.0"
       QUARTERLY_GROWTH_STREAK_MIN: "2"
       QUARTERLY_FUNDAMENTAL_STALE_TRADING_DAYS: "130"
-      # 13F-Sponsorship bleibt point-in-time Ranking-Kontext, kein harter Gate.
+      # Raw-13F-Sponsorship bleibt point-in-time Diagnosekontext; Managerzahl
+      # und Aktivitaet gehen weder in den dynamischen Rank noch in ein Gate ein.
       INSTITUTIONAL_MIN_MANAGERS: "10"
       INSTITUTIONAL_NET_ACTIVITY_MIN: "0"
       INSTITUTIONAL_ACTIVITY_LOOKBACK_SESSIONS: "130"
 
       # -- Chart-Setup-Erkennung (VCP, Flat Base, Power Play, Tight Shelf) --------
+      # Alle vier Klassen werden je Detection-Tag ausgewertet. Ueberlappende
+      # Basen mit stabilem/nahem Resistance-Pivot werden strukturbezogen
+      # dedupliziert; die staerkste Klassifikation bleibt deterministisch uebrig.
       # Swing-Fenster k: ein Hoch/Tief gilt als Swingpunkt, wenn es Extremum ueber
       # +-k Bars ist. Ein Swing ist erst k Bars spaeter bestaetigt (kein Look-Ahead).
       # Kleiner = mehr, feinere Swings; groesser = nur markante Swings.
@@ -229,10 +235,14 @@ services:
       PRIOR_ADVANCE_MIN: "0.25"
 
       # -- Simulation --------------------------------------------------------------
-      # Independent nutzt INITIAL_EQUITY ohne Cash-/Positionslimits. Portfolio
-      # skaliert die vor der Session gerankte Order-Slate gemeinsam unter Cash-,
-      # Gross-Exposure- und Slot-Limits. In beiden Modi wird die Stueckzahl am
-      # oberen Rand der Buy Zone vorab festgelegt.
+      # Vor jeder Order-Session entsteht ein neuer, ausschliesslich bis t-1
+      # bekannter Candidate-Snapshot. Klassenspezifische Gewichte kombinieren
+      # vergleichbar skalierte, kontinuierliche Komponenten zu einem Rank.
+      # Independent nutzt INITIAL_EQUITY ohne Cash-/Positions-/Exposure-Limits
+      # oder Same-Symbol-Blocking. Portfolio skaliert die vor der Session
+      # gerankte Order-Slate gemeinsam unter Cash-, Gross-Exposure- und
+      # Slot-Limits. In beiden Modi wird die Stueckzahl am oberen Rand der Buy
+      # Zone vorab festgelegt.
       # Fixe Startbasis in USD fuer Positionsgroesse und Research-Equity-Kurve.
       INITIAL_EQUITY: "100000"
       # Risiko pro Trade als Anteil der Basis (0.01 = 1 % = 1000 USD):
@@ -265,7 +275,7 @@ services:
       TIME_STOP_SESSIONS: "10"
       TIME_STOP_MIN_R: "1.0"
 
-      # -- Portfolio-Constraints (nur SIMULATION_MODE=portfolio) -----------------
+      # -- Portfolio-Constraints (portfolio bzw. Portfolio-Teil von both) --------
       # Maximal gleichzeitig offene Positionen. 8 ist bewusst konservativ, damit
       # Signalhaufen nicht automatisch zu unrealistischer Ueberdiversifikation werden.
       PORTFOLIO_MAX_OPEN_POSITIONS: "8"

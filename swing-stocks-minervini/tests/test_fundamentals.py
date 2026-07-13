@@ -46,6 +46,7 @@ def test_quarterly_growth_acceleration_margin_and_streak_are_point_in_time():
     )
 
     assert not result["eps_pass"].loc[:"2024-05-01", "AAA"].any()
+    assert result["fundamental_score"].loc[:"2024-05-01", "AAA"].isna().all()
     assert bool(result["eps_pass"].loc["2024-08-02", "AAA"])
     assert bool(result["revenue_pass"].loc["2024-08-02", "AAA"])
     assert bool(result["margin_pass"].loc["2024-08-02", "AAA"])
@@ -76,6 +77,38 @@ def test_null_quarterly_event_resets_known_growth_state():
     assert pd.isna(result["eps_yoy"].loc["2024-08-02", "AAA"])
 
 
+def test_partial_fundamentals_report_quality_and_coverage_separately():
+    dates, symbols = _grid()
+    events = _events(
+        [
+            {
+                "symbol": "AAA",
+                "available_date": "2024-05-02",
+                "fiscal_period_end_date": "2024-03-31",
+                "diluted_eps": 1.3,
+                "prior_year_diluted_eps": 1.0,
+                "quarterly_revenue": 120.0,
+                "prior_year_quarterly_revenue": 100.0,
+                "quarterly_operating_margin": 0.12,
+                "prior_year_quarterly_operating_margin": 0.10,
+                "quarterly_net_margin": np.nan,
+                "prior_year_quarterly_net_margin": np.nan,
+            }
+        ]
+    )
+
+    result = quarterly_flags(events, dates, symbols, make_cfg())
+    day = pd.Timestamp("2024-05-02")
+
+    # EPS, revenue and margin are three observed passes. Acceleration, streak
+    # and four-quarter stability are not yet comparable and must not become
+    # three implicit failures.
+    assert result["fundamental_score"].loc[day, "AAA"] == 3.0
+    assert result["fundamental_coverage"].loc[day, "AAA"] == 0.5
+    assert pd.isna(result["fundamental_score"].loc[:"2024-05-01", "AAA"]).all()
+    assert (result["fundamental_coverage"].loc[:"2024-05-01", "AAA"] == 0.0).all()
+
+
 def test_quarterly_state_expires_after_configured_sessions():
     dates, symbols = _grid()
     events = _events(
@@ -96,6 +129,7 @@ def test_quarterly_state_expires_after_configured_sessions():
     event_index = dates.get_loc(pd.Timestamp("2024-05-02"))
     assert bool(result["eps_pass"].iloc[event_index + 5, 0])
     assert not bool(result["eps_pass"].iloc[event_index + 6, 0])
+    assert pd.isna(result["fundamental_score"].iloc[event_index + 6, 0])
 
 
 def test_13f_sponsorship_uses_only_effective_date_and_cumulative_manager_count():

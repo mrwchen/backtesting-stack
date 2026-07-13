@@ -39,9 +39,8 @@ class Config:
     run_label: str
     cache_dir: str
     force_refresh: bool
-    screen_persist: str  # passed | universe
     log_level: str
-    simulation_mode: str  # independent | portfolio
+    simulation_mode: str  # independent | portfolio | both
 
     # universe filters
     min_price: float
@@ -153,7 +152,6 @@ class Config:
             run_label=_env("RUN_LABEL", "minervini_v1"),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
-            screen_persist=_env("SCREEN_PERSIST", "passed").lower(),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             simulation_mode=_env("SIMULATION_MODE", "independent").lower(),
             min_price=float(_env("MIN_PRICE", "5.0")),
@@ -255,9 +253,7 @@ class Config:
         )
         if cfg.stage not in ("screen", "setup", "sim", "all", "sensitivity"):
             raise ValueError(f"unsupported STAGE={cfg.stage!r}")
-        if cfg.screen_persist not in ("passed", "universe"):
-            raise ValueError(f"unsupported SCREEN_PERSIST={cfg.screen_persist!r}")
-        if cfg.simulation_mode not in ("independent", "portfolio"):
+        if cfg.simulation_mode not in ("independent", "portfolio", "both"):
             raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
         if not cfg.market_index_symbols:
             raise ValueError("MARKET_INDEX_SYMBOLS must contain at least one symbol")

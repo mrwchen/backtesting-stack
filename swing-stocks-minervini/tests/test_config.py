@@ -5,6 +5,12 @@ import pytest
 from src.config import Config
 
 
+def test_combined_mode_is_an_explicit_valid_runtime_mode(monkeypatch) -> None:
+    monkeypatch.setenv("SIMULATION_MODE", "both")
+
+    assert Config.from_env().simulation_mode == "both"
+
+
 def test_default_slate_risk_floor_is_serialized_in_run_params(monkeypatch) -> None:
     monkeypatch.delenv("MIN_SLATE_RISK_UTILIZATION", raising=False)
 
