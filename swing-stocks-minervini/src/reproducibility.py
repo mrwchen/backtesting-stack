@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -45,11 +47,31 @@ SIM_CONFIG_FIELDS = (
     "time_stop_min_r", "portfolio_max_open_positions",
     "portfolio_max_daily_orders",
     "portfolio_max_gross_exposure_pct", "min_slate_risk_utilization",
-    "neutral_rank_salt",
+    "portfolio_ranking_mode", "portfolio_setup_types", "neutral_rank_salt",
     "exposure_levels",
     "exposure_winners_to_step_up", "exposure_losses_to_reset",
     "exposure_drawdown_reset_pct", "market_filter_enable",
     "regime_entry_filter_enable", "regime_allowed_labels",
+)
+
+QUALITY_CALIBRATION_LABEL_FIELDS = (
+    "setup_type",
+    "information_date",
+    "available_date",
+    "raw_quality_score",
+    "realized_r_multiple",
+    "walk_forward_quality_score",
+    "weight",
+    "competition_size",
+)
+
+FILL_CALIBRATION_LABEL_FIELDS = (
+    "setup_type",
+    "information_date",
+    "available_date",
+    "readiness_signal",
+    "filled",
+    "weight",
 )
 
 
@@ -70,35 +92,35 @@ def config_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def frame_fingerprint(frame: pd.DataFrame, columns: tuple[str, ...]) -> str:
-    """Hash stage rows independently of pandas and PostgreSQL scalar dtypes."""
-    missing = sorted(set(columns) - set(frame.columns))
-    if missing:
-        raise ValueError("fingerprint frame missing columns: " + ",".join(missing))
+def _canonical(value: Any) -> str:
+    if isinstance(value, (tuple, list, np.ndarray)):
+        return "[" + ",".join(_canonical(item) for item in value) + "]"
+    if value is None or (not isinstance(value, str) and bool(pd.isna(value))):
+        return ""
+    if isinstance(value, (pd.Timestamp, datetime, date, np.datetime64)):
+        return pd.Timestamp(value).isoformat()
+    if isinstance(value, (bool, np.bool_)):
+        return "true" if bool(value) else "false"
+    if isinstance(value, (Decimal, float, np.floating)):
+        number = Decimal(str(value)).normalize()
+        return format(number, "f")
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    return str(value)
 
-    def canonical(value) -> str:
-        if isinstance(value, (tuple, list, np.ndarray)):
-            return "[" + ",".join(canonical(item) for item in value) + "]"
-        if value is None or (not isinstance(value, str) and bool(pd.isna(value))):
-            return ""
-        if isinstance(value, (pd.Timestamp, datetime, date, np.datetime64)):
-            return pd.Timestamp(value).isoformat()
-        if isinstance(value, (bool, np.bool_)):
-            return "true" if bool(value) else "false"
-        if isinstance(value, (Decimal, float, np.floating)):
-            number = Decimal(str(value)).normalize()
-            return format(number, "f")
-        if isinstance(value, (int, np.integer)):
-            return str(int(value))
-        return str(value)
 
+def _unordered_rows_fingerprint(
+    columns: tuple[str, ...],
+    rows: Iterable[Sequence[Any]],
+) -> str:
+    """Hash a row multiset without depending on its iteration order."""
     modulus = 1 << 256
     row_sum = 0
     row_square_sum = 0
     count = 0
-    for row in frame.loc[:, columns].itertuples(index=False, name=None):
+    for row in rows:
         encoded_row = json.dumps(
-            [canonical(value) for value in row],
+            [_canonical(value) for value in row],
             separators=(",", ":"),
         ).encode("utf-8")
         value = int.from_bytes(hashlib.sha256(encoded_row).digest(), "big")
@@ -113,6 +135,42 @@ def frame_fingerprint(frame: pd.DataFrame, columns: tuple[str, ...]) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def frame_fingerprint(frame: pd.DataFrame, columns: tuple[str, ...]) -> str:
+    """Hash stage rows independently of pandas and PostgreSQL scalar dtypes."""
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise ValueError("fingerprint frame missing columns: " + ",".join(missing))
+    return _unordered_rows_fingerprint(
+        columns,
+        frame.loc[:, columns].itertuples(index=False, name=None),
+    )
+
+
+def _object_records_fingerprint(
+    records: Sequence[object],
+    fields: tuple[str, ...],
+) -> str:
+    """Hash immutable record values by their declared semantic fields."""
+    return _unordered_rows_fingerprint(
+        fields,
+        (tuple(getattr(record, field) for field in fields) for record in records),
+    )
+
+
+def quality_calibration_labels_fingerprint(
+    labels: Sequence[object],
+) -> str:
+    """Fingerprint every result-bearing quality-label field."""
+    return _object_records_fingerprint(labels, QUALITY_CALIBRATION_LABEL_FIELDS)
+
+
+def fill_calibration_labels_fingerprint(
+    labels: Sequence[object],
+) -> str:
+    """Fingerprint every result-bearing fill-label field."""
+    return _object_records_fingerprint(labels, FILL_CALIBRATION_LABEL_FIELDS)
 
 
 def matrix_fingerprint(

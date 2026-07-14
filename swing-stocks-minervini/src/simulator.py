@@ -48,6 +48,11 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 
+PORTFOLIO_RESEARCH_ONLY_SETUP_TYPES = frozenset(
+    {"power_play", "tight_shelf"}
+)
+
+
 @dataclass
 class Position:
     position_id: int
@@ -66,6 +71,7 @@ class Position:
     feedback_risk_units: float
     price_continuity_segment: int
     entry_snapshot: CandidateSnapshot
+    calibration_competition_size: int
     next_stop: float | None = None
     realized_position_pnl: float = 0.0
     partial_done: bool = False
@@ -137,7 +143,7 @@ def simulate(
     c = close_m.to_numpy()
     if continuity_segment_m is None:
         raise ValueError(
-            "v7 simulation requires continuity_segment_m"
+            "v8 simulation requires continuity_segment_m"
         )
     if (
         not continuity_segment_m.index.equals(dates)
@@ -191,6 +197,7 @@ def simulate(
         fill_labels=fill_labels,
         dryup_zero_ratio=cfg.dryup_score_zero_ratio,
         neutral_rank_salt=cfg.neutral_rank_salt,
+        ranking_mode=cfg.portfolio_ranking_mode,
     )
 
     setups = setups[setups["symbol"].isin(col_index)].copy()
@@ -201,7 +208,7 @@ def simulate(
     setups["sim_setup_key"] = np.arange(len(setups), dtype=int)
     if "price_continuity_segment" not in setups.columns:
         raise ValueError(
-            "v7 setups require price_continuity_segment"
+            "v8 setups require price_continuity_segment"
         )
     setup_segments = pd.to_numeric(
         setups["price_continuity_segment"], errors="coerce"
@@ -249,6 +256,27 @@ def simulate(
         except (TypeError, ValueError):
             return default
         return default if np.isnan(out) else out
+
+    def independently_fillable(setup, t: int) -> bool:
+        """Return the setup's capacity-independent stop-buy outcome for session t."""
+        col = col_index[setup.symbol]
+        day_open = o[t, col]
+        day_high = h[t, col]
+        day_low = lo[t, col]
+        trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
+        invalidation_level = max(
+            _num_attr(setup, "last_low", -np.inf),
+            _num_attr(setup, "stop_level", -np.inf),
+        )
+        return bool(
+            np.isfinite([day_open, day_high, day_low]).all()
+            and (
+                not np.isfinite(invalidation_level)
+                or day_open > invalidation_level
+            )
+            and day_high >= trigger
+            and day_open <= trigger * (1 + cfg.max_buy_zone_pct)
+        )
 
     def allocate_portfolio_slate(
         candidates: list[SlateCandidate],
@@ -546,6 +574,7 @@ def simulate(
                     available_date=dates[t],
                     realized_r_multiple=pos.realized_position_pnl
                     / initial_risk,
+                    competition_size=pos.calibration_competition_size,
                 )
         if portfolio_mode and leg == "final":
             closed_outcomes.append(
@@ -698,8 +727,12 @@ def simulate(
         }
         ineligible: dict[int, str] = {}
         if portfolio_mode:
+            portfolio_setup_types = frozenset(cfg.portfolio_setup_types)
             for snapshot in ranked_snapshots:
-                if snapshot.setup_type == "tight_shelf":
+                if (
+                    snapshot.setup_type in PORTFOLIO_RESEARCH_ONLY_SETUP_TYPES
+                    or snapshot.setup_type not in portfolio_setup_types
+                ):
                     ineligible[snapshot.setup_key] = (
                         "setup_class_research_only"
                     )
@@ -827,6 +860,23 @@ def simulate(
                     or setup.symbol in selected_symbols
                 ):
                     set_entry_decision(setup, "existing_position")
+                    continue
+
+                snapshot = current_snapshots[int(setup.sim_setup_key)]
+                if (
+                    portfolio_mode
+                    and cfg.portfolio_ranking_mode == "validated"
+                    and (
+                        not snapshot.quality_model_validated
+                        or snapshot.quality_score <= 0.0
+                    )
+                ):
+                    # Cash is the explicit zero-return candidate.  This gate
+                    # is intentionally applied only after the exogenous
+                    # market/regime gate and before any sizing or capacity
+                    # calculation.  Neutral and quality-only experiment arms
+                    # remain ungated controls.
+                    set_entry_decision(setup, "non_positive_quality")
                     continue
 
                 pivot = _num_attr(setup, "pivot", np.nan)
@@ -1029,6 +1079,23 @@ def simulate(
             if not np.isnan(trail) and c[t, col] < trail:
                 pos.exit_next_open_reason = "trail_ma"
 
+        # Freeze the causal same-class competition before any entry can close
+        # on its entry bar.  Only independently executable planned orders
+        # count on this exogenously eligible session; cash, slots and portfolio
+        # nomination may never leak into the calibration population.
+        calibration_competition_sizes: dict[int, int] = {}
+        if not portfolio_mode and online_calibration and entries_allowed:
+            fillable_keys_by_type: dict[str, list[int]] = {}
+            for order in slate:
+                if independently_fillable(order.setup, t):
+                    fillable_keys_by_type.setdefault(
+                        order.snapshot.setup_type, []
+                    ).append(order.setup_key)
+            for setup_keys in fillable_keys_by_type.values():
+                competition_size = len(setup_keys)
+                for setup_key in setup_keys:
+                    calibration_competition_sizes[setup_key] = competition_size
+
         # ---- fill only orders selected before the session ------------------
         consumed_setup_keys = set(unusable_setup_keys)
         for order in slate:
@@ -1084,6 +1151,9 @@ def simulate(
                     continuity_numeric[t, col]
                 ),
                 entry_snapshot=order.snapshot,
+                calibration_competition_size=(
+                    calibration_competition_sizes.get(order.setup_key, 1)
+                ),
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
@@ -1167,29 +1237,13 @@ def simulate(
         # Capacity-independent first-touch observations train the fill model.
         # Portfolio selections are deliberately excluded so slots, gates and
         # the current ranking cannot leak into their own calibration sample.
-        if not portfolio_mode and online_calibration:
+        if not portfolio_mode and online_calibration and entries_allowed:
             for snapshot in ranked_snapshots:
                 setup = session_ranked_setups[snapshot.setup_key]
-                col = col_index[setup.symbol]
-                day_open = o[t, col]
-                day_high = h[t, col]
-                day_low = lo[t, col]
-                trigger = float(setup.pivot) * (1 + cfg.pivot_buffer_pct)
-                invalidation_level = max(
-                    _num_attr(setup, "last_low", -np.inf),
-                    _num_attr(setup, "stop_level", -np.inf),
-                )
-                independently_fillable = bool(
-                    np.isfinite([day_open, day_high, day_low]).all()
-                    and day_open > invalidation_level
-                    and day_high >= trigger
-                    and day_open
-                    <= trigger * (1 + cfg.max_buy_zone_pct)
-                )
                 ranker.add_fill_label(
                     snapshot,
                     available_date=dates[t],
-                    filled=independently_fillable,
+                    filled=independently_fillable(setup, t),
                 )
 
         # ---- daily aggregate (research curve, not a cash-constrained account) --

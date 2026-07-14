@@ -153,6 +153,10 @@ def _simulation_input_fingerprint(
     regime_entry_allowed: np.ndarray | None,
     regime: pd.DataFrame,
     candidate_context: dict[str, pd.DataFrame],
+    *,
+    quality_labels_fingerprint: str,
+    fill_labels_fingerprint: str,
+    online_calibration: bool,
 ) -> str:
     dates = matrices["dates"]
     price_matrices = {
@@ -204,6 +208,11 @@ def _simulation_input_fingerprint(
         entry_attribution=attribution_fingerprint,
         gates=gate_fingerprint,
         regime=regime_fingerprint,
+        quality_calibration_labels=quality_labels_fingerprint,
+        fill_calibration_labels=fill_labels_fingerprint,
+        calibration_mode=(
+            "online_calibration" if online_calibration else "preloaded"
+        ),
     )
     return reproducibility.config_fingerprint(
         cfg,
@@ -688,6 +697,8 @@ def _first_touch_calibration_labels(
     candidate_context: dict[str, pd.DataFrame],
     *,
     state_start_idx: int,
+    market_exposure_cap: np.ndarray | None,
+    regime_entry_allowed: np.ndarray | None,
 ) -> tuple[
     tuple[QualityCalibrationLabel, ...],
     tuple[FillCalibrationLabel, ...],
@@ -702,8 +713,7 @@ def _first_touch_calibration_labels(
     calibration_cfg = replace(
         cfg,
         simulation_mode="independent",
-        market_filter_enable=False,
-        regime_entry_filter_enable=False,
+        portfolio_ranking_mode="quality_only",
     )
     result = simulate(
         matrices["dates"],
@@ -719,14 +729,37 @@ def _first_touch_calibration_labels(
         volume_m=matrices["volume"],
         candidate_context=candidate_context,
         continuity_segment_m=matrices["price_continuity_segment"],
+        market_exposure_cap=market_exposure_cap,
+        regime_entry_allowed=regime_entry_allowed,
         online_calibration=True,
     )
     log.info(
-        "first-touch calibration quality-labels %d fill-labels %d",
+        "market-on first-touch calibration quality-labels %d fill-labels %d",
         len(result.quality_labels),
         len(result.fill_labels),
     )
     return result.quality_labels, result.fill_labels
+
+
+def _entry_gate_arrays(
+    cfg: Config,
+    dates: pd.DatetimeIndex,
+    market: pd.DataFrame,
+    regime: pd.DataFrame,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return the exact exogenous entry gates used by calibration and portfolio."""
+    market_for_dates = market.reindex(dates)
+    market_exposure_cap = (
+        market_for_dates["entry_exposure_cap"].to_numpy()
+        if cfg.market_filter_enable
+        else None
+    )
+    regime_entry_allowed = (
+        _regime_entry_allowed(dates, regime, cfg)
+        if cfg.regime_entry_filter_enable
+        else None
+    )
+    return market_exposure_cap, regime_entry_allowed
 
 
 def _run_simulation(
@@ -746,18 +779,22 @@ def _run_simulation(
     quality_labels: tuple[QualityCalibrationLabel, ...] = (),
     fill_labels: tuple[FillCalibrationLabel, ...] = (),
     calibration_labels_supplied: bool = False,
-    label_sink: dict[str, tuple] | None = None,
+    calibration_label_fingerprints: tuple[str, str] | None = None,
 ) -> tuple[int, dict]:
     dates = matrices["dates"]
     sim_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
     state_start_idx = int(
         dates.searchsorted(pd.Timestamp(state_start or start))
     )
+    market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
+        cfg, dates, market, regime
+    )
+    preloaded_calibration = (
+        calibration_labels_supplied or bool(quality_labels) or bool(fill_labels)
+    )
     if (
         (state_start_idx < sim_start_idx or cfg.simulation_mode == "portfolio")
-        and not calibration_labels_supplied
-        and not quality_labels
-        and not fill_labels
+        and not preloaded_calibration
     ):
         quality_labels, fill_labels = _first_touch_calibration_labels(
             cfg,
@@ -765,18 +802,30 @@ def _run_simulation(
             setups,
             candidate_context,
             state_start_idx=state_start_idx,
+            market_exposure_cap=market_exposure_cap,
+            regime_entry_allowed=regime_entry_allowed,
         )
-    market_for_dates = market.reindex(dates)
-    market_exposure_cap = (
-        market_for_dates["entry_exposure_cap"].to_numpy()
-        if cfg.market_filter_enable
-        else None
-    )
-    regime_entry_allowed = (
-        _regime_entry_allowed(dates, regime, cfg)
-        if cfg.regime_entry_filter_enable
-        else None
-    )
+        # Even an empty hidden calibration result is an intentionally frozen,
+        # preloaded label set.  It must not silently fall back to online labels.
+        preloaded_calibration = True
+    online_calibration = not preloaded_calibration
+    if calibration_label_fingerprints is None:
+        calibration_label_fingerprints = (
+            reproducibility.quality_calibration_labels_fingerprint(
+                quality_labels
+            ),
+            reproducibility.fill_calibration_labels_fingerprint(fill_labels),
+        )
+    elif (
+        len(calibration_label_fingerprints) != 2
+        or not all(
+            isinstance(fingerprint, str) and fingerprint
+            for fingerprint in calibration_label_fingerprints
+        )
+    ):
+        raise ValueError(
+            "calibration_label_fingerprints must contain quality and fill hashes"
+        )
     input_fingerprint = _simulation_input_fingerprint(
         cfg,
         setups,
@@ -786,6 +835,9 @@ def _run_simulation(
         regime_entry_allowed,
         regime,
         candidate_context,
+        quality_labels_fingerprint=calibration_label_fingerprints[0],
+        fill_labels_fingerprint=calibration_label_fingerprints[1],
+        online_calibration=online_calibration,
     )
     result = simulate(
         dates, matrices["symbols"],
@@ -798,12 +850,8 @@ def _run_simulation(
         continuity_segment_m=matrices["price_continuity_segment"],
         quality_labels=quality_labels,
         fill_labels=fill_labels,
-        online_calibration=not calibration_labels_supplied
-        and not (quality_labels or fill_labels),
+        online_calibration=online_calibration,
     )
-    if label_sink is not None:
-        label_sink["quality_labels"] = result.quality_labels
-        label_sink["fill_labels"] = result.fill_labels
     trades = result.trades
     breakout_events = result.breakout_events
     if not breakout_events.empty:
@@ -862,12 +910,14 @@ def _run_simulation(
     return run_id, result.metrics
 
 
-def _log_portfolio_ranking_sensitivity_summary(
+def _log_portfolio_ranking_experiment_summary(
+    case_name: str,
     metrics_by_salt: list[dict],
 ) -> None:
     for metric, values in ranking_sensitivity.summarize(metrics_by_salt).items():
         log.info(
-            "portfolio ranking sensitivity summary %s samples %d missing %d median %.6f adverse-quantile %.6f worst %.6f",
+            "portfolio ranking experiment summary %s %s samples %d missing %d median %.6f adverse-quantile %.6f worst %.6f",
+            case_name,
             metric,
             values["count"],
             values["missing_count"],
@@ -877,7 +927,7 @@ def _log_portfolio_ranking_sensitivity_summary(
         )
 
 
-def _run_portfolio_ranking_sensitivity(
+def _run_portfolio_ranking_experiment(
     conn,
     cfg: Config,
     matrices: dict,
@@ -890,31 +940,65 @@ def _run_portfolio_ranking_sensitivity(
     *,
     candidate_context: dict[str, pd.DataFrame],
 ) -> tuple[tuple[int, dict] | None, tuple[tuple[int, dict], ...]]:
-    """Run every frozen salt as a complete portfolio path.
+    """Run the frozen ranking-mode, setup-sleeve and bootstrap-salt matrix.
 
-    Calibration is generated exactly once and then passed unchanged to every
-    arm. Each arm commits independently so the 32 full equity/event paths do
-    not accumulate in one oversized database transaction. No arm is selected
-    as a winner; only distribution summaries are logged.
+    Market-on calibration is generated exactly once.  Each salt applies a
+    deterministic completion-day cluster bootstrap to those immutable base
+    labels, and that same weighted tuple is reused by every case for the salt.
+    Each arm commits independently so the full equity/event paths do not
+    accumulate in one oversized database transaction.  No arm is selected as
+    a winner; only predeclared case distributions are logged.
     """
     if cfg.simulation_mode not in ("portfolio", "both"):
         raise ValueError(
-            "portfolio ranking sensitivity requires SIMULATION_MODE portfolio or both"
+            "portfolio ranking experiment requires SIMULATION_MODE portfolio or both"
         )
 
+    total_paths = (
+        len(ranking_sensitivity.EXPERIMENT_CASES)
+        * len(ranking_sensitivity.NEUTRAL_RANK_SALTS)
+    )
     log.info(
-        "portfolio ranking sensitivity start salts %d label %s",
+        "portfolio ranking experiment start cases %d salts %d paths %d label %s",
+        len(ranking_sensitivity.EXPERIMENT_CASES),
         len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
+        total_paths,
         cfg.run_label,
     )
+    market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
+        cfg, matrices["dates"], market, regime
+    )
+    state_start_idx = int(matrices["dates"].searchsorted(pd.Timestamp(start)))
+    calibration_cfg = replace(
+        cfg,
+        simulation_mode="independent",
+        portfolio_ranking_mode="quality_only",
+        portfolio_setup_types=("flat_base", "vcp"),
+        neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
+    )
+    quality_labels, fill_labels = _first_touch_calibration_labels(
+        calibration_cfg,
+        matrices,
+        setups,
+        candidate_context,
+        state_start_idx=state_start_idx,
+        market_exposure_cap=market_exposure_cap,
+        regime_entry_allowed=regime_entry_allowed,
+    )
+    base_calibration_label_fingerprints = (
+        reproducibility.quality_calibration_labels_fingerprint(quality_labels),
+        reproducibility.fill_calibration_labels_fingerprint(fill_labels),
+    )
+
     first_touch: tuple[int, dict] | None = None
     if cfg.simulation_mode == "both":
-        label_sink: dict[str, tuple] = {}
         first_touch_cfg = replace(
             cfg,
             simulation_mode="independent",
             market_filter_enable=False,
             regime_entry_filter_enable=False,
+            portfolio_ranking_mode="quality_only",
+            portfolio_setup_types=("flat_base", "vcp"),
             neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
             run_label=f"{cfg.run_label}_first_touch",
         )
@@ -929,34 +1013,40 @@ def _run_portfolio_ranking_sensitivity(
             start,
             end,
             candidate_context=candidate_context,
-            label_sink=label_sink,
-        )
-        quality_labels = label_sink["quality_labels"]
-        fill_labels = label_sink["fill_labels"]
-    else:
-        state_start_idx = int(matrices["dates"].searchsorted(pd.Timestamp(start)))
-        calibration_cfg = replace(
-            cfg,
-            neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
-        )
-        quality_labels, fill_labels = _first_touch_calibration_labels(
-            calibration_cfg,
-            matrices,
-            setups,
-            candidate_context,
-            state_start_idx=state_start_idx,
+            quality_labels=quality_labels,
+            fill_labels=fill_labels,
+            calibration_labels_supplied=True,
+            calibration_label_fingerprints=(
+                base_calibration_label_fingerprints
+            ),
         )
 
     portfolio_results: list[tuple[int, dict]] = []
+    metrics_by_case: dict[str, list[dict]] = {
+        case.name: [] for case in ranking_sensitivity.EXPERIMENT_CASES
+    }
     for salt_index, salt in enumerate(ranking_sensitivity.NEUTRAL_RANK_SALTS):
-        portfolio_cfg = replace(
-            cfg,
-            simulation_mode="portfolio",
-            neutral_rank_salt=salt,
-            run_label=f"{cfg.run_label}_portfolio_salt_{salt_index:02d}",
+        weighted_quality_labels = ranking_sensitivity.bootstrap_quality_labels(
+            quality_labels, salt
         )
-        portfolio_results.append(
-            _run_simulation(
+        weighted_calibration_label_fingerprints = (
+            reproducibility.quality_calibration_labels_fingerprint(
+                weighted_quality_labels
+            ),
+            base_calibration_label_fingerprints[1],
+        )
+        for case in ranking_sensitivity.EXPERIMENT_CASES:
+            portfolio_cfg = replace(
+                cfg,
+                simulation_mode="portfolio",
+                portfolio_ranking_mode=case.ranking_mode,
+                portfolio_setup_types=case.setup_types,
+                neutral_rank_salt=salt,
+                run_label=(
+                    f"{cfg.run_label}_{case.name}_salt_{salt_index:02d}"
+                ),
+            )
+            run_result = _run_simulation(
                 conn,
                 portfolio_cfg,
                 matrices,
@@ -967,18 +1057,26 @@ def _run_portfolio_ranking_sensitivity(
                 start,
                 end,
                 candidate_context=candidate_context,
-                quality_labels=quality_labels,
+                quality_labels=weighted_quality_labels,
                 fill_labels=fill_labels,
                 calibration_labels_supplied=True,
+                calibration_label_fingerprints=(
+                    weighted_calibration_label_fingerprints
+                ),
             )
+            portfolio_results.append(run_result)
+            metrics_by_case[case.name].append(run_result[1])
+
+    for case in ranking_sensitivity.EXPERIMENT_CASES:
+        _log_portfolio_ranking_experiment_summary(
+            case.name, metrics_by_case[case.name]
         )
 
-    _log_portfolio_ranking_sensitivity_summary(
-        [metrics for _, metrics in portfolio_results]
-    )
     log.info(
-        "portfolio ranking sensitivity done salts %d persisted-runs %d",
+        "portfolio ranking experiment done cases %d salts %d portfolio-paths %d persisted-runs %d",
+        len(ranking_sensitivity.EXPERIMENT_CASES),
         len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
+        len(portfolio_results),
         len(portfolio_results) + int(first_touch is not None),
     )
     return first_touch, tuple(portfolio_results)
@@ -997,20 +1095,13 @@ def run_sim(
         setups = persistence.read_setups(conn, start, end)
     if setups.empty:
         log.warning("no setups in %s..%s -> persisting zero-signal run", start, end)
-    simulation_cfg = cfg
-    if cfg.simulation_mode == "independent":
-        simulation_cfg = replace(
-            cfg,
-            market_filter_enable=False,
-            regime_entry_filter_enable=False,
-        )
-    regime = data_loader.load_regime_scores(conn, simulation_cfg)
+    regime = data_loader.load_regime_scores(conn, cfg)
     candidate_context = _candidate_context_matrices(
         screen_daily, matrices["dates"], matrices["symbols"]
     )
 
-    if cfg.portfolio_ranking_sensitivity_enable:
-        return _run_portfolio_ranking_sensitivity(
+    if cfg.portfolio_ranking_experiment_enable:
+        return _run_portfolio_ranking_experiment(
             conn,
             cfg,
             matrices,
@@ -1024,11 +1115,34 @@ def run_sim(
         )
 
     if cfg.simulation_mode == "both":
+        market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
+            cfg, matrices["dates"], market, regime
+        )
+        state_start_idx = int(
+            matrices["dates"].searchsorted(pd.Timestamp(start))
+        )
+        quality_labels, fill_labels = _first_touch_calibration_labels(
+            cfg,
+            matrices,
+            setups,
+            candidate_context,
+            state_start_idx=state_start_idx,
+            market_exposure_cap=market_exposure_cap,
+            regime_entry_allowed=regime_entry_allowed,
+        )
+        calibration_label_fingerprints = (
+            reproducibility.quality_calibration_labels_fingerprint(
+                quality_labels
+            ),
+            reproducibility.fill_calibration_labels_fingerprint(fill_labels),
+        )
         first_touch_cfg = replace(
             cfg,
             simulation_mode="independent",
             market_filter_enable=False,
             regime_entry_filter_enable=False,
+            portfolio_ranking_mode="quality_only",
+            portfolio_setup_types=("flat_base", "vcp"),
             run_label=f"{cfg.run_label}_first_touch",
         )
         portfolio_cfg = replace(
@@ -1036,7 +1150,6 @@ def run_sim(
             simulation_mode="portfolio",
             run_label=f"{cfg.run_label}_portfolio",
         )
-        calibration_labels: dict[str, tuple] = {}
         try:
             first_touch = _run_simulation(
                 conn,
@@ -1050,7 +1163,10 @@ def run_sim(
                 end,
                 candidate_context=candidate_context,
                 commit=False,
-                label_sink=calibration_labels,
+                quality_labels=quality_labels,
+                fill_labels=fill_labels,
+                calibration_labels_supplied=True,
+                calibration_label_fingerprints=calibration_label_fingerprints,
             )
             portfolio = _run_simulation(
                 conn,
@@ -1064,9 +1180,10 @@ def run_sim(
                 end,
                 candidate_context=candidate_context,
                 commit=False,
-                quality_labels=calibration_labels["quality_labels"],
-                fill_labels=calibration_labels["fill_labels"],
+                quality_labels=quality_labels,
+                fill_labels=fill_labels,
                 calibration_labels_supplied=True,
+                calibration_label_fingerprints=calibration_label_fingerprints,
             )
             conn.commit()
             return first_touch, portfolio
@@ -1074,9 +1191,55 @@ def run_sim(
             conn.rollback()
             raise
 
+    if cfg.simulation_mode == "independent":
+        market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
+            cfg, matrices["dates"], market, regime
+        )
+        state_start_idx = int(
+            matrices["dates"].searchsorted(pd.Timestamp(start))
+        )
+        quality_labels, fill_labels = _first_touch_calibration_labels(
+            cfg,
+            matrices,
+            setups,
+            candidate_context,
+            state_start_idx=state_start_idx,
+            market_exposure_cap=market_exposure_cap,
+            regime_entry_allowed=regime_entry_allowed,
+        )
+        calibration_label_fingerprints = (
+            reproducibility.quality_calibration_labels_fingerprint(
+                quality_labels
+            ),
+            reproducibility.fill_calibration_labels_fingerprint(fill_labels),
+        )
+        first_touch_cfg = replace(
+            cfg,
+            market_filter_enable=False,
+            regime_entry_filter_enable=False,
+            portfolio_ranking_mode="quality_only",
+            portfolio_setup_types=("flat_base", "vcp"),
+        )
+        return _run_simulation(
+            conn,
+            first_touch_cfg,
+            matrices,
+            universe,
+            market,
+            setups,
+            regime,
+            start,
+            end,
+            candidate_context=candidate_context,
+            quality_labels=quality_labels,
+            fill_labels=fill_labels,
+            calibration_labels_supplied=True,
+            calibration_label_fingerprints=calibration_label_fingerprints,
+        )
+
     return _run_simulation(
         conn,
-        simulation_cfg,
+        cfg,
         matrices,
         universe,
         market,

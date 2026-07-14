@@ -29,6 +29,12 @@ def _env_str_tuple(name: str, default: str) -> tuple[str, ...]:
     return tuple(x.strip().upper() for x in _env(name, default).split(",") if x.strip())
 
 
+def _env_lower_str_tuple(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        x.strip().lower() for x in _env(name, default).split(",") if x.strip()
+    )
+
+
 @dataclass(frozen=True)
 class Config:
     # run control
@@ -41,7 +47,9 @@ class Config:
     force_refresh: bool
     log_level: str
     simulation_mode: str  # independent | portfolio | both
-    portfolio_ranking_sensitivity_enable: bool
+    portfolio_ranking_experiment_enable: bool
+    portfolio_ranking_mode: str  # neutral | quality_only | validated
+    portfolio_setup_types: tuple[str, ...]
     neutral_rank_salt: str
 
     # universe filters
@@ -152,16 +160,22 @@ class Config:
             end_date=_env("END_DATE", "") or None,
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
             run_label=_env(
-                "RUN_LABEL", "minervini_sepa_daily_v7_class_local_32salt"
+                "RUN_LABEL", "minervini_sepa_daily_v8_ranking_experiment"
             ),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
             simulation_mode=_env("SIMULATION_MODE", "independent").lower(),
-            portfolio_ranking_sensitivity_enable=_env_bool(
-                "PORTFOLIO_RANKING_SENSITIVITY_ENABLE", False
+            portfolio_ranking_experiment_enable=_env_bool(
+                "PORTFOLIO_RANKING_EXPERIMENT_ENABLE", False
             ),
-            neutral_rank_salt=_env("NEUTRAL_RANK_SALT", "v7-neutral-00"),
+            portfolio_ranking_mode=_env(
+                "PORTFOLIO_RANKING_MODE", "validated"
+            ).lower(),
+            portfolio_setup_types=_env_lower_str_tuple(
+                "PORTFOLIO_SETUP_TYPES", "flat_base,vcp"
+            ),
+            neutral_rank_salt=_env("NEUTRAL_RANK_SALT", "v8-bootstrap-00"),
             min_price=float(_env("MIN_PRICE", "5.0")),
             min_dollar_volume=float(_env("MIN_DOLLAR_VOLUME", "2000000")),
             rs_lookbacks=_env_int_tuple("RS_LOOKBACKS", "63,126,189,252"),
@@ -264,13 +278,34 @@ class Config:
         if cfg.simulation_mode not in ("independent", "portfolio", "both"):
             raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
         if (
-            cfg.portfolio_ranking_sensitivity_enable
+            cfg.portfolio_ranking_experiment_enable
             and cfg.simulation_mode == "independent"
         ):
             raise ValueError(
-                "PORTFOLIO_RANKING_SENSITIVITY_ENABLE requires "
+                "PORTFOLIO_RANKING_EXPERIMENT_ENABLE requires "
                 "SIMULATION_MODE portfolio or both"
             )
+        if cfg.portfolio_ranking_mode not in (
+            "neutral",
+            "quality_only",
+            "validated",
+        ):
+            raise ValueError(
+                "PORTFOLIO_RANKING_MODE must be neutral, quality_only or validated"
+            )
+        allowed_portfolio_setup_types = {"flat_base", "vcp"}
+        if not cfg.portfolio_setup_types:
+            raise ValueError("PORTFOLIO_SETUP_TYPES must not be empty")
+        unsupported_setup_types = sorted(
+            set(cfg.portfolio_setup_types) - allowed_portfolio_setup_types
+        )
+        if unsupported_setup_types:
+            raise ValueError(
+                "PORTFOLIO_SETUP_TYPES supports only flat_base and vcp; got "
+                + ",".join(unsupported_setup_types)
+            )
+        if len(set(cfg.portfolio_setup_types)) != len(cfg.portfolio_setup_types):
+            raise ValueError("PORTFOLIO_SETUP_TYPES must not contain duplicates")
         if not isinstance(cfg.neutral_rank_salt, str) or not cfg.neutral_rank_salt:
             raise ValueError("NEUTRAL_RANK_SALT must be a non-empty string")
         if not cfg.market_index_symbols:

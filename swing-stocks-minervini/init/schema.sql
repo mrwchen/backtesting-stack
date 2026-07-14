@@ -240,14 +240,14 @@ CREATE TABLE IF NOT EXISTS backtesting_minervini_breakout_events (
     symbol                  TEXT NOT NULL,
     setup_detect_date       DATE NOT NULL,
     snapshot_date           DATE NOT NULL,
-    -- Since minervini_daily_v7: class-local causal expected R, not a 0..100 score.
+    -- Since minervini_daily_v8: causal expected net R, not a 0..100 score.
     quality_score           NUMERIC NOT NULL,
     fill_probability        NUMERIC NOT NULL,
-    -- Since v7, class-local only: zero until validation, then quality * fill.
+    -- Since v8: effective quality used by the selected ranking mode; fill is diagnostic.
     slate_priority          NUMERIC NOT NULL,
     setup_age_sessions      INTEGER NOT NULL,
     distance_to_pivot_pct   NUMERIC,
-    -- Since v7, rank of causal expected R only within the event's setup_type.
+    -- Since v8: global causal expected-net-R rank for the pre-session slate.
     quality_rank            INTEGER NOT NULL,
     pivot                   NUMERIC(15,4) NOT NULL,
     trigger_price           NUMERIC(15,4) NOT NULL,

@@ -338,7 +338,14 @@ def test_oos_run_preloads_hidden_first_touch_labels_without_online_duplication(
     simulated = {}
 
     def fake_first_touch(
-        cfg, actual_matrices, actual_setups, candidate_context, *, state_start_idx
+        cfg,
+        actual_matrices,
+        actual_setups,
+        candidate_context,
+        *,
+        state_start_idx,
+        market_exposure_cap,
+        regime_entry_allowed,
     ):
         hidden.update(
             {
@@ -347,6 +354,8 @@ def test_oos_run_preloads_hidden_first_touch_labels_without_online_duplication(
                 "setups": actual_setups,
                 "candidate_context": candidate_context,
                 "state_start_idx": state_start_idx,
+                "market_exposure_cap": market_exposure_cap,
+                "regime_entry_allowed": regime_entry_allowed,
             }
         )
         return quality_labels, fill_labels
@@ -394,6 +403,8 @@ def test_oos_run_preloads_hidden_first_touch_labels_without_online_duplication(
         "setups": setups,
         "candidate_context": context,
         "state_start_idx": 0,
+        "market_exposure_cap": None,
+        "regime_entry_allowed": None,
     }
     assert simulated["sim_start_idx"] == 2
     assert simulated["state_start_idx"] == 0

@@ -64,7 +64,7 @@ services:
       END_DATE: "2026-07-10"
       # Freitext-Label des Runs; landet in backtesting_minervini_runs.run_label
       # (z. B. zum Unterscheiden von Parameter-Experimenten in Grafana).
-      RUN_LABEL: "minervini_sepa_daily_v7_class_local_32salt"
+      RUN_LABEL: "minervini_sepa_daily_v8_ranking_experiment"
       # Verzeichnis fuer den lokalen Parquet-Cache der DB-Abfragen (Volume ./cache).
       CACHE_DIR: "/cache"
       # true = Parquet-Cache ignorieren und alle Quelldaten frisch aus der DB laden
@@ -78,20 +78,27 @@ services:
       # Simulationsmodus:
       # independent = jeder kausale First Touch ohne Portfoliointeraktion.
       # portfolio   = echte Cash-, Exposure- und Positionslimits anwenden.
-      # both        = ohne Ranking-Sensitivitaet zwei atomare Runs: zuerst
+      # both        = ohne Ranking-Experiment zwei atomare Runs: zuerst
       #               ungefilterter True-First-Touch ohne Markt-, Regime- oder
       #               Fundamental-Gate, danach ein Portfolio-Lauf.
       SIMULATION_MODE: "both"
-      # true = ersetzt die atomare Zwei-Run-Ausfuehrung: einmal den ungefilterten
-      # First-Touch-Laufsatz erzeugen und danach
-      # 32 vollstaendige, pfadabhaengige Portfolio-Simulationen mit fest
-      # vorgegebenen neutralen Ranking-Salts persistieren. Es wird kein Salt
-      # ausgewaehlt oder nachtraeglich optimiert; bewertet werden Median,
-      # adverses Dezil und schlechtester Lauf der Ergebnisverteilung.
-      PORTFOLIO_RANKING_SENSITIVITY_ENABLE: "true"
-      # Kanonischer Salt fuer Einzellaeufe und der erste Arm der festen
-      # 32-Salt-Matrix. Jeder Sensitivitaetsarm ueberschreibt ihn reproduzierbar.
-      NEUTRAL_RANK_SALT: "v7-neutral-00"
+      # true = persistiert einen ungefilterten First-Touch-Researchlauf und die
+      # feste v8-Matrix aus 3 Rankingmodi x 3 Portfolio-Sleeves x 32
+      # Completion-Day-Cluster-Bootstrap-Salts = 288 Portfolio-Pfade.
+      # Die Market-On-Kalibrierung laeuft einmal verborgen im Speicher. Es wird
+      # weder ein bester Salt noch ein bester Arm ausgewaehlt; je Fall werden
+      # Median, adverses Dezil und schlechtester Pfad berichtet.
+      PORTFOLIO_RANKING_EXPERIMENT_ENABLE: "true"
+      # Einzelrun-Modus ausserhalb der Matrix:
+      # neutral = nur Salt-Reihenfolge; quality_only = kausaler Expected-R-Rang
+      # ohne Deployment-Huerde; validated = nur robust positive Modelle und
+      # Kandidaten duerfen Cash schlagen.
+      PORTFOLIO_RANKING_MODE: "validated"
+      # Portfoliofaehige Setupklassen. Power Play und Tight Shelf bleiben
+      # unabhaengig hiervon ausschliesslich First-Touch-Research.
+      PORTFOLIO_SETUP_TYPES: "flat_base,vcp"
+      # Kanonischer Salt fuer Einzellaeufe und erster Arm der festen Matrix.
+      NEUTRAL_RANK_SALT: "v8-bootstrap-00"
 
       # -- Universumsfilter (werden pro Tag, also as-of-date angewendet) ----------
       # Mindest-Rohschlusskurs in USD; dadurch erzeugen spaetere Splits keine
@@ -257,18 +264,19 @@ services:
 
       # -- Simulation --------------------------------------------------------------
       # Vor jeder Order-Session entsteht ein neuer, ausschliesslich bis t-1
-      # bekannter Candidate-Snapshot. Die diagnostische Basis-Quality ist ein
-      # kausaler erwarteter R-Multiple je Setupklasse. Fuer die Rangfolge bleibt
-      # sie aber so lange neutral, bis ausschliesslich fruehere Walk-forward-
-      # Prognosen einen robusten Out-of-sample-Lift belegen. Es gibt kein
-      # Non-positive-Quality-Gate.
-      # Fill Probability ist separat; Slate Priority = validierte Quality *
-      # Fill Probability. Tight Shelf bleibt nur im First-Touch-Research und
-      # wird im Portfolio nicht nominiert.
+      # bekannter Candidate-Snapshot. Quality ist ein kausaler erwarteter
+      # Netto-R-Multiple. Der rollierende Acht-Quartals-Validator wird nur an
+      # Quartalsgrenzen aktualisiert und prueft vollstaendige gleichklassige
+      # Tages-Competitions: Top-minus-Rest-Lift und Top-R muessen robust positiv
+      # sein. Im validated-Modus gewinnt Cash gegen unvalidierte oder
+      # nichtpositive Kandidaten.
+      # Fill Probability bleibt reine Diagnose; Slate Priority entspricht der
+      # effektiven Quality und wird nicht mehr mit Fill multipliziert.
+      # Power Play und Tight Shelf bleiben First-Touch-Research-only.
       # Trend Template und point-in-time Fundamentals sind Soft-Quality-Features,
-      # keine Entry-Gates. First-Touch-Labels werden erst ab ihrem Ergebnisdatum
-      # nutzbar; Portfolio-Trades trainieren den Ranker nicht. Portfolio-only und
-      # OOS mit Vorlauf erzeugen die kausale Kalibrierung unsichtbar im Speicher.
+      # keine Entry-Gates. Market-On-First-Touch-Labels werden erst ab ihrem
+      # Ergebnisdatum nutzbar; Portfolio-Trades trainieren den Ranker nicht.
+      # Der ungefilterte First-Touch-Lauf bleibt ein vollstaendiger Researchsatz.
       # Independent nutzt INITIAL_EQUITY ohne Cash-/Positions-/Exposure-Limits
       # oder Same-Symbol-Blocking. Portfolio skaliert die vor der Session
       # gerankte Order-Slate gemeinsam unter Cash-, Gross-Exposure- und

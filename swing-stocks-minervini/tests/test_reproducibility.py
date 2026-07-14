@@ -1,16 +1,20 @@
-from decimal import Decimal
+from dataclasses import replace
 from datetime import date
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 
 from src import persistence, ranking_sensitivity
+from src.candidate_ranking import FillCalibrationLabel, QualityCalibrationLabel
 from src.reproducibility import (
     SCREEN_CONFIG_FIELDS,
     SIM_CONFIG_FIELDS,
     config_fingerprint,
+    fill_calibration_labels_fingerprint,
     frame_fingerprint,
     matrix_fingerprint,
+    quality_calibration_labels_fingerprint,
 )
 from tests.util import make_cfg
 
@@ -47,15 +51,34 @@ def test_sim_config_fingerprint_tracks_daily_order_limit() -> None:
 
 
 def test_sim_config_fingerprint_tracks_neutral_rank_salt() -> None:
-    first = make_cfg(neutral_rank_salt="v7-neutral-00")
-    changed = make_cfg(neutral_rank_salt="v7-neutral-01")
+    first = make_cfg(neutral_rank_salt="v8-bootstrap-00")
+    changed = make_cfg(neutral_rank_salt="v8-bootstrap-01")
 
     assert config_fingerprint(
         first, SIM_CONFIG_FIELDS, model_version="m1"
     ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
 
 
-def test_all_frozen_neutral_salts_have_unique_simulation_fingerprints() -> None:
+def test_sim_config_fingerprint_tracks_ranking_mode_and_setup_types() -> None:
+    base = make_cfg(
+        portfolio_ranking_mode="neutral",
+        portfolio_setup_types=("flat_base", "vcp"),
+    )
+    changed_mode = make_cfg(portfolio_ranking_mode="validated")
+    changed_types = make_cfg(portfolio_setup_types=("flat_base",))
+
+    base_fingerprint = config_fingerprint(
+        base, SIM_CONFIG_FIELDS, model_version="m1"
+    )
+    assert base_fingerprint != config_fingerprint(
+        changed_mode, SIM_CONFIG_FIELDS, model_version="m1"
+    )
+    assert base_fingerprint != config_fingerprint(
+        changed_types, SIM_CONFIG_FIELDS, model_version="m1"
+    )
+
+
+def test_all_frozen_bootstrap_salts_have_unique_simulation_fingerprints() -> None:
     fingerprints = {
         config_fingerprint(
             make_cfg(neutral_rank_salt=salt),
@@ -98,6 +121,89 @@ def test_frame_fingerprint_is_stable_across_database_numeric_types() -> None:
 
     columns = ("symbol", "pivot", "depths")
     assert frame_fingerprint(memory, columns) == frame_fingerprint(database, columns)
+
+
+def test_quality_label_fingerprint_is_order_independent() -> None:
+    first = QualityCalibrationLabel(
+        setup_type="vcp",
+        information_date="2024-01-02",
+        available_date="2024-01-05",
+        raw_quality_score=75.0,
+        realized_r_multiple=1.5,
+        walk_forward_quality_score=0.25,
+        weight=1.25,
+        competition_size=3,
+    )
+    second = replace(
+        first,
+        setup_type="flat_base",
+        information_date="2024-01-03",
+        available_date="2024-01-08",
+    )
+
+    assert quality_calibration_labels_fingerprint(
+        (first, second)
+    ) == quality_calibration_labels_fingerprint((second, first))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"setup_type": "flat_base"},
+        {"information_date": "2024-01-03"},
+        {"available_date": "2024-01-08"},
+        {"raw_quality_score": 76.0},
+        {"realized_r_multiple": -0.5},
+        {"walk_forward_quality_score": 0.50},
+        {"weight": 2.0},
+        {"competition_size": 4},
+    ),
+)
+def test_quality_label_fingerprint_tracks_every_semantic_field(changes) -> None:
+    label = QualityCalibrationLabel(
+        setup_type="vcp",
+        information_date="2024-01-02",
+        available_date="2024-01-05",
+        raw_quality_score=75.0,
+        realized_r_multiple=1.5,
+        walk_forward_quality_score=0.25,
+        weight=1.25,
+        competition_size=3,
+    )
+
+    assert quality_calibration_labels_fingerprint(
+        (label,)
+    ) != quality_calibration_labels_fingerprint((replace(label, **changes),))
+
+
+def test_fill_label_fingerprint_is_order_independent_and_content_sensitive() -> None:
+    first = FillCalibrationLabel(
+        setup_type="vcp",
+        information_date="2024-01-02",
+        available_date="2024-01-03",
+        readiness_signal=75.0,
+        filled=True,
+        weight=1.25,
+    )
+    second = replace(
+        first,
+        setup_type="flat_base",
+        information_date="2024-01-03",
+        available_date="2024-01-04",
+        filled=False,
+    )
+
+    assert fill_calibration_labels_fingerprint(
+        (first, second)
+    ) == fill_calibration_labels_fingerprint((second, first))
+    for changes in (
+        {"readiness_signal": 76.0},
+        {"filled": False},
+        {"weight": 2.0},
+    ):
+        assert fill_calibration_labels_fingerprint(
+            (first,)
+        ) != fill_calibration_labels_fingerprint((replace(first, **changes),))
 
 
 def test_matrix_fingerprint_tracks_price_content_not_dataframe_dtype() -> None:

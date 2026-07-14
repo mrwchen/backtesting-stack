@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from src.candidate_ranking import (
-    QUALITY_VALIDATION_MIN_DAYS_PER_GROUP,
+    QUALITY_VALIDATION_MIN_COMPETITIONS_PER_QUARTER,
     QUALITY_VALIDATION_MIN_LABELS,
     QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER,
     QUALITY_VALIDATION_QUARTERS_PER_REVIEW,
@@ -79,6 +79,7 @@ def _setup_row(dates, detect_idx, pivot, stop, valid_idx):
             {
                 "setup_id": 1,
                 "symbol": "TEST",
+                "setup_type": "vcp",
                 "detect_date": dates[detect_idx].date(),
                 "pivot": pivot,
                 "last_low": stop,
@@ -96,6 +97,8 @@ def _clean_cfg():
         pivot_buffer_pct=0.0, max_buy_zone_pct=0.05,
         time_stop_sessions=999,
         exposure_levels=(1.0,),
+        portfolio_ranking_mode="neutral",
+        portfolio_setup_types=("flat_base", "vcp"),
     )
 
 
@@ -105,7 +108,7 @@ def _monotone_oof_quality_labels(
 ) -> tuple[QualityCalibrationLabel, ...]:
     """Return the last completed two-year review epoch for 2024 fixtures."""
     days_per_quarter = QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER // 4
-    assert days_per_quarter >= QUALITY_VALIDATION_MIN_DAYS_PER_GROUP
+    assert days_per_quarter >= QUALITY_VALIDATION_MIN_COMPETITIONS_PER_QUARTER
     raw_scores = (12.5, 37.5, 62.5, 87.5)
     oof_scores = (-1.5, -0.5, 0.5, 1.5)
     labels = []
@@ -125,19 +128,16 @@ def _monotone_oof_quality_labels(
             )
         ]
         for completion_date in completion_days:
-            for group, (raw_score, oof_score) in enumerate(
-                zip(raw_scores, oof_scores)
-            ):
+            for raw_score, oof_score in zip(raw_scores, oof_scores):
                 labels.append(
                     QualityCalibrationLabel(
                         setup_type=setup_type,
-                        information_date=(
-                            completion_date - pd.offsets.BDay(3 + group)
-                        ),
+                        information_date=completion_date - pd.offsets.BDay(5),
                         available_date=completion_date,
                         raw_quality_score=raw_score,
                         realized_r_multiple=oof_score,
                         walk_forward_quality_score=oof_score,
+                        competition_size=4,
                     )
                 )
     assert len(labels) == QUALITY_VALIDATION_MIN_LABELS
@@ -751,7 +751,7 @@ def test_full_portfolio_records_held_symbol_and_capacity_breakouts() -> None:
                 "valid_until": dates[4].date(), "setup_score": 95.0,
             },
         ]
-    )
+    ).assign(setup_type="vcp")
     cfg = make_cfg(
         **{
             **_clean_cfg().__dict__,
@@ -886,7 +886,11 @@ def test_portfolio_daily_order_limit_caps_pre_session_slate():
     }
 
 
-def test_negative_diagnostic_quality_does_not_block_portfolio_order(monkeypatch):
+@pytest.mark.parametrize("ranking_mode", ["neutral", "quality_only"])
+def test_control_ranking_modes_do_not_cash_gate_negative_quality(
+    monkeypatch,
+    ranking_mode,
+):
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100.0)]
     bars += [(100, 101, 99, 100.0)] * 2
@@ -903,6 +907,8 @@ def test_negative_diagnostic_quality_does_not_block_portfolio_order(monkeypatch)
                 snapshot,
                 walk_forward_quality_score=-1.0,
                 quality_score=-1.0,
+                quality_model_validated=False,
+                slate_priority=-1.0,
                 quality_effective_samples=100.0,
             )
             for snapshot in original_rank(self, *args, **kwargs)
@@ -920,6 +926,7 @@ def test_negative_diagnostic_quality_does_not_block_portfolio_order(monkeypatch)
             "portfolio_max_open_positions": 1,
             "portfolio_max_daily_orders": 1,
             "exposure_levels": (1.0,),
+            "portfolio_ranking_mode": ranking_mode,
         }
     )
 
@@ -937,7 +944,76 @@ def test_negative_diagnostic_quality_does_not_block_portfolio_order(monkeypatch)
     assert result.metrics["num_positions"] == 1
     assert result.breakout_events.iloc[0]["decision"] == "filled"
     assert result.breakout_events.iloc[0]["quality_score"] == -1.0
-    assert result.breakout_events.iloc[0]["slate_priority"] == 0.0
+    assert result.breakout_events.iloc[0]["slate_priority"] == -1.0
+
+
+@pytest.mark.parametrize(
+    ("model_validated", "diagnostic_score", "effective_score"),
+    [
+        (False, 0.5, 0.0),
+        (True, -0.25, -0.25),
+    ],
+)
+def test_validated_mode_prefers_cash_to_unvalidated_or_non_positive_quality(
+    monkeypatch,
+    model_validated,
+    diagnostic_score,
+    effective_score,
+):
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.0)]
+    bars += [(100, 101, 99, 100.0)] * 2
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 7)
+
+    from src import simulator as simulator_module
+
+    original_rank = simulator_module.CandidateRanker.rank
+
+    def rank_without_validated_edge(self, *args, **kwargs):
+        return tuple(
+            replace(
+                snapshot,
+                walk_forward_quality_score=diagnostic_score,
+                quality_score=effective_score,
+                quality_model_validated=model_validated,
+                slate_priority=effective_score,
+            )
+            for snapshot in original_rank(self, *args, **kwargs)
+        )
+
+    monkeypatch.setattr(
+        simulator_module.CandidateRanker,
+        "rank",
+        rank_without_validated_edge,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_ranking_mode": "validated",
+            "portfolio_max_open_positions": 1,
+            "portfolio_max_daily_orders": 1,
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        cfg,
+    )
+
+    assert result.trades.empty
+    event = result.breakout_events.iloc[0]
+    assert event["decision"] == "non_positive_quality"
+    # The causal posterior remains diagnostic even while Cash wins.
+    assert event["quality_score"] == diagnostic_score
+    assert event["slate_priority"] == effective_score
 
 
 def test_portfolio_mode_limits_gross_exposure():
@@ -1024,13 +1100,18 @@ def test_portfolio_mode_prioritizes_validated_quality_metrics():
     )
     cfg = _clean_cfg()
     cfg = make_cfg(
-        **{**cfg.__dict__, "simulation_mode": "portfolio", "portfolio_max_open_positions": 1}
+        **{
+            **cfg.__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_max_open_positions": 1,
+            "portfolio_ranking_mode": "validated",
+        }
     )
 
     result = simulate(
         dates, frames[0].columns, frames[0], frames[1], frames[2], frames[3],
         pd.concat([weak, strong], ignore_index=True), cfg,
-        quality_labels=_monotone_oof_quality_labels(dates, "unknown"),
+        quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
     )
 
     assert result.metrics["num_positions"] == 1
@@ -1189,6 +1270,7 @@ def test_capacity_feasible_slate_can_skip_a_large_candidate():
             "portfolio_max_open_positions": 3,
             "portfolio_max_gross_exposure_pct": 0.15,
             "min_slate_risk_utilization": 0.50,
+            "portfolio_ranking_mode": "quality_only",
         }
     )
 
@@ -1247,6 +1329,7 @@ def test_capacity_reject_allows_a_smaller_setup_of_the_same_symbol():
             "portfolio_max_open_positions": 3,
             "portfolio_max_gross_exposure_pct": 0.15,
             "min_slate_risk_utilization": 0.50,
+            "portfolio_ranking_mode": "quality_only",
         }
     )
 
@@ -1290,6 +1373,7 @@ def test_validated_portfolio_ranking_uses_continuous_dynamic_context():
             **_clean_cfg().__dict__,
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 1,
+            "portfolio_ranking_mode": "validated",
         }
     )
 
@@ -1302,7 +1386,7 @@ def test_validated_portfolio_ranking_uses_continuous_dynamic_context():
         frames[3],
         pd.concat([technical_only, contextual_leader], ignore_index=True),
         cfg,
-        quality_labels=_monotone_oof_quality_labels(dates, "unknown"),
+        quality_labels=_monotone_oof_quality_labels(dates, "vcp"),
     )
 
     assert result.trades["symbol"].unique().tolist() == ["LEADER"]
@@ -1338,6 +1422,7 @@ def test_current_session_context_cannot_change_same_session_selection():
             **_clean_cfg().__dict__,
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 1,
+            "portfolio_ranking_mode": "validated",
         }
     )
 
@@ -1385,6 +1470,7 @@ def test_prior_day_dynamic_context_can_change_validated_portfolio_rank():
             **_clean_cfg().__dict__,
             "simulation_mode": "portfolio",
             "portfolio_max_open_positions": 1,
+            "portfolio_ranking_mode": "validated",
         }
     )
 
@@ -2042,12 +2128,13 @@ def test_trailing_average_restarts_inside_new_continuity_segment():
     assert result.trades.iloc[-1]["exit_date"] == dates[-1].date()
 
 
-def test_tight_shelf_is_first_touch_research_only_not_portfolio_order():
+@pytest.mark.parametrize("setup_type", ["tight_shelf", "power_play"])
+def test_research_only_setup_classes_never_become_portfolio_orders(setup_type):
     bars = [(98, 99, 97, 98)] * 5
     bars += [(99, 101, 98, 100), (100, 102, 99, 101)]
     dates, open_m, high_m, low_m, close_m = _matrices(bars)
     setup = _setup_row(dates, 4, 100.0, 95.0, 6).assign(
-        setup_type="tight_shelf"
+        setup_type=setup_type
     )
 
     independent = simulate(
@@ -2068,7 +2155,15 @@ def test_tight_shelf_is_first_touch_research_only_not_portfolio_order():
         low_m,
         close_m,
         setup,
-        make_cfg(**{**_clean_cfg().__dict__, "simulation_mode": "portfolio"}),
+        make_cfg(
+            **{
+                **_clean_cfg().__dict__,
+                "simulation_mode": "portfolio",
+                # Even an accidental configuration cannot deploy either
+                # research-only setup class.
+                "portfolio_setup_types": (setup_type,),
+            }
+        ),
     )
 
     assert not independent.trades.empty
@@ -2076,6 +2171,53 @@ def test_tight_shelf_is_first_touch_research_only_not_portfolio_order():
     assert portfolio.breakout_events.iloc[0]["decision"] == (
         "setup_class_research_only"
     )
+
+
+def test_portfolio_trades_only_its_configured_setup_classes():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100), (100, 102, 99, 101)]
+    dates, open_m, high_m, low_m, close_m = _multi_matrices(
+        {"FLAT": bars, "VCP": bars}
+    )
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+                setup_id=1,
+                symbol="FLAT",
+                setup_type="flat_base",
+            ),
+            _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+                setup_id=2,
+                symbol="VCP",
+                setup_type="vcp",
+            ),
+        ],
+        ignore_index=True,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_setup_types": ("flat_base",),
+            "portfolio_ranking_mode": "neutral",
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setups,
+        cfg,
+    )
+
+    assert result.trades["symbol"].unique().tolist() == ["FLAT"]
+    decisions = result.breakout_events.set_index("setup_type")["decision"]
+    assert decisions["flat_base"] == "filled"
+    assert decisions["vcp"] == "setup_class_research_only"
 
 
 def test_power_play_one_r_ratchet_arms_only_for_following_session():
@@ -2156,8 +2298,191 @@ def test_first_touch_exports_labels_and_portfolio_does_not_duplicate_them():
     assert len(first_touch.quality_labels) == 1
     assert len(first_touch.fill_labels) == 1
     assert first_touch.fill_labels[0].filled
+    assert first_touch.quality_labels[0].competition_size == 1
     assert portfolio.quality_labels == first_touch.quality_labels
     assert portfolio.fill_labels == first_touch.fill_labels
+
+
+def test_same_class_fillable_entries_freeze_one_competition_size():
+    dates = pd.bdate_range("2024-01-01", periods=7)
+    normal = np.asarray(
+        [(98, 99, 97, 98)] * 5
+        + [(99, 101, 98, 100.5), (101, 102, 100, 101)]
+    )
+    excessive_gap = np.asarray(
+        [(98, 99, 97, 98)] * 5
+        + [(106, 107, 105.5, 106), (106, 107, 105, 106)]
+    )
+    frames = [
+        pd.DataFrame(
+            {
+                "AAA": normal[:, field],
+                "BBB": normal[:, field],
+                "FLAT": normal[:, field],
+                "GAP": excessive_gap[:, field],
+            },
+            index=dates,
+        )
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+                setup_id=setup_id,
+                symbol=symbol,
+                setup_type="vcp",
+            )
+            for setup_id, symbol in enumerate(("AAA", "BBB", "GAP"), start=1)
+        ],
+        ignore_index=True,
+    )
+    setups = pd.concat(
+        [
+            setups,
+            _setup_row(dates, 4, 100.0, 95.0, 6).assign(
+                setup_id=4,
+                symbol="FLAT",
+                setup_type="flat_base",
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        _clean_cfg(),
+    )
+
+    assert len(result.quality_labels) == 3
+    assert sorted(
+        label.competition_size
+        for label in result.quality_labels
+        if label.setup_type == "vcp"
+    ) == [2, 2]
+    assert [
+        label.competition_size
+        for label in result.quality_labels
+        if label.setup_type == "flat_base"
+    ] == [1]
+    decisions = result.breakout_events.set_index("symbol")["decision"]
+    assert decisions["AAA"] == decisions["BBB"] == "filled"
+    assert decisions["FLAT"] == "filled"
+    assert decisions["GAP"] == "excessive_gap"
+
+
+def test_competition_size_remains_frozen_across_different_exit_dates():
+    dates = pd.bdate_range("2024-01-01", periods=8)
+    aaa = np.asarray(
+        [(98, 99, 97, 98)] * 5
+        + [
+            (99, 101, 98, 100.5),
+            (94, 96, 93, 95),
+            (95, 96, 94, 95),
+        ]
+    )
+    bbb = np.asarray(
+        [(98, 99, 97, 98)] * 5
+        + [
+            (99, 101, 98, 100.5),
+            (101, 102, 100, 101),
+            (102, 103, 101, 102),
+        ]
+    )
+    frames = [
+        pd.DataFrame(
+            {"AAA": aaa[:, field], "BBB": bbb[:, field]},
+            index=dates,
+        )
+        for field in range(4)
+    ]
+    setups = pd.concat(
+        [
+            _setup_row(dates, 4, 100.0, 95.0, 7).assign(
+                setup_id=setup_id,
+                symbol=symbol,
+                setup_type="vcp",
+            )
+            for setup_id, symbol in enumerate(("AAA", "BBB"), start=1)
+        ],
+        ignore_index=True,
+    )
+
+    result = simulate(
+        dates,
+        frames[0].columns,
+        *frames,
+        setups,
+        _clean_cfg(),
+    )
+
+    assert len(result.quality_labels) == 2
+    assert {label.competition_size for label in result.quality_labels} == {2}
+    assert {label.available_date for label in result.quality_labels} == {
+        dates[6],
+        dates[7],
+    }
+
+
+def test_independent_calibration_labels_only_market_on_order_sessions():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [
+        (98, 99, 97, 98),       # setup active, but prior market close is off
+        (99, 101, 98, 100.5),   # prior market close is on -> entry
+    ]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6)
+    market_cap = np.zeros(len(dates), dtype=float)
+    market_cap[5] = 1.0
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+        market_exposure_cap=market_cap,
+    )
+
+    assert result.metrics["num_positions"] == 1
+    assert len(result.fill_labels) == 1
+    assert len(result.quality_labels) == 1
+    fill_label = result.fill_labels[0]
+    quality_label = result.quality_labels[0]
+    assert fill_label.information_date == dates[5]
+    assert fill_label.available_date == dates[6]
+    assert fill_label.filled
+    assert quality_label.information_date == dates[5]
+    assert quality_label.available_date == dates[6]
+
+
+def test_market_off_fill_opportunity_creates_no_calibration_labels():
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100.5), (100, 101, 99, 100)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6)
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        _clean_cfg(),
+        market_exposure_cap=np.zeros(len(dates), dtype=float),
+    )
+
+    assert result.trades.empty
+    assert result.quality_labels == ()
+    assert result.fill_labels == ()
+    assert result.breakout_events.iloc[0]["decision"] == "market_gate_blocked"
 
 
 def test_failed_breakout_exits_next_open():
@@ -2269,6 +2594,56 @@ def test_market_gate_blocks_entries_but_not_exits():
     assert len(trades) == 1  # only the first breakout traded
     assert trades.iloc[0]["exit_reason"] == "stop"  # exit executed despite gate off
     assert trades.iloc[0]["entry_date"] == dates[5].date()
+
+
+def test_exogenous_market_gate_precedes_validated_cash_gate(monkeypatch):
+    bars = [(98, 99, 97, 98)] * 5
+    bars += [(99, 101, 98, 100), (100, 101, 99, 100)]
+    dates, open_m, high_m, low_m, close_m = _matrices(bars)
+    setup = _setup_row(dates, 4, 100.0, 95.0, 6)
+
+    from src import simulator as simulator_module
+
+    original_rank = simulator_module.CandidateRanker.rank
+
+    def rank_without_validated_edge(self, *args, **kwargs):
+        return tuple(
+            replace(
+                snapshot,
+                quality_score=0.0,
+                quality_model_validated=False,
+                slate_priority=0.0,
+            )
+            for snapshot in original_rank(self, *args, **kwargs)
+        )
+
+    monkeypatch.setattr(
+        simulator_module.CandidateRanker,
+        "rank",
+        rank_without_validated_edge,
+    )
+    cfg = make_cfg(
+        **{
+            **_clean_cfg().__dict__,
+            "simulation_mode": "portfolio",
+            "portfolio_ranking_mode": "validated",
+        }
+    )
+
+    result = simulate(
+        dates,
+        close_m.columns,
+        open_m,
+        high_m,
+        low_m,
+        close_m,
+        setup,
+        cfg,
+        market_exposure_cap=np.zeros(len(dates), dtype=float),
+    )
+
+    assert result.trades.empty
+    assert result.breakout_events.iloc[0]["decision"] == "market_gate_blocked"
 
 
 def test_market_gate_uses_previous_close_not_breakout_day_close():
