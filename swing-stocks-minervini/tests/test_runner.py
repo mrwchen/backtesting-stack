@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -305,135 +303,51 @@ def test_simulation_fingerprint_tracks_actual_calibration_mode() -> None:
     assert online != preloaded
 
 
-def test_single_run_and_bootstrapped_labels_cannot_share_fingerprint() -> None:
-    dates, matrices, context, setups, universe = _simulation_fingerprint_inputs()
-    cfg = make_cfg(
-        simulation_mode="portfolio",
-        portfolio_ranking_mode="quality_only",
-        portfolio_setup_types=("vcp",),
-        neutral_rank_salt="v8-bootstrap-00",
-    )
-    quality_labels = (
+def _forward_labels(dates: pd.DatetimeIndex):
+    quality = tuple(
         QualityCalibrationLabel(
-            setup_type="vcp",
+            setup_type=setup_type,
             information_date=dates[0],
             available_date=dates[1],
             raw_quality_score=75.0,
-            realized_r_multiple=1.5,
+            realized_r_multiple=realized_r,
             walk_forward_quality_score=0.25,
-            competition_size=2,
-        ),
-    )
-    bootstrapped = runner.ranking_sensitivity.bootstrap_quality_labels(
-        quality_labels, cfg.neutral_rank_salt
-    )
-    fill_fingerprint = (
-        runner.reproducibility.fill_calibration_labels_fingerprint(())
-    )
-
-    def fingerprint(labels) -> str:
-        return runner._simulation_input_fingerprint(
-            cfg,
-            setups,
-            matrices,
-            universe,
-            None,
-            None,
-            pd.DataFrame(),
-            context,
-            quality_labels_fingerprint=(
-                runner.reproducibility.quality_calibration_labels_fingerprint(
-                    labels
-                )
-            ),
-            fill_labels_fingerprint=fill_fingerprint,
-            online_calibration=False,
         )
-
-    assert fingerprint(quality_labels) != fingerprint(bootstrapped)
-
-
-def test_all_288_experiment_paths_have_unique_input_fingerprints() -> None:
-    dates, matrices, context, setups, universe = _simulation_fingerprint_inputs()
-    base_cfg = make_cfg(simulation_mode="portfolio")
-    quality_labels = (
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            raw_quality_score=75.0,
-            realized_r_multiple=1.5,
-            walk_forward_quality_score=0.25,
-            competition_size=2,
-        ),
+        for setup_type, realized_r in (("flat_base", 1.5), ("vcp", -0.5))
     )
-    fill_fingerprint = (
-        runner.reproducibility.fill_calibration_labels_fingerprint(())
-    )
-    fingerprints = set()
-    for salt in runner.ranking_sensitivity.NEUTRAL_RANK_SALTS:
-        weighted_labels = runner.ranking_sensitivity.bootstrap_quality_labels(
-            quality_labels, salt
-        )
-        quality_fingerprint = (
-            runner.reproducibility.quality_calibration_labels_fingerprint(
-                weighted_labels
-            )
-        )
-        for case in runner.ranking_sensitivity.EXPERIMENT_CASES:
-            cfg = replace(
-                base_cfg,
-                portfolio_ranking_mode=case.ranking_mode,
-                portfolio_setup_types=case.setup_types,
-                neutral_rank_salt=salt,
-            )
-            fingerprints.add(
-                runner._simulation_input_fingerprint(
-                    cfg,
-                    setups,
-                    matrices,
-                    universe,
-                    None,
-                    None,
-                    pd.DataFrame(),
-                    context,
-                    quality_labels_fingerprint=quality_fingerprint,
-                    fill_labels_fingerprint=fill_fingerprint,
-                    online_calibration=False,
-                )
-            )
-
-    assert len(fingerprints) == 288
-
-
-def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
-    monkeypatch,
-) -> None:
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
-    calls = []
-    conn = _TransactionConnection()
-    quality_labels = (
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            raw_quality_score=75.0,
-            realized_r_multiple=1.5,
-            walk_forward_quality_score=0.25,
-        ),
-    )
-    fill_labels = (
+    fills = tuple(
         FillCalibrationLabel(
-            setup_type="vcp",
+            setup_type=setup_type,
             information_date=dates[0],
             available_date=dates[1],
             readiness_signal=80.0,
             filled=True,
-        ),
+        )
+        for setup_type in ("flat_base", "vcp")
+    )
+    return quality, fills
+
+
+def _forward_setups(dates: pd.DatetimeIndex) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "AAA"],
+            "setup_type": ["flat_base", "vcp", "power_play"],
+            "detect_date": [dates[0].date()] * 3,
+            "valid_until": [dates[-1].date()] * 3,
+        }
     )
 
+
+def test_forward_shadow_runs_one_research_one_shadow_and_32_controls(
+    monkeypatch, caplog
+) -> None:
+    dates = pd.DatetimeIndex(["2026-07-10", "2026-07-13", "2026-07-14"])
+    matrices = _matrices(dates)
+    setups = _forward_setups(dates)
+    quality_labels, fill_labels = _forward_labels(dates)
     calibration_calls = []
+    run_calls = []
 
     def fake_calibration(*args, **kwargs):
         calibration_calls.append((args, kwargs))
@@ -441,327 +355,115 @@ def test_both_mode_runs_ungated_first_touch_then_original_portfolio(
 
     def fake_run(*args, **kwargs):
         phase_cfg = args[1]
-        calls.append(
-            (
-                phase_cfg.simulation_mode,
-                phase_cfg.market_filter_enable,
-                phase_cfg.regime_entry_filter_enable,
-                phase_cfg.run_label,
-                kwargs["candidate_context"],
-                kwargs["commit"],
-                kwargs.get("quality_labels", ()),
-                kwargs.get("fill_labels", ()),
-                kwargs["calibration_labels_supplied"],
-            )
-        )
-        return len(calls), {"num_positions": len(calls)}
-
-    monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_calibration)
-    monkeypatch.setattr(runner, "_run_simulation", fake_run)
-    monkeypatch.setattr(
-        runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
-    )
-    cfg = make_cfg(
-        simulation_mode="both", market_filter_enable=True, run_label="daily"
-    )
-
-    actual = runner.run_sim(
-        conn,
-        cfg,
-        matrices,
-        pd.DataFrame(),
-        _market(dates),
-        _screen_passes(dates),
-        dates[0].date(),
-        dates[-1].date(),
-        setups=pd.DataFrame(
-            {
-                "symbol": ["AAA"],
-                "detect_date": [dates[0].date()],
-                "valid_until": [dates[-1].date()],
-            }
-        ),
-    )
-
-    assert actual == ((1, {"num_positions": 1}), (2, {"num_positions": 2}))
-    assert [call[:4] for call in calls] == [
-        ("independent", False, False, "daily_first_touch"),
-        ("portfolio", True, False, "daily_portfolio"),
-    ]
-    assert calls[0][4] is calls[1][4]
-    assert calls[0][5] is calls[1][5] is False
-    assert calls[0][6] is calls[1][6] is quality_labels
-    assert calls[0][7] is calls[1][7] is fill_labels
-    assert calls[0][8] is calls[1][8] is True
-    assert len(calibration_calls) == 1
-    assert calibration_calls[0][1]["market_exposure_cap"].tolist() == [1.0, 1.0]
-    assert conn.commits == 1
-    assert conn.rollbacks == 0
-
-
-def test_ranking_experiment_runs_complete_case_salt_cartesian_product(
-    monkeypatch, caplog
-) -> None:
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
-    conn = _TransactionConnection()
-    calls = []
-    quality_labels = (
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            raw_quality_score=75.0,
-            realized_r_multiple=1.5,
-            walk_forward_quality_score=0.25,
-        ),
-    )
-    fill_labels = (
-        FillCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            readiness_signal=80.0,
-            filled=True,
-        ),
-    )
-
-    calibration_calls = []
-    fingerprint_calls = {"quality": 0, "fill": 0}
-    quality_fingerprint = (
-        runner.reproducibility.quality_calibration_labels_fingerprint
-    )
-    fill_fingerprint = runner.reproducibility.fill_calibration_labels_fingerprint
-
-    def counted_quality_fingerprint(labels):
-        fingerprint_calls["quality"] += 1
-        return quality_fingerprint(labels)
-
-    def counted_fill_fingerprint(labels):
-        fingerprint_calls["fill"] += 1
-        return fill_fingerprint(labels)
-
-    def fake_calibration(*args, **kwargs):
-        calibration_calls.append((args[0], kwargs))
-        return quality_labels, fill_labels
-
-    def fake_run(*args, **kwargs):
-        phase_cfg = args[1]
-        calls.append((phase_cfg, kwargs))
-        salt_number = max(0, len(calls) - 1)
-        return len(calls), {
-            "total_return": salt_number / 100,
-            "cagr": salt_number / 200,
-            "max_drawdown": salt_number / 300,
-            "profit_factor": 1.0 + salt_number / 100,
-            "avg_r_multiple": salt_number / 1000,
+        run_calls.append((args, kwargs))
+        path_index = len(run_calls) - 1
+        return len(run_calls), {
+            "total_return": path_index / 100.0,
+            "cagr": path_index / 200.0,
+            "max_drawdown": path_index / 300.0,
+            "profit_factor": 1.0 + path_index / 100.0,
+            "avg_r_multiple": path_index / 1000.0,
         }
 
     monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_calibration)
     monkeypatch.setattr(runner, "_run_simulation", fake_run)
     monkeypatch.setattr(
-        runner.reproducibility,
-        "quality_calibration_labels_fingerprint",
-        counted_quality_fingerprint,
-    )
-    monkeypatch.setattr(
-        runner.reproducibility,
-        "fill_calibration_labels_fingerprint",
-        counted_fill_fingerprint,
-    )
-    monkeypatch.setattr(
         runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
-    )
-    cfg = make_cfg(
-        simulation_mode="both",
-        portfolio_ranking_experiment_enable=True,
-        neutral_rank_salt="outer-salt-must-not-affect-calibration",
-        run_label="ensemble",
     )
 
     with caplog.at_level("INFO", logger="runner"):
-        first_touch, portfolio = runner.run_sim(
-            conn,
-            cfg,
+        first_touch, shadow, controls = runner.run_sim(
+            _TransactionConnection(),
+            make_cfg(run_label="v9"),
             matrices,
             pd.DataFrame(),
             _market(dates),
             _screen_passes(dates),
             dates[0].date(),
             dates[-1].date(),
-            setups=pd.DataFrame(
-                {
-                    "symbol": ["AAA"],
-                    "detect_date": [dates[0].date()],
-                    "valid_until": [dates[-1].date()],
-                }
-            ),
+            setups=setups,
         )
 
     assert first_touch[0] == 1
-    assert len(portfolio) == 288
-    assert len(calls) == 289
+    assert shadow[0] == 2
+    assert len(controls) == 32
+    assert len(run_calls) == 34
     assert len(calibration_calls) == 1
-    assert calibration_calls[0][0].neutral_rank_salt == "v8-bootstrap-00"
-    assert calibration_calls[0][0].portfolio_ranking_mode == "quality_only"
-    assert calls[0][0].run_label == "ensemble_first_touch"
-    assert calls[0][0].simulation_mode == "independent"
-    assert calls[0][0].neutral_rank_salt == "v8-bootstrap-00"
-    assert calls[0][1]["quality_labels"] is quality_labels
-    assert calls[0][1]["fill_labels"] is fill_labels
-    assert calls[0][1]["calibration_labels_supplied"] is True
-    base_label_fingerprints = calls[0][1]["calibration_label_fingerprints"]
-    assert calls[0][1].get("commit", True) is True
-    expected_configs = [
-        (salt, case)
-        for salt in runner.ranking_sensitivity.NEUTRAL_RANK_SALTS
-        for case in runner.ranking_sensitivity.EXPERIMENT_CASES
+    calibration_cfg = calibration_calls[0][0][0]
+    assert calibration_cfg.simulation_mode == "independent"
+    assert calibration_cfg.portfolio_ranking_mode == "relative_quality"
+    assert calibration_cfg.force_close_at_end is False
+    assert calibration_calls[0][0][2] is setups
+    assert calibration_calls[0][1]["state_start_idx"] == 0
+    assert calibration_calls[0][1]["market_exposure_cap"].tolist() == [1.0] * 3
+
+    first_cfg = run_calls[0][0][1]
+    assert first_cfg.simulation_mode == "independent"
+    assert not first_cfg.market_filter_enable
+    assert not first_cfg.regime_entry_filter_enable
+    assert first_cfg.run_label == "v9_first_touch_research"
+    assert first_cfg.force_close_at_end is False
+    assert run_calls[0][0][5] is setups
+    assert run_calls[0][0][7] == dates[1].date()
+    assert run_calls[0][1]["state_start"] == dates[0].date()
+    assert run_calls[0][1]["quality_labels"] is quality_labels
+    assert run_calls[0][1]["fill_labels"] is fill_labels
+
+    portfolio_calls = run_calls[1:]
+    expected_cases = runner.forward_shadow.PORTFOLIO_CASES
+    assert [call[0][1].run_label for call in portfolio_calls] == [
+        f"v9_{case.name}" for case in expected_cases
     ]
-    assert [
-        (call[0].neutral_rank_salt, call[0].portfolio_ranking_mode,
-         call[0].portfolio_setup_types)
-        for call in calls[1:]
-    ] == [
-        (salt, case.ranking_mode, case.setup_types)
-        for salt, case in expected_configs
+    assert [call[0][1].portfolio_ranking_mode for call in portfolio_calls] == [
+        case.ranking_mode for case in expected_cases
     ]
-    assert [call[0].run_label for call in calls[1:]] == [
-        f"ensemble_{case.name}_salt_{salt_index:02d}"
-        for salt_index, _salt in enumerate(
-            runner.ranking_sensitivity.NEUTRAL_RANK_SALTS
-        )
-        for case in runner.ranking_sensitivity.EXPERIMENT_CASES
+    assert [call[0][1].neutral_rank_salt for call in portfolio_calls] == [
+        case.neutral_rank_salt for case in expected_cases
     ]
-    for salt_index in range(32):
-        salt_calls = calls[1 + 9 * salt_index : 1 + 9 * (salt_index + 1)]
-        weighted_tuple = salt_calls[0][1]["quality_labels"]
-        assert all(call[1]["quality_labels"] is weighted_tuple for call in salt_calls)
-        fingerprint_tuple = salt_calls[0][1]["calibration_label_fingerprints"]
-        assert all(
-            call[1]["calibration_label_fingerprints"] is fingerprint_tuple
-            for call in salt_calls
-        )
-        assert fingerprint_tuple[1] == base_label_fingerprints[1]
-    for _, kwargs in calls[1:]:
-        assert kwargs["fill_labels"] is fill_labels
+    flat_quality = portfolio_calls[0][1]["quality_labels"]
+    flat_fills = portfolio_calls[0][1]["fill_labels"]
+    assert [label.setup_type for label in flat_quality] == ["flat_base"]
+    assert [label.setup_type for label in flat_fills] == ["flat_base"]
+    for args, kwargs in portfolio_calls:
+        phase_cfg = args[1]
+        phase_setups = args[5]
+        assert phase_cfg.simulation_mode == "portfolio"
+        assert phase_cfg.portfolio_setup_types == ("flat_base",)
+        assert phase_cfg.force_close_at_end is False
+        assert phase_setups["setup_type"].tolist() == ["flat_base"]
+        assert kwargs["quality_labels"] is flat_quality
+        assert kwargs["fill_labels"] is flat_fills
         assert kwargs["calibration_labels_supplied"] is True
+        assert kwargs["state_start"] == dates[0].date()
         assert kwargs.get("commit", True) is True
-    assert fingerprint_calls == {"quality": 33, "fill": 1}
-    assert len(
-        {
-            kwargs["calibration_label_fingerprints"][0]
-            for _, kwargs in calls[1:]
-        }
-    ) == 32
+    assert all(
+        call[1]["calibration_label_fingerprints"]
+        is portfolio_calls[0][1]["calibration_label_fingerprints"]
+        for call in portfolio_calls
+    )
     assert sum(
-        "portfolio ranking experiment summary" in record.message
+        "forward shadow neutral-control summary" in record.message
         for record in caplog.records
-    ) == 45
+    ) == 5
     assert any(
-        "portfolio ranking experiment done cases 9 salts 32 portfolio-paths 288 persisted-runs 289"
+        "forward shadow done portfolio-paths 33 neutral-controls 32 persisted-runs 34"
         in record.message
         for record in caplog.records
     )
     assert not any("best" in record.message.lower() for record in caplog.records)
 
 
-def test_portfolio_only_ranking_experiment_builds_calibration_once(
-    monkeypatch,
-) -> None:
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
-    calibration_calls = 0
-    calibration_salts = []
-    portfolio_calls = []
-    quality_labels = (
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            raw_quality_score=75.0,
-            realized_r_multiple=1.5,
-            walk_forward_quality_score=0.25,
-        ),
-    )
-    fill_labels = (
-        FillCalibrationLabel(
-            setup_type="vcp",
-            information_date=dates[0],
-            available_date=dates[1],
-            readiness_signal=80.0,
-            filled=True,
-        ),
-    )
-
-    def fake_calibration(*_args, **_kwargs):
-        nonlocal calibration_calls
-        calibration_calls += 1
-        calibration_salts.append(_args[0].neutral_rank_salt)
-        return quality_labels, fill_labels
-
-    def fake_run(*args, **kwargs):
-        portfolio_calls.append((args[1], kwargs))
-        return len(portfolio_calls), {
-            "total_return": 0.0,
-            "cagr": 0.0,
-            "max_drawdown": 0.0,
-            "profit_factor": 1.0,
-            "avg_r_multiple": 0.0,
-        }
-
-    monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_calibration)
-    monkeypatch.setattr(runner, "_run_simulation", fake_run)
-    monkeypatch.setattr(
-        runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
-    )
-
-    first_touch, portfolio = runner.run_sim(
-        _TransactionConnection(),
-        make_cfg(
-            simulation_mode="portfolio",
-            portfolio_ranking_experiment_enable=True,
-            neutral_rank_salt="outer-salt-must-not-affect-calibration",
-        ),
-        matrices,
-        pd.DataFrame(),
-        _market(dates),
-        _screen_passes(dates),
-        dates[0].date(),
-        dates[-1].date(),
-        setups=pd.DataFrame(
-            {
-                "symbol": ["AAA"],
-                "detect_date": [dates[0].date()],
-                "valid_until": [dates[-1].date()],
-            }
-        ),
-    )
-
-    assert first_touch is None
-    assert len(portfolio) == 288
-    assert calibration_calls == 1
-    assert calibration_salts == ["v8-bootstrap-00"]
-    assert len(portfolio_calls) == 288
-    for _, kwargs in portfolio_calls:
-        assert kwargs["fill_labels"] is fill_labels
-        assert kwargs["calibration_labels_supplied"] is True
-    for salt_index in range(32):
-        salt_calls = portfolio_calls[9 * salt_index : 9 * (salt_index + 1)]
-        weighted_tuple = salt_calls[0][1]["quality_labels"]
-        assert weighted_tuple is not quality_labels
-        assert all(call[1]["quality_labels"] is weighted_tuple for call in salt_calls)
-
-
-def test_ranking_experiment_has_no_completion_summary_after_partial_failure(
+def test_forward_shadow_has_no_completion_summary_after_partial_failure(
     monkeypatch, caplog
 ) -> None:
+    dates = pd.DatetimeIndex(["2026-07-10", "2026-07-13", "2026-07-14"])
     calls = 0
 
-    def fake_run(*_args, **kwargs):
+    def fake_run(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 7:
-            raise RuntimeError("salt arm failed")
+            raise RuntimeError("control failed")
         return calls, {
             "total_return": 0.0,
             "cagr": 0.0,
@@ -770,8 +472,6 @@ def test_ranking_experiment_has_no_completion_summary_after_partial_failure(
             "avg_r_multiple": 0.0,
         }
 
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
     monkeypatch.setattr(
         runner, "_first_touch_calibration_labels", lambda *args, **kwargs: ((), ())
     )
@@ -781,126 +481,111 @@ def test_ranking_experiment_has_no_completion_summary_after_partial_failure(
     )
 
     with caplog.at_level("INFO", logger="runner"):
-        with pytest.raises(RuntimeError, match="salt arm failed"):
+        with pytest.raises(RuntimeError, match="control failed"):
             runner.run_sim(
                 _TransactionConnection(),
-                make_cfg(
-                    simulation_mode="both",
-                    portfolio_ranking_experiment_enable=True,
-                ),
-                matrices,
+                make_cfg(),
+                _matrices(dates),
                 pd.DataFrame(),
                 _market(dates),
                 _screen_passes(dates),
                 dates[0].date(),
                 dates[-1].date(),
-                setups=pd.DataFrame(
-                    {
-                        "symbol": ["AAA"],
-                        "detect_date": [dates[0].date()],
-                        "valid_until": [dates[-1].date()],
-                    }
-                ),
+                setups=_forward_setups(dates),
             )
 
     assert calls == 7
-    assert not any(" summary " in record.message for record in caplog.records)
-    assert not any(" experiment done " in record.message for record in caplog.records)
+    assert not any(" neutral-control summary " in r.message for r in caplog.records)
+    assert not any(" forward shadow done " in r.message for r in caplog.records)
 
 
-def test_both_mode_rolls_back_both_arms_when_second_arm_fails(monkeypatch) -> None:
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
-    conn = _TransactionConnection()
-    calls = 0
-
-    def fake_run(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("portfolio persistence failed")
-        return 1, {}
-
-    monkeypatch.setattr(
-        runner, "_first_touch_calibration_labels", lambda *args, **kwargs: ((), ())
-    )
-    monkeypatch.setattr(runner, "_run_simulation", fake_run)
+def test_forward_shadow_rejects_run_without_forward_session(monkeypatch) -> None:
+    dates = pd.DatetimeIndex(["2026-07-09", "2026-07-10"])
     monkeypatch.setattr(
         runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
     )
 
-    with pytest.raises(RuntimeError, match="portfolio persistence failed"):
+    with pytest.raises(ValueError, match="no price session"):
         runner.run_sim(
-            conn,
-            make_cfg(simulation_mode="both"),
-            matrices,
+            _TransactionConnection(),
+            make_cfg(),
+            _matrices(dates),
             pd.DataFrame(),
             _market(dates),
             _screen_passes(dates),
             dates[0].date(),
             dates[-1].date(),
-            setups=pd.DataFrame(
-                {
-                    "symbol": ["AAA"],
-                    "detect_date": [dates[0].date()],
-                    "valid_until": [dates[-1].date()],
-                }
-            ),
+            setups=_forward_setups(dates),
         )
 
-    assert conn.commits == 0
-    assert conn.rollbacks == 1
 
-
-def test_single_independent_mode_is_canonical_unfiltered_first_touch(
+def test_forward_shadow_rejects_later_session_when_exact_start_is_missing(
     monkeypatch,
 ) -> None:
-    dates = pd.bdate_range("2024-01-02", periods=2)
-    matrices = _matrices(dates)
-    observed = {}
-
-    def fake_run(*args, **kwargs):
-        observed["cfg"] = args[1]
-        observed["kwargs"] = kwargs
-        return 1, {}
-
-    calibration_calls = []
-
-    def fake_calibration(*args, **kwargs):
-        calibration_calls.append((args, kwargs))
-        return (), ()
-
-    monkeypatch.setattr(runner, "_first_touch_calibration_labels", fake_calibration)
-    monkeypatch.setattr(runner, "_run_simulation", fake_run)
+    dates = pd.DatetimeIndex(["2026-07-10", "2026-07-14", "2026-07-15"])
     monkeypatch.setattr(
         runner.data_loader, "load_regime_scores", lambda *_: pd.DataFrame()
     )
 
-    runner.run_sim(
-        _TransactionConnection(),
-        make_cfg(
-            simulation_mode="independent",
-            market_filter_enable=True,
-            regime_entry_filter_enable=True,
+    with pytest.raises(
+        ValueError,
+        match=(
+            "requires the exact price session 2026-07-13; "
+            "first available session is 2026-07-14"
         ),
-        matrices,
-        pd.DataFrame(),
-        _market(dates),
-        _screen_passes(dates),
-        dates[0].date(),
-        dates[-1].date(),
-        setups=pd.DataFrame(
+    ):
+        runner.run_sim(
+            _TransactionConnection(),
+            make_cfg(),
+            _matrices(dates),
+            pd.DataFrame(),
+            _market(dates),
+            _screen_passes(dates),
+            dates[0].date(),
+            dates[-1].date(),
+            setups=_forward_setups(dates),
+        )
+
+
+def test_portfolio_concentration_excludes_partial_only_open_positions() -> None:
+    trades = pd.DataFrame(
+        [
             {
-                "symbol": ["AAA"],
-                "detect_date": [dates[0].date()],
-                "valid_until": [dates[-1].date()],
-            }
-        ),
+                "position_id": 1, "symbol": "AAA", "leg": "final",
+                "entry_price": 100.0, "stop_price": 90.0,
+                "shares": 10, "pnl": 200.0,
+            },
+            {
+                "position_id": 2, "symbol": "BBB", "leg": "partial",
+                "entry_price": 100.0, "stop_price": 90.0,
+                "shares": 4, "pnl": 40.0,
+            },
+            {
+                "position_id": 2, "symbol": "BBB", "leg": "final",
+                "entry_price": 100.0, "stop_price": 90.0,
+                "shares": 6, "pnl": 60.0,
+            },
+            {
+                "position_id": 3, "symbol": "AAA", "leg": "final",
+                "entry_price": 100.0, "stop_price": 90.0,
+                "shares": 10, "pnl": -50.0,
+            },
+            {
+                "position_id": 4, "symbol": "OPEN", "leg": "partial",
+                "entry_price": 100.0, "stop_price": 90.0,
+                "shares": 5, "pnl": 100.0,
+            },
+        ]
     )
 
-    assert observed["cfg"].simulation_mode == "independent"
-    assert not observed["cfg"].market_filter_enable
-    assert not observed["cfg"].regime_entry_filter_enable
-    assert observed["kwargs"]["calibration_labels_supplied"] is True
-    assert len(calibration_calls) == 1
-    assert calibration_calls[0][1]["market_exposure_cap"].tolist() == [1.0, 1.0]
+    actual = runner._portfolio_concentration(trades)
+
+    assert actual["closed_positions"] == 3
+    assert actual["winner_symbols"] == 2
+    assert actual["gross_positive_r"] == pytest.approx(3.0)
+    assert actual["net_r"] == pytest.approx(2.5)
+    assert actual["top"][1]["positive_r_share"] == pytest.approx(2 / 3)
+    assert actual["top"][1]["leave_out_net_r"] == pytest.approx(0.5)
+    assert actual["top"][1]["leave_out_profit_factor"] == pytest.approx(2.0)
+    assert actual["top"][3]["leave_out_net_r"] == pytest.approx(-0.5)
+    assert actual["top"][3]["leave_out_profit_factor"] == pytest.approx(0.0)

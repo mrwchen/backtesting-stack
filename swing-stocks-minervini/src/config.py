@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import date
+
+from . import forward_shadow
 
 
 def _env(name: str, default: str) -> str:
@@ -40,15 +43,16 @@ class Config:
     # run control
     stage: str
     start_date: str
+    forward_start_date: str
     end_date: str | None
+    force_close_at_end: bool
     warmup_calendar_days: int
     run_label: str
     cache_dir: str
     force_refresh: bool
     log_level: str
-    simulation_mode: str  # independent | portfolio | both
-    portfolio_ranking_experiment_enable: bool
-    portfolio_ranking_mode: str  # neutral | quality_only | validated
+    simulation_mode: str  # external contract: both; runner phases replace internally
+    portfolio_ranking_mode: str  # neutral | relative_quality
     portfolio_setup_types: tuple[str, ...]
     neutral_rank_salt: str
 
@@ -156,26 +160,32 @@ class Config:
     def from_env(cls) -> "Config":
         cfg = cls(
             stage=_env("STAGE", "all").lower(),
-            start_date=_env("START_DATE", "2020-01-02"),
+            start_date=_env(
+                "START_DATE", forward_shadow.HISTORY_START_DATE.isoformat()
+            ),
+            forward_start_date=_env(
+                "FORWARD_START_DATE", forward_shadow.FORWARD_START_DATE.isoformat()
+            ),
             end_date=_env("END_DATE", "") or None,
+            force_close_at_end=_env_bool("FORCE_CLOSE_AT_END", False),
             warmup_calendar_days=int(_env("WARMUP_CALENDAR_DAYS", "550")),
             run_label=_env(
-                "RUN_LABEL", "minervini_sepa_daily_v8_ranking_experiment"
+                "RUN_LABEL", "minervini_sepa_daily_v9_forward_shadow"
             ),
             cache_dir=_env("CACHE_DIR", "/cache"),
             force_refresh=_env_bool("FORCE_REFRESH", False),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
-            simulation_mode=_env("SIMULATION_MODE", "independent").lower(),
-            portfolio_ranking_experiment_enable=_env_bool(
-                "PORTFOLIO_RANKING_EXPERIMENT_ENABLE", False
-            ),
+            simulation_mode=_env("SIMULATION_MODE", "both").lower(),
             portfolio_ranking_mode=_env(
-                "PORTFOLIO_RANKING_MODE", "validated"
+                "PORTFOLIO_RANKING_MODE", "relative_quality"
             ).lower(),
             portfolio_setup_types=_env_lower_str_tuple(
-                "PORTFOLIO_SETUP_TYPES", "flat_base,vcp"
+                "PORTFOLIO_SETUP_TYPES",
+                ",".join(forward_shadow.PORTFOLIO_SETUP_TYPES),
             ),
-            neutral_rank_salt=_env("NEUTRAL_RANK_SALT", "v8-bootstrap-00"),
+            neutral_rank_salt=_env(
+                "NEUTRAL_RANK_SALT", forward_shadow.RELATIVE_QUALITY_SHADOW_SALT
+            ),
             min_price=float(_env("MIN_PRICE", "5.0")),
             min_dollar_volume=float(_env("MIN_DOLLAR_VOLUME", "2000000")),
             rs_lookbacks=_env_int_tuple("RS_LOOKBACKS", "63,126,189,252"),
@@ -273,41 +283,38 @@ class Config:
             exposure_losses_to_reset=int(_env("EXPOSURE_LOSSES_TO_RESET", "2")),
             exposure_drawdown_reset_pct=float(_env("EXPOSURE_DRAWDOWN_RESET_PCT", "0.04")),
         )
-        if cfg.stage not in ("screen", "setup", "sim", "all", "sensitivity"):
+        if cfg.stage not in ("screen", "setup", "sim", "all"):
             raise ValueError(f"unsupported STAGE={cfg.stage!r}")
-        if cfg.simulation_mode not in ("independent", "portfolio", "both"):
-            raise ValueError(f"unsupported SIMULATION_MODE={cfg.simulation_mode!r}")
-        if (
-            cfg.portfolio_ranking_experiment_enable
-            and cfg.simulation_mode == "independent"
-        ):
-            raise ValueError(
-                "PORTFOLIO_RANKING_EXPERIMENT_ENABLE requires "
-                "SIMULATION_MODE portfolio or both"
+        if cfg.simulation_mode != "both":
+            raise ValueError("SIMULATION_MODE must be both for the v9 forward run")
+        try:
+            history_start = date.fromisoformat(cfg.start_date)
+            forward_start = date.fromisoformat(cfg.forward_start_date)
+            configured_end = (
+                date.fromisoformat(cfg.end_date) if cfg.end_date is not None else None
             )
-        if cfg.portfolio_ranking_mode not in (
-            "neutral",
-            "quality_only",
-            "validated",
-        ):
+        except ValueError as exc:
             raise ValueError(
-                "PORTFOLIO_RANKING_MODE must be neutral, quality_only or validated"
-            )
-        allowed_portfolio_setup_types = {"flat_base", "vcp"}
-        if not cfg.portfolio_setup_types:
-            raise ValueError("PORTFOLIO_SETUP_TYPES must not be empty")
-        unsupported_setup_types = sorted(
-            set(cfg.portfolio_setup_types) - allowed_portfolio_setup_types
-        )
-        if unsupported_setup_types:
+                "START_DATE, FORWARD_START_DATE and END_DATE must use YYYY-MM-DD"
+            ) from exc
+        if history_start != forward_shadow.HISTORY_START_DATE:
+            raise ValueError("START_DATE is frozen at 2020-01-02 for v9")
+        if forward_start != forward_shadow.FORWARD_START_DATE:
+            raise ValueError("FORWARD_START_DATE is frozen at 2026-07-13 for v9")
+        if configured_end is not None and configured_end < forward_start:
+            raise ValueError("END_DATE must be empty or on/after FORWARD_START_DATE")
+        if cfg.force_close_at_end:
+            raise ValueError("FORCE_CLOSE_AT_END must be false for the v9 forward run")
+        if cfg.portfolio_ranking_mode != "relative_quality":
             raise ValueError(
-                "PORTFOLIO_SETUP_TYPES supports only flat_base and vcp; got "
-                + ",".join(unsupported_setup_types)
+                "PORTFOLIO_RANKING_MODE must be relative_quality for v9"
             )
-        if len(set(cfg.portfolio_setup_types)) != len(cfg.portfolio_setup_types):
-            raise ValueError("PORTFOLIO_SETUP_TYPES must not contain duplicates")
-        if not isinstance(cfg.neutral_rank_salt, str) or not cfg.neutral_rank_salt:
-            raise ValueError("NEUTRAL_RANK_SALT must be a non-empty string")
+        if cfg.portfolio_setup_types != forward_shadow.PORTFOLIO_SETUP_TYPES:
+            raise ValueError("PORTFOLIO_SETUP_TYPES must be exactly flat_base for v9")
+        if cfg.neutral_rank_salt != forward_shadow.RELATIVE_QUALITY_SHADOW_SALT:
+            raise ValueError(
+                "NEUTRAL_RANK_SALT is frozen at v9-relative-quality-shadow"
+            )
         if not cfg.market_index_symbols:
             raise ValueError("MARKET_INDEX_SYMBOLS must contain at least one symbol")
         if cfg.market_primary_index not in cfg.market_index_symbols:

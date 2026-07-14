@@ -8,10 +8,6 @@ import pytest
 from src.candidate_ranking import (
     CandidateRanker,
     FillCalibrationLabel,
-    QUALITY_VALIDATION_MIN_COMPETITIONS_PER_QUARTER,
-    QUALITY_VALIDATION_MIN_LABELS,
-    QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER,
-    QUALITY_VALIDATION_QUARTERS_PER_REVIEW,
     QualityCalibrationLabel,
 )
 
@@ -71,15 +67,15 @@ def _ranker(dates, symbols, close, volume=None, rs=None, fundamentals=None, **kw
     )
 
 
-def _validated_quality_labels(
+def _quality_labels(
     setup_type,
     raw_score,
     group_outcomes=(-1.5, -0.5, 0.5, 1.5),
     *,
     start_quarter="2020Q1",
-    quarters=QUALITY_VALIDATION_QUARTERS_PER_REVIEW,
+    quarters=8,
 ):
-    """Complete causal same-type slates over fixed completion quarters."""
+    """Return dense causal historical outcomes for calibration tests."""
     labels = []
     raw_scores = np.linspace(
         max(0.0, float(raw_score) - 30.0),
@@ -93,14 +89,7 @@ def _validated_quality_labels(
         )
         for _ in range(2)
     )
-    competition_size = len(scores_and_outcomes)
-    competitions_per_quarter = max(
-        QUALITY_VALIDATION_MIN_COMPETITIONS_PER_QUARTER,
-        QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER // competition_size,
-    )
-    assert competitions_per_quarter * competition_size >= (
-        QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER
-    )
+    observations_per_quarter = 5
     for quarter in pd.period_range(start_quarter, periods=quarters, freq="Q"):
         available_days = pd.bdate_range(
             quarter.start_time + pd.Timedelta(days=14),
@@ -110,7 +99,7 @@ def _validated_quality_labels(
             np.linspace(
                 0,
                 len(available_days) - 1,
-                num=competitions_per_quarter,
+                num=observations_per_quarter,
                 dtype=int,
             )
         ]
@@ -125,7 +114,6 @@ def _validated_quality_labels(
                         raw_quality_score=label_raw_score,
                         realized_r_multiple=outcome,
                         walk_forward_quality_score=oof_score,
-                        competition_size=competition_size,
                     )
                 )
     return labels
@@ -236,8 +224,8 @@ def test_future_labels_are_ignored_until_their_available_date():
     assert after.quality_calibration_count == 1
     assert after.fill_calibration_count == 1
     assert after.walk_forward_quality_score > before.walk_forward_quality_score
-    assert after.quality_score == before.quality_score == 0.0
-    assert not after.quality_model_validated
+    assert after.quality_score == after.walk_forward_quality_score
+    assert before.quality_score == 0.0
     assert after.fill_probability > before.fill_probability
 
 
@@ -273,8 +261,7 @@ def test_calibration_is_strictly_isolated_by_setup_class():
     power = ranker.snapshot(_setup(dates, setup_type="power_play"), 60)
 
     assert vcp.walk_forward_quality_score > 0.0
-    assert vcp.quality_score == 0.0
-    assert not vcp.quality_model_validated
+    assert vcp.quality_score == vcp.walk_forward_quality_score
     assert vcp.quality_calibration_count == 1
     assert power.quality_score == 0.0
     assert power.quality_calibration_count == 0
@@ -311,502 +298,15 @@ def test_small_samples_are_shrunk_toward_explicit_neutral_priors():
     ).snapshot(_setup(dates), 60)
 
     assert 0.0 < snapshot.walk_forward_quality_score < 1.0
-    assert snapshot.quality_score == 0.0
-    assert snapshot.slate_priority == 0.0
-    assert not snapshot.quality_model_validated
+    assert snapshot.quality_score == snapshot.walk_forward_quality_score
+    assert snapshot.slate_priority == snapshot.quality_score
     assert snapshot.quality_calibration_count == 1
-    assert snapshot.quality_validation_count == 0
     assert 0.5 < snapshot.fill_probability < 0.55
 
 
-def test_quality_activates_only_after_robust_positive_top_of_slate_evidence():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    setup = _setup(dates)
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    probe = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-    ).snapshot(setup, session_idx)
-    labels = _validated_quality_labels(
-        "vcp", probe.raw_quality_score
-    )
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(setup, session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert snapshot.quality_model_validated
-    assert snapshot.quality_score == pytest.approx(
-        snapshot.walk_forward_quality_score
-    )
-    assert snapshot.quality_score > 0.0
-    assert snapshot.slate_priority == pytest.approx(snapshot.quality_score)
 
 
-def test_positive_lift_with_negative_top_r_fails_closed():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    labels = _validated_quality_labels(
-        "vcp",
-        50.0,
-        group_outcomes=(-1.5, -1.0, -0.5, -0.1),
-    )
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(_setup(dates), session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert not snapshot.quality_model_validated
-    assert snapshot.walk_forward_quality_score < 0.0
-    assert snapshot.quality_score == snapshot.slate_priority == 0.0
-
-
-def test_unstable_positive_top_group_fails_its_quarter_block_lower_bound():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    labels = []
-    for quarter_index, quarter in enumerate(
-        pd.period_range("2020Q1", periods=8, freq="Q")
-    ):
-        shift = -2.0 if quarter_index % 2 == 0 else 2.0
-        labels.extend(
-            _validated_quality_labels(
-                "vcp",
-                50.0,
-                group_outcomes=(
-                    shift - 1.5,
-                    shift - 1.0,
-                    shift - 0.5,
-                    shift + 0.5,
-                ),
-                start_quarter=str(quarter),
-                quarters=1,
-            )
-        )
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(_setup(dates), session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert not snapshot.quality_model_validated
-    assert snapshot.quality_score == snapshot.slate_priority == 0.0
-
-
-def test_online_snapshot_and_add_label_path_can_validate_next_review_window():
-    dates, symbols, close, _, _, _ = _matrices(
-        periods=1100, start="2018-01-02"
-    )
-    raw_scores = (12.5, 37.5, 62.5, 87.5)
-    outcomes = (-1.5, -0.5, 0.5, 1.5)
-    seed_labels = []
-    seed_start = pd.Timestamp("2019-01-03")
-    for repeat in range(12):
-        available_date = seed_start + pd.offsets.BDay(repeat + 1)
-        for raw_score, outcome in zip(raw_scores, outcomes):
-            seed_labels.append(
-                QualityCalibrationLabel(
-                    setup_type="vcp",
-                    information_date=available_date - pd.offsets.BDay(1),
-                    available_date=available_date,
-                    raw_quality_score=raw_score,
-                    realized_r_multiple=outcome,
-                    # The seed is outside the window under review; it exists
-                    # only to define a causal prior mapping for the first
-                    # production-generated OOF forecasts.
-                    walk_forward_quality_score=0.0,
-                )
-            )
-    ranker = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_type_weights={
-            "default": {"structure": 1.0},
-            "vcp": {"structure": 1.0},
-        },
-        quality_labels=seed_labels,
-    )
-
-    generated = []
-    days_per_quarter = QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER // 4
-    for quarter in pd.period_range(
-        "2020Q1", periods=QUALITY_VALIDATION_QUARTERS_PER_REVIEW, freq="Q"
-    ):
-        available_days = pd.bdate_range(
-            quarter.start_time + pd.Timedelta(days=14),
-            quarter.end_time - pd.Timedelta(days=7),
-        ).normalize()
-        completion_days = available_days[
-            np.linspace(
-                0,
-                len(available_days) - 1,
-                num=days_per_quarter,
-                dtype=int,
-            )
-        ]
-        for completion_date in completion_days:
-            session_idx = int(dates.get_loc(completion_date))
-            snapshots = [
-                ranker.snapshot(
-                    _setup(
-                        dates,
-                        setup_id=group + 1,
-                        structure_quality_score=raw_score / 4.0,
-                    ),
-                    session_idx,
-                    setup_key=group,
-                )
-                for group, raw_score in enumerate(raw_scores)
-            ]
-            assert all(
-                later.walk_forward_quality_score
-                > earlier.walk_forward_quality_score
-                for earlier, later in zip(snapshots, snapshots[1:])
-            )
-            for snapshot, outcome in zip(snapshots, outcomes):
-                label = ranker.add_quality_label(
-                    snapshot,
-                    available_date=completion_date,
-                    realized_r_multiple=outcome,
-                    competition_size=len(snapshots),
-                )
-                assert label.walk_forward_quality_score == pytest.approx(
-                    snapshot.walk_forward_quality_score
-                )
-                assert label.competition_size == len(snapshots)
-                generated.append(label)
-
-    review_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    reviewed = ranker.snapshot(
-        _setup(dates, structure_quality_score=20.0), review_idx
-    )
-
-    assert len(generated) == QUALITY_VALIDATION_MIN_LABELS
-    assert reviewed.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert reviewed.quality_model_validated
-
-
-def test_inverted_oof_relationship_never_activates_quality():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    setup = _setup(dates)
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    probe = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-    ).snapshot(setup, session_idx)
-    labels = _validated_quality_labels(
-        "vcp",
-        probe.raw_quality_score,
-        group_outcomes=(1.5, 0.5, -0.5, -1.5),
-    )
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(setup, session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert not snapshot.quality_model_validated
-    assert snapshot.quality_score == 0.0
-    assert snapshot.slate_priority == 0.0
-
-
-def test_fewer_than_eight_complete_quarter_blocks_fails_closed():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    setup = _setup(dates)
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    probe = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-    ).snapshot(setup, session_idx)
-    labels = _validated_quality_labels(
-        "vcp",
-        probe.raw_quality_score,
-        quarters=QUALITY_VALIDATION_QUARTERS_PER_REVIEW - 1,
-    )
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(setup, session_idx)
-
-    assert snapshot.quality_validation_count == (
-        QUALITY_VALIDATION_MIN_LABELS
-        - QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER
-    )
-    assert not snapshot.quality_model_validated
-    assert snapshot.quality_score == snapshot.slate_priority == 0.0
-
-
-def test_regime_drift_across_quarter_blocks_stays_neutral():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    labels = [
-        *_validated_quality_labels(
-            "vcp", 50.0, start_quarter="2020Q1", quarters=4
-        ),
-        *_validated_quality_labels(
-            "vcp",
-            50.0,
-            group_outcomes=(1.5, 0.5, -0.5, -1.5),
-            start_quarter="2021Q1",
-            quarters=4,
-        )
-    ]
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(_setup(dates), session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert not snapshot.quality_model_validated
-    assert snapshot.quality_score == snapshot.slate_priority == 0.0
-
-
-def test_bootstrap_weights_change_fit_but_not_validation_evidence():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    labels = _validated_quality_labels("vcp", 50.0)
-    bootstrap_labels = [
-        replace(
-            label,
-            weight=(
-                1_000.0
-                if label.walk_forward_quality_score == 1.5
-                else 0.01
-            ),
-        )
-        for label in labels
-    ]
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    baseline = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(_setup(dates), session_idx)
-    bootstrapped = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=bootstrap_labels,
-    ).snapshot(_setup(dates), session_idx)
-
-    assert baseline.quality_model_validated
-    assert bootstrapped.quality_model_validated
-    assert baseline.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert bootstrapped.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert bootstrapped.walk_forward_quality_score != pytest.approx(
-        baseline.walk_forward_quality_score
-    )
-
-
-def test_competition_completes_at_latest_label_availability_and_waits_for_review():
-    dates, symbols, close, _, _, _ = _matrices(periods=1150, start="2020-01-02")
-    baseline_labels = _validated_quality_labels("vcp", 50.0)
-    extra_labels = [
-        replace(label, information_date=label.information_date + pd.Timedelta(days=1))
-        for label in _validated_quality_labels(
-            "vcp", 50.0, start_quarter="2021Q4", quarters=1
-        )
-    ]
-    grouped: dict[pd.Timestamp, list[QualityCalibrationLabel]] = {}
-    for label in extra_labels:
-        grouped.setdefault(label.information_date, []).append(label)
-    late_date = pd.Timestamp("2022-01-03")
-    delayed_labels = []
-    for competition in grouped.values():
-        delayed_labels.extend(
-            [
-                replace(label, available_date=late_date)
-                if index == len(competition) - 1
-                else label
-                for index, label in enumerate(competition)
-            ]
-        )
-
-    ranker = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=[*baseline_labels, *delayed_labels],
-    )
-    current_quarter_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    next_review_idx = int(dates.searchsorted(pd.Timestamp("2022-04-04")))
-
-    current_quarter = ranker.snapshot(_setup(dates), current_quarter_idx)
-    next_review = ranker.snapshot(_setup(dates), next_review_idx)
-
-    # The seven early labels do not complete a slate.  Once the final label is
-    # available, max(available_date) assigns the whole slate to 2022Q1, which
-    # remains out of evidence until that quarter has fully completed.
-    assert current_quarter.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert current_quarter.quality_model_validated
-    assert next_review.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert next_review.quality_model_validated
-
-
-def test_tied_top_predictions_use_mean_realized_r_for_the_competition():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    labels = _validated_quality_labels("vcp", 50.0)
-    grouped: dict[pd.Timestamp, list[int]] = {}
-    for index, label in enumerate(labels):
-        grouped.setdefault(label.information_date, []).append(index)
-    for indexes in grouped.values():
-        top_indexes = [
-            index
-            for index in indexes
-            if labels[index].walk_forward_quality_score == 1.5
-        ]
-        assert len(top_indexes) == 2
-        labels[top_indexes[0]] = replace(
-            labels[top_indexes[0]], realized_r_multiple=3.0
-        )
-        labels[top_indexes[1]] = replace(
-            labels[top_indexes[1]], realized_r_multiple=-1.0
-        )
-
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    ).snapshot(_setup(dates), session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert snapshot.quality_model_validated
-
-
-def test_incomplete_and_indistinguishable_competitions_are_not_evidence():
-    dates, symbols, close, _, _, _ = _matrices(periods=800, start="2020-01-02")
-    baseline = _validated_quality_labels("vcp", 50.0)
-    completion_date = pd.Timestamp("2021-12-20")
-    information_date = pd.Timestamp("2021-12-01")
-    incomplete = [
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=information_date,
-            available_date=completion_date,
-            raw_quality_score=20.0 + index * 10.0,
-            realized_r_multiple=float(index),
-            walk_forward_quality_score=float(index),
-            competition_size=8,
-        )
-        for index in range(7)
-    ]
-    indistinguishable = [
-        QualityCalibrationLabel(
-            setup_type="vcp",
-            information_date=information_date + pd.Timedelta(days=1),
-            available_date=completion_date,
-            raw_quality_score=20.0 + index * 10.0,
-            realized_r_multiple=float(index),
-            walk_forward_quality_score=1.0,
-            competition_size=8,
-        )
-        for index in range(8)
-    ]
-    session_idx = int(dates.searchsorted(pd.Timestamp("2022-01-04")))
-    snapshot = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=[*baseline, *incomplete, *indistinguishable],
-    ).snapshot(_setup(dates), session_idx)
-
-    assert snapshot.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert snapshot.quality_model_validated
-
-
-def test_review_is_frozen_within_quarter_and_rolls_at_next_quarter():
-    dates, symbols, close, _, _, _ = _matrices(periods=1150, start="2020-01-02")
-    setup = _setup(dates)
-    labels = _validated_quality_labels("vcp", 50.0, start_quarter="2020Q1")
-    ranker = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=labels,
-    )
-    early_idx = int(dates.searchsorted(pd.Timestamp("2022-02-01")))
-    late_idx = int(dates.searchsorted(pd.Timestamp("2022-03-31")))
-    next_checkpoint_idx = int(dates.searchsorted(pd.Timestamp("2022-04-04")))
-
-    early = ranker.snapshot(setup, early_idx)
-    late = ranker.snapshot(setup, late_idx)
-    next_checkpoint = ranker.snapshot(setup, next_checkpoint_idx)
-
-    assert early.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert late.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert early.quality_model_validated
-    assert late.quality_model_validated
-    assert next_checkpoint.quality_validation_count == (
-        QUALITY_VALIDATION_MIN_LABELS
-        - QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER
-    )
-    assert not next_checkpoint.quality_model_validated
-    assert next_checkpoint.quality_score == next_checkpoint.slate_priority == 0.0
-
-
-def test_review_cache_changes_rolling_window_even_without_a_new_label():
-    dates, symbols, close, _, _, _ = _matrices(periods=1150, start="2020-01-02")
-    ranker = CandidateRanker(
-        dates,
-        symbols,
-        close,
-        continuity_segment=_segments(dates, symbols),
-        quality_labels=_validated_quality_labels(
-            "vcp", 50.0, start_quarter="2022Q1"
-        ),
-    )
-    before_idx = int(dates.searchsorted(pd.Timestamp("2024-03-15")))
-    after_idx = int(dates.searchsorted(pd.Timestamp("2024-04-03")))
-
-    before = ranker.snapshot(_setup(dates), before_idx)
-    after = ranker.snapshot(_setup(dates), after_idx)
-
-    assert before.quality_model_validated
-    assert before.quality_validation_count == QUALITY_VALIDATION_MIN_LABELS
-    assert not after.quality_model_validated
-    assert after.quality_validation_count == (
-        QUALITY_VALIDATION_MIN_LABELS
-        - QUALITY_VALIDATION_MIN_LABELS_PER_QUARTER
-    )
-
-
-def test_unvalidated_quality_and_fill_do_not_hide_in_neutral_tie_breaks():
+def test_uncalibrated_quality_and_fill_do_not_hide_in_neutral_tie_breaks():
     dates, symbols, close, _, _, _ = _matrices()
     close.loc[dates[59], "AAA"] = 90.0
     close.loc[dates[59], "BBB"] = 99.0
@@ -843,14 +343,13 @@ def test_unvalidated_quality_and_fill_do_not_hide_in_neutral_tie_breaks():
         by_symbol = {item.symbol: item for item in forward}
         assert by_symbol["BBB"].raw_quality_score > by_symbol["AAA"].raw_quality_score
         assert by_symbol["BBB"].fill_probability != by_symbol["AAA"].fill_probability
-        assert all(not item.quality_model_validated for item in forward)
         assert all(
             item.quality_score == item.slate_priority == 0.0 for item in forward
         )
         first_symbols.add(forward[0].symbol)
 
     # The stable session lottery is reproducible but creates no permanent
-    # lexical winner inside the unvalidated class.
+    # lexical winner inside the uncalibrated class.
     assert first_symbols == {"AAA", "BBB"}
 
 
@@ -877,8 +376,8 @@ def test_online_labels_cannot_affect_the_session_that_generated_them():
     assert same_session.quality_score == before.quality_score
     assert same_session.fill_probability == before.fill_probability
     assert next_session.walk_forward_quality_score > before.walk_forward_quality_score
-    assert next_session.quality_score == before.quality_score == 0.0
-    assert not next_session.quality_model_validated
+    assert next_session.quality_score == next_session.walk_forward_quality_score
+    assert next_session.quality_score > before.quality_score == 0.0
     assert next_session.fill_probability > before.fill_probability
     assert ranker.quality_labels[0].walk_forward_quality_score == pytest.approx(
         before.walk_forward_quality_score
@@ -991,7 +490,7 @@ def test_rank_is_deterministic_and_assigns_positive_quality_ranks():
     reverse = ranker.rank([aaa, bbb], 60)
 
     assert forward == reverse
-    assert [item.quality_rank for item in forward] == [1, 1]
+    assert [item.quality_rank for item in forward] == [1, 2]
     assert all(np.isfinite(item.quality_score) for item in forward)
     assert all(np.isfinite(item.slate_priority) for item in forward)
 
@@ -1022,7 +521,9 @@ def test_neutral_mode_is_one_global_stable_salted_order():
     assert forward == reverse
     assert len(forward) == len(setups)
     assert all(item.quality_score == item.slate_priority == 0.0 for item in forward)
-    assert all(item.quality_rank == 1 for item in forward)
+    assert [item.quality_rank for item in forward] == list(
+        range(1, len(setups) + 1)
+    )
 
 
 def test_global_expected_r_order_ignores_fill_probability_across_classes():
@@ -1047,13 +548,13 @@ def test_global_expected_r_order_ignores_fill_probability_across_classes():
         quality_prior_strength=0.1,
         fill_prior_strength=0.1,
         quality_labels=[
-            *_validated_quality_labels(
+            *_quality_labels(
                 "vcp",
                 vcp_probe.raw_quality_score,
                 group_outcomes=(0.5, 1.5, 2.5, 3.5),
                 start_quarter="2022Q1",
             ),
-            *_validated_quality_labels(
+            *_quality_labels(
                 "power_play",
                 power_probe.raw_quality_score,
                 group_outcomes=(-0.5, 0.0, 0.5, 1.0),
@@ -1092,13 +593,13 @@ def test_global_expected_r_order_ignores_fill_probability_across_classes():
         quality_prior_strength=0.1,
         fill_prior_strength=0.1,
         quality_labels=[
-            *_validated_quality_labels(
+            *_quality_labels(
                 "vcp",
                 vcp_probe.raw_quality_score,
                 group_outcomes=(-0.5, 0.0, 0.5, 1.0),
                 start_quarter="2022Q1",
             ),
-            *_validated_quality_labels(
+            *_quality_labels(
                 "power_play",
                 power_probe.raw_quality_score,
                 group_outcomes=(0.5, 1.5, 2.5, 3.5),
@@ -1115,7 +616,7 @@ def test_global_expected_r_order_ignores_fill_probability_across_classes():
     ]
 
 
-def test_validated_quality_orders_and_ranks_globally():
+def test_relative_quality_orders_and_ranks_globally():
     dates, symbols, close, _, _, _ = _matrices()
     continuity = _segments(dates, symbols)
     high = _setup(dates, symbol="AAA", setup_type="vcp", setup_id=1)
@@ -1137,7 +638,7 @@ def test_validated_quality_orders_and_ranks_globally():
         close,
         continuity_segment=continuity,
         quality_prior_strength=0.1,
-        quality_labels=_validated_quality_labels(
+        quality_labels=_quality_labels(
             "vcp",
             50.0,
             group_outcomes=(-1.5, -0.5, 0.5, 1.5),
@@ -1147,13 +648,12 @@ def test_validated_quality_orders_and_ranks_globally():
 
     slate = ranker.rank([low, high], 60)
 
-    assert all(item.quality_model_validated for item in slate)
     assert [item.symbol for item in slate] == ["AAA", "BBB"]
     assert [item.quality_rank for item in slate] == [1, 2]
     assert slate[0].quality_score > slate[1].quality_score
 
 
-def test_validated_mode_puts_cash_zero_ahead_of_negative_expected_r():
+def test_relative_quality_orders_negative_expected_r_below_neutral_prior():
     dates, symbols, close, _, _, _ = _matrices()
     continuity = _segments(dates, symbols)
     vcp = _setup(
@@ -1168,10 +668,10 @@ def test_validated_mode_puts_cash_zero_ahead_of_negative_expected_r():
         tightness_score=0.0,
         prior_advance_score=0.0,
     )
-    unvalidated = _setup(
+    uncalibrated = _setup(
         dates, symbol="BBB", setup_type="power_play", setup_id=2
     )
-    labels = _validated_quality_labels(
+    labels = _quality_labels(
         "vcp",
         50.0,
         group_outcomes=(-1.5, -0.5, 0.5, 1.5),
@@ -1186,11 +686,9 @@ def test_validated_mode_puts_cash_zero_ahead_of_negative_expected_r():
     )
 
     for session_idx in range(60, 64):
-        slate = ranker.rank([unvalidated, vcp], session_idx)
+        slate = ranker.rank([uncalibrated, vcp], session_idx)
         by_type = {item.setup_type: item for item in slate}
-        assert by_type["vcp"].quality_model_validated
         assert by_type["vcp"].quality_score < 0.0
-        assert not by_type["power_play"].quality_model_validated
         assert by_type["power_play"].quality_score == 0.0
         assert [item.setup_type for item in slate] == ["power_play", "vcp"]
         assert [item.quality_rank for item in slate] == [1, 2]
@@ -1274,9 +772,21 @@ def test_neutral_rank_salt_must_be_a_nonempty_string():
         CandidateRanker(dates, symbols, close, neutral_rank_salt=7, **kwargs)
 
 
+def test_ranker_uses_the_v9_default_salt():
+    dates, symbols, close, _, _, _ = _matrices()
+    ranker = CandidateRanker(
+        dates,
+        symbols,
+        close,
+        continuity_segment=_segments(dates, symbols),
+    )
+
+    assert ranker.neutral_rank_salt == "v9-relative-quality-shadow"
+
+
 def test_ranking_mode_controls_only_expected_r_exposure():
     dates, symbols, close, _, _, _ = _matrices()
-    labels = _validated_quality_labels(
+    labels = _quality_labels(
         "vcp",
         50.0,
         group_outcomes=(-1.5, -1.0, -0.5, -0.1),
@@ -1291,31 +801,27 @@ def test_ranking_mode_controls_only_expected_r_exposure():
     neutral = CandidateRanker(
         dates, symbols, close, ranking_mode="neutral", **kwargs
     ).snapshot(_setup(dates), 60)
-    quality_only = CandidateRanker(
-        dates, symbols, close, ranking_mode="quality_only", **kwargs
-    ).snapshot(_setup(dates), 60)
-    validated = CandidateRanker(
-        dates, symbols, close, ranking_mode="validated", **kwargs
+    relative_quality = CandidateRanker(
+        dates, symbols, close, ranking_mode="relative_quality", **kwargs
     ).snapshot(_setup(dates), 60)
 
     assert neutral.walk_forward_quality_score == pytest.approx(
-        quality_only.walk_forward_quality_score
+        relative_quality.walk_forward_quality_score
     )
-    assert validated.walk_forward_quality_score == pytest.approx(
-        quality_only.walk_forward_quality_score
-    )
-    assert not neutral.quality_model_validated
     assert neutral.quality_score == neutral.slate_priority == 0.0
-    assert quality_only.quality_score == pytest.approx(
-        quality_only.walk_forward_quality_score
+    assert relative_quality.quality_score == pytest.approx(
+        relative_quality.walk_forward_quality_score
     )
-    assert quality_only.slate_priority == pytest.approx(quality_only.quality_score)
-    assert quality_only.quality_score < 0.0
-    assert validated.quality_score == validated.slate_priority == 0.0
+    assert relative_quality.slate_priority == pytest.approx(
+        relative_quality.quality_score
+    )
+    assert relative_quality.quality_score < 0.0
 
 
-@pytest.mark.parametrize("mode", ["", "quality", "VALIDATED", 7])
-def test_ranking_mode_must_be_one_of_the_frozen_v8_modes(mode):
+@pytest.mark.parametrize(
+    "mode", ["", "quality", "quality_only", "validated", "VALIDATED", 7]
+)
+def test_ranking_mode_must_be_neutral_or_relative_quality(mode):
     dates, symbols, close, _, _, _ = _matrices()
     kwargs = {"continuity_segment": _segments(dates, symbols)}
 
@@ -1376,34 +882,4 @@ def test_quality_labels_require_a_finite_walk_forward_prediction():
     with pytest.raises(ValueError, match="walk_forward_quality_score must be finite"):
         QualityCalibrationLabel(
             "vcp", dates[20], dates[21], 50.0, 1.0, float("nan")
-        )
-
-
-@pytest.mark.parametrize("competition_size", [True, np.bool_(False), 1.0, "2"])
-def test_quality_label_competition_size_must_be_an_integer(competition_size):
-    dates, *_ = _matrices()
-    with pytest.raises(TypeError, match="competition_size must be an integer"):
-        QualityCalibrationLabel(
-            "vcp",
-            dates[20],
-            dates[21],
-            50.0,
-            1.0,
-            0.0,
-            competition_size=competition_size,
-        )
-
-
-@pytest.mark.parametrize("competition_size", [0, -1])
-def test_quality_label_competition_size_must_be_positive(competition_size):
-    dates, *_ = _matrices()
-    with pytest.raises(ValueError, match="competition_size must be positive"):
-        QualityCalibrationLabel(
-            "vcp",
-            dates[20],
-            dates[21],
-            50.0,
-            1.0,
-            0.0,
-            competition_size=competition_size,
         )

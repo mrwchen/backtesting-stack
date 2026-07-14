@@ -19,8 +19,9 @@ Exits:  initial stop (gap-aware, also checked on the entry bar itself —
         breakout and stop-out on the same day is assumed to resolve against
         us), failed-breakout and time-stop exits, delayed profit protection,
         trailing exit on a close below the TRAIL_MA_DAYS MA (both executed next
-        open), forced close at the end of the simulation only when that symbol
-        has an executable final-session bar.
+        open). End-of-data liquidation is explicit: finite research backtests
+        may force-close, forward/shadow runs leave positions open and mark them
+        to the last known close.
 Sizing: independent mode uses fixed INITIAL_EQUITY as sizing base. Portfolio
         mode uses previous-close equity, cash, gross exposure and position
         count. Same-session exits never finance or make room for new entries.
@@ -71,7 +72,6 @@ class Position:
     feedback_risk_units: float
     price_continuity_segment: int
     entry_snapshot: CandidateSnapshot
-    calibration_competition_size: int
     next_stop: float | None = None
     realized_position_pnl: float = 0.0
     partial_done: bool = False
@@ -143,7 +143,7 @@ def simulate(
     c = close_m.to_numpy()
     if continuity_segment_m is None:
         raise ValueError(
-            "v8 simulation requires continuity_segment_m"
+            "v9 simulation requires continuity_segment_m"
         )
     if (
         not continuity_segment_m.index.equals(dates)
@@ -208,7 +208,7 @@ def simulate(
     setups["sim_setup_key"] = np.arange(len(setups), dtype=int)
     if "price_continuity_segment" not in setups.columns:
         raise ValueError(
-            "v8 setups require price_continuity_segment"
+            "v9 setups require price_continuity_segment"
         )
     setup_segments = pd.to_numeric(
         setups["price_continuity_segment"], errors="coerce"
@@ -437,9 +437,9 @@ def simulate(
             "entry_date": entry_date,
             "entry_price": entry_price,
             "snapshot_date": snapshot.information_date.date(),
-            # Persist the causal diagnostic posterior even while the ranking
-            # contract is fail-closed. ``snapshot.quality_score`` is the
-            # effective ranking value and remains neutral until validation.
+            # Persist the causal posterior used by relative-quality ranking.
+            # Neutral controls retain the same posterior diagnostically while
+            # exposing a zero slate priority.
             "quality_score": round(snapshot.walk_forward_quality_score, 8),
             "fill_probability": round(snapshot.fill_probability, 8),
             "slate_priority": round(snapshot.slate_priority, 8),
@@ -544,6 +544,11 @@ def simulate(
         realized_pnl += pnl
         pos.realized_position_pnl += pnl
         r_unit = pos.entry_price - pos.initial_stop
+        net_r_multiple = (
+            pnl / (r_unit * shares)
+            if r_unit > 0 and shares > 0
+            else None
+        )
         trades.append(
             {
                 "position_id": pos.position_id,
@@ -560,7 +565,10 @@ def simulate(
                 "exit_date": dates[t].date(),
                 "exit_price": round(price, 4),
                 "pnl": round(pnl, 2),
-                "r_multiple": round((price - pos.entry_price) / r_unit, 4) if r_unit > 0 else None,
+                # Net R uses the same commission-aware PnL and initial-risk
+                # denominator as the causal quality label. Share-weighting
+                # closed legs therefore reconstructs the exact position R.
+                "r_multiple": net_r_multiple,
                 "holding_days": int(t - pos.entry_idx),
             }
         )
@@ -574,7 +582,6 @@ def simulate(
                     available_date=dates[t],
                     realized_r_multiple=pos.realized_position_pnl
                     / initial_risk,
-                    competition_size=pos.calibration_competition_size,
                 )
         if portfolio_mode and leg == "final":
             closed_outcomes.append(
@@ -863,22 +870,6 @@ def simulate(
                     continue
 
                 snapshot = current_snapshots[int(setup.sim_setup_key)]
-                if (
-                    portfolio_mode
-                    and cfg.portfolio_ranking_mode == "validated"
-                    and (
-                        not snapshot.quality_model_validated
-                        or snapshot.quality_score <= 0.0
-                    )
-                ):
-                    # Cash is the explicit zero-return candidate.  This gate
-                    # is intentionally applied only after the exogenous
-                    # market/regime gate and before any sizing or capacity
-                    # calculation.  Neutral and quality-only experiment arms
-                    # remain ungated controls.
-                    set_entry_decision(setup, "non_positive_quality")
-                    continue
-
                 pivot = _num_attr(setup, "pivot", np.nan)
                 stop = _num_attr(setup, "stop_level", np.nan)
                 trigger = pivot * (1 + cfg.pivot_buffer_pct)
@@ -1079,23 +1070,6 @@ def simulate(
             if not np.isnan(trail) and c[t, col] < trail:
                 pos.exit_next_open_reason = "trail_ma"
 
-        # Freeze the causal same-class competition before any entry can close
-        # on its entry bar.  Only independently executable planned orders
-        # count on this exogenously eligible session; cash, slots and portfolio
-        # nomination may never leak into the calibration population.
-        calibration_competition_sizes: dict[int, int] = {}
-        if not portfolio_mode and online_calibration and entries_allowed:
-            fillable_keys_by_type: dict[str, list[int]] = {}
-            for order in slate:
-                if independently_fillable(order.setup, t):
-                    fillable_keys_by_type.setdefault(
-                        order.snapshot.setup_type, []
-                    ).append(order.setup_key)
-            for setup_keys in fillable_keys_by_type.values():
-                competition_size = len(setup_keys)
-                for setup_key in setup_keys:
-                    calibration_competition_sizes[setup_key] = competition_size
-
         # ---- fill only orders selected before the session ------------------
         consumed_setup_keys = set(unusable_setup_keys)
         for order in slate:
@@ -1151,9 +1125,6 @@ def simulate(
                     continuity_numeric[t, col]
                 ),
                 entry_snapshot=order.snapshot,
-                calibration_competition_size=(
-                    calibration_competition_sizes.get(order.setup_key, 1)
-                ),
             )
             next_position_id += 1
             consumed_setup_keys.add(order.setup_key)
@@ -1293,18 +1264,19 @@ def simulate(
             elif drawdown > -0.5 * cfg.exposure_drawdown_reset_pct:
                 drawdown_reset_armed = True
 
-    # ---- close remaining positions only when the final session is tradable ----
+    # ---- optional finite-backtest liquidation -----------------------------
     last = len(dates) - 1
-    for sym in list(positions):
-        pos = positions[sym]
-        final_close = c[last, pos.col]
-        if np.isnan(final_close):
-            continue
-        price = final_close * (1 - cfg.slippage_pct)
-        record_trade(pos, last, pos.shares, price, "final", "eod")
-        del positions[sym]
+    if cfg.force_close_at_end:
+        for sym in list(positions):
+            pos = positions[sym]
+            final_close = c[last, pos.col]
+            if np.isnan(final_close):
+                continue
+            price = final_close * (1 - cfg.slippage_pct)
+            record_trade(pos, last, pos.shares, price, "final", "eod")
+            del positions[sym]
 
-    if positions:
+    if cfg.force_close_at_end and positions:
         log.warning(
             "%d positions remain open at end-of-data because their symbols have no final-session bar",
             len(positions),
@@ -1374,7 +1346,8 @@ def _metrics(
     final = float(equity["equity"].iloc[-1])
     eq = equity["equity"].astype(float)
     years = len(eq) / 252.0
-    drawdown = 1.0 - eq / eq.cummax()
+    running_peak = eq.cummax().clip(lower=float(initial))
+    drawdown = 1.0 - eq / running_peak
 
     metrics = {
         "initial_equity": initial,

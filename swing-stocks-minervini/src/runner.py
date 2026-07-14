@@ -14,13 +14,12 @@ from . import (
     data_loader,
     db,
     fundamentals,
+    forward_shadow,
     group_filter,
     market_filter,
     persistence,
-    ranking_sensitivity,
     reproducibility,
     rs_rating,
-    sensitivity,
     trend_template,
 )
 from .config import Config
@@ -220,15 +219,6 @@ def _simulation_input_fingerprint(
         model_version=model.MODEL_VERSION,
         upstream_fingerprint=source_fingerprint,
     )
-
-
-def _market_data_config(cfg: Config) -> Config:
-    """Require complete index inputs when any sensitivity arm uses the gate."""
-    if cfg.stage == "sensitivity" and any(
-        variant.market_filter_enable for variant in sensitivity.VARIANTS
-    ):
-        return replace(cfg, market_filter_enable=True)
-    return cfg
 
 
 def _long_frame(mask: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index, columns: dict) -> pd.DataFrame:
@@ -616,16 +606,6 @@ def run_setup(
     return setups_df
 
 
-def _prepare_simulation_setups(setups: pd.DataFrame) -> pd.DataFrame:
-    prepared = setups.copy()
-    if "setup_id" not in prepared:
-        # Sensitivity setups stay in memory because the shared setup table is
-        # not run-scoped. Negative identifiers cannot be mistaken for its
-        # positive BIGSERIAL values when events are inspected later.
-        prepared["setup_id"] = -np.arange(1, len(prepared) + 1, dtype=np.int64)
-    return prepared
-
-
 def _screen_pass_rows(screen_daily: pd.DataFrame) -> pd.DataFrame:
     if "screen_pass" not in screen_daily.columns:
         raise ValueError("daily screen rows are missing screen_pass")
@@ -676,20 +656,6 @@ def _candidate_context_matrices(
     return aligned
 
 
-def _slice_matrices(matrices: dict, end: date) -> dict:
-    mask = matrices["dates"] <= pd.Timestamp(end)
-    sliced = {
-        "dates": matrices["dates"][mask],
-        "symbols": matrices["symbols"],
-    }
-    for field in (
-        "open", "high", "low", "close", "volume",
-        "price_continuity_segment", "price_continuity_break",
-    ):
-        sliced[field] = matrices[field].loc[mask]
-    return sliced
-
-
 def _first_touch_calibration_labels(
     cfg: Config,
     matrices: dict,
@@ -713,7 +679,7 @@ def _first_touch_calibration_labels(
     calibration_cfg = replace(
         cfg,
         simulation_mode="independent",
-        portfolio_ranking_mode="quality_only",
+        portfolio_ranking_mode="relative_quality",
     )
     result = simulate(
         matrices["dates"],
@@ -883,6 +849,8 @@ def _run_simulation(
         if commit:
             conn.rollback()
         raise
+    if cfg.simulation_mode == "portfolio":
+        _log_portfolio_concentration(cfg.run_label, trades)
     decisions = (
         " ".join(
             f"{decision} {count}"
@@ -910,14 +878,130 @@ def _run_simulation(
     return run_id, result.metrics
 
 
-def _log_portfolio_ranking_experiment_summary(
-    case_name: str,
-    metrics_by_salt: list[dict],
-) -> None:
-    for metric, values in ranking_sensitivity.summarize(metrics_by_salt).items():
+def _portfolio_concentration(trades: pd.DataFrame) -> dict[str, object]:
+    """Return ex-post winner concentration for fully closed positions only."""
+    top_counts = (1, 3, 5)
+    empty = {
+        "closed_positions": 0,
+        "winner_symbols": 0,
+        "gross_positive_r": 0.0,
+        "net_r": 0.0,
+        "top": {
+            count: {
+                "positive_r_share": 0.0,
+                "leave_out_net_r": 0.0,
+                "leave_out_profit_factor": None,
+            }
+            for count in top_counts
+        },
+    }
+    if trades.empty:
+        return empty
+
+    required = {
+        "position_id", "symbol", "leg", "entry_price", "stop_price",
+        "shares", "pnl",
+    }
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(
+            "portfolio concentration trades are missing fields: "
+            + ", ".join(missing)
+        )
+
+    # Partial legs from positions still open at the data boundary must not be
+    # treated as completed outcomes.
+    final_ids = pd.Index(
+        trades.loc[trades["leg"].eq("final"), "position_id"].unique()
+    )
+    if final_ids.empty:
+        return empty
+    closed = trades.loc[trades["position_id"].isin(final_ids)].copy()
+
+    position_rows: list[dict[str, object]] = []
+    for position_id, legs in closed.groupby("position_id", sort=False):
+        entry_price = float(legs["entry_price"].iloc[0])
+        stop_price = float(legs["stop_price"].iloc[0])
+        initial_shares = float(pd.to_numeric(legs["shares"]).sum())
+        initial_risk = (entry_price - stop_price) * initial_shares
+        if not np.isfinite(initial_risk) or initial_risk <= 0:
+            continue
+        position_rows.append(
+            {
+                "position_id": position_id,
+                "symbol": str(legs["symbol"].iloc[0]),
+                "net_r": float(pd.to_numeric(legs["pnl"]).sum())
+                / initial_risk,
+            }
+        )
+    if not position_rows:
+        return empty
+
+    positions = pd.DataFrame(position_rows)
+    position_r = positions["net_r"].astype(float)
+    positive = positions.loc[position_r > 0].sort_values(
+        ["net_r", "position_id"], ascending=[False, True], kind="stable"
+    )
+    negative_r = float(position_r.loc[position_r < 0].sum())
+    gross_positive_r = float(positive["net_r"].sum())
+    diagnostics: dict[str, object] = {
+        "closed_positions": int(len(positions)),
+        "winner_symbols": int(positive["symbol"].nunique()),
+        "gross_positive_r": gross_positive_r,
+        "net_r": float(position_r.sum()),
+        "top": {},
+    }
+    for count in top_counts:
+        removed_r = float(positive["net_r"].head(count).sum())
+        remaining_positive_r = gross_positive_r - removed_r
+        diagnostics["top"][count] = {
+            "positive_r_share": (
+                removed_r / gross_positive_r if gross_positive_r > 0 else 0.0
+            ),
+            "leave_out_net_r": remaining_positive_r + negative_r,
+            "leave_out_profit_factor": (
+                remaining_positive_r / abs(negative_r)
+                if negative_r < 0
+                else None
+            ),
+        }
+    return diagnostics
+
+
+def _log_portfolio_concentration(run_label: str, trades: pd.DataFrame) -> None:
+    diagnostics = _portfolio_concentration(trades)
+    log.info(
+        "portfolio concentration %s closed-positions %d winner-symbols %d gross-positive-r %.6f net-r %.6f",
+        run_label,
+        diagnostics["closed_positions"],
+        diagnostics["winner_symbols"],
+        diagnostics["gross_positive_r"],
+        diagnostics["net_r"],
+    )
+    for count, values in diagnostics["top"].items():
+        profit_factor = values["leave_out_profit_factor"]
         log.info(
-            "portfolio ranking experiment summary %s %s samples %d missing %d median %.6f adverse-quantile %.6f worst %.6f",
-            case_name,
+            "portfolio concentration %s ex-post leave-top-%d positive-r-share %.6f net-r %.6f profit-factor %s",
+            run_label,
+            count,
+            values["positive_r_share"],
+            values["leave_out_net_r"],
+            f"{profit_factor:.6f}" if profit_factor is not None else "none",
+        )
+
+
+def _filter_calibration_labels(
+    labels: tuple[QualityCalibrationLabel, ...] | tuple[FillCalibrationLabel, ...],
+    setup_types: tuple[str, ...],
+) -> tuple:
+    allowed = frozenset(setup_types)
+    return tuple(label for label in labels if label.setup_type in allowed)
+
+
+def _log_neutral_control_summary(metrics: list[dict]) -> None:
+    for metric, values in forward_shadow.summarize_controls(metrics).items():
+        log.info(
+            "forward shadow neutral-control summary %s samples %d missing %d median %.6f adverse-quantile %.6f worst %.6f",
             metric,
             values["count"],
             values["missing_count"],
@@ -927,7 +1011,7 @@ def _log_portfolio_ranking_experiment_summary(
         )
 
 
-def _run_portfolio_ranking_experiment(
+def _run_forward_shadow(
     conn,
     cfg: Config,
     matrices: dict,
@@ -939,44 +1023,63 @@ def _run_portfolio_ranking_experiment(
     end: date,
     *,
     candidate_context: dict[str, pd.DataFrame],
-) -> tuple[tuple[int, dict] | None, tuple[tuple[int, dict], ...]]:
-    """Run the frozen ranking-mode, setup-sleeve and bootstrap-salt matrix.
-
-    Market-on calibration is generated exactly once.  Each salt applies a
-    deterministic completion-day cluster bootstrap to those immutable base
-    labels, and that same weighted tuple is reused by every case for the salt.
-    Each arm commits independently so the full equity/event paths do not
-    accumulate in one oversized database transaction.  No arm is selected as
-    a winner; only predeclared case distributions are logged.
-    """
-    if cfg.simulation_mode not in ("portfolio", "both"):
+) -> tuple[
+    tuple[int, dict],
+    tuple[int, dict],
+    tuple[tuple[int, dict], ...],
+]:
+    """Run the one frozen v9 First-Touch, shadow and control protocol."""
+    configured_forward_start = date.fromisoformat(cfg.forward_start_date)
+    if configured_forward_start != forward_shadow.FORWARD_START_DATE:
         raise ValueError(
-            "portfolio ranking experiment requires SIMULATION_MODE portfolio or both"
+            "forward shadow requires FORWARD_START_DATE="
+            f"{forward_shadow.FORWARD_START_DATE.isoformat()}"
         )
+    dates = matrices["dates"]
+    sim_start_idx = int(dates.searchsorted(pd.Timestamp(configured_forward_start)))
+    if sim_start_idx >= len(dates):
+        raise ValueError(
+            "forward shadow has no price session on or after "
+            f"{configured_forward_start.isoformat()}"
+        )
+    persisted_start = dates[sim_start_idx].date()
+    if persisted_start != configured_forward_start:
+        raise ValueError(
+            "forward shadow requires the exact price session "
+            f"{configured_forward_start.isoformat()}; first available session is "
+            f"{persisted_start.isoformat()}"
+        )
+    if persisted_start > end:
+        raise ValueError("forward shadow start is after the available data end")
+    if "setup_type" not in setups.columns:
+        raise ValueError("forward shadow setups are missing setup_type")
+    flat_setups = setups.loc[
+        setups["setup_type"].isin(forward_shadow.PORTFOLIO_SETUP_TYPES)
+    ].reset_index(drop=True)
 
-    total_paths = (
-        len(ranking_sensitivity.EXPERIMENT_CASES)
-        * len(ranking_sensitivity.NEUTRAL_RANK_SALTS)
-    )
     log.info(
-        "portfolio ranking experiment start cases %d salts %d paths %d label %s",
-        len(ranking_sensitivity.EXPERIMENT_CASES),
-        len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
-        total_paths,
+        "forward shadow start history %s forward %s end %s all-setups %d flat-setups %d portfolio-paths %d label %s",
+        start,
+        persisted_start,
+        end,
+        len(setups),
+        len(flat_setups),
+        len(forward_shadow.PORTFOLIO_CASES),
         cfg.run_label,
     )
     market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
-        cfg, matrices["dates"], market, regime
+        cfg, dates, market, regime
     )
-    state_start_idx = int(matrices["dates"].searchsorted(pd.Timestamp(start)))
+    state_start_idx = int(dates.searchsorted(pd.Timestamp(start)))
     calibration_cfg = replace(
         cfg,
         simulation_mode="independent",
-        portfolio_ranking_mode="quality_only",
-        portfolio_setup_types=("flat_base", "vcp"),
-        neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
+        portfolio_ranking_mode="relative_quality",
+        portfolio_setup_types=forward_shadow.PORTFOLIO_SETUP_TYPES,
+        neutral_rank_salt=forward_shadow.RELATIVE_QUALITY_SHADOW_SALT,
+        force_close_at_end=False,
     )
-    quality_labels, fill_labels = _first_touch_calibration_labels(
+    all_quality_labels, all_fill_labels = _first_touch_calibration_labels(
         calibration_cfg,
         matrices,
         setups,
@@ -985,112 +1088,122 @@ def _run_portfolio_ranking_experiment(
         market_exposure_cap=market_exposure_cap,
         regime_entry_allowed=regime_entry_allowed,
     )
-    base_calibration_label_fingerprints = (
-        reproducibility.quality_calibration_labels_fingerprint(quality_labels),
-        reproducibility.fill_calibration_labels_fingerprint(fill_labels),
+    all_label_fingerprints = (
+        reproducibility.quality_calibration_labels_fingerprint(
+            all_quality_labels
+        ),
+        reproducibility.fill_calibration_labels_fingerprint(all_fill_labels),
+    )
+    flat_quality_labels = _filter_calibration_labels(
+        all_quality_labels, forward_shadow.PORTFOLIO_SETUP_TYPES
+    )
+    flat_fill_labels = _filter_calibration_labels(
+        all_fill_labels, forward_shadow.PORTFOLIO_SETUP_TYPES
+    )
+    flat_label_fingerprints = (
+        reproducibility.quality_calibration_labels_fingerprint(
+            flat_quality_labels
+        ),
+        reproducibility.fill_calibration_labels_fingerprint(flat_fill_labels),
+    )
+    log.info(
+        "forward shadow calibration all-quality-labels %d all-fill-labels %d flat-quality-labels %d flat-fill-labels %d",
+        len(all_quality_labels),
+        len(all_fill_labels),
+        len(flat_quality_labels),
+        len(flat_fill_labels),
     )
 
-    first_touch: tuple[int, dict] | None = None
-    if cfg.simulation_mode == "both":
-        first_touch_cfg = replace(
-            cfg,
-            simulation_mode="independent",
-            market_filter_enable=False,
-            regime_entry_filter_enable=False,
-            portfolio_ranking_mode="quality_only",
-            portfolio_setup_types=("flat_base", "vcp"),
-            neutral_rank_salt=ranking_sensitivity.NEUTRAL_RANK_SALTS[0],
-            run_label=f"{cfg.run_label}_first_touch",
-        )
-        first_touch = _run_simulation(
-            conn,
-            first_touch_cfg,
-            matrices,
-            universe,
-            market,
-            setups,
-            regime,
-            start,
-            end,
-            candidate_context=candidate_context,
-            quality_labels=quality_labels,
-            fill_labels=fill_labels,
-            calibration_labels_supplied=True,
-            calibration_label_fingerprints=(
-                base_calibration_label_fingerprints
-            ),
-        )
+    first_touch_cfg = replace(
+        cfg,
+        simulation_mode="independent",
+        market_filter_enable=False,
+        regime_entry_filter_enable=False,
+        portfolio_ranking_mode="relative_quality",
+        neutral_rank_salt=forward_shadow.RELATIVE_QUALITY_SHADOW_SALT,
+        run_label=f"{cfg.run_label}_first_touch_research",
+        force_close_at_end=False,
+    )
+    first_touch = _run_simulation(
+        conn,
+        first_touch_cfg,
+        matrices,
+        universe,
+        market,
+        setups,
+        regime,
+        persisted_start,
+        end,
+        candidate_context=candidate_context,
+        state_start=start,
+        quality_labels=all_quality_labels,
+        fill_labels=all_fill_labels,
+        calibration_labels_supplied=True,
+        calibration_label_fingerprints=all_label_fingerprints,
+    )
 
     portfolio_results: list[tuple[int, dict]] = []
-    metrics_by_case: dict[str, list[dict]] = {
-        case.name: [] for case in ranking_sensitivity.EXPERIMENT_CASES
-    }
-    for salt_index, salt in enumerate(ranking_sensitivity.NEUTRAL_RANK_SALTS):
-        weighted_quality_labels = ranking_sensitivity.bootstrap_quality_labels(
-            quality_labels, salt
+    for case in forward_shadow.PORTFOLIO_CASES:
+        portfolio_cfg = replace(
+            cfg,
+            simulation_mode="portfolio",
+            portfolio_ranking_mode=case.ranking_mode,
+            portfolio_setup_types=case.setup_types,
+            neutral_rank_salt=case.neutral_rank_salt,
+            run_label=f"{cfg.run_label}_{case.name}",
+            force_close_at_end=False,
         )
-        weighted_calibration_label_fingerprints = (
-            reproducibility.quality_calibration_labels_fingerprint(
-                weighted_quality_labels
-            ),
-            base_calibration_label_fingerprints[1],
-        )
-        for case in ranking_sensitivity.EXPERIMENT_CASES:
-            portfolio_cfg = replace(
-                cfg,
-                simulation_mode="portfolio",
-                portfolio_ranking_mode=case.ranking_mode,
-                portfolio_setup_types=case.setup_types,
-                neutral_rank_salt=salt,
-                run_label=(
-                    f"{cfg.run_label}_{case.name}_salt_{salt_index:02d}"
-                ),
-            )
-            run_result = _run_simulation(
+        portfolio_results.append(
+            _run_simulation(
                 conn,
                 portfolio_cfg,
                 matrices,
                 universe,
                 market,
-                setups,
+                flat_setups,
                 regime,
-                start,
+                persisted_start,
                 end,
                 candidate_context=candidate_context,
-                quality_labels=weighted_quality_labels,
-                fill_labels=fill_labels,
+                state_start=start,
+                quality_labels=flat_quality_labels,
+                fill_labels=flat_fill_labels,
                 calibration_labels_supplied=True,
-                calibration_label_fingerprints=(
-                    weighted_calibration_label_fingerprints
-                ),
+                calibration_label_fingerprints=flat_label_fingerprints,
             )
-            portfolio_results.append(run_result)
-            metrics_by_case[case.name].append(run_result[1])
-
-    for case in ranking_sensitivity.EXPERIMENT_CASES:
-        _log_portfolio_ranking_experiment_summary(
-            case.name, metrics_by_case[case.name]
         )
 
+    shadow = portfolio_results[0]
+    controls = tuple(portfolio_results[1:])
+    shadow_metrics = shadow[1]
     log.info(
-        "portfolio ranking experiment done cases %d salts %d portfolio-paths %d persisted-runs %d",
-        len(ranking_sensitivity.EXPERIMENT_CASES),
-        len(ranking_sensitivity.NEUTRAL_RANK_SALTS),
-        len(portfolio_results),
-        len(portfolio_results) + int(first_touch is not None),
+        "forward shadow relative-quality result run %d return %s cagr %s max-drawdown %s profit-factor %s avg-r %s",
+        shadow[0],
+        shadow_metrics.get("total_return"),
+        shadow_metrics.get("cagr"),
+        shadow_metrics.get("max_drawdown"),
+        shadow_metrics.get("profit_factor"),
+        shadow_metrics.get("avg_r_multiple"),
     )
-    return first_touch, tuple(portfolio_results)
+    _log_neutral_control_summary([result[1] for result in controls])
+    log.info(
+        "forward shadow done portfolio-paths %d neutral-controls %d persisted-runs %d",
+        len(portfolio_results),
+        len(controls),
+        len(portfolio_results) + 1,
+    )
+    return first_touch, shadow, controls
 
 
 def run_sim(
     conn, cfg: Config, matrices: dict, universe: pd.DataFrame,
     market: pd.DataFrame, screen_daily: pd.DataFrame, start, end, *,
     setups: pd.DataFrame | None = None,
-) -> (
-    tuple[int, dict]
-    | tuple[tuple[int, dict], tuple[int, dict]]
-    | tuple[tuple[int, dict] | None, tuple[tuple[int, dict], ...]]
-):
+) -> tuple[
+    tuple[int, dict],
+    tuple[int, dict],
+    tuple[tuple[int, dict], ...],
+]:
     if setups is None:
         setups = persistence.read_setups(conn, start, end)
     if setups.empty:
@@ -1100,144 +1213,9 @@ def run_sim(
         screen_daily, matrices["dates"], matrices["symbols"]
     )
 
-    if cfg.portfolio_ranking_experiment_enable:
-        return _run_portfolio_ranking_experiment(
-            conn,
-            cfg,
-            matrices,
-            universe,
-            market,
-            setups,
-            regime,
-            start,
-            end,
-            candidate_context=candidate_context,
-        )
-
-    if cfg.simulation_mode == "both":
-        market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
-            cfg, matrices["dates"], market, regime
-        )
-        state_start_idx = int(
-            matrices["dates"].searchsorted(pd.Timestamp(start))
-        )
-        quality_labels, fill_labels = _first_touch_calibration_labels(
-            cfg,
-            matrices,
-            setups,
-            candidate_context,
-            state_start_idx=state_start_idx,
-            market_exposure_cap=market_exposure_cap,
-            regime_entry_allowed=regime_entry_allowed,
-        )
-        calibration_label_fingerprints = (
-            reproducibility.quality_calibration_labels_fingerprint(
-                quality_labels
-            ),
-            reproducibility.fill_calibration_labels_fingerprint(fill_labels),
-        )
-        first_touch_cfg = replace(
-            cfg,
-            simulation_mode="independent",
-            market_filter_enable=False,
-            regime_entry_filter_enable=False,
-            portfolio_ranking_mode="quality_only",
-            portfolio_setup_types=("flat_base", "vcp"),
-            run_label=f"{cfg.run_label}_first_touch",
-        )
-        portfolio_cfg = replace(
-            cfg,
-            simulation_mode="portfolio",
-            run_label=f"{cfg.run_label}_portfolio",
-        )
-        try:
-            first_touch = _run_simulation(
-                conn,
-                first_touch_cfg,
-                matrices,
-                universe,
-                market,
-                setups,
-                regime,
-                start,
-                end,
-                candidate_context=candidate_context,
-                commit=False,
-                quality_labels=quality_labels,
-                fill_labels=fill_labels,
-                calibration_labels_supplied=True,
-                calibration_label_fingerprints=calibration_label_fingerprints,
-            )
-            portfolio = _run_simulation(
-                conn,
-                portfolio_cfg,
-                matrices,
-                universe,
-                market,
-                setups,
-                regime,
-                start,
-                end,
-                candidate_context=candidate_context,
-                commit=False,
-                quality_labels=quality_labels,
-                fill_labels=fill_labels,
-                calibration_labels_supplied=True,
-                calibration_label_fingerprints=calibration_label_fingerprints,
-            )
-            conn.commit()
-            return first_touch, portfolio
-        except Exception:
-            conn.rollback()
-            raise
-
-    if cfg.simulation_mode == "independent":
-        market_exposure_cap, regime_entry_allowed = _entry_gate_arrays(
-            cfg, matrices["dates"], market, regime
-        )
-        state_start_idx = int(
-            matrices["dates"].searchsorted(pd.Timestamp(start))
-        )
-        quality_labels, fill_labels = _first_touch_calibration_labels(
-            cfg,
-            matrices,
-            setups,
-            candidate_context,
-            state_start_idx=state_start_idx,
-            market_exposure_cap=market_exposure_cap,
-            regime_entry_allowed=regime_entry_allowed,
-        )
-        calibration_label_fingerprints = (
-            reproducibility.quality_calibration_labels_fingerprint(
-                quality_labels
-            ),
-            reproducibility.fill_calibration_labels_fingerprint(fill_labels),
-        )
-        first_touch_cfg = replace(
-            cfg,
-            market_filter_enable=False,
-            regime_entry_filter_enable=False,
-            portfolio_ranking_mode="quality_only",
-            portfolio_setup_types=("flat_base", "vcp"),
-        )
-        return _run_simulation(
-            conn,
-            first_touch_cfg,
-            matrices,
-            universe,
-            market,
-            setups,
-            regime,
-            start,
-            end,
-            candidate_context=candidate_context,
-            quality_labels=quality_labels,
-            fill_labels=fill_labels,
-            calibration_labels_supplied=True,
-            calibration_label_fingerprints=calibration_label_fingerprints,
-        )
-
-    return _run_simulation(
+    # v9 deliberately has one execution contract. Legacy mode/experiment
+    # switches no longer select alternate run matrices.
+    return _run_forward_shadow(
         conn,
         cfg,
         matrices,
@@ -1251,112 +1229,13 @@ def run_sim(
     )
 
 
-def run_sensitivity(
-    conn,
-    cfg: Config,
-    prices: pd.DataFrame,
-    screen_daily: pd.DataFrame,
-    matrices: dict,
-    universe: pd.DataFrame,
-    market: pd.DataFrame,
-    start: date,
-    end: date,
-) -> None:
-    if cfg.simulation_mode == "both":
-        raise ValueError(
-            "sensitivity requires SIMULATION_MODE independent or portfolio"
-        )
-    periods = sensitivity.phases(start, end)
-    regime = data_loader.load_regime_scores(conn, cfg)
-    detection_cache: dict[str, pd.DataFrame] = {}
-    setup_pass_days = _screen_pass_rows(screen_daily)
-
-    log.info(
-        "sensitivity start development-only market-filter ablation variants %d periods %d end-limit %s screen-pass-days %d symbols %d",
-        len(sensitivity.VARIANTS),
-        len(periods),
-        sensitivity.DEVELOPMENT_END_DATE,
-        len(setup_pass_days),
-        setup_pass_days["symbol"].nunique(),
-    )
-    for variant in sensitivity.VARIANTS:
-        if variant.detection_key not in detection_cache:
-            detection_cfg = variant.apply(cfg, "full", start, end)
-            detection_cache[variant.detection_key] = detect_setups(
-                detection_cfg,
-                prices,
-                setup_pass_days,
-                universe,
-                matrices["dates"],
-            )
-        all_setups = detection_cache[variant.detection_key]
-
-        for phase, phase_start, phase_end in periods:
-            phase_cfg = variant.apply(cfg, phase, phase_start, phase_end)
-            detect_date = pd.to_datetime(all_setups["detect_date"]).dt.date
-            phase_setups = all_setups.loc[
-                detect_date <= phase_end
-            ].reset_index(drop=True)
-            phase_setups = _prepare_simulation_setups(phase_setups)
-            phase_matrices = _slice_matrices(matrices, phase_end)
-            candidate_context = _candidate_context_matrices(
-                screen_daily,
-                phase_matrices["dates"],
-                phase_matrices["symbols"],
-            )
-
-            log.info(
-                "sensitivity variant %s period %s %s %s market-filter %s setups %d",
-                variant.name,
-                phase,
-                phase_start,
-                phase_end,
-                "on" if variant.market_filter_enable else "off",
-                len(phase_setups),
-            )
-            _run_simulation(
-                conn,
-                phase_cfg,
-                phase_matrices,
-                universe,
-                market,
-                phase_setups,
-                regime,
-                phase_start,
-                phase_end,
-                candidate_context=candidate_context,
-                state_start=start,
-            )
-
-    log.info(
-        "sensitivity done detection-configurations %d runs %d",
-        len(detection_cache),
-        len(sensitivity.VARIANTS) * len(periods),
-    )
-
-
 def main() -> None:
     cfg = Config.from_env()
     _configure_logging(cfg.log_level)
     log.info("Stage %s start %s end %s label %s", cfg.stage, cfg.start_date, cfg.end_date, cfg.run_label)
 
-    if cfg.stage == "sensitivity":
-        if cfg.simulation_mode == "both":
-            raise ValueError(
-                "sensitivity requires SIMULATION_MODE independent or portfolio"
-            )
-        if cfg.end_date is None:
-            raise ValueError(
-                "development-only market-filter ablation requires END_DATE=2023-12-31"
-            )
-        sensitivity.validate_configured_window(
-            date.fromisoformat(cfg.start_date), date.fromisoformat(cfg.end_date)
-        )
-
     if cfg.stage == "all":
         stages = ("screen", "setup", "sim")
-    elif cfg.stage == "sensitivity":
-        stages = ("screen", "sensitivity")
     else:
         stages = (cfg.stage,)
 
@@ -1388,10 +1267,8 @@ def main() -> None:
         raise SystemExit(f"no price data on/after START_DATE={cfg.start_date}")
     start, end = dates[window][0].date(), dates[window][-1].date()
 
-    if {"screen", "sim", "sensitivity"}.intersection(stages):
-        index_bars = data_loader.load_market_indexes(
-            conn, _market_data_config(cfg)
-        )
+    if {"screen", "sim"}.intersection(stages):
+        index_bars = data_loader.load_market_indexes(conn, cfg)
         market = market_filter.compute_market_model(
             matrices["close"], index_bars, cfg
         )
@@ -1526,19 +1403,6 @@ def main() -> None:
             start,
             end,
             setups=setups,
-        )
-    if "sensitivity" in stages:
-        assert pass_days is not None
-        run_sensitivity(
-            conn,
-            cfg,
-            prices,
-            pass_days,
-            matrices,
-            universe,
-            market,
-            start,
-            end,
         )
     conn.close()
     log.info("done")

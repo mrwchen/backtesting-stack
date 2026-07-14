@@ -5,7 +5,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from src import persistence, ranking_sensitivity
+from src import forward_shadow, persistence
 from src.candidate_ranking import FillCalibrationLabel, QualityCalibrationLabel
 from src.reproducibility import (
     SCREEN_CONFIG_FIELDS,
@@ -51,8 +51,8 @@ def test_sim_config_fingerprint_tracks_daily_order_limit() -> None:
 
 
 def test_sim_config_fingerprint_tracks_neutral_rank_salt() -> None:
-    first = make_cfg(neutral_rank_salt="v8-bootstrap-00")
-    changed = make_cfg(neutral_rank_salt="v8-bootstrap-01")
+    first = make_cfg(neutral_rank_salt="v9-neutral-control-00")
+    changed = make_cfg(neutral_rank_salt="v9-neutral-control-01")
 
     assert config_fingerprint(
         first, SIM_CONFIG_FIELDS, model_version="m1"
@@ -62,10 +62,10 @@ def test_sim_config_fingerprint_tracks_neutral_rank_salt() -> None:
 def test_sim_config_fingerprint_tracks_ranking_mode_and_setup_types() -> None:
     base = make_cfg(
         portfolio_ranking_mode="neutral",
-        portfolio_setup_types=("flat_base", "vcp"),
+        portfolio_setup_types=("flat_base",),
     )
-    changed_mode = make_cfg(portfolio_ranking_mode="validated")
-    changed_types = make_cfg(portfolio_setup_types=("flat_base",))
+    changed_mode = make_cfg(portfolio_ranking_mode="relative_quality")
+    changed_types = make_cfg(portfolio_setup_types=("vcp",))
 
     base_fingerprint = config_fingerprint(
         base, SIM_CONFIG_FIELDS, model_version="m1"
@@ -78,17 +78,35 @@ def test_sim_config_fingerprint_tracks_ranking_mode_and_setup_types() -> None:
     )
 
 
-def test_all_frozen_bootstrap_salts_have_unique_simulation_fingerprints() -> None:
+def test_all_frozen_control_salts_have_unique_simulation_fingerprints() -> None:
     fingerprints = {
         config_fingerprint(
             make_cfg(neutral_rank_salt=salt),
             SIM_CONFIG_FIELDS,
             model_version="m1",
         )
-        for salt in ranking_sensitivity.NEUTRAL_RANK_SALTS
+        for salt in forward_shadow.NEUTRAL_CONTROL_SALTS
     }
 
     assert len(fingerprints) == 32
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("forward_start_date", "2026-07-14"),
+        ("force_close_at_end", True),
+    ],
+)
+def test_sim_config_fingerprint_tracks_forward_contract(
+    field: str, changed_value: object
+) -> None:
+    baseline = make_cfg()
+    changed = make_cfg(**{field: changed_value})
+
+    assert config_fingerprint(
+        baseline, SIM_CONFIG_FIELDS, model_version="m1"
+    ) != config_fingerprint(changed, SIM_CONFIG_FIELDS, model_version="m1")
 
 
 def test_frame_fingerprint_is_order_independent_and_content_sensitive() -> None:
@@ -132,7 +150,6 @@ def test_quality_label_fingerprint_is_order_independent() -> None:
         realized_r_multiple=1.5,
         walk_forward_quality_score=0.25,
         weight=1.25,
-        competition_size=3,
     )
     second = replace(
         first,
@@ -156,7 +173,6 @@ def test_quality_label_fingerprint_is_order_independent() -> None:
         {"realized_r_multiple": -0.5},
         {"walk_forward_quality_score": 0.50},
         {"weight": 2.0},
-        {"competition_size": 4},
     ),
 )
 def test_quality_label_fingerprint_tracks_every_semantic_field(changes) -> None:
@@ -168,7 +184,6 @@ def test_quality_label_fingerprint_tracks_every_semantic_field(changes) -> None:
         realized_r_multiple=1.5,
         walk_forward_quality_score=0.25,
         weight=1.25,
-        competition_size=3,
     )
 
     assert quality_calibration_labels_fingerprint(

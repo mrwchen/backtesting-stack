@@ -29,7 +29,7 @@ import pandas as pd
 
 SetupType = Literal["vcp", "flat_base", "power_play", "tight_shelf"]
 Swing = tuple[int, float, Literal["H", "L"]]
-MODEL_VERSION = "minervini_daily_v8"
+MODEL_VERSION = "minervini_daily_v9"
 
 # Classification is score-first.  The order is only a deterministic tie
 # breaker for nested patterns with identical quality: a contraction structure

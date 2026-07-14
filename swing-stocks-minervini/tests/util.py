@@ -4,4 +4,6 @@ from src.config import Config
 
 
 def make_cfg(**overrides) -> Config:
-    return dataclasses.replace(Config.from_env(), **overrides)
+    values = {"simulation_mode": "independent"}
+    values.update(overrides)
+    return dataclasses.replace(Config.from_env(), **values)

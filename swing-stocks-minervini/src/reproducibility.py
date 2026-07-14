@@ -37,7 +37,8 @@ SETUP_CONFIG_FIELDS = (
 )
 
 SIM_CONFIG_FIELDS = (
-    "simulation_mode", "initial_equity", "risk_pct", "stop_max_pct",
+    "simulation_mode", "forward_start_date", "force_close_at_end",
+    "initial_equity", "risk_pct", "stop_max_pct",
     "max_position_pct", "slippage_pct", "commission_pct", "partial_at_r",
     "partial_fraction", "breakeven_after_partial", "trail_ma_days",
     "failed_breakout_exit_enable", "failed_breakout_days",
@@ -62,7 +63,6 @@ QUALITY_CALIBRATION_LABEL_FIELDS = (
     "realized_r_multiple",
     "walk_forward_quality_score",
     "weight",
-    "competition_size",
 )
 
 FILL_CALIBRATION_LABEL_FIELDS = (

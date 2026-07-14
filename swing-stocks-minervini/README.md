@@ -4,40 +4,38 @@ Daily, causal research implementation of a Minervini/SEPA-style stock process.
 The chart model lives in `backtest_models/minervini.py`; data access,
 eligibility, persistence and portfolio simulation stay in this service.
 
-The v8 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
-`minervini_sepa_daily_v8_ranking_experiment`
-(`MODEL_VERSION=minervini_daily_v8`). With
-`PORTFOLIO_RANKING_EXPERIMENT_ENABLE=true`, one invocation performs one hidden,
-capacity-independent Market-On calibration, persists one unfiltered true
-first-touch research run and then persists a fixed matrix of 288 complete
-portfolio paths:
+The v9 default is `STAGE=all`, `SIMULATION_MODE=both` with the base label
+`minervini_sepa_daily_v9_forward_shadow`
+(`MODEL_VERSION=minervini_daily_v9`). It is a frozen forward protocol, not
+another retrospective ranking search. `START_DATE=2020-01-02` supplies history,
+indicator warm-up, setup lifecycle and causal calibration. Headline performance
+starts only at `FORWARD_START_DATE=2026-07-13`, the first US session after the
+last inspected data date of 2026-07-10. `END_DATE` is open so each invocation
+extends through the newest available daily data.
 
-- ranking modes: `neutral`, `quality_only`, `validated`;
-- sleeves: `flat_base`, `vcp`, `combined` (`flat_base,vcp`); and
-- 32 frozen completion-day-cluster bootstrap salts per mode/sleeve case.
+One invocation performs one hidden, capacity-independent Market-On calibration
+and persists exactly 34 forward paths:
 
-The configured run spans 2020-01-02 through 2026-07-10. Keep 2020-2023 as the
-calibration/development segment and report 2024-2026 separately: that later
-period has already been inspected and is retrospective validation, not a
-pristine out-of-sample test.
+- one unfiltered true first-touch research run with all four setup classes;
+- one Flat-Base-only `relative_quality` shadow portfolio using the fixed,
+  unweighted causal expected-R rank; and
+- 32 Flat-Base-only `neutral` control portfolios using frozen session/salt
+  hashes (`v9-neutral-control-00` through `v9-neutral-control-31`).
 
-The salts are frozen in source control (`v8-bootstrap-00` through
-`v8-bootstrap-31`); the canonical single-run default is `v8-bootstrap-00`.
-Outside the experiment matrix, a normal single run uses the unbootstrapped
-Market-On label set; its `NEUTRAL_RANK_SALT` controls deterministic ranking ties
-only. Inside the matrix, each salt additionally applies a deterministic positive
-Bayesian-bootstrap weight to every setup-class/completion-day quality-label
-cluster. A later cluster cannot change an earlier cluster's weight, and fill
-labels are never reweighted. This makes the matrix vary calibration uncertainty
-inside setup classes instead of merely rotating class order. Runtime never
-selects a best salt or best case. After all 32 paths of a case complete, logs
-report its median, adverse decile (p10 for return/quality metrics, p90 for
-drawdown) and worst core metric. Arms commit separately; absence of the final
-9-case/288-path completion message identifies an incomplete matrix. A retry
-creates new run IDs rather than overwriting prior rows. Compare only a complete
-matrix identified by its base label and final completion log. The 32 paths
-remain correlated robustness scenarios, not independent observations or a
-confidence interval.
+There is no VCP or combined portfolio, no absolute quality/cash gate, no
+bootstrap-reweighted quality path and no automatic deployment decision. VCP,
+Power Play and Tight Shelf remain visible only in the first-touch research run.
+The 32 neutral controls measure sensitivity to arbitrary same-session selection;
+they are correlated controls, not independent observations or a confidence
+interval. Runtime never selects the best control. A retry creates new run IDs
+rather than overwriting prior rows, and a complete batch is identified by its
+final 34-run completion log.
+
+Calibration continues causally during the forward period: a new outcome can
+affect a later rank only after that outcome is complete and observable. Feature
+weights, setup rules, portfolio constraints, costs and exits remain frozen.
+Open positions are marked to market at the current data end instead of being
+closed by fictional end-of-data trades.
 
 ## Model
 
@@ -97,7 +95,9 @@ The pipeline has three functional stages:
    `fill_probability` estimates only whether the stop order may touch; it is a
    persisted diagnostic and never changes ranking, tie-breaking or portfolio
    admission. `slate_priority` is the effective quality used by the selected
-   ranking mode.
+   ranking mode. Persisted trade `r_multiple` values and the run-level
+   `avg_r_multiple` use commission-aware net P&L divided by initial risk, the
+   same outcome unit used by quality calibration.
 
    Calibration is strictly walk-forward: a session may use only labels whose
    trade outcome was complete before its information date. Sparse histories
@@ -110,39 +110,18 @@ The pipeline has three functional stages:
    are recorded only for Market-On setup/sessions. Portfolio trades never train
    the model, and no calibration/audit-only rows are written to the database.
 
-   Validation is fail-closed and class-local. Independently fillable Market-On
-   entries of the same setup class and information date form one frozen
-   competition group. A group becomes usable only after every declared member
-   has a final outcome; its completion date is the latest member availability
-   date. Single-candidate groups, incomplete groups and groups whose stored
-   purged walk-forward predictions cannot distinguish a top candidate provide
-   no ranking evidence.
+   v9 deliberately separates relative selection from absolute profitability.
+   `relative_quality` orders Flat Bases by their causal expected net R but does
+   not interpret zero as a cash threshold. `neutral` ignores quality and orders
+   the same eligible class only by its frozen session/salt hash. Absolute
+   profitability is judged from the resulting forward portfolio, while the 32
+   neutral controls show how much of the result could come from arbitrary
+   same-session selection.
 
-   At each calendar-quarter boundary the validator reviews the latest eight
-   fully completed competition-completion quarters and freezes that result for
-   the new quarter. Every reviewed quarter needs at least 40 labels from at
-   least five complete competition groups. Within each group, the realized net
-   R of the highest stored out-of-sample prediction is compared with the rest;
-   tied top predictions are averaged. Competition groups are equal-weight when
-   forming the quarter result. Across the eight quarter blocks, both
-   top-minus-rest lift and the top candidates' own net R must retain positive
-   lower confidence bounds using `t=2.365`. Bootstrap weights deliberately do
-   not enter this deployment proof: they vary the posterior estimate, not the
-   evidence that permits exposure. Therefore a merely less-bad but still
-   negative ranking can no longer pass validation.
-
-   Ranking modes have fixed meanings:
-
-   - `neutral` ignores quality and orders only by the stable session/salt hash;
-   - `quality_only` orders globally by the causal expected net R without a
-     deployment hurdle; and
-   - `validated` exposes quality only after the robust review. Cash is an
-     explicit zero-return candidate, so an unvalidated or nonpositive setup is
-     rejected as `non_positive_quality` before sizing or capacity allocation.
-
-   `quality_rank` is the global expected-net-R rank. Fill probability is absent
-   from all three orders, eliminating the old signed-product defect where a
-   lower fill probability improved a negative-quality candidate.
+   `quality_rank` is the actual ordinal pre-session slate position (`1..N`),
+   including neutral controls and score ties. Fill probability remains a
+   diagnostic and is absent from both orders, eliminating the old signed-product
+   defect where a lower fill probability improved a negative-quality candidate.
    Current RS, refreshed volume dry-up, setup age, point-in-time fundamentals,
    the trend-template result and structural components are soft quality
    features, not ex-post filters or entry gates. The trend-template contribution
@@ -150,21 +129,14 @@ The pipeline has three functional stages:
    expired observations stay unknown rather than becoming implicit passes or
    failures.
 
-   The persisted `independent` half of the default `both` run records every
-   setup's true first touch without cash, slot, exposure, same-symbol, market,
-   regime or fundamental-gate interaction. It is the complete research
-   population, not the training population. The 288 portfolio arms reuse one
-   Market-On base-label set. For each salt, quality labels receive the frozen
-   completion-day-cluster bootstrap weights and the resulting tuple is reused
-   by all nine mode/sleeve cases. No outcome, metric or later cluster influences
-   an earlier cluster's weight.
-
-   Flat Base and VCP are evaluated both as isolated sleeves and as one combined
-   control. The combined `quality_only` and `validated` slates compare their
-   calibrated expected net R directly; there is no forced one-third class
-   rotation. Power Play and Tight Shelf remain in setup detection and
-   first-touch research but are always `setup_class_research_only` in portfolio
-   mode because their current evidence is insufficient for deployment.
+   The persisted `independent` forward run records every setup's true first
+   touch without cash, slot, exposure, same-symbol, market, regime or
+   fundamental-gate interaction. It is the complete forward research population,
+   not the training population. The Quality shadow and all neutral controls
+   reuse one causally filtered Market-On calibration set, but Flat portfolio
+   fingerprints contain only Flat-Base setups and labels. VCP, Power Play and
+   Tight Shelf remain in setup detection and first-touch research and can never
+   enter a v9 portfolio arm.
 
    The portfolio enforces the configured market state, cash, slots, per-trade
    risk and one aggregate gross-exposure cap. Before the session, every admitted
@@ -195,6 +167,12 @@ The pipeline has three functional stages:
    position at the first usable session open in the new segment, including
    normal exit slippage. It never backdates the exit to the old segment and
    never carries chart, trailing-MA or risk state across the discontinuity.
+
+   After each portfolio path, logs report closed-position concentration: Top
+   1/3/5 share of positive gross R, net R and profit factor after removing those
+   winners, and the number of distinct winning symbols. This is an ex-post
+   robustness diagnostic only; it never changes historical orders or creates an
+   alternative equity curve.
 
 There is deliberately **no daily-close or breakout-volume confirmation** in
 this model. A stop-buy fills on the breakout session when the daily high reaches
@@ -244,10 +222,10 @@ validates the incompatible result schema before loading source data and fails
 with the required drop instruction if old columns remain.
 
 Every simulation fingerprint also binds the exact order-independent Quality
-and Fill calibration-label multisets, including outcome values, weights and
-quality-label competition sizes, plus the actual `online_calibration` or
-`preloaded` mode. Thus a canonical unbootstrapped single run cannot share an
-input identity with a bootstrap arm even when its configured salt is the same.
+and Fill calibration-label multisets, including outcome values and availability
+dates, plus the actual `online_calibration` or `preloaded` mode, Forward cutoff,
+ranking mode, neutral salt and end-of-data policy. The Quality path is fixed and
+unweighted; only neutral controls vary their deterministic pre-session order.
 
 ## Result tables
 
@@ -260,7 +238,7 @@ All service-owned tables use the prefix `backtesting_minervini_`:
 | `screen_daily` | every rankable symbol/session, including trend failures, plus fundamental, sponsorship and group diagnostics |
 | `market_daily` | causal market status, breadth and exposure cap |
 | `setups` | typed chart setups, continuity segment, pivot, stop and component scores |
-| `runs` | model/input identity, mode, parameters and aggregate metrics; one first-touch row plus 288 portfolio rows for the default v8 experiment |
+| `runs` | model/input identity, Forward contract, parameters and aggregate metrics; one first-touch row, one Quality shadow row and 32 neutral control rows per complete v9 batch |
 | `breakout_events` | first pivot touch and fill/rejection decision plus scalar t-1 quality/fill/slate snapshot |
 | `trades` | completed trade legs and entry-time attribution |
 | `equity_daily` | portfolio equity, open positions and exposure state |
@@ -277,10 +255,10 @@ JSON snapshot payload and no audit-only table.
 
 ## Run
 
-The v8 model change does not alter the existing result-table structure. It
-requires no migration and no table drop. Existing run rows remain available as
+The v9 Forward protocol does not alter the result-table structure. It requires
+no migration and no table drop; existing v8 rows remain available as historical
 comparison baselines. Rebuild the image and run the complete functional
-pipeline so v8 model-version fingerprints replace current stage and setup
+pipeline so v9 model-version fingerprints replace current stage and setup
 state:
 
 ```bash
@@ -288,15 +266,16 @@ cd /home/wei/backtesting-stack/swing-stocks-minervini
 docker compose up --build
 ```
 
-Keep `START_DATE=2020-01-02` for this full-history validation. Starting the
-process only in 2024 would remove the completed 2022-2023 Market-On first-touch
-labels that the rolling quality review needs at the 2024 boundary. Aggregate run metrics
-cover the complete history; evaluate 2024-2026 separately when judging the
-validated ranker.
+Keep `START_DATE=2020-01-02`: it is the causal history/calibration start, not the
+performance start. `FORWARD_START_DATE=2026-07-13` is frozen in configuration
+and code. All persisted trades, events, equity and headline metrics begin there.
+With open `END_DATE`, rerunning later extends the same deterministic Shadow
+protocol through newly available data. A completed new trade may train later
+sessions only after its exit result is observable.
 
 `DROP_ALL_MINERVINI_TABLES_ON_START` remains `false`. Setting it to `true` would
 delete all previous Minervini runs, trades, events, setups and stage state and
-is not needed for v8. The Docker build context is the service directory, which
+is not needed for v9. The Docker build context is the service directory, which
 contains both the runtime code and its service-owned `backtest_models` package.
 
 All runtime parameters are documented in `compose.yaml`. The daily screen table
@@ -319,6 +298,10 @@ python -m pytest tests -q
 - 2024 through the already reviewed 2026 data are development evidence, not a
   clean holdout. Only future, previously unseen data after the latest inspected
   date can provide a new forward test.
+- The v9 Forward clock starts on 2026-07-13. Early runs can contain few or no
+  completed trades and must not be treated as evidence. Changing ranking
+  features, weights, gates, costs or exits creates a new model version and
+  restarts that clock instead of rewriting v9 history.
 - SEC fundamentals and 13F data are used only from their effective knowledge
   dates. Missing/non-comparable filing values remain unknown instead of being
   estimated.
