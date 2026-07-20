@@ -106,7 +106,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
         connection.rollback()
 
     result = (
-        pd.concat(frames, ignore_index=True, copy=False)
+        pd.concat(frames, ignore_index=True)
         if frames
         else empty_signal_frame()
     )
@@ -192,7 +192,7 @@ def run(cfg: Config) -> tuple[int, int]:
 
                 frames = [item.signals for item in worker_results]
                 signals = (
-                    pd.concat(frames, ignore_index=True, copy=False)
+                    pd.concat(frames, ignore_index=True)
                     if frames
                     else empty_signal_frame()
                 )
@@ -240,4 +240,3 @@ def main() -> None:
             configure_logging("INFO")
         log.exception("Stock analyser filter research failed")
         raise SystemExit(1) from None
-

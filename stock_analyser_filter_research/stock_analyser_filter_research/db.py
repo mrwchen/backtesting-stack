@@ -905,7 +905,10 @@ def _copy_csv_batch(
     integer_columns: Sequence[str] = (),
     boolean_columns: Sequence[str] = (),
 ) -> str:
-    batch = frame.loc[:, columns].copy()
+    # COPY does not use the DataFrame index. A fresh positional index also
+    # prevents pandas extension arrays from aligning a sliced batch back to
+    # labels from the full result frame.
+    batch = frame.loc[:, columns].copy().reset_index(drop=True)
 
     for column in set(integer_columns).intersection(columns):
         original = batch[column]
@@ -928,20 +931,31 @@ def _copy_csv_batch(
             raise ValueError(f"COPY integer column {column} exceeds int64") from exc
 
     for column in set(boolean_columns).intersection(columns):
-        batch[column] = (
-            batch[column]
-            .map(
-                lambda value, name=column: _normalize_boolean_value(value, name),
-                na_action=None,
-            )
-            .astype("boolean")
+        batch[column] = pd.array(
+            [
+                _normalize_boolean_value(value, column)
+                for value in batch[column].array
+            ],
+            dtype="boolean",
         )
 
-    numeric_columns = batch.select_dtypes(include=[np.number]).columns
-    if len(numeric_columns):
-        batch.loc[:, numeric_columns] = batch.loc[:, numeric_columns].replace(
-            [np.inf, -np.inf], np.nan
+    # Do not assign a mixed numeric DataFrame back through ``.loc`` here.
+    # pandas 3.0.x can route that assignment through nullable integer arrays
+    # and perform label-based access with a positional np.int64, which raised
+    # the production COPY error ``KeyError np.int64(...)``. Integer columns
+    # were already validated above; normalize every remaining numeric column
+    # independently through a plain NumPy array.
+    integer_column_set = set(integer_columns)
+    for column in batch.select_dtypes(include=[np.number]).columns:
+        if column in integer_column_set:
+            continue
+        values = batch[column].to_numpy(
+            dtype=float,
+            na_value=np.nan,
+            copy=True,
         )
+        values[~np.isfinite(values)] = np.nan
+        batch[column] = values
 
     # PostgreSQL text values cannot contain NUL. An unquoted real text value
     # equal to COPY_NULL would also be interpreted silently as SQL NULL by
@@ -990,13 +1004,19 @@ class _CopyCsvStream:
     def _fill_buffer(self) -> bool:
         if self._next_row >= len(self._frame):
             return False
+        start = self._next_row
         end = min(self._next_row + self._batch_size, len(self._frame))
-        self._buffer = _copy_csv_batch(
-            self._frame.iloc[self._next_row : end],
-            self._columns,
-            integer_columns=self._integer_columns,
-            boolean_columns=self._boolean_columns,
-        )
+        try:
+            self._buffer = _copy_csv_batch(
+                self._frame.iloc[start:end],
+                self._columns,
+                integer_columns=self._integer_columns,
+                boolean_columns=self._boolean_columns,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to serialize COPY rows {start} through {end - 1}"
+            ) from exc
         self._next_row = end
         return True
 

@@ -8,7 +8,12 @@ import pytest
 from psycopg2 import extensions
 
 from stock_analyser_filter_research import db
-from stock_analyser_filter_research.contracts import RULE_COLUMNS, SIGNAL_COLUMNS
+from stock_analyser_filter_research.contracts import (
+    RULE_COLUMNS,
+    SIGNAL_BOOLEAN_COLUMNS,
+    SIGNAL_COLUMNS,
+    SIGNAL_INTEGER_COLUMNS,
+)
 
 
 class _Cursor:
@@ -85,6 +90,68 @@ def test_copy_csv_normalizes_nullable_integer_boolean_and_infinity() -> None:
             pd.DataFrame({"text": [r"\N"]}),
             ("text",),
         )
+
+
+def test_large_mixed_signal_frame_streams_across_copy_batches() -> None:
+    row_count = 5_101
+    frame = pd.DataFrame(index=pd.RangeIndex(row_count))
+    positions = np.arange(row_count)
+    for column in SIGNAL_COLUMNS:
+        udt_name, nullable, _, _ = db.SIGNAL_COLUMN_CONTRACTS[column]
+        if udt_name == "date":
+            frame[column] = pd.Timestamp("2020-01-02")
+        elif udt_name == "text":
+            values = np.full(row_count, f"value_{column}", dtype=object)
+            if nullable:
+                values[positions % 23 == 0] = None
+            frame[column] = pd.Series(values, dtype="string")
+        elif udt_name in {"int2", "int4", "int8"}:
+            values = pd.array(positions % 97 + 1, dtype="Int64")
+            if nullable:
+                values[positions % 29 == 0] = pd.NA
+            frame[column] = values
+        elif udt_name == "bool":
+            values = pd.array(positions % 2 == 0, dtype="boolean")
+            if nullable:
+                values[positions % 31 == 0] = pd.NA
+            frame[column] = values
+        else:
+            values = positions.astype(float) / 10.0
+            values[positions % 37 == 0] = np.nan
+            frame[column] = values
+    frame.loc[4_645, "prior_atr_14d_pct"] = np.inf
+    # COPY is positional; production slices can carry arbitrary source labels.
+    frame.index = pd.RangeIndex(10_000, 10_000 + row_count)
+
+    stream = db._CopyCsvStream(
+        frame,
+        SIGNAL_COLUMNS,
+        5_000,
+        integer_columns=SIGNAL_INTEGER_COLUMNS,
+        boolean_columns=SIGNAL_BOOLEAN_COLUMNS,
+    )
+    csv = stream.read()
+
+    assert csv.count("\n") == row_count
+    assert "inf" not in csv.lower()
+
+
+def test_copy_stream_reports_failing_positional_batch(monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise KeyError(np.int64(4_645))
+
+    monkeypatch.setattr(db, "_copy_csv_batch", fail)
+    stream = db._CopyCsvStream(
+        pd.DataFrame({"value": range(6_000)}),
+        ("value",),
+        5_000,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="COPY rows 0 through 4999"
+    ) as error:
+        stream.read()
+    assert isinstance(error.value.__cause__, KeyError)
 
 
 def test_database_column_contracts_cover_every_written_column(
