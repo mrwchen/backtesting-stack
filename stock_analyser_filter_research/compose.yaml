@@ -1,0 +1,79 @@
+services:
+  init-stock-analyser-filter-research-schema:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: "postgres-ts-root-pw"
+      PGAPPNAME: "stock_analyser_filter_research_init"
+      # true deletes both service-owned result tables before recreating them.
+      DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START: "${DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START:-false}"
+    command:
+      - sh
+      - -c
+      - >
+        psql -h timescaledb -p 5432 -U postgres-ts -d postgres
+        -v ON_ERROR_STOP=1
+        -v drop_all_stock_analyser_filter_research_tables_on_start="$${DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START:-false}"
+        -f /init.sql
+    networks:
+      - shared_net
+
+  stock-analyser-filter-research:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m stock_analyser_filter_research
+    depends_on:
+      init-stock-analyser-filter-research-schema:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 6g
+    environment:
+      PGHOST: "timescaledb"
+      PGPORT: "5432"
+      PGDATABASE: "postgres"
+      PGUSER: "market-data-account"
+      PGPASSWORD: "market-data-account-pw"
+      PGAPPNAME: "stock_analyser_filter_research"
+      DB_CONNECT_TIMEOUT_SECONDS: "15"
+      DB_STATEMENT_TIMEOUT_MS: "0"
+      SOURCE_TABLE: "stock_analyser_trend_template_daily"
+      SIGNAL_RESULT_TABLE: "stock_analyser_filter_research_signal_results"
+      RULE_RESULT_TABLE: "stock_analyser_filter_research_rule_results"
+      LOG_LEVEL: "INFO"
+
+      SIGNAL_START_DATE: "2016-01-01"
+      SIGNAL_END_DATE: ""
+      DISCOVERY_END_DATE: "2022-12-31"
+      VALIDATION_END_DATE: "2024-12-31"
+
+      WEAK_5D_MAX_GAIN_PCT: "2.0"
+      STRONG_5D_MIN_GAIN_PCT: "5.0"
+      DEEP_LOSS_5D_MAX_LOSS_PCT: "-5.0"
+
+      QUANTILE_COUNT: "10"
+      MAX_RULE_CONDITIONS: "3"
+      MIN_CANDIDATE_MATCH_PCT: "0.01"
+      MAX_CANDIDATE_MATCH_PCT: "0.35"
+      MIN_STRONG_RETENTION_PCT: "0.90"
+      MIN_MATCHED_LABEL_COVERAGE_PCT: "0.90"
+      MIN_BAD_LIFT: "1.05"
+      MIN_SELECTION_SCORE_IMPROVEMENT: "0.01"
+
+      MAX_WORKERS: "4"
+      WORKER_IDENTITY_BATCH_SIZE: "16"
+      DB_FETCH_BATCH_SIZE: "10000"
+      DB_COPY_BATCH_SIZE: "5000"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+    name: shared_net
