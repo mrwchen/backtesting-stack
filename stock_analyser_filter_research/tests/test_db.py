@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ from psycopg2 import extensions
 
 from stock_analyser_filter_research import db
 from stock_analyser_filter_research.contracts import (
+    EARLY_CUT_COLUMNS,
     RULE_COLUMNS,
     SIGNAL_BOOLEAN_COLUMNS,
     SIGNAL_COLUMNS,
@@ -47,6 +48,20 @@ class _IdleConnection:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+
+class _RowsCursor(_Cursor):
+    def fetchall(self):
+        return self.connection.rows
+
+
+class _RowsConnection(_IdleConnection):
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    def cursor(self):
+        return _RowsCursor(self)
 
 
 def test_application_name_is_explicit_and_utf8_byte_bounded(cfg_factory) -> None:
@@ -147,9 +162,7 @@ def test_copy_stream_reports_failing_positional_batch(monkeypatch) -> None:
         5_000,
     )
 
-    with pytest.raises(
-        RuntimeError, match="COPY rows 0 through 4999"
-    ) as error:
+    with pytest.raises(RuntimeError, match="COPY rows 0 through 4999") as error:
         stream.read()
     assert isinstance(error.value.__cause__, KeyError)
 
@@ -158,15 +171,14 @@ def test_database_column_contracts_cover_every_written_column(
     monkeypatch,
 ) -> None:
     assert set(db.SIGNAL_COLUMN_CONTRACTS) == set(SIGNAL_COLUMNS)
+    assert set(db.EARLY_CUT_COLUMN_CONTRACTS) == set(EARLY_CUT_COLUMNS)
     assert set(db.RULE_COLUMN_CONTRACTS) == {"result_id", *RULE_COLUMNS}
     wrong = dict(db.SIGNAL_COLUMN_CONTRACTS)
     wrong["signal_date"] = ("text", False, None, None)
     monkeypatch.setattr(db, "_column_definitions", lambda connection, table: wrong)
 
     with pytest.raises(RuntimeError, match="signal_date"):
-        db._validate_column_definitions(
-            object(), "target", db.SIGNAL_COLUMN_CONTRACTS
-        )
+        db._validate_column_definitions(object(), "target", db.SIGNAL_COLUMN_CONTRACTS)
 
 
 class _HypertableCursor:
@@ -199,32 +211,81 @@ class _HypertableConnection:
 
 
 def test_hypertable_validation_requires_365_days_and_no_compression() -> None:
-    db._validate_signal_hypertable(
-        _HypertableConnection(
-            [(False,), [("signal_date", timedelta(days=365))]]
-        ),
+    db._validate_hypertable(
+        _HypertableConnection([(False,), [("signal_date", timedelta(days=365))]]),
         "stock_analyser_filter_research_signal_results",
+        "signal_date",
     )
-
     with pytest.raises(RuntimeError, match="must not use compression"):
-        db._validate_signal_hypertable(
+        db._validate_hypertable(
             _HypertableConnection([(True,)]),
             "stock_analyser_filter_research_signal_results",
+            "signal_date",
         )
     with pytest.raises(RuntimeError, match="365-day"):
-        db._validate_signal_hypertable(
-            _HypertableConnection(
-                [(False,), [("signal_date", timedelta(days=30))]]
-            ),
+        db._validate_hypertable(
+            _HypertableConnection([(False,), [("signal_date", timedelta(days=30))]]),
             "stock_analyser_filter_research_signal_results",
+            "signal_date",
         )
 
+    db._validate_hypertable(
+        _HypertableConnection([(False,), [("signal_date", timedelta(days=365))]]),
+        "stock_analyser_filter_research_early_cut_results",
+        "signal_date",
+    )
 
-def test_atomic_copy_commits_both_or_rolls_back_both(
-    cfg_factory, monkeypatch
+
+def test_source_calendar_and_workload_keep_post_signal_end_rows(
+    cfg_factory,
 ) -> None:
+    cfg = cfg_factory(signal_end_date=date(2024, 6, 30))
+    calendar_connection = _RowsConnection([(date(2024, 6, 28),), (date(2024, 7, 1),)])
+
+    calendar = db.load_trading_dates(calendar_connection, cfg)
+
+    assert calendar[-1] == pd.Timestamp("2024-07-01")
+    calendar_statement, calendar_parameters = calendar_connection.executed[0]
+    assert "period_end_date <=" not in calendar_statement
+    assert calendar_parameters is None
+
+    workload_connection = _RowsConnection([("ABC", "NYSE", 123, 900)])
+    workload = db.load_identity_work(workload_connection, cfg)
+
+    assert workload == [("ABC", "NYSE", 123, 900)]
+    workload_statement, workload_parameters = workload_connection.executed[0]
+    assert " WHERE " not in workload_statement
+    assert "HAVING bool_or" in workload_statement
+    assert workload_parameters == [
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    ]
+
+
+def test_empty_rebuild_guard_checks_all_three_targets(cfg_factory, monkeypatch) -> None:
+    cfg = cfg_factory()
+    visited: list[str] = []
+
+    def target_empty(connection, table_name):
+        visited.append(table_name)
+        return table_name != cfg.early_cut_result_table
+
+    monkeypatch.setattr(db, "_target_empty", target_empty)
+
+    with pytest.raises(RuntimeError, match=cfg.early_cut_result_table):
+        db.assert_targets_empty(object(), cfg)
+    assert visited == [
+        cfg.signal_result_table,
+        cfg.early_cut_result_table,
+        cfg.rule_result_table,
+    ]
+
+
+def test_atomic_copy_commits_all_or_rolls_back_all(cfg_factory, monkeypatch) -> None:
     cfg = cfg_factory()
     signals = pd.DataFrame(columns=SIGNAL_COLUMNS)
+    early_cuts = pd.DataFrame(columns=EARLY_CUT_COLUMNS)
     rules = pd.DataFrame(columns=RULE_COLUMNS)
     copied: list[str] = []
     monkeypatch.setattr(db, "assert_targets_empty", lambda connection, cfg: None)
@@ -235,8 +296,16 @@ def test_atomic_copy_commits_both_or_rolls_back_both(
     monkeypatch.setattr(db, "_copy_frame", successful_copy)
     connection = _IdleConnection()
 
-    assert db.write_results_atomic(connection, cfg, signals, rules) == (0, 0)
-    assert copied == [cfg.signal_result_table, cfg.rule_result_table]
+    assert db.write_results_atomic(connection, cfg, signals, early_cuts, rules) == (
+        0,
+        0,
+        0,
+    )
+    assert copied == [
+        cfg.signal_result_table,
+        cfg.early_cut_result_table,
+        cfg.rule_result_table,
+    ]
     assert connection.commits == 1
     assert connection.rollbacks == 0
 
@@ -245,12 +314,46 @@ def test_atomic_copy_commits_both_or_rolls_back_both(
     def failing_copy(connection, table_name, *args, **kwargs):
         copied.append(table_name)
         if table_name == cfg.rule_result_table:
-            raise RuntimeError("second COPY failed")
+            raise RuntimeError("third COPY failed")
 
     monkeypatch.setattr(db, "_copy_frame", failing_copy)
     connection = _IdleConnection()
-    with pytest.raises(RuntimeError, match="second COPY"):
-        db.write_results_atomic(connection, cfg, signals, rules)
-    assert copied == [cfg.signal_result_table, cfg.rule_result_table]
+    with pytest.raises(RuntimeError, match="third COPY"):
+        db.write_results_atomic(connection, cfg, signals, early_cuts, rules)
+    assert copied == [
+        cfg.signal_result_table,
+        cfg.early_cut_result_table,
+        cfg.rule_result_table,
+    ]
     assert connection.commits == 0
     assert connection.rollbacks == 1
+
+
+def test_atomic_copy_rejects_duplicate_early_cut_primary_keys(
+    cfg_factory,
+) -> None:
+    cfg = cfg_factory()
+    signals = pd.DataFrame(columns=SIGNAL_COLUMNS)
+    rules = pd.DataFrame(columns=RULE_COLUMNS)
+    early_cuts = pd.DataFrame(
+        [
+            {
+                "signal_date": pd.Timestamp("2024-01-02"),
+                "symbol": "ABC",
+                "exchange": "NYSE",
+                "cik": 1,
+                "landmark_day": 1,
+            },
+            {
+                "signal_date": pd.Timestamp("2024-01-02"),
+                "symbol": "ABC",
+                "exchange": "NYSE",
+                "cik": 1,
+                "landmark_day": 1,
+            },
+        ],
+        columns=EARLY_CUT_COLUMNS,
+    )
+
+    with pytest.raises(ValueError, match="early-cut.*duplicate"):
+        db.write_results_atomic(_IdleConnection(), cfg, signals, early_cuts, rules)

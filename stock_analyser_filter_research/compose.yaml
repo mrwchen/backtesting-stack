@@ -7,7 +7,7 @@ services:
     environment:
       PGPASSWORD: "postgres-ts-root-pw"
       PGAPPNAME: "stock_analyser_filter_research_init"
-      # true deletes both service-owned result tables before recreating them.
+      # true deletes all three service-owned result tables before recreating them.
       DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START: "${DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START:-false}"
     command:
       - sh
@@ -41,6 +41,7 @@ services:
       DB_STATEMENT_TIMEOUT_MS: "0"
       SOURCE_TABLE: "stock_analyser_trend_template_daily"
       SIGNAL_RESULT_TABLE: "stock_analyser_filter_research_signal_results"
+      EARLY_CUT_RESULT_TABLE: "stock_analyser_filter_research_early_cut_results"
       RULE_RESULT_TABLE: "stock_analyser_filter_research_rule_results"
       LOG_LEVEL: "INFO"
 
@@ -48,19 +49,31 @@ services:
       SIGNAL_END_DATE: ""
       DISCOVERY_END_DATE: "2022-12-31"
       VALIDATION_END_DATE: "2024-12-31"
+      # The first global trading session after this date is the new untouched holdout.
+      HOLDOUT_CUTOFF_DATE: "2026-07-20"
 
       WEAK_5D_MAX_GAIN_PCT: "2.0"
       STRONG_5D_MIN_GAIN_PCT: "5.0"
       DEEP_LOSS_5D_MAX_LOSS_PCT: "-5.0"
 
       QUANTILE_COUNT: "10"
-      MAX_RULE_CONDITIONS: "3"
+      MAX_CONDITIONS_PER_OBJECTIVE: "2"
+      RULE_SEARCH_BEAM_WIDTH: "20"
+      WALK_FORWARD_FIRST_YEAR: "2020"
+      MIN_WALK_FORWARD_FOLDS: "4"
+      MIN_STABLE_FOLD_FRACTION: "0.75"
+      MIN_FOLD_OBJECTIVE_LIFT: "1.00"
+      MIN_FOLD_SAMPLE_COUNT: "200"
+      MIN_FOLD_OBJECTIVE_COUNT: "20"
+      MIN_FOLD_PROTECTED_RETENTION_PCT: "0.85"
+      MAX_FOLD_MATCH_PCT: "0.40"
       MIN_CANDIDATE_MATCH_PCT: "0.01"
       MAX_CANDIDATE_MATCH_PCT: "0.35"
-      MIN_STRONG_RETENTION_PCT: "0.90"
+      MIN_PROTECTED_RETENTION_PCT: "0.90"
       MIN_MATCHED_LABEL_COVERAGE_PCT: "0.90"
-      MIN_BAD_LIFT: "1.05"
-      MIN_SELECTION_SCORE_IMPROVEMENT: "0.01"
+      MIN_OBJECTIVE_LIFT: "1.05"
+      MIN_SELECTION_CAPTURE_IMPROVEMENT: "0.01"
+      MIN_HOLDOUT_SAMPLE_COUNT: "500"
 
       MAX_WORKERS: "4"
       WORKER_IDENTITY_BATCH_SIZE: "16"

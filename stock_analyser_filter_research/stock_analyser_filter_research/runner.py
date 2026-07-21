@@ -10,7 +10,11 @@ import time
 import pandas as pd
 
 from . import db
-from .computation import calculate_signal_batch, empty_signal_frame
+from .computation import (
+    calculate_signal_batch,
+    empty_early_cut_frame,
+    empty_signal_frame,
+)
 from .config import Config
 from .logging_utils import configure_logging
 from .research import run_research
@@ -33,6 +37,7 @@ class WorkerTask:
 @dataclass
 class WorkerResult:
     signals: pd.DataFrame
+    early_cuts: pd.DataFrame
     loaded_rows: int
     identity_count: int
     elapsed_seconds: float
@@ -48,17 +53,13 @@ def balance_identity_work(
         return ()
 
     partition_count = min(max_workers, len(identity_work))
-    partitions: list[list[StockIdentity]] = [
-        [] for _ in range(partition_count)
-    ]
+    partitions: list[list[StockIdentity]] = [[] for _ in range(partition_count)]
     partition_loads = [0] * partition_count
     normalized = [
         ((str(symbol), str(exchange), int(cik)), int(row_count))
         for symbol, exchange, cik, row_count in identity_work
     ]
-    for identity, row_count in sorted(
-        normalized, key=lambda item: (-item[1], item[0])
-    ):
+    for identity, row_count in sorted(normalized, key=lambda item: (-item[1], item[0])):
         if row_count < 1:
             raise ValueError("identity row counts must be positive")
         partition_index = min(
@@ -85,6 +86,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     configure_logging(task.cfg.log_level)
     started = time.monotonic()
     frames: list[pd.DataFrame] = []
+    early_cut_frames: list[pd.DataFrame] = []
     loaded_rows = 0
     app_suffix = f"worker_{task.worker_number:02d}"
     with db.connect(task.cfg, app_suffix=app_suffix) as connection:
@@ -94,33 +96,36 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
         ):
             source = db.load_source_batch(connection, task.cfg, identities)
             loaded_rows += len(source)
-            signals = calculate_signal_batch(
-                source, task.trading_dates, task.cfg
-            )
-            if not signals.empty:
-                frames.append(signals)
-            del source, signals
+            calculated = calculate_signal_batch(source, task.trading_dates, task.cfg)
+            if not calculated.signals.empty:
+                frames.append(calculated.signals)
+            if not calculated.early_cut.empty:
+                early_cut_frames.append(calculated.early_cut)
+            del source, calculated
             gc.collect()
         # An imported snapshot is read-only. Rollback closes it without an
         # unnecessary commit and leaves no transaction behind on close.
         connection.rollback()
 
-    result = (
-        pd.concat(frames, ignore_index=True)
-        if frames
-        else empty_signal_frame()
+    result = pd.concat(frames, ignore_index=True) if frames else empty_signal_frame()
+    early_cuts = (
+        pd.concat(early_cut_frames, ignore_index=True)
+        if early_cut_frames
+        else empty_early_cut_frame()
     )
     elapsed = time.monotonic() - started
     log.info(
-        "Worker %d processed %d identities and %d source rows into %d signals in %.1f seconds",
+        "Worker %d processed %d identities and %d source rows into %d signals and %d early-cut rows in %.1f seconds",
         task.worker_number,
         len(task.identities),
         loaded_rows,
         len(result),
+        len(early_cuts),
         elapsed,
     )
     return WorkerResult(
         signals=result,
+        early_cuts=early_cuts,
         loaded_rows=loaded_rows,
         identity_count=len(task.identities),
         elapsed_seconds=elapsed,
@@ -137,7 +142,7 @@ def _execute_workers(tasks: list[WorkerTask]) -> list[WorkerResult]:
         return list(executor.map(_calculate_worker, tasks))
 
 
-def run(cfg: Config) -> tuple[int, int]:
+def run(cfg: Config) -> tuple[int, int, int]:
     started = time.monotonic()
     with db.connect(cfg) as connection:
         try:
@@ -155,11 +160,9 @@ def run(cfg: Config) -> tuple[int, int]:
                 if trading_dates.empty or not identity_work:
                     connection.rollback()
                     log.info("No source rows available; no results written")
-                    return (0, 0)
+                    return (0, 0, 0)
 
-                partitions = balance_identity_work(
-                    identity_work, cfg.max_workers
-                )
+                partitions = balance_identity_work(identity_work, cfg.max_workers)
                 tasks = [
                     WorkerTask(
                         cfg=cfg,
@@ -191,38 +194,52 @@ def run(cfg: Config) -> tuple[int, int]:
                 connection.commit()
 
                 frames = [item.signals for item in worker_results]
+                early_cut_frames = [item.early_cuts for item in worker_results]
                 signals = (
                     pd.concat(frames, ignore_index=True)
                     if frames
                     else empty_signal_frame()
                 )
-                del frames, worker_results
+                early_cuts = (
+                    pd.concat(early_cut_frames, ignore_index=True)
+                    if early_cut_frames
+                    else empty_early_cut_frame()
+                )
+                if len(early_cuts) != 3 * len(signals):
+                    raise RuntimeError(
+                        "early-cut landmark invariant failed: expected "
+                        f"{3 * len(signals)} rows for {len(signals)} signals, "
+                        f"received {len(early_cuts)}"
+                    )
+                del frames, early_cut_frames, worker_results
                 gc.collect()
 
                 research_started = time.monotonic()
-                result = run_research(signals, cfg)
+                result = run_research(signals, early_cuts, trading_dates, cfg)
                 research_seconds = time.monotonic() - research_started
-                selected_text = (
-                    " OR ".join(condition.text for condition in result.selected.final)
-                    or "none"
-                )
                 log.info(
-                    "Research evaluated %d signals and selected %d conditions in %.1f seconds: %s",
+                    "Research evaluated %d signals and %d early-cut landmarks and selected %d conditions in %.1f seconds: %s",
                     len(result.signals),
-                    len(result.selected.final),
+                    len(result.early_cuts),
+                    result.selected_condition_count,
                     research_seconds,
-                    selected_text,
+                    result.selected_text or "none",
                 )
-                signal_count, rule_count = db.write_results_atomic(
-                    connection, cfg, result.signals, result.rules
+                signal_count, early_cut_count, rule_count = db.write_results_atomic(
+                    connection,
+                    cfg,
+                    result.signals,
+                    result.early_cuts,
+                    result.rules,
                 )
                 log.info(
-                    "Atomically stored %d signal rows and %d rule rows in %.1f seconds",
+                    "Atomically stored %d signal rows, %d early-cut rows and %d rule rows in %.1f seconds",
                     signal_count,
+                    early_cut_count,
                     rule_count,
                     time.monotonic() - started,
                 )
-                return signal_count, rule_count
+                return signal_count, early_cut_count, rule_count
         finally:
             # Keep advisory-lock cleanup usable even after a failed statement.
             connection.rollback()

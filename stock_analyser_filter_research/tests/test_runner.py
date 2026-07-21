@@ -4,8 +4,13 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
-from stock_analyser_filter_research.computation import empty_signal_frame
+from stock_analyser_filter_research.computation import (
+    CalculationBatchResult,
+    empty_early_cut_frame,
+    empty_signal_frame,
+)
 from stock_analyser_filter_research import runner
 
 
@@ -59,7 +64,10 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
     monkeypatch.setattr(
         runner,
         "calculate_signal_batch",
-        lambda source, dates, cfg: empty_signal_frame(),
+        lambda source, dates, cfg: CalculationBatchResult(
+            signals=empty_signal_frame(),
+            early_cut=empty_early_cut_frame(),
+        ),
     )
     identities = (
         ("A", "NYSE", 1),
@@ -82,6 +90,64 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
     assert result.loaded_rows == 3
     assert result.identity_count == 3
     assert result.signals.empty
+    assert result.early_cuts.empty
+
+
+def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
+    cfg_factory, monkeypatch
+) -> None:
+    cfg = cfg_factory(worker_identity_batch_size=2)
+
+    @contextmanager
+    def fake_connect(cfg, app_suffix=None):
+        yield _WorkerConnection()
+
+    monkeypatch.setattr(runner.db, "connect", fake_connect)
+    monkeypatch.setattr(runner.db, "import_snapshot", lambda *args: None)
+    monkeypatch.setattr(
+        runner.db,
+        "load_source_batch",
+        lambda connection, cfg, identities: pd.DataFrame(
+            {"identity": list(identities)}
+        ),
+    )
+
+    def fake_calculate(source, dates, cfg):
+        signal_count = len(source)
+        signals = empty_signal_frame().reindex(range(signal_count))
+        early_cuts = empty_early_cut_frame().reindex(range(3 * signal_count))
+        early_cuts["landmark_day"] = [1, 2, 3] * signal_count
+        return CalculationBatchResult(signals=signals, early_cut=early_cuts)
+
+    monkeypatch.setattr(runner, "calculate_signal_batch", fake_calculate)
+    task = runner.WorkerTask(
+        cfg=cfg,
+        worker_number=1,
+        identities=(
+            ("A", "NYSE", 1),
+            ("B", "NYSE", 2),
+            ("C", "NASDAQ", 3),
+        ),
+        trading_dates=pd.date_range("2020-01-01", periods=3),
+        snapshot_id="snapshot-1",
+    )
+
+    result = runner._calculate_worker(task)
+
+    assert result.loaded_rows == 3
+    assert len(result.signals) == 3
+    assert len(result.early_cuts) == 9
+    assert result.early_cuts["landmark_day"].tolist() == [
+        1,
+        2,
+        3,
+        1,
+        2,
+        3,
+        1,
+        2,
+        3,
+    ]
 
 
 class _MainConnection:
@@ -139,11 +205,11 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
     monkeypatch.setattr(
         runner.db,
         "load_identity_work",
-        lambda connection, cfg: events.append("work")
-        or [("A", "NYSE", 1, 2)],
+        lambda connection, cfg: events.append("work") or [("A", "NYSE", 1, 2)],
     )
     worker_result = runner.WorkerResult(
         signals=empty_signal_frame(),
+        early_cuts=empty_early_cut_frame(),
         loaded_rows=2,
         identity_count=1,
         elapsed_seconds=0.1,
@@ -155,24 +221,31 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         return [worker_result]
 
     monkeypatch.setattr(runner, "_execute_workers", fake_workers)
-    selected = SimpleNamespace(final=())
     research_result = SimpleNamespace(
         signals=pd.DataFrame(index=range(2)),
+        early_cuts=pd.DataFrame(index=range(6)),
         rules=pd.DataFrame(index=range(3)),
-        selected=selected,
+        selected_condition_count=0,
+        selected_text="",
     )
     monkeypatch.setattr(
         runner,
         "run_research",
-        lambda signals, cfg: events.append("research") or research_result,
-    )
-    monkeypatch.setattr(
-        runner.db,
-        "write_results_atomic",
-        lambda connection, cfg, signals, rules: events.append("write") or (2, 3),
+        lambda signals, early_cuts, trading_dates, cfg: events.append("research")
+        or research_result,
     )
 
-    assert runner.run(cfg) == (2, 3)
+    def fake_write(connection, observed_cfg, signals, early_cuts, rules):
+        events.append("write")
+        assert observed_cfg is cfg
+        assert signals is research_result.signals
+        assert early_cuts is research_result.early_cuts
+        assert rules is research_result.rules
+        return (2, 6, 3)
+
+    monkeypatch.setattr(runner.db, "write_results_atomic", fake_write)
+
+    assert runner.run(cfg) == (2, 6, 3)
     assert events == [
         "connect",
         "lock",
@@ -190,3 +263,123 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         "rollback",
     ]
 
+
+@pytest.mark.parametrize(
+    ("trading_dates", "identity_work"),
+    [
+        (pd.DatetimeIndex([]), [("A", "NYSE", 1, 2)]),
+        (pd.date_range("2020-01-01", periods=3), []),
+    ],
+)
+def test_run_with_no_source_work_returns_empty_without_research_or_write(
+    cfg_factory,
+    monkeypatch,
+    trading_dates,
+    identity_work,
+) -> None:
+    cfg = cfg_factory(max_workers=1)
+    events: list[str] = []
+    connection = _MainConnection(events)
+
+    @contextmanager
+    def fake_connect(cfg):
+        events.append("connect")
+        yield connection
+
+    @contextmanager
+    def fake_lock(connection):
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    monkeypatch.setattr(runner.db, "connect", fake_connect)
+    monkeypatch.setattr(runner.db, "advisory_lock", fake_lock)
+    monkeypatch.setattr(
+        runner.db,
+        "begin_exported_snapshot",
+        lambda connection: "snapshot-1",
+    )
+    monkeypatch.setattr(runner.db, "validate_schema", lambda *args: None)
+    monkeypatch.setattr(runner.db, "assert_targets_empty", lambda *args: None)
+    monkeypatch.setattr(
+        runner.db,
+        "load_trading_dates",
+        lambda connection, cfg: trading_dates,
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_identity_work",
+        lambda connection, cfg: identity_work,
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("workers, research and writes must not run without source")
+
+    monkeypatch.setattr(runner, "_execute_workers", forbidden)
+    monkeypatch.setattr(runner, "run_research", forbidden)
+    monkeypatch.setattr(runner.db, "write_results_atomic", forbidden)
+
+    assert runner.run(cfg) == (0, 0, 0)
+    assert events == [
+        "connect",
+        "lock",
+        "commit",
+        "rollback",
+        "unlock",
+        "rollback",
+    ]
+
+
+def test_run_rejects_any_landmark_count_other_than_three_per_signal(
+    cfg_factory, monkeypatch
+) -> None:
+    cfg = cfg_factory(max_workers=1)
+    connection = _MainConnection([])
+
+    @contextmanager
+    def fake_connect(cfg):
+        yield connection
+
+    @contextmanager
+    def fake_lock(connection):
+        yield
+
+    monkeypatch.setattr(runner.db, "connect", fake_connect)
+    monkeypatch.setattr(runner.db, "advisory_lock", fake_lock)
+    monkeypatch.setattr(
+        runner.db,
+        "begin_exported_snapshot",
+        lambda connection: "snapshot-1",
+    )
+    monkeypatch.setattr(runner.db, "validate_schema", lambda *args: None)
+    monkeypatch.setattr(runner.db, "assert_targets_empty", lambda *args: None)
+    monkeypatch.setattr(
+        runner.db,
+        "load_trading_dates",
+        lambda *args: pd.date_range("2020-01-01", periods=3),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_identity_work",
+        lambda *args: [("A", "NYSE", 1, 2)],
+    )
+    worker_result = runner.WorkerResult(
+        signals=empty_signal_frame().reindex(range(2)),
+        early_cuts=empty_early_cut_frame().reindex(range(5)),
+        loaded_rows=2,
+        identity_count=1,
+        elapsed_seconds=0.1,
+    )
+    monkeypatch.setattr(runner, "_execute_workers", lambda tasks: [worker_result])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid landmark batches must not reach research or COPY")
+
+    monkeypatch.setattr(runner, "run_research", forbidden)
+    monkeypatch.setattr(runner.db, "write_results_atomic", forbidden)
+
+    with pytest.raises(
+        RuntimeError,
+        match="expected 6 rows for 2 signals, received 5",
+    ):
+        runner.run(cfg)

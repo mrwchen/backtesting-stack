@@ -34,6 +34,8 @@ def _env_date(name: str, default: str, *, optional: bool = False) -> date | None
 def _table_name(name: str, value: str) -> str:
     if not _QUALIFIED_IDENTIFIER.fullmatch(value):
         raise ValueError(f"{name} must be an unquoted PostgreSQL table name")
+    if value != value.lower():
+        raise ValueError(f"{name} must use lowercase PostgreSQL identifiers")
     return value
 
 
@@ -49,6 +51,7 @@ class Config:
     db_statement_timeout_ms: int
     source_table: str
     signal_result_table: str
+    early_cut_result_table: str
     rule_result_table: str
     log_level: str
 
@@ -56,19 +59,30 @@ class Config:
     signal_end_date: date | None
     discovery_end_date: date
     validation_end_date: date
+    holdout_cutoff_date: date
 
     weak_5d_max_gain_pct: float
     strong_5d_min_gain_pct: float
     deep_loss_5d_max_loss_pct: float
 
     quantile_count: int
-    max_rule_conditions: int
+    max_conditions_per_objective: int
+    rule_search_beam_width: int
+    walk_forward_first_year: int
+    min_walk_forward_folds: int
+    min_stable_fold_fraction: float
+    min_fold_objective_lift: float
+    min_fold_sample_count: int
+    min_fold_objective_count: int
+    min_fold_protected_retention_pct: float
+    max_fold_match_pct: float
     min_candidate_match_pct: float
     max_candidate_match_pct: float
-    min_strong_retention_pct: float
+    min_protected_retention_pct: float
     min_matched_label_coverage_pct: float
-    min_bad_lift: float
-    min_selection_score_improvement: float
+    min_objective_lift: float
+    min_selection_capture_improvement: float
+    min_holdout_sample_count: int
 
     max_workers: int
     worker_identity_batch_size: int
@@ -84,24 +98,25 @@ class Config:
             pg_database=os.getenv("PGDATABASE", "postgres"),
             pg_user=os.getenv("PGUSER", "market-data-account"),
             pg_password=os.getenv("PGPASSWORD", "market-data-account-pw"),
-            pg_app_name=os.getenv(
-                "PGAPPNAME", "stock_analyser_filter_research"
-            ),
-            db_connect_timeout_seconds=_env_int(
-                "DB_CONNECT_TIMEOUT_SECONDS", 15
-            ),
+            pg_app_name=os.getenv("PGAPPNAME", "stock_analyser_filter_research"),
+            db_connect_timeout_seconds=_env_int("DB_CONNECT_TIMEOUT_SECONDS", 15),
             db_statement_timeout_ms=_env_int("DB_STATEMENT_TIMEOUT_MS", 0),
             source_table=_table_name(
                 "SOURCE_TABLE",
-                os.getenv(
-                    "SOURCE_TABLE", "stock_analyser_trend_template_daily"
-                ),
+                os.getenv("SOURCE_TABLE", "stock_analyser_trend_template_daily"),
             ),
             signal_result_table=_table_name(
                 "SIGNAL_RESULT_TABLE",
                 os.getenv(
                     "SIGNAL_RESULT_TABLE",
                     "stock_analyser_filter_research_signal_results",
+                ),
+            ),
+            early_cut_result_table=_table_name(
+                "EARLY_CUT_RESULT_TABLE",
+                os.getenv(
+                    "EARLY_CUT_RESULT_TABLE",
+                    "stock_analyser_filter_research_early_cut_results",
                 ),
             ),
             rule_result_table=_table_name(
@@ -112,49 +127,40 @@ class Config:
                 ),
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
-            signal_start_date=_env_date(
-                "SIGNAL_START_DATE", "2016-01-01"
-            ),
-            signal_end_date=_env_date(
-                "SIGNAL_END_DATE", "", optional=True
-            ),
-            discovery_end_date=_env_date(
-                "DISCOVERY_END_DATE", "2022-12-31"
-            ),
-            validation_end_date=_env_date(
-                "VALIDATION_END_DATE", "2024-12-31"
-            ),
-            weak_5d_max_gain_pct=_env_float(
-                "WEAK_5D_MAX_GAIN_PCT", 2.0
-            ),
-            strong_5d_min_gain_pct=_env_float(
-                "STRONG_5D_MIN_GAIN_PCT", 5.0
-            ),
-            deep_loss_5d_max_loss_pct=_env_float(
-                "DEEP_LOSS_5D_MAX_LOSS_PCT", -5.0
-            ),
+            signal_start_date=_env_date("SIGNAL_START_DATE", "2016-01-01"),
+            signal_end_date=_env_date("SIGNAL_END_DATE", "", optional=True),
+            discovery_end_date=_env_date("DISCOVERY_END_DATE", "2022-12-31"),
+            validation_end_date=_env_date("VALIDATION_END_DATE", "2024-12-31"),
+            holdout_cutoff_date=_env_date("HOLDOUT_CUTOFF_DATE", "2026-07-20"),
+            weak_5d_max_gain_pct=_env_float("WEAK_5D_MAX_GAIN_PCT", 2.0),
+            strong_5d_min_gain_pct=_env_float("STRONG_5D_MIN_GAIN_PCT", 5.0),
+            deep_loss_5d_max_loss_pct=_env_float("DEEP_LOSS_5D_MAX_LOSS_PCT", -5.0),
             quantile_count=_env_int("QUANTILE_COUNT", 10),
-            max_rule_conditions=_env_int("MAX_RULE_CONDITIONS", 3),
-            min_candidate_match_pct=_env_float(
-                "MIN_CANDIDATE_MATCH_PCT", 0.01
+            max_conditions_per_objective=_env_int("MAX_CONDITIONS_PER_OBJECTIVE", 2),
+            rule_search_beam_width=_env_int("RULE_SEARCH_BEAM_WIDTH", 20),
+            walk_forward_first_year=_env_int("WALK_FORWARD_FIRST_YEAR", 2020),
+            min_walk_forward_folds=_env_int("MIN_WALK_FORWARD_FOLDS", 4),
+            min_stable_fold_fraction=_env_float("MIN_STABLE_FOLD_FRACTION", 0.75),
+            min_fold_objective_lift=_env_float("MIN_FOLD_OBJECTIVE_LIFT", 1.0),
+            min_fold_sample_count=_env_int("MIN_FOLD_SAMPLE_COUNT", 200),
+            min_fold_objective_count=_env_int("MIN_FOLD_OBJECTIVE_COUNT", 20),
+            min_fold_protected_retention_pct=_env_float(
+                "MIN_FOLD_PROTECTED_RETENTION_PCT", 0.85
             ),
-            max_candidate_match_pct=_env_float(
-                "MAX_CANDIDATE_MATCH_PCT", 0.35
-            ),
-            min_strong_retention_pct=_env_float(
-                "MIN_STRONG_RETENTION_PCT", 0.90
-            ),
+            max_fold_match_pct=_env_float("MAX_FOLD_MATCH_PCT", 0.40),
+            min_candidate_match_pct=_env_float("MIN_CANDIDATE_MATCH_PCT", 0.01),
+            max_candidate_match_pct=_env_float("MAX_CANDIDATE_MATCH_PCT", 0.35),
+            min_protected_retention_pct=_env_float("MIN_PROTECTED_RETENTION_PCT", 0.90),
             min_matched_label_coverage_pct=_env_float(
                 "MIN_MATCHED_LABEL_COVERAGE_PCT", 0.90
             ),
-            min_bad_lift=_env_float("MIN_BAD_LIFT", 1.05),
-            min_selection_score_improvement=_env_float(
-                "MIN_SELECTION_SCORE_IMPROVEMENT", 0.01
+            min_objective_lift=_env_float("MIN_OBJECTIVE_LIFT", 1.05),
+            min_selection_capture_improvement=_env_float(
+                "MIN_SELECTION_CAPTURE_IMPROVEMENT", 0.01
             ),
+            min_holdout_sample_count=_env_int("MIN_HOLDOUT_SAMPLE_COUNT", 500),
             max_workers=_env_int("MAX_WORKERS", cpu_default),
-            worker_identity_batch_size=_env_int(
-                "WORKER_IDENTITY_BATCH_SIZE", 16
-            ),
+            worker_identity_batch_size=_env_int("WORKER_IDENTITY_BATCH_SIZE", 16),
             db_fetch_batch_size=_env_int("DB_FETCH_BATCH_SIZE", 10_000),
             db_copy_batch_size=_env_int("DB_COPY_BATCH_SIZE", 5_000),
         )
@@ -168,76 +174,104 @@ class Config:
             raise ValueError("DB_CONNECT_TIMEOUT_SECONDS must be >= 1")
         if self.db_statement_timeout_ms < 0:
             raise ValueError("DB_STATEMENT_TIMEOUT_MS must be >= 0")
-        if self.signal_start_date is None:
-            raise ValueError("SIGNAL_START_DATE is required")
-        if self.discovery_end_date is None or self.validation_end_date is None:
-            raise ValueError("split end dates are required")
         if not (
             self.signal_start_date
             <= self.discovery_end_date
             < self.validation_end_date
+            < self.holdout_cutoff_date
         ):
             raise ValueError(
                 "dates must satisfy SIGNAL_START_DATE <= DISCOVERY_END_DATE "
-                "< VALIDATION_END_DATE"
+                "< VALIDATION_END_DATE < HOLDOUT_CUTOFF_DATE"
             )
         if (
             self.signal_end_date is not None
-            and self.signal_end_date <= self.validation_end_date
+            and self.signal_end_date < self.signal_start_date
         ):
             raise ValueError(
-                "SIGNAL_END_DATE must be empty or after VALIDATION_END_DATE"
+                "SIGNAL_END_DATE must be empty or not precede SIGNAL_START_DATE"
             )
+
         float_values = {
             "WEAK_5D_MAX_GAIN_PCT": self.weak_5d_max_gain_pct,
             "STRONG_5D_MIN_GAIN_PCT": self.strong_5d_min_gain_pct,
             "DEEP_LOSS_5D_MAX_LOSS_PCT": self.deep_loss_5d_max_loss_pct,
+            "MIN_STABLE_FOLD_FRACTION": self.min_stable_fold_fraction,
+            "MIN_FOLD_OBJECTIVE_LIFT": self.min_fold_objective_lift,
+            "MIN_FOLD_PROTECTED_RETENTION_PCT": (self.min_fold_protected_retention_pct),
+            "MAX_FOLD_MATCH_PCT": self.max_fold_match_pct,
             "MIN_CANDIDATE_MATCH_PCT": self.min_candidate_match_pct,
             "MAX_CANDIDATE_MATCH_PCT": self.max_candidate_match_pct,
-            "MIN_STRONG_RETENTION_PCT": self.min_strong_retention_pct,
-            "MIN_MATCHED_LABEL_COVERAGE_PCT": (
-                self.min_matched_label_coverage_pct
-            ),
-            "MIN_BAD_LIFT": self.min_bad_lift,
-            "MIN_SELECTION_SCORE_IMPROVEMENT": (
-                self.min_selection_score_improvement
+            "MIN_PROTECTED_RETENTION_PCT": (self.min_protected_retention_pct),
+            "MIN_MATCHED_LABEL_COVERAGE_PCT": (self.min_matched_label_coverage_pct),
+            "MIN_OBJECTIVE_LIFT": self.min_objective_lift,
+            "MIN_SELECTION_CAPTURE_IMPROVEMENT": (
+                self.min_selection_capture_improvement
             ),
         }
         for name, value in float_values.items():
             if not isfinite(value):
                 raise ValueError(f"{name} must be finite")
-        if self.weak_5d_max_gain_pct < 0:
-            raise ValueError("WEAK_5D_MAX_GAIN_PCT must be >= 0")
+        if self.weak_5d_max_gain_pct <= 0:
+            raise ValueError("WEAK_5D_MAX_GAIN_PCT must be > 0")
         if self.strong_5d_min_gain_pct <= self.weak_5d_max_gain_pct:
-            raise ValueError(
-                "STRONG_5D_MIN_GAIN_PCT must exceed WEAK_5D_MAX_GAIN_PCT"
-            )
+            raise ValueError("STRONG_5D_MIN_GAIN_PCT must exceed WEAK_5D_MAX_GAIN_PCT")
         if self.deep_loss_5d_max_loss_pct >= 0:
             raise ValueError("DEEP_LOSS_5D_MAX_LOSS_PCT must be negative")
         if not 4 <= self.quantile_count <= 20:
             raise ValueError("QUANTILE_COUNT must be between 4 and 20")
-        if not 1 <= self.max_rule_conditions <= 3:
-            raise ValueError("MAX_RULE_CONDITIONS must be between 1 and 3")
+        if not 1 <= self.max_conditions_per_objective <= 2:
+            raise ValueError("MAX_CONDITIONS_PER_OBJECTIVE must be 1 or 2")
+        if self.rule_search_beam_width < 1:
+            raise ValueError("RULE_SEARCH_BEAM_WIDTH must be >= 1")
         if not (
-            0
-            < self.min_candidate_match_pct
-            < self.max_candidate_match_pct
-            < 1
+            self.signal_start_date.year
+            < self.walk_forward_first_year
+            <= self.validation_end_date.year
         ):
+            raise ValueError(
+                "WALK_FORWARD_FIRST_YEAR must be after SIGNAL_START_DATE year "
+                "and no later than VALIDATION_END_DATE year"
+            )
+        last_fold_year = self.validation_end_date.year
+        if self.signal_end_date is not None:
+            last_fold_year = min(last_fold_year, self.signal_end_date.year)
+        available_folds = last_fold_year - self.walk_forward_first_year + 1
+        if not 1 <= self.min_walk_forward_folds <= available_folds:
+            raise ValueError(
+                "MIN_WALK_FORWARD_FOLDS exceeds configured development years"
+            )
+        if self.min_fold_sample_count < 1 or self.min_fold_objective_count < 1:
+            raise ValueError("fold sample/count minimums must be positive")
+        if self.min_holdout_sample_count < 1:
+            raise ValueError("MIN_HOLDOUT_SAMPLE_COUNT must be positive")
+        for name, value in (
+            ("MIN_STABLE_FOLD_FRACTION", self.min_stable_fold_fraction),
+            (
+                "MIN_FOLD_PROTECTED_RETENTION_PCT",
+                self.min_fold_protected_retention_pct,
+            ),
+            ("MAX_FOLD_MATCH_PCT", self.max_fold_match_pct),
+            (
+                "MIN_PROTECTED_RETENTION_PCT",
+                self.min_protected_retention_pct,
+            ),
+            (
+                "MIN_MATCHED_LABEL_COVERAGE_PCT",
+                self.min_matched_label_coverage_pct,
+            ),
+        ):
+            if not 0 < value <= 1:
+                raise ValueError(f"{name} must be in (0, 1]")
+        if not (0 < self.min_candidate_match_pct < self.max_candidate_match_pct < 1):
             raise ValueError(
                 "candidate match percentages must satisfy 0 < MIN < MAX < 1"
             )
-        if not 0 < self.min_strong_retention_pct <= 1:
-            raise ValueError("MIN_STRONG_RETENTION_PCT must be in (0, 1]")
-        if not 0 < self.min_matched_label_coverage_pct <= 1:
+        if self.min_objective_lift < 1 or self.min_fold_objective_lift < 1:
+            raise ValueError("objective lift minimums must be >= 1")
+        if not 0 <= self.min_selection_capture_improvement <= 1:
             raise ValueError(
-                "MIN_MATCHED_LABEL_COVERAGE_PCT must be in (0, 1]"
-            )
-        if self.min_bad_lift < 1:
-            raise ValueError("MIN_BAD_LIFT must be >= 1")
-        if self.min_selection_score_improvement < 0:
-            raise ValueError(
-                "MIN_SELECTION_SCORE_IMPROVEMENT must be non-negative"
+                "MIN_SELECTION_CAPTURE_IMPROVEMENT must be between 0 and 1"
             )
         if self.max_workers < 1:
             raise ValueError("MAX_WORKERS must be >= 1")
@@ -245,11 +279,23 @@ class Config:
             raise ValueError("WORKER_IDENTITY_BATCH_SIZE must be >= 1")
         if self.db_fetch_batch_size < 1 or self.db_copy_batch_size < 1:
             raise ValueError("database batch sizes must be >= 1")
-        for name, table in (
+
+        target_tables = (
             ("SIGNAL_RESULT_TABLE", self.signal_result_table),
+            ("EARLY_CUT_RESULT_TABLE", self.early_cut_result_table),
             ("RULE_RESULT_TABLE", self.rule_result_table),
-        ):
+        )
+        _table_name("SOURCE_TABLE", self.source_table)
+        for name, table in target_tables:
+            _table_name(name, table)
             if not table.split(".")[-1].startswith(_TARGET_PREFIX):
                 raise ValueError(f"{name} must start with {_TARGET_PREFIX}")
-        if self.signal_result_table == self.rule_result_table:
+        normalized_tables = {
+            (
+                table.rsplit(".", 1)[0] if "." in table else "public",
+                table.rsplit(".", 1)[-1],
+            )
+            for _, table in target_tables
+        }
+        if len(normalized_tables) != len(target_tables):
             raise ValueError("result table names must be distinct")

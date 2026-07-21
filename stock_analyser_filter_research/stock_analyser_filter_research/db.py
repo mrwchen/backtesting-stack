@@ -14,6 +14,9 @@ from psycopg2 import extensions, sql
 
 from .config import Config
 from .contracts import (
+    EARLY_CUT_BOOLEAN_COLUMNS,
+    EARLY_CUT_COLUMNS,
+    EARLY_CUT_INTEGER_COLUMNS,
     RULE_BOOLEAN_COLUMNS,
     RULE_COLUMNS,
     RULE_INTEGER_COLUMNS,
@@ -30,6 +33,13 @@ from .contracts import (
 # stock_analyser, because both programs are allowed to run at the same time.
 ADVISORY_LOCK_KEY = 7_321_904_823
 EXPECTED_SIGNAL_PRIMARY_KEY = ("signal_date", "symbol", "exchange", "cik")
+EXPECTED_EARLY_CUT_PRIMARY_KEY = (
+    "signal_date",
+    "symbol",
+    "exchange",
+    "cik",
+    "landmark_day",
+)
 EXPECTED_RULE_PRIMARY_KEY = ("result_id",)
 EXPECTED_CHUNK_INTERVAL = timedelta(days=365)
 COPY_NULL = r"\N"
@@ -124,6 +134,9 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         contracts, ("signal_date", "previous_session_date"), "date", nullable=False
     )
     _add_column_contracts(
+        contracts, ("forward_5d_label_end_date",), "date", nullable=True
+    )
+    _add_column_contracts(
         contracts,
         (
             "symbol",
@@ -137,7 +150,16 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         nullable=False,
     )
     _add_column_contracts(
-        contracts, ("matched_rule_ids", "exclusion_reason"), "text", nullable=True
+        contracts,
+        (
+            "gain_loss_order_5d",
+            "weak_matched_rule_ids",
+            "loss_first_matched_rule_ids",
+            "matched_rule_ids",
+            "exclusion_reason",
+        ),
+        "text",
+        nullable=True,
     )
     _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
     _add_column_contracts(
@@ -163,6 +185,8 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
             "strong_5d",
             "deep_loss_5d",
             "bad_5d",
+            "loss_first_5d",
+            "strong_first_5d",
             "late_strong_10d",
             "late_strong_20d",
         ),
@@ -171,9 +195,15 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(
         contracts,
-        ("include_stage_a", "include_stage_ab", "include_stage_abc"),
+        ("include_weak_filter", "include_loss_first_filter", "include_final"),
         "bool",
         nullable=False,
+    )
+    _add_column_contracts(
+        contracts,
+        ("first_gain_2pct_day", "first_gain_5pct_day", "first_loss_5pct_day"),
+        "int2",
+        nullable=True,
     )
     _add_column_contracts(
         contracts,
@@ -223,6 +253,117 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     return contracts
 
 
+def _early_cut_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(contracts, ("signal_date",), "date", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("landmark_date", "effective_session_date", "horizon_end_date"),
+        "date",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("symbol", "exchange", "currency", "analysis_split", "cut_decision"),
+        "text",
+        nullable=False,
+    )
+    _add_column_contracts(
+        contracts,
+        (
+            "continuation_outcome",
+            "stagnation_matched_rule_ids",
+            "loss_matched_rule_ids",
+            "matched_rule_ids",
+            "cut_reason",
+        ),
+        "text",
+        nullable=True,
+    )
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(
+        contracts, ("price_continuity_segment",), "int4", nullable=False
+    )
+    _add_column_contracts(contracts, ("landmark_day",), "int2", nullable=False)
+    _add_column_contracts(
+        contracts, ("landmark_adjusted_volume",), "int8", nullable=True
+    )
+    _add_column_contracts(
+        contracts,
+        (
+            "landmark_rs_rating",
+            "landmark_criteria_pass_count",
+            "first_gain_2pct_day_so_far",
+            "first_gain_5pct_day_so_far",
+            "first_loss_5pct_day_so_far",
+            "future_first_gain_2pct_day",
+            "future_first_gain_5pct_day",
+            "future_first_loss_5pct_day",
+        ),
+        "int2",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        (
+            "landmark_observed",
+            "same_continuity_segment",
+            "eligible_at_landmark",
+            "full_outcome_available",
+            "include_stagnation_filter",
+            "include_loss_filter",
+            "include_final",
+        ),
+        "bool",
+        nullable=False,
+    )
+    nullable_boolean_columns = set(EARLY_CUT_BOOLEAN_COLUMNS) - {
+        "landmark_observed",
+        "same_continuity_segment",
+        "eligible_at_landmark",
+        "full_outcome_available",
+        "include_stagnation_filter",
+        "include_loss_filter",
+        "include_final",
+    }
+    _add_column_contracts(contracts, nullable_boolean_columns, "bool", nullable=True)
+    _add_column_contracts(
+        contracts,
+        {
+            "landmark_volume_vs_sma21_prior_ratio",
+            "landmark_volume_vs_sma50_prior_ratio",
+            "landmark_notional_vs_sma21_prior_ratio",
+            "landmark_notional_vs_sma50_prior_ratio",
+            "mean_volume_since_signal_vs_prior21_ratio",
+            "mean_notional_since_signal_vs_prior21_ratio",
+        },
+        "numeric",
+        nullable=True,
+        precision=30,
+        scale=8,
+    )
+    _add_column_contracts(
+        contracts,
+        ("landmark_daily_traded_notional_usd",),
+        "numeric",
+        nullable=True,
+        precision=24,
+        scale=2,
+    )
+    remaining = set(EARLY_CUT_COLUMNS) - set(contracts)
+    _add_column_contracts(
+        contracts,
+        remaining,
+        "numeric",
+        nullable=True,
+        precision=20,
+        scale=8,
+    )
+    if set(contracts) != set(EARLY_CUT_COLUMNS):
+        raise AssertionError("early-cut database column contract is incomplete")
+    return contracts
+
+
 def _rule_column_contracts() -> dict[str, ColumnContract]:
     contracts: dict[str, ColumnContract] = {}
     _add_column_contracts(contracts, ("result_id",), "int8", nullable=False)
@@ -231,7 +372,9 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         (
             "rule_id",
             "result_kind",
-            "stage",
+            "decision_family",
+            "objective",
+            "protected_outcome",
             "feature_group",
             "rule_text",
             "evaluation_scope",
@@ -243,21 +386,29 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         contracts, ("feature_name", "operator"), "text", nullable=True
     )
     _add_column_contracts(
-        contracts, ("period_start", "period_end"), "date", nullable=True
+        contracts,
+        ("period_start", "period_end", "threshold_fit_end_date"),
+        "date",
+        nullable=True,
     )
     _add_column_contracts(
         contracts, ("is_selected", "is_final_filter"), "bool", nullable=False
     )
-    _add_column_contracts(contracts, ("passes_holdout",), "bool", nullable=True)
     _add_column_contracts(
         contracts,
-        ("bin_number", "selection_order", "scope_year"),
+        ("passes_holdout", "passes_development_gates", "passes_stability_gates"),
+        "bool",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("landmark_day", "selection_order", "scope_year"),
         "int2",
         nullable=True,
     )
     _add_column_contracts(contracts, ("component_count",), "int2", nullable=False)
     count_columns = set(RULE_INTEGER_COLUMNS) - {
-        "bin_number",
+        "landmark_day",
         "selection_order",
         "scope_year",
         "component_count",
@@ -265,7 +416,7 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
     _add_column_contracts(contracts, count_columns, "int4", nullable=False)
     _add_column_contracts(
         contracts,
-        ("threshold_value", "bin_lower_bound", "bin_upper_bound"),
+        ("quantile_value", "threshold_value"),
         "numeric",
         nullable=True,
         precision=30,
@@ -287,6 +438,7 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
 
 SOURCE_COLUMN_CONTRACTS = _source_column_contracts()
 SIGNAL_COLUMN_CONTRACTS = _signal_column_contracts()
+EARLY_CUT_COLUMN_CONTRACTS = _early_cut_column_contracts()
 RULE_COLUMN_CONTRACTS = _rule_column_contracts()
 
 
@@ -552,8 +704,10 @@ def _validate_primary_key(
         )
 
 
-def _validate_signal_hypertable(
-    connection: extensions.connection, table_name: str
+def _validate_hypertable(
+    connection: extensions.connection,
+    table_name: str,
+    time_column: str,
 ) -> None:
     schema_name, relation_name = _schema_and_table(table_name)
     with connection.cursor() as cursor:
@@ -583,9 +737,9 @@ def _validate_signal_hypertable(
             (schema_name, relation_name),
         )
         dimensions = cursor.fetchall()
-    if dimensions != [("signal_date", EXPECTED_CHUNK_INTERVAL)]:
+    if dimensions != [(time_column, EXPECTED_CHUNK_INTERVAL)]:
         raise RuntimeError(
-            f"target hypertable {table_name} requires one signal_date time "
+            f"target hypertable {table_name} requires one {time_column} time "
             f"dimension with a 365-day chunk interval, found {dimensions!r}"
         )
 
@@ -656,6 +810,12 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_required_columns(
         connection,
+        cfg.early_cut_result_table,
+        EARLY_CUT_COLUMNS,
+        reject_extra=True,
+    )
+    _validate_required_columns(
+        connection,
         cfg.rule_result_table,
         ("result_id", *RULE_COLUMNS),
         reject_extra=True,
@@ -663,6 +823,9 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     _validate_column_definitions(connection, cfg.source_table, SOURCE_COLUMN_CONTRACTS)
     _validate_column_definitions(
         connection, cfg.signal_result_table, SIGNAL_COLUMN_CONTRACTS
+    )
+    _validate_column_definitions(
+        connection, cfg.early_cut_result_table, EARLY_CUT_COLUMN_CONTRACTS
     )
     _validate_column_definitions(
         connection, cfg.rule_result_table, RULE_COLUMN_CONTRACTS
@@ -674,10 +837,16 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_primary_key(
         connection,
+        cfg.early_cut_result_table,
+        EXPECTED_EARLY_CUT_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
         cfg.rule_result_table,
         EXPECTED_RULE_PRIMARY_KEY,
     )
-    _validate_signal_hypertable(connection, cfg.signal_result_table)
+    _validate_hypertable(connection, cfg.signal_result_table, "signal_date")
+    _validate_hypertable(connection, cfg.early_cut_result_table, "signal_date")
     _validate_rule_is_regular_table(connection, cfg.rule_result_table)
     _validate_rule_result_id_default(connection, cfg.rule_result_table)
 
@@ -696,7 +865,11 @@ def assert_targets_empty(connection: extensions.connection, cfg: Config) -> None
 
     nonempty = [
         table_name
-        for table_name in (cfg.signal_result_table, cfg.rule_result_table)
+        for table_name in (
+            cfg.signal_result_table,
+            cfg.early_cut_result_table,
+            cfg.rule_result_table,
+        )
         if not _target_empty(connection, table_name)
     ]
     if nonempty:
@@ -708,29 +881,16 @@ def assert_targets_empty(connection: extensions.connection, cfg: Config) -> None
         )
 
 
-def _source_end_predicate(
-    cfg: Config, *, alias: str | None = None
-) -> tuple[sql.Composed, list[Any]]:
-    if cfg.signal_end_date is None:
-        return sql.SQL(""), []
-    prefix = sql.SQL("") if alias is None else sql.SQL(alias + ".")
-    return (
-        sql.SQL(" WHERE {}{} <= %s").format(prefix, sql.Identifier("period_end_date")),
-        [cfg.signal_end_date],
-    )
-
-
 def load_trading_dates(
     connection: extensions.connection, cfg: Config
 ) -> pd.DatetimeIndex:
-    """Load the global stock-session calendar, including pre-start history."""
+    """Load every available session needed for lookbacks and forward labels."""
 
-    end_clause, parameters = _source_end_predicate(cfg)
     statement = sql.SQL(
-        "SELECT DISTINCT period_end_date FROM {}{} ORDER BY period_end_date"
-    ).format(_qualified_identifier(cfg.source_table), end_clause)
+        "SELECT DISTINCT period_end_date FROM {} ORDER BY period_end_date"
+    ).format(_qualified_identifier(cfg.source_table))
     with connection.cursor() as cursor:
-        cursor.execute(statement, parameters)
+        cursor.execute(statement)
         values = [row[0] for row in cursor.fetchall()]
     return pd.DatetimeIndex(values).normalize()
 
@@ -741,20 +901,25 @@ def load_identity_work(
     """Return relevant identities and their actual source-row workload.
 
     Identities without a passing day in the requested signal period cannot
-    produce an event, so they are omitted. Their earlier rows are still counted
-    and later loaded when they are relevant, preserving every causal lookback.
+    produce an event, so they are omitted. Every available row for a relevant
+    identity is counted and later loaded, preserving causal lookbacks and the
+    post-signal D+5 observation window even when SIGNAL_END_DATE is configured.
     """
 
-    end_clause, parameters = _source_end_predicate(cfg, alias="source")
-    parameters.append(cfg.signal_start_date)
     statement = sql.SQL(
         "SELECT source.symbol, source.exchange, source.cik, count(*)::bigint "
-        "FROM {} AS source{} "
+        "FROM {} AS source "
         "GROUP BY source.symbol, source.exchange, source.cik "
         "HAVING bool_or(source.trend_template_pass "
-        "AND source.period_end_date >= %s) "
+        "AND source.period_end_date >= %s "
+        "AND (%s::date IS NULL OR source.period_end_date <= %s)) "
         "ORDER BY source.symbol, source.exchange, source.cik"
-    ).format(_qualified_identifier(cfg.source_table), end_clause)
+    ).format(_qualified_identifier(cfg.source_table))
+    parameters = [
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    ]
     with connection.cursor() as cursor:
         cursor.execute(statement, parameters)
         rows = cursor.fetchall()
@@ -848,12 +1013,11 @@ def load_source_batch(
     cfg: Config,
     identities: Sequence[StockIdentity],
 ) -> pd.DataFrame:
-    """Stream all causal history for one bounded batch of identities."""
+    """Stream all available history for one bounded batch of identities."""
 
     if not identities:
         return pd.DataFrame(columns=SOURCE_COLUMNS)
     symbols, exchanges, ciks = _validate_identities(identities)
-    end_clause, end_parameters = _source_end_predicate(cfg, alias="source")
     selected_columns = sql.SQL(", ").join(
         sql.SQL("source.{}").format(sql.Identifier(column)) for column in SOURCE_COLUMNS
     )
@@ -863,15 +1027,14 @@ def load_source_batch(
         "AS selected(symbol, exchange, cik) "
         "ON source.symbol = selected.symbol "
         "AND source.exchange = selected.exchange "
-        "AND source.cik = selected.cik{} "
+        "AND source.cik = selected.cik "
         "ORDER BY source.symbol, source.exchange, source.cik, "
         "source.period_end_date"
     ).format(
         selected_columns,
         _qualified_identifier(cfg.source_table),
-        end_clause,
     )
-    parameters: list[Any] = [symbols, exchanges, ciks, *end_parameters]
+    parameters: list[Any] = [symbols, exchanges, ciks]
     frames: list[pd.DataFrame] = []
     cursor_name = f"safr_source_{uuid4().hex[:20]}"
     with connection.cursor(name=cursor_name) as cursor:
@@ -932,10 +1095,7 @@ def _copy_csv_batch(
 
     for column in set(boolean_columns).intersection(columns):
         batch[column] = pd.array(
-            [
-                _normalize_boolean_value(value, column)
-                for value in batch[column].array
-            ],
+            [_normalize_boolean_value(value, column) for value in batch[column].array],
             dtype="boolean",
         )
 
@@ -1079,17 +1239,24 @@ def write_results_atomic(
     connection: extensions.connection,
     cfg: Config,
     signals: pd.DataFrame,
+    early_cuts: pd.DataFrame,
     rules: pd.DataFrame,
-) -> tuple[int, int]:
-    """COPY both result sets in one new read/write transaction."""
+) -> tuple[int, int, int]:
+    """COPY all three result sets in one new read/write transaction."""
 
     _validate_result_frame(signals, SIGNAL_COLUMNS, "signal result")
+    _validate_result_frame(early_cuts, EARLY_CUT_COLUMNS, "early-cut result")
     _validate_result_frame(rules, RULE_COLUMNS, "rule result")
     if (
         not signals.empty
         and signals.duplicated(list(EXPECTED_SIGNAL_PRIMARY_KEY)).any()
     ):
         raise ValueError("signal result frame contains duplicate primary keys")
+    if (
+        not early_cuts.empty
+        and early_cuts.duplicated(list(EXPECTED_EARLY_CUT_PRIMARY_KEY)).any()
+    ):
+        raise ValueError("early-cut result frame contains duplicate primary keys")
 
     if _transaction_status(connection) != extensions.TRANSACTION_STATUS_IDLE:
         raise RuntimeError(
@@ -1101,7 +1268,7 @@ def write_results_atomic(
         with connection.cursor() as cursor:
             cursor.execute("BEGIN TRANSACTION READ WRITE")
         # Recheck after the long worker phase and inside the same transaction as
-        # both COPY statements. All program instances cooperate via the session
+        # all three COPY statements. All program instances cooperate via the session
         # advisory lock, so this also closes the rebuild race.
         assert_targets_empty(connection, cfg)
         _copy_frame(
@@ -1112,6 +1279,15 @@ def write_results_atomic(
             cfg.db_copy_batch_size,
             integer_columns=SIGNAL_INTEGER_COLUMNS,
             boolean_columns=SIGNAL_BOOLEAN_COLUMNS,
+        )
+        _copy_frame(
+            connection,
+            cfg.early_cut_result_table,
+            early_cuts,
+            EARLY_CUT_COLUMNS,
+            cfg.db_copy_batch_size,
+            integer_columns=EARLY_CUT_INTEGER_COLUMNS,
+            boolean_columns=EARLY_CUT_BOOLEAN_COLUMNS,
         )
         _copy_frame(
             connection,
@@ -1126,4 +1302,4 @@ def write_results_atomic(
     except Exception:
         connection.rollback()
         raise
-    return len(signals), len(rules)
+    return len(signals), len(early_cuts), len(rules)

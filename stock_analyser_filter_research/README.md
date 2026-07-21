@@ -1,109 +1,153 @@
-# Stock Analyser Filter Research
+# Stock Analyser Filter Research V2
 
-Dieses eigenstaendige Research-Programm untersucht alle kausalen
-`false -> true`-Ereignisse des 8-von-8-Trend-Templates aus
-`stock_analyser_trend_template_daily`. Es simuliert kein Portfolio und
-beruecksichtigt weder Orders, Kosten noch Slippage. Das Ergebnis ist eine kleine,
-interpretierbare Menge von Ausschlussregeln fuer Signale, die in den folgenden
-fuenf Handelssessions schwach bleiben oder stark verlieren.
+Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
+Ereignisse des 8-von-8-Trend-Templates aus
+`stock_analyser_trend_template_daily`. Es simuliert weder ein Portfolio noch
+Orders, Kosten oder Slippage. Das Ergebnis sind einfache, nachvollziehbare
+Include-/Exclude-Regeln am Signaltag sowie kausale Hold-/Cut-Regeln nach D+1,
+D+2 und D+3.
 
-## Research-Vertrag
+## Signalvertrag
 
-Ein Signal entsteht nur, wenn dieselbe `(symbol, exchange, cik)` in der aktuellen
-globalen Handelssession alle acht Kriterien besteht und in der unmittelbar
-vorherigen globalen Session nicht bestanden hat. Fehlende Sessions,
-Kontinuitaetssegment-Wechsel, erste Beobachtungen und `true -> true` erzeugen kein
+Ein Signal entsteht nur, wenn dieselbe `(symbol, exchange, cik)` in der
+aktuellen globalen Handelssession alle acht Kriterien besteht und in der
+unmittelbar vorherigen globalen Session nicht bestanden hat. Beide Sessions
+muessen beobachtet sein und zum selben Kontinuitaetssegment gehoeren.
+`true -> true`, erste Beobachtungen, Luecken und Segmentwechsel erzeugen kein
 neues Signal.
 
-Die Version 1 untersucht drei Stufen:
+Die A-Features verwenden teilweise die komplette Signaltagskerze. Eine
+Signaltagsentscheidung ist daher erst nach Handelsschluss bekannt. Das Programm
+berechnet bewusst keinen fiktiven Same-Close- oder Next-Open-Return.
 
-- **A – Zustand am Signaltag:** unter anderem Volume/21d Avg, Volume/50d Avg,
-  Notional/21d Avg, Notional/50d Avg, Liquiditaet, RS-Rating sowie Abstaende zu
-  gleitenden Durchschnitten und 52-Wochen-Grenzen.
-- **B – vorheriger Chartverlauf:** Renditen, Momentum-Beschleunigung, ATR,
-  Drawdown, Position im vorherigen Kursbereich, Range-Kompression und
-  RS-Veraenderung. Historische Fenster enden ausnahmslos am Vortag.
-- **C – vorheriger Aktivitaetsverlauf:** kurz-/mittelfristige Volume- und
-  Notional-Verhaeltnisse, Up-Session-Anteile sowie Preis-Aktivitaets-Korrelationen.
+## Getrennte Entry-Ziele
 
-Fundamentaldaten sind bewusst noch nicht Teil dieser ersten, einfachen Version.
-Sie koennen spaeter als Stufe D ergaenzt werden, sobald A-C belastbare
-Out-of-sample-Ergebnisse liefern.
+V2 vermischt schwache und stark verlierende Signale nicht mehr zu einem
+Optimierungsziel:
 
-Die Zielvariablen beziehen sich auf den Adjusted Close des Signaltags:
+- `weak_5d`: In D+1 bis D+5 wird ausgehend vom Signaltags-Close nie +2 %
+  erreicht.
+- `loss_first_5d`: Die -5-%-Barriere wird vor der +5-%-Barriere erreicht.
+- `strong_first_5d`: Die +5-%-Barriere wird vor der -5-%-Barriere erreicht und
+  bildet die geschuetzte Klasse.
 
-- `weak_5d`: maximaler 5-Session-Gewinn `< 2 %`
-- `strong_5d`: maximaler 5-Session-Gewinn `>= 5 %`
-- `deep_loss_5d`: maximaler 5-Session-Verlust `<= -5 %`
-- `bad_5d`: `weak_5d OR deep_loss_5d`
+Wenn beide Barrieren in derselben Tageskerze erreicht werden, ist die
+Intraday-Reihenfolge mit Tagesdaten unbekannt. Solche Faelle werden als
+`same_day_ambiguous` gespeichert und nicht gewaltsam einem der beiden
+Reihenfolgeziele zugeordnet. `deep_loss_5d`, `strong_5d` und `bad_5d` bleiben
+als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 
-Unvollstaendige Forward-Horizonte bleiben `NULL` und werden nicht zur
-Regelauswahl verwendet.
+## Feature-Gruppen A-C
 
-## Schutz vor Look-ahead und Overfitting
+- **A – Zustand am Signaltag:** Volume/21d, Volume/50d, Notional/21d,
+  Notional/50d, Liquiditaet, RS, Triggerkontext, Trendgeometrie und Position zu
+  den 52-Wochen-Grenzen.
+- **B – Chartverlauf bis D-1:** Renditen, Beschleunigung, ATR, Drawdown,
+  vorherige Hochs, Range-Kompression und RS-Aenderung.
+- **C – Aktivitaetsverlauf bis D-1:** kurz-/mittelfristige Volume- und
+  Notional-Verhaeltnisse, Up-Session-Anteile sowie Preis-Aktivitaets-
+  Korrelationen.
 
-Schwellenwerte werden nur aus dem Discovery-Zeitraum bis 2022-12-31 gewonnen.
-Eine Regel muss danach sowohl in Discovery als auch in Validation (2023-2024)
-Mindestbedingungen fuer Bad-Trade-Lift, Ausschlussrate und Erhalt starker Signale
-erfuellen. Pro Stufe wird hoechstens eine einfache Bedingung gewaehlt; die finale
-Entscheidung ist `A OR B OR C`. Daten ab 2025 bleiben bis zur fertigen Auswahl
-unangetasteter Testbestand.
+A, B und C sind bei der Auswahl gleichberechtigt. Es gibt keine irreversible
+Reihenfolge A -> B -> C mehr. Pro Ziel werden hoechstens zwei einfache
+Quantilbedingungen gewaehlt und mit `OR` verknuepft. Die beiden Zielregeln
+werden anschliessend nur in einer Kombination verwendet, welche die gemeinsame
+Strong-Retention- und Ausschlussgrenze weiterhin einhaelt.
 
-Die jeweils letzten fuenf globalen Handelssessions vor dem Ende von Discovery
-und Validation tragen den Split `purged`: Ihre Signale werden gespeichert, aber
-ihre erst im folgenden Zeitraum bekannten 5-Session-Ergebnisse duerfen nicht in
-die Schwellen- oder Regelauswahl einfliessen.
+Fundamentaldaten sind weiterhin nicht Teil von V2.
 
-Standardbedingungen:
+## Walk-forward und neuer Holdout
 
-- mindestens `max(50, 1 %)` gelabelte Signale ausgeschlossen
-- hoechstens 35 % gelabelte Signale ausgeschlossen
-- mindestens 90 % der starken Signale behalten
-- mindestens 90 % vollstaendige 5-Tage-Labels unter den gematchten Signalen
-- Bad-Trade-Lift mindestens 1,05
-- jede weitere Stufe verbessert die Bad-Trade-Capture-Rate in Discovery und
-  Validation um mindestens einen Prozentpunkt
+Quantil-Policies werden expanding walk-forward geprueft. Standardmaessig wird
+fuer jedes Evaluationsjahr 2020 bis 2024 der Schwellenwert ausschliesslich aus
+frueheren Featurezeilen bestimmt. Die letzten Signale, deren D+5-Label erst im
+Folgejahr bekannt waere, bleiben sichtbar, werden fuer den Fold aber gepurgt.
 
-Diese Grenzen sind Research-Hyperparameter und stehen explizit in `compose.yaml`.
+Eine Regel muss neben den gepoolten Safety-Gates in mindestens vier
+aussagefaehigen Jahresfolds stabil sein. Standardbedingungen sind unter
+anderem:
+
+- mindestens `max(50, 1 %)` gelabelte Matches,
+- hoechstens 35 % Matches,
+- mindestens 90 % Retention der geschuetzten Strong-First-Klasse,
+- mindestens 90 % Labelabdeckung unter den Matches,
+- Objective-Lift mindestens 1,05,
+- positiver Lift in mindestens 75 % der aussagefaehigen Jahresfolds,
+- mindestens ein Prozentpunkt zusaetzliche Capture fuer eine zweite Bedingung.
+
+Der bereits betrachtete Zeitraum 2025 bis einschliesslich 20.07.2026 ist nur
+`diagnostic` und darf die Auswahl oder den finalen Schwellenwert nicht aendern.
+Die erste globale Handelssession nach dem 20.07.2026 beginnt den neuen,
+unangetasteten `holdout`. Solange dort weniger als die konfigurierte
+Mindestanzahl gelabelter Beobachtungen vorliegt, bleibt `passes_holdout` NULL
+statt faelschlich `false` zu werden.
+
+## Early Cut D+1 bis D+3
+
+Zu jedem Signal werden genau drei Landmark-Zeilen gespeichert:
+
+- Entscheidung nach Close D+1, wirksam ab D+2,
+- Entscheidung nach Close D+2, wirksam ab D+3,
+- Entscheidung nach Close D+3, wirksam ab D+4.
+
+Jede Landmark-Zeile verwendet nur Informationen bis zu ihrem Close. Dazu
+gehoeren bisherige MFE/MAE, Rendite seit dem Signal, Drawdown/Rebound,
+Tagesrange, Close-Position, Volume-/Notional-Verhaeltnisse, RS- und
+Trendabstaende. Future-Spalten der Source werden nie als Feature verwendet.
+
+Die verbleibende Entwicklung wird bis zum unveraenderten Ende D+5 bewertet.
+Die pfadbewusste Klasse ist eine von:
+
+- `loss_first`,
+- `strong_first`,
+- `same_session_ambiguous`,
+- `stagnant`,
+- `neutral`.
+
+Bereits bis zum Landmark erreichte +/-5-%-Barrieren verlassen das primaere
+Early-Cut-Risk-Set. Luecken, Segmentwechsel, Delistings und unvollstaendige
+Horizonte werden zensiert und niemals als Verlust oder Erfolg unterstellt.
+Alle drei Landmark-Zeilen bleiben trotzdem gespeichert, damit Coverage
+sichtbar ist. Die drei Landmarks sind unabhaengige Research-Entscheidungen;
+eine hypothetische fruehere Cut-Regel entfernt keine spaetere Zeile.
+Der Split einer Landmark-Zeile richtet sich nach ihrem eigenen
+`landmark_date`; ein Entry unmittelbar vor einer Jahres- oder Holdout-Grenze
+zieht seine spaeteren Early-Cut-Entscheidungen daher nicht in den alten Split.
 
 ## Datenbanktabellen
 
-Das Init-SQL erzeugt ausschliesslich:
+Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
 
-- `stock_analyser_filter_research_signal_results`: unkomprimierte
-  Timescale-Hypertable mit 365-Tage-Chunks, allen Signalfeatures, Labels und der
-  finalen Include-/Exclude-Entscheidung.
-- `stock_analyser_filter_research_rule_results`: Kandidaten-, Quantil- und
-  ausgewaehlte Regelmetriken fuer Discovery, Validation, Test, Gesamtbestand und
-  Kalenderjahre. Signal-, Unlabeled- und Coverage-Zaehler machen unvollstaendige
-  Forward-Horizonte sichtbar.
+- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-C-Features,
+  pfadbewusste Labels und finale Entry-Entscheidungen.
+- `stock_analyser_filter_research_early_cut_results`: genau drei kausale
+  Landmark-Zeilen je Signal mit Hold-/Cut-Entscheidungen.
+- `stock_analyser_filter_research_rule_results`: generische Kandidaten-,
+  Walk-forward-, Diagnose-, Holdout- und ausgewählte Regelmetriken fuer beide
+  Entscheidungsfamilien und Ziele.
 
-Es gibt keine JSON-Spalten und keine Audit-/Run-Tabelle. Runtime-Code erzeugt oder
-veraendert keine DB-Struktur; er validiert den Schema-Vertrag und schreibt beide
-leeren Zieltabellen atomar. Sind Zielzeilen vorhanden, bricht der Lauf ab.
+Signal- und Early-Cut-Tabelle sind unkomprimierte Timescale-Hypertables mit
+365-Tage-Chunks. Es gibt keine JSON-, Audit- oder Run-Tabelle. Runtime-Code
+erzeugt oder aendert keine DB-Struktur; er validiert den vollstaendigen Vertrag
+und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Auf der Trading-VM kann der erste Lauf beide Tabellen ohne Drop erzeugen und
-danach direkt befuellen:
-
-```bash
-docker compose up --build --force-recreate stock-analyser-filter-research
-```
-
-Ein spaeterer vollstaendiger Neuaufbau benoetigt explizit den bereits
-freigegebenen Drop-Schalter:
+Der inkompatible V2-Neuaufbau der freigegebenen, reproduzierbaren
+Research-Tabellen erfolgt einmalig mit:
 
 ```bash
 DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START=true \
   docker compose up --build --force-recreate stock-analyser-filter-research
 ```
 
-Der Prozess nutzt nach Zeilenanzahl balancierte, disjunkte Aktienpartitionen.
-Jeder Worker-Prozess besitzt eine eigene DB-Verbindung; nur der Hauptprozess
-schreibt. Alle Worker importieren denselben exportierten PostgreSQL-Snapshot und
-sehen dadurch exakt denselben Source-Stand. Die Anzahl der Prozesse und die Identity-Batchgroesse sind ueber
-`MAX_WORKERS` und `WORKER_IDENTITY_BATCH_SIZE` steuerbar.
+Der Drop-Schalter ist und bleibt standardmaessig `false`. Ohne expliziten Drop
+bricht das Programm bei bereits vorhandenen Zielzeilen ab.
+
+Die Berechnung nutzt disjunkte, nach Source-Zeilenzahl balancierte
+Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung und
+importiert denselben exportierten PostgreSQL-Snapshot. Nur der Hauptprozess
+schreibt die drei Ergebnistabellen.
 
 ## Tests
 
