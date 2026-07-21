@@ -681,6 +681,25 @@ def test_next_session_missing_does_not_change_landmark_eligibility(
     assert pd.isna(day1["continuation_outcome"])
 
 
+def test_nullable_string_gap_does_not_require_boolean_value_of_na(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2023-01-01", periods=40, freq="D")
+    position = 25
+    source = _source_frame(dates)
+    source["symbol"] = source["symbol"].astype("string")
+    source["exchange"] = source["exchange"].astype("string")
+    _set_pass(source, position)
+    source = source.loc[source["period_end_date"].ne(dates[position + 2])]
+
+    result = calculate_identity_results(source, dates, cfg_factory())
+
+    assert len(result.early_cut) == 3
+    day2 = _landmark_row(result.early_cut, 2)
+    assert not bool(day2["landmark_observed"])
+    assert day2["cut_decision"] == "not_evaluable"
+
+
 def test_end_of_calendar_is_censored_but_still_emits_three_landmarks(
     cfg_factory,
 ) -> None:

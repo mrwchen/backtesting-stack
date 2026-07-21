@@ -821,10 +821,15 @@ def _early_cut_landmark_row(
     if _finite_positive(signal_close):
         row["signal_adjusted_close"] = float(signal_close)
 
-    landmark_observed = bool(
-        landmark_position < len(indexed)
-        and indexed["symbol"].iloc[landmark_position] == signal["symbol"]
-    )
+    landmark_observed = False
+    if 0 <= landmark_position < len(indexed):
+        landmark_symbol = indexed["symbol"].iloc[landmark_position]
+        signal_symbol = signal["symbol"]
+        landmark_observed = bool(
+            pd.notna(landmark_symbol)
+            and pd.notna(signal_symbol)
+            and landmark_symbol == signal_symbol
+        )
     row["landmark_observed"] = landmark_observed
     # Eligibility is decided at the landmark close.  The following session is
     # only when a possible cut becomes effective; requiring that observation
