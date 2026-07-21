@@ -175,7 +175,14 @@ def _fundamental_snapshot_source_column_contracts() -> dict[str, ColumnContract]
         nullable=True,
     )
     remaining = set(FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS) - set(contracts)
-    _add_column_contracts(contracts, remaining, "numeric", nullable=True)
+    _add_column_contracts(
+        contracts,
+        remaining,
+        "numeric",
+        nullable=True,
+        precision=18,
+        scale=6,
+    )
     if set(contracts) != set(FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS):
         raise AssertionError("fundamental snapshot source contract is incomplete")
     return contracts
@@ -201,8 +208,31 @@ def _quarterly_fundamental_event_source_column_contracts(
     _add_column_contracts(
         contracts, ("accepted_at",), "timestamptz", nullable=True
     )
+    _add_column_contracts(
+        contracts,
+        ("diluted_eps", "prior_year_diluted_eps"),
+        "numeric",
+        nullable=True,
+        precision=18,
+        scale=6,
+    )
+    _add_column_contracts(
+        contracts,
+        ("quarterly_revenue", "prior_year_quarterly_revenue"),
+        "numeric",
+        nullable=True,
+        precision=28,
+        scale=2,
+    )
     remaining = set(QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS) - set(contracts)
-    _add_column_contracts(contracts, remaining, "numeric", nullable=True)
+    _add_column_contracts(
+        contracts,
+        remaining,
+        "numeric",
+        nullable=True,
+        precision=18,
+        scale=8,
+    )
     if set(contracts) != set(QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS):
         raise AssertionError("quarterly fundamental event source contract is incomplete")
     return contracts

@@ -203,6 +203,15 @@ def test_database_column_contracts_cover_every_written_column(
     assert set(db.QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS) == set(
         QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS
     )
+    assert db.FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS[
+        "sec_operating_margin_ttm"
+    ] == ("numeric", True, 18, 6)
+    assert db.QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS[
+        "quarterly_revenue"
+    ] == ("numeric", True, 28, 2)
+    assert db.QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS[
+        "quarterly_operating_margin"
+    ] == ("numeric", True, 18, 8)
     assert set(db.EARLY_CUT_COLUMN_CONTRACTS) == set(EARLY_CUT_COLUMNS)
     assert set(db.RULE_COLUMN_CONTRACTS) == {"result_id", *RULE_COLUMNS}
     assert db.EARLY_CUT_COLUMN_CONTRACTS["active_at_landmark"] == (
