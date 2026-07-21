@@ -1508,10 +1508,12 @@ def _apply_max_stat_permutation_gate(
 ) -> None:
     """Apply a deterministic family-wise max-statistic gate on validation data.
 
-    The three-class label (objective/protected/other) is permuted within
-    calendar years.  Every candidate is compared with the maximum null score
-    across the complete evaluable candidate family, so adding many features or
-    interactions cannot silently increase the false-positive budget.
+    The joint objective/protected label state is permuted within calendar
+    years.  This preserves all four possible states, including observations
+    that belong to both classes.  Every candidate is compared with the maximum
+    null score across the complete evaluable candidate family, so adding many
+    features or interactions cannot silently increase the false-positive
+    budget.
     """
 
     candidate_list = list(candidates)
@@ -1546,12 +1548,6 @@ def _apply_max_stat_permutation_gate(
         for candidate in evaluable:
             candidate.passes_multiple_testing = False
         return
-    if np.logical_and(objective, protected).any():
-        raise ValueError(
-            f"objective {spec.objective} and protected outcome "
-            f"{spec.protected_outcome} overlap"
-        )
-
     masks = np.column_stack(
         [
             _combined_mask(validation, candidate.final_conditions)
@@ -1567,9 +1563,12 @@ def _apply_max_stat_permutation_gate(
         - mask_matrix.T @ protected.astype(np.float32) / protected_count
     )
 
-    label_codes = np.zeros(len(validation), dtype=np.uint8)
-    label_codes[objective] = 1
-    label_codes[protected] = 2
+    # Bit 0 represents objective membership and bit 1 protected membership.
+    # Permuting this joint code keeps overlap prevalence and its association
+    # structure intact instead of forcing a logically false disjoint split.
+    label_codes = objective.astype(np.uint8) + (
+        protected.astype(np.uint8) * np.uint8(2)
+    )
     years = pd.to_datetime(validation[spec.date_column], errors="raise").dt.year
     strata = [
         np.flatnonzero(years.to_numpy() == year)
@@ -1598,8 +1597,8 @@ def _apply_max_stat_permutation_gate(
             permuted = label_codes.copy()
             for positions in strata:
                 permuted[positions] = rng.permutation(permuted[positions])
-            objective_permutations[:, trial] = permuted == 1
-            protected_permutations[:, trial] = permuted == 2
+            objective_permutations[:, trial] = (permuted & 1) != 0
+            protected_permutations[:, trial] = (permuted & 2) != 0
         null_scores = (
             mask_matrix.T @ objective_permutations / objective_count
             - mask_matrix.T @ protected_permutations / protected_count

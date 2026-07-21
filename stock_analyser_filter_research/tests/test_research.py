@@ -18,6 +18,7 @@ from stock_analyser_filter_research.research import (
     CandidateEvaluation,
     Condition,
     ConditionTemplate,
+    ENTRY_CONFIRMATION_SPECS,
     ENTRY_EXCLUSION_SPECS,
     FoldResult,
     PatternTemplate,
@@ -278,6 +279,8 @@ def test_max_stat_permutation_gate_is_deterministic_and_family_wise(
             "balanced_a": np.isin(np.arange(200) % 4, [0, 1]).astype(float),
             "balanced_b": np.isin(np.arange(200) % 4, [0, 1]).astype(float),
             "perfect": (np.arange(200) % 4 != 0).astype(float),
+            "bad_5d": np.isin(np.arange(200) % 4, [0, 1]),
+            "confirmation": (np.arange(200) % 4 != 1).astype(float),
         }
     )
 
@@ -305,6 +308,19 @@ def test_max_stat_permutation_gate_is_deterministic_and_family_wise(
     _apply_max_stat_permutation_gate(frame, ENTRY_EXCLUSION_SPECS[0], [perfect], cfg)
     assert perfect.passes_multiple_testing is True
     assert perfect.max_stat_permutation_p_value == pytest.approx(1 / 50)
+
+    overlapping_first = candidate("OVERLAP_FIRST", "confirmation")
+    overlapping_second = candidate("OVERLAP_SECOND", "confirmation")
+    _apply_max_stat_permutation_gate(
+        frame, ENTRY_CONFIRMATION_SPECS[0], [overlapping_first], cfg
+    )
+    _apply_max_stat_permutation_gate(
+        frame, ENTRY_CONFIRMATION_SPECS[0], [overlapping_second], cfg
+    )
+    assert overlapping_first.max_stat_permutation_p_value is not None
+    assert overlapping_first.max_stat_permutation_p_value == (
+        overlapping_second.max_stat_permutation_p_value
+    )
 
 
 def test_pattern_candidate_uses_and_inside_pattern_and_causal_thresholds(
