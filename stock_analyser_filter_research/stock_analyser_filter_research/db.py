@@ -17,6 +17,7 @@ from .contracts import (
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
+    EARNINGS_EVENT_SOURCE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     IDENTITY_COLUMNS,
     MARKET_METRIC_SOURCE_COLUMNS,
@@ -30,6 +31,7 @@ from .contracts import (
     SOURCE_BOOLEAN_COLUMNS,
     SOURCE_COLUMNS,
     SOURCE_INTEGER_COLUMNS,
+    WORLD_MARKET_SOURCE_COLUMNS,
 )
 
 
@@ -56,6 +58,13 @@ EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY = (
     "exchange",
     "cik",
     "accession_number",
+)
+EXPECTED_EARNINGS_EVENT_PRIMARY_KEY = (
+    "symbol",
+    "exchange",
+    "cik",
+    "source",
+    "source_event_id",
 )
 EXPECTED_MARKET_METRIC_PRIMARY_KEY = (
     "symbol",
@@ -178,7 +187,35 @@ def _fundamental_snapshot_source_column_contracts() -> dict[str, ColumnContract]
     )
     _add_column_contracts(
         contracts,
-        ("sec_revenue_ttm", "sec_share_based_compensation_ttm"),
+        {
+            "sec_revenue_ttm",
+            "sec_operating_income_ttm",
+            "sec_net_income_ttm",
+            "sec_operating_cashflow_ttm",
+            "sec_capex_ttm",
+            "sec_free_cashflow_ttm",
+            "sec_share_based_compensation_ttm",
+            "sec_free_cashflow_sbc_adjusted_ttm",
+            "sec_research_and_development_ttm",
+            "sec_selling_general_and_admin_ttm",
+            "sec_interest_expense_ttm",
+            "sec_depreciation_and_amortization_ttm",
+            "sec_assets",
+            "sec_stockholders_equity",
+            "sec_cash_and_equivalents",
+            "sec_total_debt",
+            "sec_current_assets",
+            "sec_current_liabilities",
+            "sec_inventory",
+            "sec_accounts_receivable",
+            "sec_accounts_payable",
+            "sec_goodwill",
+            "sec_intangible_assets",
+            "sec_property_plant_equipment",
+            "sec_shares_outstanding",
+            "sec_weighted_avg_shares_diluted",
+            "sec_common_stock_repurchased_ttm",
+        },
         "int8",
         nullable=True,
     )
@@ -226,7 +263,14 @@ def _quarterly_fundamental_event_source_column_contracts(
     )
     _add_column_contracts(
         contracts,
-        ("quarterly_revenue", "prior_year_quarterly_revenue"),
+        (
+            "quarterly_revenue",
+            "prior_year_quarterly_revenue",
+            "quarterly_operating_income",
+            "prior_year_quarterly_operating_income",
+            "quarterly_net_income",
+            "prior_year_quarterly_net_income",
+        ),
         "numeric",
         nullable=True,
         precision=28,
@@ -246,6 +290,34 @@ def _quarterly_fundamental_event_source_column_contracts(
     return contracts
 
 
+def _earnings_event_source_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts,
+        (
+            "symbol",
+            "exchange",
+            "announcement_time_type",
+            "source",
+            "source_event_id",
+        ),
+        "text",
+        nullable=False,
+    )
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(contracts, ("earnings_date",), "date", nullable=False)
+    _add_column_contracts(
+        contracts, ("announcement_ts",), "timestamptz", nullable=True
+    )
+    _add_column_contracts(
+        contracts, ("known_as_of_ts",), "timestamptz", nullable=False
+    )
+    _add_column_contracts(contracts, ("is_confirmed",), "bool", nullable=False)
+    if set(contracts) != set(EARNINGS_EVENT_SOURCE_COLUMNS):
+        raise AssertionError("earnings event source contract is incomplete")
+    return contracts
+
+
 def _market_metric_source_column_contracts() -> dict[str, ColumnContract]:
     contracts: dict[str, ColumnContract] = {}
     _add_column_contracts(
@@ -253,9 +325,25 @@ def _market_metric_source_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
     _add_column_contracts(contracts, ("period_end_date",), "date", nullable=False)
-    _add_column_contracts(contracts, ("market_cap",), "int8", nullable=True)
     _add_column_contracts(
-        contracts, ("market_cap_currency",), "text", nullable=True
+        contracts,
+        ("market_cap", "raw_volume", "shares_outstanding"),
+        "int8",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("market_cap_currency", "shares_outstanding_source"),
+        "text",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("adjusted_open",),
+        "numeric",
+        nullable=True,
+        precision=15,
+        scale=4,
     )
     _add_column_contracts(
         contracts,
@@ -265,6 +353,32 @@ def _market_metric_source_column_contracts() -> dict[str, ColumnContract]:
     )
     if set(contracts) != set(MARKET_METRIC_SOURCE_COLUMNS):
         raise AssertionError("market metric source contract is incomplete")
+    return contracts
+
+
+def _world_market_source_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts, ("source", "series_id"), "text", nullable=False
+    )
+    _add_column_contracts(
+        contracts,
+        ("observation_time", "available_at", "asof_known_at"),
+        "timestamptz",
+        nullable=False,
+    )
+    _add_column_contracts(contracts, ("value",), "float8", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("is_revision_prone", "is_final"),
+        "bool",
+        nullable=False,
+    )
+    _add_column_contracts(
+        contracts, ("source_local_date",), "date", nullable=False
+    )
+    if set(contracts) != set(WORLD_MARKET_SOURCE_COLUMNS):
+        raise AssertionError("world market source contract is incomplete")
     return contracts
 
 
@@ -296,6 +410,8 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
             "weak_matched_rule_ids",
             "loss_first_matched_rule_ids",
             "matched_rule_ids",
+            "confirmation_matched_rule_ids",
+            "confirmation_reason",
             "exclusion_reason",
         ),
         "text",
@@ -344,6 +460,8 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
             "bad_5d",
             "loss_first_5d",
             "strong_first_5d",
+            "terminal_stagnant_5d",
+            "terminal_winner_5d",
             "late_strong_10d",
             "late_strong_20d",
         ),
@@ -352,15 +470,32 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(
         contracts,
-        ("include_weak_filter", "include_loss_first_filter", "include_final"),
+        (
+            "include_weak_filter",
+            "include_loss_first_filter",
+            "include_final",
+            "strong_confirmation",
+        ),
         "bool",
         nullable=False,
     )
     _add_column_contracts(
         contracts,
-        ("first_gain_2pct_day", "first_gain_5pct_day", "first_loss_5pct_day"),
+        (
+            "first_gain_1pct_day",
+            "first_gain_2pct_day",
+            "first_gain_3pct_day",
+            "first_gain_5pct_day",
+            "first_loss_5pct_day",
+        ),
         "int2",
         nullable=True,
+    )
+    _add_column_contracts(
+        contracts, ("shares_outstanding",), "int8", nullable=True
+    )
+    _add_column_contracts(
+        contracts, ("prior_history_sessions",), "int4", nullable=True
     )
     _add_column_contracts(
         contracts,
@@ -558,7 +693,12 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(
         contracts,
-        ("passes_holdout", "passes_development_gates", "passes_stability_gates"),
+        (
+            "passes_holdout",
+            "passes_development_gates",
+            "passes_stability_gates",
+            "passes_multiple_testing",
+        ),
         "bool",
         nullable=True,
     )
@@ -569,11 +709,19 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         nullable=True,
     )
     _add_column_contracts(contracts, ("component_count",), "int2", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("multiple_testing_candidate_count", "permutation_trial_count"),
+        "int4",
+        nullable=True,
+    )
     count_columns = set(RULE_INTEGER_COLUMNS) - {
         "landmark_day",
         "selection_order",
         "scope_year",
         "component_count",
+        "multiple_testing_candidate_count",
+        "permutation_trial_count",
     }
     _add_column_contracts(contracts, count_columns, "int4", nullable=False)
     _add_column_contracts(
@@ -605,7 +753,9 @@ FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS = (
 QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS = (
     _quarterly_fundamental_event_source_column_contracts()
 )
+EARNINGS_EVENT_SOURCE_COLUMN_CONTRACTS = _earnings_event_source_column_contracts()
 MARKET_METRIC_SOURCE_COLUMN_CONTRACTS = _market_metric_source_column_contracts()
+WORLD_MARKET_SOURCE_COLUMN_CONTRACTS = _world_market_source_column_contracts()
 SIGNAL_COLUMN_CONTRACTS = _signal_column_contracts()
 EARLY_CUT_COLUMN_CONTRACTS = _early_cut_column_contracts()
 RULE_COLUMN_CONTRACTS = _rule_column_contracts()
@@ -985,8 +1135,20 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_required_columns(
         connection,
+        cfg.earnings_event_table,
+        EARNINGS_EVENT_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
         cfg.market_metrics_table,
         MARKET_METRIC_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
+        cfg.world_market_observation_table,
+        WORLD_MARKET_SOURCE_COLUMNS,
         reject_extra=False,
     )
     _validate_required_columns(
@@ -1020,8 +1182,18 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_column_definitions(
         connection,
+        cfg.earnings_event_table,
+        EARNINGS_EVENT_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
+        connection,
         cfg.market_metrics_table,
         MARKET_METRIC_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
+        connection,
+        cfg.world_market_observation_table,
+        WORLD_MARKET_SOURCE_COLUMN_CONTRACTS,
     )
     _validate_column_definitions(
         connection, cfg.signal_result_table, SIGNAL_COLUMN_CONTRACTS
@@ -1046,6 +1218,11 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         connection,
         cfg.quarterly_fundamental_event_table,
         EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
+        cfg.earnings_event_table,
+        EXPECTED_EARNINGS_EVENT_PRIMARY_KEY,
     )
     _validate_primary_key(
         connection,
@@ -1375,6 +1552,37 @@ def _normalize_quarterly_fundamental_event_frame(
     return frame.loc[:, QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS]
 
 
+def _normalize_earnings_event_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "earnings event source"
+    frame = frame.loc[:, EARNINGS_EVENT_SOURCE_COLUMNS].copy()
+    _normalize_required_text(
+        frame,
+        (
+            "symbol",
+            "exchange",
+            "announcement_time_type",
+            "source",
+            "source_event_id",
+        ),
+        source_name,
+    )
+    _normalize_cik(frame, source_name)
+    frame["earnings_date"] = pd.to_datetime(
+        frame["earnings_date"], errors="raise"
+    ).dt.normalize()
+    frame["announcement_ts"] = pd.to_datetime(
+        frame["announcement_ts"], errors="coerce", utc=True
+    )
+    frame["known_as_of_ts"] = pd.to_datetime(
+        frame["known_as_of_ts"], errors="raise", utc=True
+    )
+    try:
+        frame["is_confirmed"] = frame["is_confirmed"].astype("boolean")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("earnings event source is_confirmed is not boolean") from exc
+    return frame.loc[:, EARNINGS_EVENT_SOURCE_COLUMNS]
+
+
 def _load_fundamental_identity_batch(
     connection: extensions.connection,
     cfg: Config,
@@ -1385,6 +1593,7 @@ def _load_fundamental_identity_batch(
     order_columns: Sequence[str],
     cursor_prefix: str,
     normalize: Callable[[pd.DataFrame], pd.DataFrame],
+    additional_where: sql.Composable | None = None,
 ) -> pd.DataFrame:
     if not identities:
         return pd.DataFrame(columns=columns)
@@ -1396,6 +1605,7 @@ def _load_fundamental_identity_batch(
         sql.SQL("source.{}").format(sql.Identifier(column))
         for column in order_columns
     )
+    where_clause = additional_where or sql.SQL("")
     statement = sql.SQL(
         "SELECT {} FROM {} AS source "
         "JOIN unnest(%s::text[], %s::text[], %s::bigint[]) "
@@ -1403,8 +1613,13 @@ def _load_fundamental_identity_batch(
         "ON source.symbol = selected.symbol "
         "AND source.exchange = selected.exchange "
         "AND source.cik = selected.cik "
-        "ORDER BY {}"
-    ).format(selected_columns, _qualified_identifier(table_name), ordering)
+        "{} ORDER BY {}"
+    ).format(
+        selected_columns,
+        _qualified_identifier(table_name),
+        where_clause,
+        ordering,
+    )
     parameters: list[Any] = [symbols, exchanges, ciks]
     frames: list[pd.DataFrame] = []
     cursor_name = f"{cursor_prefix}_{uuid4().hex[:20]}"
@@ -1460,6 +1675,29 @@ def load_quarterly_fundamental_event_batch(
     )
 
 
+def load_earnings_event_batch(
+    connection: extensions.connection,
+    cfg: Config,
+    identities: Sequence[StockIdentity],
+) -> pd.DataFrame:
+    """Load earnings events; causal enrichment accepts SEC events only."""
+
+    return _load_fundamental_identity_batch(
+        connection,
+        cfg,
+        identities,
+        table_name=cfg.earnings_event_table,
+        columns=EARNINGS_EVENT_SOURCE_COLUMNS,
+        order_columns=(*IDENTITY_COLUMNS, "earnings_date", "known_as_of_ts"),
+        cursor_prefix="safr_earnings_event",
+        normalize=_normalize_earnings_event_frame,
+        additional_where=sql.SQL(
+            "WHERE source.source = 'sec_8k_item_2_02' "
+            "AND source.is_confirmed = true"
+        ),
+    )
+
+
 def _normalize_nullable_integer_column(
     frame: pd.DataFrame, column: str, source_name: str
 ) -> None:
@@ -1488,8 +1726,15 @@ def _normalize_market_metric_frame(frame: pd.DataFrame) -> pd.DataFrame:
     ).dt.normalize()
     _normalize_optional_currency(frame, "market_cap_currency")
     _normalize_nullable_integer_column(frame, "market_cap", source_name)
+    _normalize_nullable_integer_column(frame, "raw_volume", source_name)
+    _normalize_nullable_integer_column(frame, "shares_outstanding", source_name)
     _normalize_nullable_integer_column(
         frame, "shares_outstanding_staleness_days", source_name
+    )
+    _normalize_numeric_columns(frame, ("adjusted_open",), source_name)
+    source_values = frame["shares_outstanding_source"].astype("string").str.strip()
+    frame["shares_outstanding_source"] = source_values.mask(
+        source_values.eq(""), pd.NA
     )
     return frame.loc[:, MARKET_METRIC_SOURCE_COLUMNS]
 
@@ -1574,6 +1819,138 @@ def load_market_metrics_for_signals(
     if result.duplicated(["period_end_date", *IDENTITY_COLUMNS]).any():
         raise RuntimeError("market metric source returned duplicate signal keys")
     return result
+
+
+MARKET_BREADTH_COLUMNS = (
+    "market_date",
+    "market_breadth_above_ma50_ratio",
+    "market_breadth_above_ma150_ratio",
+    "market_breadth_above_ma200_ratio",
+    "market_breadth_trend_template_ratio",
+    "market_breadth_rs70_ratio",
+    "market_breadth_rs90_ratio",
+    "market_advancer_ratio",
+    "market_median_daily_return_pct",
+)
+
+
+def load_market_breadth_daily(
+    connection: extensions.connection, cfg: Config
+) -> pd.DataFrame:
+    """Aggregate causal same-close cross-sectional breadth once per run."""
+
+    statement = sql.SQL(
+        "SELECT period_end_date AS market_date, "
+        "(avg((adjusted_close > ma50)::int) "
+        "FILTER (WHERE adjusted_close IS NOT NULL AND ma50 IS NOT NULL))::double precision, "
+        "(avg((adjusted_close > ma150)::int) "
+        "FILTER (WHERE adjusted_close IS NOT NULL AND ma150 IS NOT NULL))::double precision, "
+        "(avg((adjusted_close > ma200)::int) "
+        "FILTER (WHERE adjusted_close IS NOT NULL AND ma200 IS NOT NULL))::double precision, "
+        "avg(trend_template_pass::int)::double precision, "
+        "(avg((rs_rating >= 70)::int) "
+        "FILTER (WHERE rs_rating IS NOT NULL))::double precision, "
+        "(avg((rs_rating >= 90)::int) "
+        "FILTER (WHERE rs_rating IS NOT NULL))::double precision, "
+        "(avg((daily_price_change_pct > 0)::int) "
+        "FILTER (WHERE daily_price_change_pct IS NOT NULL))::double precision, "
+        "percentile_cont(0.5) WITHIN GROUP (ORDER BY daily_price_change_pct) "
+        "FILTER (WHERE daily_price_change_pct IS NOT NULL) "
+        "FROM {} WHERE period_end_date >= %s "
+        "AND (%s::date IS NULL OR period_end_date <= %s) "
+        "GROUP BY period_end_date ORDER BY period_end_date"
+    ).format(_qualified_identifier(cfg.source_table))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            statement,
+            (cfg.signal_start_date, cfg.signal_end_date, cfg.signal_end_date),
+        )
+        rows = cursor.fetchall()
+    frame = pd.DataFrame.from_records(rows, columns=MARKET_BREADTH_COLUMNS)
+    if frame.empty:
+        return frame
+    frame["market_date"] = pd.to_datetime(
+        frame["market_date"], errors="raise"
+    ).dt.normalize()
+    _normalize_numeric_columns(
+        frame, MARKET_BREADTH_COLUMNS[1:], "market breadth source"
+    )
+    return frame.loc[:, MARKET_BREADTH_COLUMNS]
+
+
+def load_world_market_observations(
+    connection: extensions.connection, cfg: Config
+) -> pd.DataFrame:
+    """Load only pre-approved non-revision market/index series from the DB."""
+
+    selected = (
+        ("twelve_data", "SPY"),
+        ("twelve_data", "QQQ"),
+        ("twelve_data", "IWM"),
+        ("twelve_data", "DIA"),
+        ("cboe_vix", "VIX"),
+        ("cboe_vix", "VXN"),
+        ("cboe_vix", "VVIX"),
+        ("cboe_vix", "SKEW"),
+        ("cboe_vix", "VIX9D"),
+        ("cboe_vix", "VIX3M"),
+    )
+    sources = [item[0] for item in selected]
+    series_ids = [item[1] for item in selected]
+    selected_columns = sql.SQL(", ").join(
+        sql.SQL("source.{}").format(sql.Identifier(column))
+        for column in WORLD_MARKET_SOURCE_COLUMNS
+    )
+    statement = sql.SQL(
+        "SELECT {} FROM {} AS source "
+        "JOIN unnest(%s::text[], %s::text[]) AS selected(source, series_id) "
+        "ON source.source = selected.source "
+        "AND source.series_id = selected.series_id "
+        "WHERE source.is_revision_prone = false "
+        "AND source.is_final = true "
+        "AND source.observation_time >= %s::date - INTERVAL '400 days' "
+        "AND (%s::date IS NULL OR source.observation_time < %s::date + INTERVAL '2 days') "
+        "ORDER BY source.source, source.series_id, source.asof_known_at, "
+        "source.observation_time"
+    ).format(
+        selected_columns,
+        _qualified_identifier(cfg.world_market_observation_table),
+    )
+    frames: list[pd.DataFrame] = []
+    cursor_name = f"safr_world_market_{uuid4().hex[:20]}"
+    with connection.cursor(name=cursor_name) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(
+            statement,
+            (
+                sources,
+                series_ids,
+                cfg.signal_start_date,
+                cfg.signal_end_date,
+                cfg.signal_end_date,
+            ),
+        )
+        while True:
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            if not rows:
+                break
+            frames.append(pd.DataFrame.from_records(rows, columns=WORLD_MARKET_SOURCE_COLUMNS))
+    if not frames:
+        return pd.DataFrame(columns=WORLD_MARKET_SOURCE_COLUMNS)
+    frame = pd.concat(frames, ignore_index=True).loc[:, WORLD_MARKET_SOURCE_COLUMNS]
+    for column in ("source", "series_id"):
+        if frame[column].isna().any():
+            raise RuntimeError(f"world market source column {column} contains null")
+        frame[column] = frame[column].astype("string")
+    for column in ("observation_time", "available_at", "asof_known_at"):
+        frame[column] = pd.to_datetime(frame[column], errors="raise", utc=True)
+    frame["source_local_date"] = pd.to_datetime(
+        frame["source_local_date"], errors="raise"
+    ).dt.normalize()
+    _normalize_numeric_columns(frame, ("value",), "world market source")
+    for column in ("is_revision_prone", "is_final"):
+        frame[column] = frame[column].astype("boolean")
+    return frame
 
 
 def _normalize_boolean_value(value: Any, column: str) -> Any:

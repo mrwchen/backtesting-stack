@@ -10,6 +10,7 @@ from psycopg2 import extensions
 from stock_analyser_filter_research import db
 from stock_analyser_filter_research.contracts import (
     EARLY_CUT_COLUMNS,
+    EARNINGS_EVENT_SOURCE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     MARKET_METRIC_SOURCE_COLUMNS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
@@ -17,6 +18,7 @@ from stock_analyser_filter_research.contracts import (
     SIGNAL_BOOLEAN_COLUMNS,
     SIGNAL_COLUMNS,
     SIGNAL_INTEGER_COLUMNS,
+    WORLD_MARKET_SOURCE_COLUMNS,
 )
 
 
@@ -136,31 +138,34 @@ def test_copy_csv_normalizes_nullable_integer_boolean_and_infinity() -> None:
 
 def test_large_mixed_signal_frame_streams_across_copy_batches() -> None:
     row_count = 5_101
-    frame = pd.DataFrame(index=pd.RangeIndex(row_count))
     positions = np.arange(row_count)
+    data: dict[str, object] = {}
     for column in SIGNAL_COLUMNS:
         udt_name, nullable, _, _ = db.SIGNAL_COLUMN_CONTRACTS[column]
         if udt_name == "date":
-            frame[column] = pd.Timestamp("2020-01-02")
+            data[column] = pd.Series(
+                pd.Timestamp("2020-01-02"), index=pd.RangeIndex(row_count)
+            )
         elif udt_name == "text":
             values = np.full(row_count, f"value_{column}", dtype=object)
             if nullable:
                 values[positions % 23 == 0] = None
-            frame[column] = pd.Series(values, dtype="string")
+            data[column] = pd.Series(values, dtype="string")
         elif udt_name in {"int2", "int4", "int8"}:
             values = pd.array(positions % 97 + 1, dtype="Int64")
             if nullable:
                 values[positions % 29 == 0] = pd.NA
-            frame[column] = values
+            data[column] = values
         elif udt_name == "bool":
             values = pd.array(positions % 2 == 0, dtype="boolean")
             if nullable:
                 values[positions % 31 == 0] = pd.NA
-            frame[column] = values
+            data[column] = values
         else:
             values = positions.astype(float) / 10.0
             values[positions % 37 == 0] = np.nan
-            frame[column] = values
+            data[column] = values
+    frame = pd.DataFrame(data, index=pd.RangeIndex(row_count))
     frame.loc[4_645, "prior_atr_14d_pct"] = np.inf
     # COPY is positional; production slices can carry arbitrary source labels.
     frame.index = pd.RangeIndex(10_000, 10_000 + row_count)
@@ -397,6 +402,43 @@ def test_fundamental_loaders_are_identity_bounded_and_normalized(cfg_factory) ->
     assert event_parameters == [["ABC"], ["NYSE"], [123]]
     assert event_connection.cursor_names[0].startswith("safr_fund_event_")
 
+    earnings_values = {
+        column: None for column in EARNINGS_EVENT_SOURCE_COLUMNS
+    }
+    earnings_values.update(
+        {
+            "symbol": "ABC",
+            "exchange": "NYSE",
+            "cik": 123,
+            "earnings_date": date(2026, 2, 1),
+            "announcement_ts": pd.Timestamp("2026-02-01T21:00:00Z"),
+            "announcement_time_type": "after_market_close",
+            "source": "sec_8k_item_2_02",
+            "source_event_id": "0001-8k",
+            "known_as_of_ts": pd.Timestamp("2026-02-01T21:00:00Z"),
+            "is_confirmed": True,
+        }
+    )
+    earnings_connection = _StreamingConnection(
+        [
+            tuple(
+                earnings_values[column]
+                for column in EARNINGS_EVENT_SOURCE_COLUMNS
+            )
+        ]
+    )
+    earnings = db.load_earnings_event_batch(
+        earnings_connection, cfg, [identity]
+    )
+
+    assert earnings.loc[0, "source"] == "sec_8k_item_2_02"
+    earnings_statement, earnings_parameters = earnings_connection.executed[0]
+    assert cfg.earnings_event_table in earnings_statement
+    assert "source.source = 'sec_8k_item_2_02'" in earnings_statement
+    assert "source.is_confirmed = true" in earnings_statement
+    assert earnings_parameters == [["ABC"], ["NYSE"], [123]]
+    assert earnings_connection.cursor_names[0].startswith("safr_earnings_event_")
+
 
 def test_market_metric_loader_is_exact_signal_key_bounded_and_normalized(
     cfg_factory,
@@ -411,6 +453,10 @@ def test_market_metric_loader_is_exact_signal_key_bounded_and_normalized(
         "market_cap": 12_345_678_901,
         "market_cap_currency": "usd",
         "shares_outstanding_staleness_days": 17,
+        "adjusted_open": 100.25,
+        "raw_volume": 1_250_000,
+        "shares_outstanding": 123_456_789,
+        "shares_outstanding_source": "sec_companyfacts",
     }
     connection = _StreamingConnection(
         [tuple(values[column] for column in MARKET_METRIC_SOURCE_COLUMNS)]
@@ -445,6 +491,68 @@ def test_market_metric_loader_rejects_duplicate_or_invalid_signal_keys(
         db.load_market_metrics_for_signals(
             object(), cfg, [(pd.NaT, "ABC", "NYSE", 123)]
         )
+
+
+def test_global_market_loaders_are_bounded_and_point_in_time(cfg_factory) -> None:
+    cfg = cfg_factory()
+    breadth_connection = _RowsConnection(
+        [
+            (
+                date(2026, 7, 15),
+                0.60,
+                0.55,
+                0.50,
+                0.12,
+                0.40,
+                0.10,
+                0.52,
+                0.25,
+            )
+        ]
+    )
+
+    breadth = db.load_market_breadth_daily(breadth_connection, cfg)
+
+    assert breadth.loc[0, "market_breadth_above_ma50_ratio"] == pytest.approx(0.60)
+    breadth_statement, breadth_parameters = breadth_connection.executed[0]
+    assert cfg.source_table in breadth_statement
+    assert "period_end_date >= %s" in breadth_statement
+    assert breadth_parameters == (
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    )
+
+    values = {
+        "source": "twelve_data",
+        "series_id": "SPY",
+        "observation_time": pd.Timestamp("2026-07-15T20:00:00Z"),
+        "value": 625.5,
+        "available_at": pd.Timestamp("2026-07-15T20:30:00Z"),
+        "asof_known_at": pd.Timestamp("2026-07-15T20:30:00Z"),
+        "is_revision_prone": False,
+        "is_final": True,
+        "source_local_date": date(2026, 7, 15),
+    }
+    world_connection = _StreamingConnection(
+        [tuple(values[column] for column in WORLD_MARKET_SOURCE_COLUMNS)]
+    )
+
+    world = db.load_world_market_observations(world_connection, cfg)
+
+    assert world.loc[0, "series_id"] == "SPY"
+    assert world.loc[0, "value"] == pytest.approx(625.5)
+    statement, parameters = world_connection.executed[0]
+    assert cfg.world_market_observation_table in statement
+    assert "source.is_revision_prone = false" in statement
+    assert "source.is_final = true" in statement
+    assert len(parameters[0]) == len(parameters[1]) == 10
+    assert parameters[2:] == (
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    )
+    assert world_connection.cursor_names[0].startswith("safr_world_market_")
 
 
 def test_empty_rebuild_guard_checks_all_three_targets(cfg_factory, monkeypatch) -> None:

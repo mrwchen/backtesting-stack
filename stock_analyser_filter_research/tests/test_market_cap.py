@@ -11,6 +11,7 @@ from stock_analyser_filter_research.contracts import (
     MARKET_CAP_FEATURE_COLUMNS,
     MARKET_METRIC_SOURCE_COLUMNS,
     SIGNAL_COLUMNS,
+    SUPPLY_DEMAND_FEATURE_COLUMNS,
 )
 
 
@@ -21,6 +22,9 @@ def _signals(signal_date: str = "2026-07-15") -> pd.DataFrame:
     row = {column: pd.NA for column in SIGNAL_COLUMNS}
     row.update(IDENTITY)
     row["signal_date"] = pd.Timestamp(signal_date)
+    row["prior_adjusted_close"] = 90.0
+    row["adjusted_close"] = 100.0
+    row["adjusted_volume"] = 1_000_000
     return pd.DataFrame([row], columns=SIGNAL_COLUMNS)
 
 
@@ -33,6 +37,10 @@ def _metric(**overrides: object) -> dict[str, object]:
             "market_cap": 12_345_678_901,
             "market_cap_currency": "USD",
             "shares_outstanding_staleness_days": 17,
+            "adjusted_open": 95.0,
+            "raw_volume": 1_000_000,
+            "shares_outstanding": 100_000_000,
+            "shares_outstanding_source": "sec_xbrl_instant",
         }
     )
     row.update(overrides)
@@ -54,6 +62,8 @@ def test_market_cap_features_compete_only_in_entry_group_m() -> None:
         for feature in features
     }
     assert not early_features.intersection(MARKET_CAP_FEATURE_COLUMNS)
+    assert ENTRY_FEATURE_GROUPS["S"] == SUPPLY_DEMAND_FEATURE_COLUMNS
+    assert not early_features.intersection(SUPPLY_DEMAND_FEATURE_COLUMNS)
 
 
 def test_exact_signal_day_usd_market_cap_is_attached_with_log_and_staleness() -> None:
@@ -89,6 +99,9 @@ def test_non_usd_or_unknown_market_cap_is_not_comparable(currency) -> None:
     ).iloc[0]
 
     assert output.loc[list(MARKET_CAP_FEATURE_COLUMNS)].isna().all()
+    assert output["signal_adjusted_open"] == pytest.approx(95.0)
+    assert output["shares_outstanding"] == 100_000_000
+    assert output["signal_turnover_ratio"] == pytest.approx(0.01)
 
 
 def test_invalid_market_metric_source_rows_are_rejected() -> None:
@@ -124,3 +137,20 @@ def test_missing_or_nonpositive_market_cap_leaves_all_features_null() -> None:
     ).iloc[0]
     assert one_dollar["market_cap_usd"] == 1
     assert one_dollar["log_market_cap_usd"] == 0.0
+
+
+def test_supply_demand_uses_adjusted_open_raw_volume_and_point_in_time_sec_shares() -> None:
+    safe = enrich_signal_market_metrics(_signals(), _metric_frame(_metric())).iloc[0]
+    assert safe["signal_adjusted_open"] == pytest.approx(95.0)
+    assert safe["signal_gap_pct"] == pytest.approx((95 / 90 - 1) * 100)
+    assert safe["signal_intraday_return_pct"] == pytest.approx((100 / 95 - 1) * 100)
+    assert safe["shares_outstanding"] == 100_000_000
+    assert safe["signal_turnover_ratio"] == pytest.approx(0.01)
+
+    unsafe = enrich_signal_market_metrics(
+        _signals(),
+        _metric_frame(_metric(shares_outstanding_source="yfinance_shares_full_asof")),
+    ).iloc[0]
+    assert pd.isna(unsafe["shares_outstanding"])
+    assert pd.isna(unsafe["log_shares_outstanding"])
+    assert pd.isna(unsafe["signal_turnover_ratio"])

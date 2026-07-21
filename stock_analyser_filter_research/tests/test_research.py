@@ -15,12 +15,14 @@ from stock_analyser_filter_research.contracts import (
 )
 from stock_analyser_filter_research.research import (
     CompositeCondition,
+    CandidateEvaluation,
     Condition,
     ConditionTemplate,
-    ENTRY_SPECS,
+    ENTRY_EXCLUSION_SPECS,
     FoldResult,
     PatternTemplate,
     _Evaluator,
+    _apply_max_stat_permutation_gate,
     _choose_sequential_early_prefixes,
     _sequential_policy_metrics,
     _sequential_policy_state,
@@ -86,6 +88,8 @@ def _signals(rows_per_year: int = 100) -> pd.DataFrame:
     frame["weak_5d"] = weak
     frame["loss_first_5d"] = loss
     frame["strong_first_5d"] = protected
+    frame["terminal_stagnant_5d"] = weak
+    frame["terminal_winner_5d"] = protected
     frame["strong_5d"] = protected
     frame["deep_loss_5d"] = loss
     frame["bad_5d"] = weak | loss
@@ -211,7 +215,7 @@ def test_quantile_count_controls_template_grid() -> None:
     atomic = [item for item in coarse if isinstance(item, ConditionTemplate)]
     patterns = [item for item in coarse if isinstance(item, PatternTemplate)]
     assert {item.quantile for item in atomic} == {0.25, 0.75}
-    assert {item.pattern_name for item in patterns} == {
+    expected_original_patterns = {
         "flat_base",
         "ordered_uptrend",
         "pullback_from_high",
@@ -226,10 +230,81 @@ def test_quantile_count_controls_template_grid() -> None:
         "small_cap_bearish_high_volume",
         "high_volume_strong_close",
     }
+    pattern_names = {item.pattern_name for item in patterns}
+    assert expected_original_patterns <= pattern_names
+    assert {
+        "vcp",
+        "high_tight_flag",
+        "bull_flag",
+        "darvas_box",
+        "ascending_triangle",
+        "cup_with_handle",
+        "three_weeks_tight",
+        "pocket_pivot",
+        "rs_leader",
+        "weinstein_stage2",
+        "zanger_volume_breakout",
+        "growth_leader",
+        "quality_growth",
+        "post_earnings_power",
+        "market_confirmed_leader",
+    } <= pattern_names
+    assert {
+        "micro_cap_range",
+        "small_cap_range",
+        "mid_cap_range",
+        "large_cap_range",
+        "mega_cap_range",
+        "mid_cap_range_volume21_high",
+        "large_cap_range_notional21_low",
+    } <= pattern_names
     assert all(
         isinstance(item, ConditionTemplate)
         for item in build_candidate_templates("early_cut", 1, quantile_count=4)
     )
+
+
+def test_max_stat_permutation_gate_is_deterministic_and_family_wise(
+    cfg_factory,
+) -> None:
+    cfg = _cfg(cfg_factory, permutation_trial_count=49)
+    dates = pd.bdate_range("2023-01-02", periods=200)
+    frame = pd.DataFrame(
+        {
+            "signal_date": dates,
+            "forward_5d_label_end_date": dates + pd.offsets.BDay(5),
+            "weak_5d": np.arange(200) % 4 == 0,
+            "strong_first_5d": np.arange(200) % 4 == 1,
+            "balanced_a": np.isin(np.arange(200) % 4, [0, 1]).astype(float),
+            "balanced_b": np.isin(np.arange(200) % 4, [0, 1]).astype(float),
+            "perfect": (np.arange(200) % 4 != 0).astype(float),
+        }
+    )
+
+    def candidate(rule_id: str, feature: str) -> CandidateEvaluation:
+        template = ConditionTemplate(rule_id, "I", feature, "le", None)
+        condition = Condition(rule_id, "I", feature, "le", 0.5, None)
+        return CandidateEvaluation(
+            (template,), (), {}, (condition,), {}, True, True, {}, 0.0
+        )
+
+    null_candidates = [
+        candidate("NULL_A", "balanced_a"),
+        candidate("NULL_B", "balanced_b"),
+    ]
+    _apply_max_stat_permutation_gate(
+        frame, ENTRY_EXCLUSION_SPECS[0], null_candidates, cfg
+    )
+    assert all(item.passes_multiple_testing is False for item in null_candidates)
+    assert all(
+        item.max_stat_permutation_p_value > cfg.max_stat_permutation_p_value
+        for item in null_candidates
+    )
+
+    perfect = candidate("PERFECT", "perfect")
+    _apply_max_stat_permutation_gate(frame, ENTRY_EXCLUSION_SPECS[0], [perfect], cfg)
+    assert perfect.passes_multiple_testing is True
+    assert perfect.max_stat_permutation_p_value == pytest.approx(1 / 50)
 
 
 def test_pattern_candidate_uses_and_inside_pattern_and_causal_thresholds(
@@ -252,7 +327,9 @@ def test_pattern_candidate_uses_and_inside_pattern_and_causal_thresholds(
             ),
         ),
     )
-    evaluator = _Evaluator(frame, ENTRY_SPECS[0], (template,), _cfg(cfg_factory))
+    evaluator = _Evaluator(
+        frame, ENTRY_EXCLUSION_SPECS[0], (template,), _cfg(cfg_factory)
+    )
 
     candidate = evaluator.evaluate((template,))
 
@@ -291,18 +368,23 @@ def test_structural_minimum_prevents_zero_count_distribution_clause(
     assert not condition.matches(frame).any()
 
 
-def test_market_cap_patterns_use_only_the_three_predefined_and_interactions() -> None:
+def test_market_cap_patterns_include_fixed_disjoint_ranges_and_interactions() -> None:
     patterns = [
         item
         for item in build_candidate_templates("entry_filter")
         if isinstance(item, PatternTemplate) and item.feature_group == "M"
     ]
 
-    assert [item.pattern_name for item in patterns] == [
+    assert {item.pattern_name for item in patterns} == {
         "high_volume_strong_close",
         "large_cap_low_atr_stagnation",
         "small_cap_bearish_high_volume",
-    ]
+        "micro_cap_range",
+        "small_cap_range",
+        "mid_cap_range",
+        "large_cap_range",
+        "mega_cap_range",
+    }
     clauses = {
         pattern.pattern_name: {
             clause.feature_name: clause for clause in pattern.clauses
@@ -321,7 +403,23 @@ def test_market_cap_patterns_use_only_the_three_predefined_and_interactions() ->
     assert clauses["high_volume_strong_close"][
         "signal_close_location_value"
     ].fixed_threshold == 0.65
-    assert all(len(pattern.clauses) >= 2 for pattern in patterns)
+    assert clauses["micro_cap_range"]["market_cap_usd"].fixed_threshold == (
+        299_999_999.0
+    )
+    mid_cap_range = next(
+        item for item in patterns if item.pattern_name == "mid_cap_range"
+    )
+    assert {
+        item.operator: item.fixed_threshold for item in mid_cap_range.clauses
+    } == {"ge": 2_000_000_000.0, "le": 9_999_999_999.0}
+    cap_activity_interactions = [
+        item
+        for item in build_candidate_templates("entry_filter")
+        if isinstance(item, PatternTemplate)
+        and item.feature_group == "I"
+        and "_cap_range_" in item.pattern_name
+    ]
+    assert len(cap_activity_interactions) == 20
 
 
 def test_fixed_threshold_is_not_refit_and_is_identified_in_rule_text() -> None:
@@ -377,7 +475,7 @@ def test_evaluator_compiles_fixed_and_quantile_clauses_together(
 
     candidate = _Evaluator(
         frame,
-        ENTRY_SPECS[0],
+        ENTRY_EXCLUSION_SPECS[0],
         (template,),
         _cfg(cfg_factory),
     ).evaluate((template,))
@@ -399,7 +497,7 @@ def test_a_b_c_templates_compete_globally_and_future_diagnostic_is_frozen(
         _template("RULE_B", "B", B_FEATURE),
         _template("RULE_A", "A", A_FEATURE),
     )
-    selected = select_objective(signals, ENTRY_SPECS[0], templates, cfg)
+    selected = select_objective(signals, ENTRY_EXCLUSION_SPECS[0], templates, cfg)
     assert selected.selected.templates
     assert selected.selected.templates[0].feature_group == "A"
 
@@ -409,7 +507,9 @@ def test_a_b_c_templates_compete_globally_and_future_diagnostic_is_frozen(
     )
     mutated.loc[diagnostic, A_FEATURE] = -1e12
     mutated.loc[diagnostic, "weak_5d"] = False
-    changed = select_objective(mutated, ENTRY_SPECS[0], tuple(reversed(templates)), cfg)
+    changed = select_objective(
+        mutated, ENTRY_EXCLUSION_SPECS[0], tuple(reversed(templates)), cfg
+    )
     assert tuple(item.rule_id for item in selected.selected.templates) == tuple(
         item.rule_id for item in changed.selected.templates
     )
@@ -431,7 +531,7 @@ def test_beam_search_can_select_two_conditions_with_one_point_gain(
         _template("RULE_A", "A", A_FEATURE, 0.10),
         _template("RULE_C", "C", C_FEATURE, 0.10),
     )
-    selected = select_objective(signals, ENTRY_SPECS[0], templates, cfg)
+    selected = select_objective(signals, ENTRY_EXCLUSION_SPECS[0], templates, cfg)
     assert len(selected.selected.templates) == 2
     assert {item.feature_group for item in selected.selected.templates} == {"A", "C"}
     assert selected.selected.pooled_metrics["objective_capture_rate"] == pytest.approx(
@@ -440,7 +540,7 @@ def test_beam_search_can_select_two_conditions_with_one_point_gain(
 
     capped = select_objective(
         signals,
-        ENTRY_SPECS[0],
+        ENTRY_EXCLUSION_SPECS[0],
         templates,
         _cfg(cfg_factory, max_conditions_per_objective=1),
     )
@@ -469,10 +569,11 @@ def test_entry_union_does_not_require_weak_rule_to_lift_loss_objective(
         cfg,
     )
 
-    assert result.selected.entry_prefix_lengths == {
-        "weak_5d": 1,
-        "loss_first_5d": 0,
-    }
+    lengths = result.selected.entry_prefix_lengths
+    assert lengths["loss_first_5d"] == 0
+    # The same fitted rule explains both weak and terminal-stagnant rows. The
+    # union deliberately persists it only once, independent of objective owner.
+    assert lengths["weak_5d"] + lengths["terminal_stagnant_5d"] == 1
     weak_rows = result.signals["weak_5d"].astype("boolean").fillna(False)
     assert result.signals.loc[weak_rows, "filter_decision"].eq("exclude").all()
     assert result.signals.loc[~weak_rows, "filter_decision"].eq("include").all()
@@ -508,12 +609,19 @@ def test_pair_upgrade_requires_net_capture_minus_protected_damage(
     rule_c = _template("RULE_C", "C", C_FEATURE, 0.10)
 
     selected = select_objective(
-        signals, ENTRY_SPECS[0], (rule_a, rule_c), cfg
+        signals, ENTRY_EXCLUSION_SPECS[0], (rule_a, rule_c), cfg
     )
 
     assert selected.selected.templates == (rule_a,)
     assert selected.selected.selection_score == pytest.approx(0.5)
-    assert not any(len(candidate.templates) == 2 for candidate in selected.candidates)
+    tested_pair = next(
+        candidate
+        for candidate in selected.candidates
+        if len(candidate.templates) == 2
+    )
+    assert tested_pair.selection_score < (
+        selected.selected.selection_score + cfg.min_selection_score_improvement
+    )
 
 
 def test_final_refit_falls_back_to_safe_prefix_using_only_development_data(
@@ -549,7 +657,9 @@ def test_final_refit_falls_back_to_safe_prefix_using_only_development_data(
         _template("RULE_A", "A", A_FEATURE, 0.10),
         _template("RULE_C", "C", C_FEATURE, 0.10),
     )
-    before_refit_gate = select_objective(signals, ENTRY_SPECS[0], templates, cfg)
+    before_refit_gate = select_objective(
+        signals, ENTRY_EXCLUSION_SPECS[0], templates, cfg
+    )
     assert len(before_refit_gate.selected.templates) == 2
     monkeypatch.setattr(
         "stock_analyser_filter_research.research.build_candidate_templates",
@@ -1155,7 +1265,11 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "candidate_rule",
         "selected_filter",
     }
-    assert set(result.rules["decision_family"]) == {"entry_filter", "early_cut"}
+    assert set(result.rules["decision_family"]) == {
+        "entry_filter",
+        "entry_confirmation",
+        "early_cut",
+    }
     assert result.rules["eligible_fold_count"].notna().all()
     assert result.rules["positive_lift_fold_count"].notna().all()
     assert result.rules["result_kind"].eq("baseline").any()
@@ -1225,14 +1339,30 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
     assert set(result.rules["objective"]) <= {
         "weak_5d",
         "loss_first_5d",
+        "terminal_stagnant_5d",
+        "strong_first_5d",
+        "terminal_winner_5d",
         "stagnant_to_day5",
         "loss_first_to_day5",
         "bad_to_day5",
     }
     assert set(result.rules["protected_outcome"]) <= {
         "strong_first_5d",
+        "terminal_winner_5d",
+        "bad_5d",
+        "terminal_stagnant_5d",
         "strong_first_to_day5",
     }
+    permutation_rows = result.rules.loc[
+        result.rules["result_kind"].eq("candidate_rule")
+        & result.rules["max_stat_permutation_p_value"].notna()
+    ]
+    assert not permutation_rows.empty
+    assert permutation_rows["multiple_testing_candidate_count"].gt(0).all()
+    assert permutation_rows["permutation_trial_count"].eq(
+        cfg.permutation_trial_count
+    ).all()
+    assert permutation_rows["max_stat_permutation_p_value"].between(0, 1).all()
     assert set(result.rules["feature_group"]) <= {
         "none",
         "A",

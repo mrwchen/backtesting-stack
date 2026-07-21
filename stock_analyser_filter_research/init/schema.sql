@@ -110,6 +110,57 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     prior_churning_day_count_20                  SMALLINT,
     prior_failed_breakout_count_20               SMALLINT,
 
+    prior_adjusted_close                         NUMERIC(20,8),
+    prior_return_42d_pct                         NUMERIC(20,8),
+    prior_return_63d_pct                         NUMERIC(20,8),
+    prior_return_126d_pct                        NUMERIC(20,8),
+    prior_return_252d_pct                        NUMERIC(20,8),
+    prior_return_acceleration_21d_pct_points     NUMERIC(20,8),
+    prior_daily_return_std_21d_pct               NUMERIC(20,8),
+    prior_daily_return_std_63d_pct               NUMERIC(20,8),
+    prior_downside_return_std_21d_pct            NUMERIC(20,8),
+    prior_max_drawdown_63d_pct                   NUMERIC(20,8),
+    prior_max_drawdown_126d_pct                  NUMERIC(20,8),
+    prior_atr_5d_pct                             NUMERIC(20,8),
+    prior_atr_21d_pct                            NUMERIC(20,8),
+    prior_atr_5_vs21_ratio                       NUMERIC(20,8),
+    prior_atr_10_vs21_ratio                      NUMERIC(20,8),
+    prior_close_vs_126d_high_pct                 NUMERIC(20,8),
+    prior_close_vs_252d_high_pct                 NUMERIC(20,8),
+    prior_volume_sma5_vs50_ratio                 NUMERIC(20,8),
+    prior_volume_sma10_vs50_ratio                NUMERIC(20,8),
+    prior_volume_sma21_vs50_ratio                NUMERIC(20,8),
+    prior_notional_sma5_vs50_ratio               NUMERIC(20,8),
+    prior_notional_sma10_vs50_ratio              NUMERIC(20,8),
+    prior_notional_sma21_vs50_ratio              NUMERIC(20,8),
+    prior_up_down_volume_ratio21                 NUMERIC(20,8),
+    prior_up_down_notional_ratio21               NUMERIC(20,8),
+    prior_volume_dryup_share10                   NUMERIC(20,8),
+    prior_volume_dryup_share20                   NUMERIC(20,8),
+    prior_obv_slope_20                           NUMERIC(20,8),
+    prior_accumulation_day_count_20              NUMERIC(20,8),
+    prior_high_volume_down_day_count_20          NUMERIC(20,8),
+    prior_base_width_10_pct                      NUMERIC(20,8),
+    prior_base_width_40_pct                      NUMERIC(20,8),
+    prior_base_width_63_pct                      NUMERIC(20,8),
+    prior_tight_close_range_5_pct                NUMERIC(20,8),
+    prior_tight_close_range_10_pct               NUMERIC(20,8),
+    prior_tight_close_range_15_pct               NUMERIC(20,8),
+    prior_range_compression_5_vs20_ratio         NUMERIC(20,8),
+    ma50_slope_21d_pct                           NUMERIC(20,8),
+    ma150_slope_21d_pct                          NUMERIC(20,8),
+    ma200_slope_63d_pct                          NUMERIC(20,8),
+    prior_overhead_supply_share63                NUMERIC(20,8),
+    prior_high_test_count_20                     NUMERIC(20,8),
+    prior_high_slope_20_pct_per_session          NUMERIC(20,8),
+    prior_low_slope_20_pct_per_session           NUMERIC(20,8),
+    prior_contraction_count_40                   NUMERIC(20,8),
+    prior_return_efficiency_63                   NUMERIC(20,8),
+    prior_rs_rating_change_21d                   NUMERIC(20,8),
+    prior_history_sessions                       INTEGER,
+    signal_undercut_reclaim_10                   NUMERIC(20,8),
+    signal_volume_vs_prior_10d_max_down_volume_ratio NUMERIC(20,8),
+
     fundamental_snapshot_age_days                NUMERIC(20,8),
     fundamental_report_age_days                  NUMERIC(20,8),
     fundamental_gross_margin_ttm_ratio           NUMERIC(20,8),
@@ -122,18 +173,102 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     fundamental_current_ratio                    NUMERIC(20,8),
     fundamental_accruals_ratio                   NUMERIC(20,8),
     fundamental_sbc_to_revenue_ttm_ratio         NUMERIC(20,8),
+    fundamental_operating_cashflow_margin_ttm_ratio NUMERIC(20,8),
+    fundamental_rd_to_revenue_ttm_ratio          NUMERIC(20,8),
+    fundamental_sga_to_revenue_ttm_ratio         NUMERIC(20,8),
+    fundamental_capex_to_revenue_ttm_ratio       NUMERIC(20,8),
+    fundamental_da_to_revenue_ttm_ratio          NUMERIC(20,8),
+    fundamental_roe_ttm_ratio                    NUMERIC(20,8),
+    fundamental_roa_ttm_ratio                    NUMERIC(20,8),
+    fundamental_cash_conversion_ttm_ratio        NUMERIC(20,8),
+    fundamental_fcf_conversion_ttm_ratio         NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_conversion_ttm_ratio NUMERIC(20,8),
+    fundamental_interest_coverage_ttm_ratio      NUMERIC(20,8),
+    fundamental_debt_to_assets_ratio             NUMERIC(20,8),
+    fundamental_net_debt_to_assets_ratio         NUMERIC(20,8),
+    fundamental_debt_to_operating_income_ttm_ratio NUMERIC(20,8),
+    fundamental_net_debt_to_fcf_ttm_ratio        NUMERIC(20,8),
+    fundamental_quick_ratio                      NUMERIC(20,8),
+    fundamental_working_capital_to_assets_ratio  NUMERIC(20,8),
+    fundamental_goodwill_intangibles_to_assets_ratio NUMERIC(20,8),
+    fundamental_inventory_to_revenue_ttm_ratio   NUMERIC(20,8),
+    fundamental_receivables_to_revenue_ttm_ratio NUMERIC(20,8),
+    fundamental_payables_to_revenue_ttm_ratio    NUMERIC(20,8),
+    fundamental_asset_turnover_ttm_ratio         NUMERIC(20,8),
+    fundamental_diluted_share_pressure_ratio     NUMERIC(20,8),
+    fundamental_buyback_to_revenue_ttm_ratio     NUMERIC(20,8),
+    fundamental_sec_shares_change_1y_ratio       NUMERIC(20,8),
     fundamental_quarter_filing_age_days          NUMERIC(20,8),
     fundamental_quarter_age_days                 NUMERIC(20,8),
     fundamental_quarterly_revenue_yoy_growth_ratio NUMERIC(20,8),
     fundamental_quarterly_eps_yoy_change_ratio   NUMERIC(20,8),
+    fundamental_quarterly_eps_yoy_growth_ratio   NUMERIC(20,8),
+    fundamental_quarterly_loss_to_profit         NUMERIC(20,8),
+    fundamental_quarterly_revenue_growth_acceleration NUMERIC(20,8),
+    fundamental_quarterly_eps_growth_acceleration NUMERIC(20,8),
+    fundamental_quarterly_revenue_sequential_growth_ratio NUMERIC(20,8),
+    fundamental_quarterly_eps_sequential_change_ratio NUMERIC(20,8),
+    fundamental_revenue_growth_streak_4q         NUMERIC(20,8),
+    fundamental_eps_growth_streak_4q             NUMERIC(20,8),
     fundamental_quarterly_operating_margin_ratio NUMERIC(20,8),
     fundamental_quarterly_operating_margin_yoy_change NUMERIC(20,8),
     fundamental_quarterly_net_margin_ratio       NUMERIC(20,8),
     fundamental_quarterly_net_margin_yoy_change  NUMERIC(20,8),
+    fundamental_quarterly_operating_margin_acceleration NUMERIC(20,8),
+    fundamental_quarterly_net_margin_acceleration NUMERIC(20,8),
+
+    earnings_event_age_days                      NUMERIC(20,8),
+    earnings_event_on_signal_day                 NUMERIC(20,8),
+    earnings_event_within_5d                     NUMERIC(20,8),
+    earnings_event_within_21d                    NUMERIC(20,8),
 
     market_cap_usd                              BIGINT,
     log_market_cap_usd                          NUMERIC(20,8),
     market_cap_shares_staleness_days            INTEGER,
+
+    signal_adjusted_open                        NUMERIC(20,8),
+    signal_gap_pct                              NUMERIC(20,8),
+    signal_intraday_return_pct                  NUMERIC(20,8),
+    shares_outstanding                          BIGINT,
+    log_shares_outstanding                      NUMERIC(20,8),
+    signal_turnover_ratio                       NUMERIC(20,8),
+
+    cross_sectional_rs_21d_pct_rank             NUMERIC(20,8),
+    cross_sectional_rs_63d_pct_rank             NUMERIC(20,8),
+    cross_sectional_rs_126d_pct_rank            NUMERIC(20,8),
+    cross_sectional_rs_252d_pct_rank            NUMERIC(20,8),
+    market_breadth_above_ma50_ratio             NUMERIC(20,8),
+    market_breadth_above_ma150_ratio            NUMERIC(20,8),
+    market_breadth_above_ma200_ratio            NUMERIC(20,8),
+    market_breadth_trend_template_ratio         NUMERIC(20,8),
+    market_breadth_rs70_ratio                   NUMERIC(20,8),
+    market_breadth_rs90_ratio                   NUMERIC(20,8),
+    market_advancer_ratio                       NUMERIC(20,8),
+    market_median_daily_return_pct              NUMERIC(20,8),
+    market_breadth_above_ma50_change_5d         NUMERIC(20,8),
+    market_breadth_above_ma200_change_21d       NUMERIC(20,8),
+    market_spy_prior_return_5d_pct              NUMERIC(20,8),
+    market_spy_prior_return_21d_pct             NUMERIC(20,8),
+    market_spy_prior_return_63d_pct             NUMERIC(20,8),
+    market_qqq_prior_return_5d_pct              NUMERIC(20,8),
+    market_qqq_prior_return_21d_pct             NUMERIC(20,8),
+    market_qqq_prior_return_63d_pct             NUMERIC(20,8),
+    market_iwm_prior_return_5d_pct              NUMERIC(20,8),
+    market_iwm_prior_return_21d_pct             NUMERIC(20,8),
+    market_iwm_prior_return_63d_pct             NUMERIC(20,8),
+    market_dia_prior_return_21d_pct             NUMERIC(20,8),
+    relative_return_vs_spy_21d_pct_points       NUMERIC(20,8),
+    relative_return_vs_spy_63d_pct_points       NUMERIC(20,8),
+    relative_return_vs_qqq_21d_pct_points       NUMERIC(20,8),
+    relative_return_vs_qqq_63d_pct_points       NUMERIC(20,8),
+    relative_return_vs_iwm_21d_pct_points       NUMERIC(20,8),
+    relative_return_vs_iwm_63d_pct_points       NUMERIC(20,8),
+    market_vix_level                            NUMERIC(20,8),
+    market_vxn_level                            NUMERIC(20,8),
+    market_vvix_level                           NUMERIC(20,8),
+    market_skew_level                           NUMERIC(20,8),
+    market_vix9d_to_vix_ratio                   NUMERIC(20,8),
+    market_vix_to_vix3m_ratio                   NUMERIC(20,8),
 
     forward_5d_max_gain_pct                      NUMERIC(20,8),
     forward_5d_max_loss_pct                      NUMERIC(20,8),
@@ -144,6 +279,8 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     forward_5d_label_end_date                    DATE,
     terminal_close_return_5d_pct                 NUMERIC(20,8),
     first_gain_2pct_day                          SMALLINT,
+    first_gain_1pct_day                          SMALLINT,
+    first_gain_3pct_day                          SMALLINT,
     first_gain_5pct_day                          SMALLINT,
     first_loss_5pct_day                          SMALLINT,
     gain_loss_order_5d                           TEXT,
@@ -153,6 +290,10 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     bad_5d                                       BOOLEAN,
     loss_first_5d                                BOOLEAN,
     strong_first_5d                              BOOLEAN,
+    terminal_stagnant_5d                         BOOLEAN,
+    terminal_winner_5d                           BOOLEAN,
+    mfe_to_abs_mae_5d_ratio                      NUMERIC(20,8),
+    terminal_return_to_mfe_5d_ratio              NUMERIC(20,8),
     late_strong_10d                              BOOLEAN,
     late_strong_20d                              BOOLEAN,
 
@@ -160,9 +301,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     include_weak_filter                          BOOLEAN NOT NULL,
     include_loss_first_filter                    BOOLEAN NOT NULL,
     include_final                                BOOLEAN NOT NULL,
+    strong_confirmation                          BOOLEAN NOT NULL,
     weak_matched_rule_ids                        TEXT,
     loss_first_matched_rule_ids                  TEXT,
     matched_rule_ids                             TEXT,
+    confirmation_matched_rule_ids                TEXT,
+    confirmation_reason                          TEXT,
     filter_decision                              TEXT NOT NULL,
     exclusion_reason                             TEXT,
 
@@ -210,6 +354,8 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (forward_20d_max_loss_pct IS NULL OR forward_20d_max_loss_pct <= 0),
     CHECK (forward_5d_label_end_date IS NULL OR forward_5d_label_end_date > signal_date),
     CHECK (first_gain_2pct_day IS NULL OR first_gain_2pct_day BETWEEN 1 AND 5),
+    CHECK (first_gain_1pct_day IS NULL OR first_gain_1pct_day BETWEEN 1 AND 5),
+    CHECK (first_gain_3pct_day IS NULL OR first_gain_3pct_day BETWEEN 1 AND 5),
     CHECK (first_gain_5pct_day IS NULL OR first_gain_5pct_day BETWEEN 1 AND 5),
     CHECK (first_loss_5pct_day IS NULL OR first_loss_5pct_day BETWEEN 1 AND 5),
     CHECK (
@@ -234,14 +380,32 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
         gain_loss_order_5d <> 'same_day_ambiguous'
         OR (loss_first_5d IS NULL AND strong_first_5d IS NULL)
     ),
+    CHECK (
+        (terminal_close_return_5d_pct IS NULL)
+        = (terminal_stagnant_5d IS NULL)
+    ),
+    CHECK ((terminal_stagnant_5d IS NULL) = (terminal_winner_5d IS NULL)),
+    CHECK (
+        terminal_stagnant_5d IS NULL
+        OR NOT (terminal_stagnant_5d AND terminal_winner_5d)
+    ),
     CHECK (analysis_split IN ('discovery', 'validation', 'diagnostic', 'holdout', 'purged')),
-    CHECK (include_final = (include_weak_filter AND include_loss_first_filter)),
+    CHECK (
+        NOT include_final
+        OR (include_weak_filter AND include_loss_first_filter)
+    ),
     CHECK (filter_decision IN ('include', 'exclude')),
     CHECK ((filter_decision = 'include') = include_final),
     CHECK (
         (filter_decision = 'include' AND exclusion_reason IS NULL)
         OR
         (filter_decision = 'exclude' AND NULLIF(TRIM(exclusion_reason), '') IS NOT NULL)
+    ),
+    CHECK (
+        (strong_confirmation
+         AND NULLIF(TRIM(confirmation_reason), '') IS NOT NULL)
+        OR
+        (NOT strong_confirmation AND confirmation_reason IS NULL)
     )
 );
 
@@ -331,6 +495,25 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     loss_first_to_day5                                BOOLEAN,
     strong_first_to_day5                              BOOLEAN,
     bad_to_day5                                       BOOLEAN,
+
+    market_breadth_above_ma50_ratio                   NUMERIC(20,8),
+    market_breadth_above_ma200_ratio                  NUMERIC(20,8),
+    market_breadth_trend_template_ratio               NUMERIC(20,8),
+    market_advancer_ratio                             NUMERIC(20,8),
+    market_median_daily_return_pct                    NUMERIC(20,8),
+    market_spy_prior_return_5d_pct                    NUMERIC(20,8),
+    market_qqq_prior_return_5d_pct                    NUMERIC(20,8),
+    market_iwm_prior_return_5d_pct                    NUMERIC(20,8),
+    market_vix_level                                  NUMERIC(20,8),
+    market_vxn_level                                  NUMERIC(20,8),
+    market_vix9d_to_vix_ratio                         NUMERIC(20,8),
+    market_vix_to_vix3m_ratio                         NUMERIC(20,8),
+    market_spy_return_since_signal_pct                NUMERIC(20,8),
+    market_qqq_return_since_signal_pct                NUMERIC(20,8),
+    market_iwm_return_since_signal_pct                NUMERIC(20,8),
+    relative_return_vs_spy_since_signal_pct_points    NUMERIC(20,8),
+    relative_return_vs_qqq_since_signal_pct_points    NUMERIC(20,8),
+    relative_return_vs_iwm_since_signal_pct_points    NUMERIC(20,8),
 
     analysis_split                                    TEXT NOT NULL,
     include_stagnation_filter                         BOOLEAN NOT NULL,
@@ -486,6 +669,10 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     passes_holdout                     BOOLEAN,
     passes_development_gates           BOOLEAN,
     passes_stability_gates             BOOLEAN,
+    passes_multiple_testing            BOOLEAN,
+    multiple_testing_candidate_count   INTEGER,
+    permutation_trial_count            INTEGER,
+    max_stat_permutation_p_value       NUMERIC(18,8),
     component_count                    SMALLINT NOT NULL,
     population_count                   INTEGER NOT NULL,
     sample_count                       INTEGER NOT NULL,
@@ -518,19 +705,39 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     selection_score                    NUMERIC(18,8),
 
     CHECK (result_kind IN ('baseline', 'candidate_rule', 'selected_filter')),
-    CHECK (decision_family IN ('entry_filter', 'early_cut')),
+    CHECK (decision_family IN ('entry_filter', 'entry_confirmation', 'early_cut')),
     CHECK (
         objective IN (
-            'weak_5d', 'loss_first_5d', 'stagnant_to_day5',
-            'loss_first_to_day5', 'bad_to_day5'
+            'weak_5d', 'loss_first_5d', 'terminal_stagnant_5d',
+            'strong_first_5d', 'terminal_winner_5d',
+            'stagnant_to_day5', 'loss_first_to_day5', 'bad_to_day5'
         )
     ),
-    CHECK (protected_outcome IN ('strong_first_5d', 'strong_first_to_day5')),
+    CHECK (
+        protected_outcome IN (
+            'strong_first_5d', 'terminal_winner_5d', 'bad_5d',
+            'terminal_stagnant_5d', 'strong_first_to_day5'
+        )
+    ),
     CHECK (
         (decision_family = 'entry_filter'
          AND landmark_day IS NULL
-         AND objective IN ('weak_5d', 'loss_first_5d')
-         AND protected_outcome = 'strong_first_5d')
+         AND (
+             (objective IN ('weak_5d', 'loss_first_5d')
+              AND protected_outcome = 'strong_first_5d')
+             OR
+             (objective = 'terminal_stagnant_5d'
+              AND protected_outcome = 'terminal_winner_5d')
+         ))
+        OR
+        (decision_family = 'entry_confirmation'
+         AND landmark_day IS NULL
+         AND (
+             (objective = 'strong_first_5d' AND protected_outcome = 'bad_5d')
+             OR
+             (objective = 'terminal_winner_5d'
+              AND protected_outcome = 'terminal_stagnant_5d')
+         ))
         OR
         (decision_family = 'early_cut'
          AND landmark_day BETWEEN 1 AND 3
@@ -540,7 +747,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
          )
          AND protected_outcome = 'strong_first_to_day5')
     ),
-    CHECK (feature_group IN ('none', 'A', 'B', 'C', 'D', 'E', 'F', 'M', 'multiple')),
+    CHECK (
+        feature_group IN (
+            'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N',
+            'R', 'S', 'T', 'multiple'
+        )
+    ),
     CHECK (operator IS NULL OR operator IN ('le', 'ge')),
     CHECK (quantile_value IS NULL OR quantile_value BETWEEN 0 AND 1),
     CHECK (
@@ -561,6 +773,15 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     CHECK (selection_order IS NULL OR selection_order BETWEEN 1 AND 2),
     CHECK (NOT is_final_filter OR is_selected),
     CHECK (component_count >= 0),
+    CHECK (
+        multiple_testing_candidate_count IS NULL
+        OR multiple_testing_candidate_count > 0
+    ),
+    CHECK (permutation_trial_count IS NULL OR permutation_trial_count >= 19),
+    CHECK (
+        max_stat_permutation_p_value IS NULL
+        OR max_stat_permutation_p_value BETWEEN 0 AND 1
+    ),
     CHECK (population_count >= 0),
     CHECK (sample_count BETWEEN 0 AND population_count),
     CHECK (unlabeled_count = population_count - sample_count),
@@ -624,4 +845,4 @@ COMMENT ON TABLE stock_analyser_filter_research_signal_results IS
 COMMENT ON TABLE stock_analyser_filter_research_early_cut_results IS
     'D+1, D+2 and D+3 landmark observations for each signal, with point-in-time features, landmark-relative continuation outcomes and sequential early-cut decisions.';
 COMMENT ON TABLE stock_analyser_filter_research_rule_results IS
-    'Entry-filter and early-cut rule candidates, stability gates and out-of-sample evaluations.';
+    'Entry-filter, entry-confirmation and early-cut rule candidates, stability gates and out-of-sample evaluations.';

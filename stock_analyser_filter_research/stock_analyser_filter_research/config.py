@@ -52,7 +52,9 @@ class Config:
     source_table: str
     fundamental_snapshot_table: str
     quarterly_fundamental_event_table: str
+    earnings_event_table: str
     market_metrics_table: str
+    world_market_observation_table: str
     signal_result_table: str
     early_cut_result_table: str
     rule_result_table: str
@@ -67,6 +69,8 @@ class Config:
     weak_5d_max_gain_pct: float
     strong_5d_min_gain_pct: float
     deep_loss_5d_max_loss_pct: float
+    terminal_stagnant_5d_max_return_pct: float
+    terminal_winner_5d_min_return_pct: float
 
     quantile_count: int
     max_conditions_per_objective: int
@@ -85,6 +89,9 @@ class Config:
     min_matched_label_coverage_pct: float
     min_objective_lift: float
     min_selection_score_improvement: float
+    permutation_trial_count: int
+    max_stat_permutation_p_value: float
+    permutation_random_seed: int
     min_holdout_sample_count: int
 
     max_workers: int
@@ -122,11 +129,25 @@ class Config:
                     "stock_core_sec_quarterly_fundamental_events",
                 ),
             ),
+            earnings_event_table=_table_name(
+                "EARNINGS_EVENT_TABLE",
+                os.getenv(
+                    "EARNINGS_EVENT_TABLE",
+                    "stock_core_earnings_calendar_events",
+                ),
+            ),
             market_metrics_table=_table_name(
                 "MARKET_METRICS_TABLE",
                 os.getenv(
                     "MARKET_METRICS_TABLE",
                     "stock_core_market_metrics_daily",
+                ),
+            ),
+            world_market_observation_table=_table_name(
+                "WORLD_MARKET_OBSERVATION_TABLE",
+                os.getenv(
+                    "WORLD_MARKET_OBSERVATION_TABLE",
+                    "world_regime_observations",
                 ),
             ),
             signal_result_table=_table_name(
@@ -159,6 +180,12 @@ class Config:
             weak_5d_max_gain_pct=_env_float("WEAK_5D_MAX_GAIN_PCT", 2.0),
             strong_5d_min_gain_pct=_env_float("STRONG_5D_MIN_GAIN_PCT", 5.0),
             deep_loss_5d_max_loss_pct=_env_float("DEEP_LOSS_5D_MAX_LOSS_PCT", -5.0),
+            terminal_stagnant_5d_max_return_pct=_env_float(
+                "TERMINAL_STAGNANT_5D_MAX_RETURN_PCT", 1.0
+            ),
+            terminal_winner_5d_min_return_pct=_env_float(
+                "TERMINAL_WINNER_5D_MIN_RETURN_PCT", 3.0
+            ),
             quantile_count=_env_int("QUANTILE_COUNT", 10),
             max_conditions_per_objective=_env_int("MAX_CONDITIONS_PER_OBJECTIVE", 2),
             rule_search_beam_width=_env_int("RULE_SEARCH_BEAM_WIDTH", 20),
@@ -182,6 +209,11 @@ class Config:
             min_selection_score_improvement=_env_float(
                 "MIN_SELECTION_SCORE_IMPROVEMENT", 0.01
             ),
+            permutation_trial_count=_env_int("PERMUTATION_TRIAL_COUNT", 999),
+            max_stat_permutation_p_value=_env_float(
+                "MAX_STAT_PERMUTATION_P_VALUE", 0.05
+            ),
+            permutation_random_seed=_env_int("PERMUTATION_RANDOM_SEED", 1729),
             min_holdout_sample_count=_env_int("MIN_HOLDOUT_SAMPLE_COUNT", 500),
             max_workers=_env_int("MAX_WORKERS", cpu_default),
             worker_identity_batch_size=_env_int("WORKER_IDENTITY_BATCH_SIZE", 16),
@@ -220,6 +252,12 @@ class Config:
             "WEAK_5D_MAX_GAIN_PCT": self.weak_5d_max_gain_pct,
             "STRONG_5D_MIN_GAIN_PCT": self.strong_5d_min_gain_pct,
             "DEEP_LOSS_5D_MAX_LOSS_PCT": self.deep_loss_5d_max_loss_pct,
+            "TERMINAL_STAGNANT_5D_MAX_RETURN_PCT": (
+                self.terminal_stagnant_5d_max_return_pct
+            ),
+            "TERMINAL_WINNER_5D_MIN_RETURN_PCT": (
+                self.terminal_winner_5d_min_return_pct
+            ),
             "MIN_STABLE_FOLD_FRACTION": self.min_stable_fold_fraction,
             "MIN_FOLD_OBJECTIVE_LIFT": self.min_fold_objective_lift,
             "MIN_FOLD_PROTECTED_RETENTION_PCT": (self.min_fold_protected_retention_pct),
@@ -232,6 +270,7 @@ class Config:
             "MIN_SELECTION_SCORE_IMPROVEMENT": (
                 self.min_selection_score_improvement
             ),
+            "MAX_STAT_PERMUTATION_P_VALUE": self.max_stat_permutation_p_value,
         }
         for name, value in float_values.items():
             if not isfinite(value):
@@ -242,6 +281,14 @@ class Config:
             raise ValueError("STRONG_5D_MIN_GAIN_PCT must exceed WEAK_5D_MAX_GAIN_PCT")
         if self.deep_loss_5d_max_loss_pct >= 0:
             raise ValueError("DEEP_LOSS_5D_MAX_LOSS_PCT must be negative")
+        if (
+            self.terminal_winner_5d_min_return_pct
+            <= self.terminal_stagnant_5d_max_return_pct
+        ):
+            raise ValueError(
+                "TERMINAL_WINNER_5D_MIN_RETURN_PCT must exceed "
+                "TERMINAL_STAGNANT_5D_MAX_RETURN_PCT"
+            )
         if not 4 <= self.quantile_count <= 20:
             raise ValueError("QUANTILE_COUNT must be between 4 and 20")
         if not 1 <= self.max_conditions_per_objective <= 2:
@@ -297,6 +344,14 @@ class Config:
             raise ValueError(
                 "MIN_SELECTION_SCORE_IMPROVEMENT must be between 0 and 1"
             )
+        if self.permutation_trial_count < 19:
+            raise ValueError("PERMUTATION_TRIAL_COUNT must be >= 19")
+        if not 0 < self.max_stat_permutation_p_value <= 1:
+            raise ValueError(
+                "MAX_STAT_PERMUTATION_P_VALUE must be in the interval (0, 1]"
+            )
+        if self.permutation_random_seed < 0:
+            raise ValueError("PERMUTATION_RANDOM_SEED must be >= 0")
         if self.max_workers < 1:
             raise ValueError("MAX_WORKERS must be >= 1")
         if self.worker_identity_batch_size < 1:
@@ -316,7 +371,12 @@ class Config:
                 "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
                 self.quarterly_fundamental_event_table,
             ),
+            ("EARNINGS_EVENT_TABLE", self.earnings_event_table),
             ("MARKET_METRICS_TABLE", self.market_metrics_table),
+            (
+                "WORLD_MARKET_OBSERVATION_TABLE",
+                self.world_market_observation_table,
+            ),
         )
         for name, table in source_tables:
             _table_name(name, table)

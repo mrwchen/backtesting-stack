@@ -13,7 +13,12 @@ from .config import Config
 from .contracts import (
     CRITERION_COLUMNS,
     EARLY_CUT_COLUMNS,
+    EARLY_CUT_BOOLEAN_COLUMNS,
+    EARLY_CUT_INTEGER_COLUMNS,
     EARLY_CUT_LANDMARK_DAYS,
+    EARLY_GLOBAL_MARKET_FEATURE_COLUMNS,
+    EARNINGS_EVENT_FEATURE_COLUMNS,
+    EARNINGS_EVENT_SOURCE_COLUMNS,
     FUNDAMENTAL_FEATURE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     IDENTITY_COLUMNS,
@@ -21,6 +26,12 @@ from .contracts import (
     MARKET_METRIC_SOURCE_COLUMNS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     SIGNAL_COLUMNS,
+    SIGNAL_BOOLEAN_COLUMNS,
+    SIGNAL_INTEGER_COLUMNS,
+    SUPPLY_DEMAND_FEATURE_COLUMNS,
+    TECHNICAL_V3_FEATURE_COLUMNS,
+    GLOBAL_MARKET_FEATURE_COLUMNS,
+    WORLD_MARKET_SOURCE_COLUMNS,
     SOURCE_BOOLEAN_COLUMNS,
     SOURCE_COLUMNS,
 )
@@ -57,6 +68,84 @@ def empty_calculation_batch() -> CalculationBatchResult:
         signals=empty_signal_frame(),
         early_cut=empty_early_cut_frame(),
     )
+
+
+_SIGNAL_TEXT_COLUMNS = (
+    "symbol",
+    "exchange",
+    "currency",
+    "trigger_criteria",
+    "gain_loss_order_5d",
+    "analysis_split",
+    "weak_matched_rule_ids",
+    "loss_first_matched_rule_ids",
+    "matched_rule_ids",
+    "confirmation_matched_rule_ids",
+    "confirmation_reason",
+    "filter_decision",
+    "exclusion_reason",
+)
+
+_EARLY_CUT_TEXT_COLUMNS = (
+    "symbol",
+    "exchange",
+    "currency",
+    "continuation_outcome",
+    "analysis_split",
+    "stagnation_matched_rule_ids",
+    "loss_matched_rule_ids",
+    "matched_rule_ids",
+    "cut_decision",
+    "cut_reason",
+)
+
+_SIGNAL_DATE_COLUMNS = (
+    "signal_date",
+    "previous_session_date",
+    "forward_5d_label_end_date",
+)
+
+_EARLY_CUT_DATE_COLUMNS = (
+    "signal_date",
+    "landmark_date",
+    "effective_session_date",
+    "horizon_end_date",
+)
+
+
+def _normalize_result_dtypes(
+    frame: pd.DataFrame,
+    *,
+    integer_columns: tuple[str, ...],
+    boolean_columns: tuple[str, ...],
+    text_columns: tuple[str, ...],
+    date_columns: tuple[str, ...],
+) -> pd.DataFrame:
+    """Make worker partitions concatenate without null-sentinel drift."""
+
+    result = frame.copy()
+    for column in integer_columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce").astype(
+            "Int64"
+        )
+    for column in boolean_columns:
+        result[column] = result[column].astype("boolean")
+    for column in text_columns:
+        result[column] = result[column].astype("string")
+    for column in date_columns:
+        result[column] = pd.to_datetime(result[column], errors="raise")
+    typed = {
+        *integer_columns,
+        *boolean_columns,
+        *text_columns,
+        *date_columns,
+    }
+    for column in result.columns:
+        if column not in typed:
+            result[column] = pd.to_numeric(
+                result[column], errors="raise"
+            ).astype(float)
+    return result
 
 
 def _signal_decision_timestamp(signal_date: Any) -> pd.Timestamp:
@@ -191,6 +280,41 @@ def _prepare_quarterly_fundamental_events(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _prepare_earnings_events(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "earnings event data"
+    _require_columns(frame, EARNINGS_EVENT_SOURCE_COLUMNS, source_name)
+    if frame.empty:
+        return pd.DataFrame(columns=EARNINGS_EVENT_SOURCE_COLUMNS)
+    result = _normalize_fundamental_identities(
+        frame.loc[:, EARNINGS_EVENT_SOURCE_COLUMNS], source_name
+    )
+    for column in (
+        "source",
+        "source_event_id",
+    ):
+        if result[column].isna().any():
+            raise ValueError(f"earnings event {column} must not be null")
+        result[column] = result[column].astype("string")
+    result["announcement_time_type"] = result[
+        "announcement_time_type"
+    ].astype("string")
+    result["earnings_date"] = pd.to_datetime(
+        result["earnings_date"], errors="raise"
+    ).dt.normalize()
+    result["announcement_ts"] = pd.to_datetime(
+        result["announcement_ts"], errors="coerce", utc=True
+    )
+    result["known_as_of_ts"] = pd.to_datetime(
+        result["known_as_of_ts"], errors="raise", utc=True
+    )
+    result["is_confirmed"] = result["is_confirmed"].astype("boolean")
+    if result.duplicated(
+        [*IDENTITY_COLUMNS, "source", "source_event_id"]
+    ).any():
+        raise ValueError("earnings event data contains duplicate source events")
+    return result
+
+
 def _identity_groups(frame: pd.DataFrame) -> dict[tuple[str, str, int], pd.DataFrame]:
     return {
         (str(symbol), str(exchange), int(cik)): group.reset_index(drop=True)
@@ -206,6 +330,22 @@ def _finite_scalar(value: Any) -> float:
     except (TypeError, ValueError):
         return np.nan
     return numeric if np.isfinite(numeric) else np.nan
+
+
+def _safe_scalar_divide(
+    numerator: Any,
+    denominator: Any,
+    *,
+    positive_denominator: bool = True,
+) -> float:
+    numerator_value = _finite_scalar(numerator)
+    denominator_value = _finite_scalar(denominator)
+    denominator_valid = (
+        denominator_value > 0 if positive_denominator else denominator_value != 0
+    )
+    if not np.isfinite(numerator_value) or not denominator_valid:
+        return np.nan
+    return float(numerator_value / denominator_value)
 
 
 def _verified_currency(value: Any) -> bool:
@@ -269,6 +409,137 @@ def _assign_snapshot_features(
             sbc / revenue
         )
 
+    direct_ratios = {
+        "fundamental_operating_cashflow_margin_ttm_ratio": (
+            "sec_operating_cashflow_ttm",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_rd_to_revenue_ttm_ratio": (
+            "sec_research_and_development_ttm",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_sga_to_revenue_ttm_ratio": (
+            "sec_selling_general_and_admin_ttm",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_capex_to_revenue_ttm_ratio": (
+            "sec_capex_ttm",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_da_to_revenue_ttm_ratio": (
+            "sec_depreciation_and_amortization_ttm",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_roe_ttm_ratio": (
+            "sec_net_income_ttm",
+            "sec_stockholders_equity",
+        ),
+        "fundamental_roa_ttm_ratio": ("sec_net_income_ttm", "sec_assets"),
+        "fundamental_cash_conversion_ttm_ratio": (
+            "sec_operating_cashflow_ttm",
+            "sec_net_income_ttm",
+        ),
+        "fundamental_fcf_conversion_ttm_ratio": (
+            "sec_free_cashflow_ttm",
+            "sec_net_income_ttm",
+        ),
+        "fundamental_fcf_sbc_adjusted_conversion_ttm_ratio": (
+            "sec_free_cashflow_sbc_adjusted_ttm",
+            "sec_net_income_ttm",
+        ),
+        "fundamental_interest_coverage_ttm_ratio": (
+            "sec_operating_income_ttm",
+            "sec_interest_expense_ttm",
+        ),
+        "fundamental_debt_to_assets_ratio": ("sec_total_debt", "sec_assets"),
+        "fundamental_inventory_to_revenue_ttm_ratio": (
+            "sec_inventory",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_receivables_to_revenue_ttm_ratio": (
+            "sec_accounts_receivable",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_payables_to_revenue_ttm_ratio": (
+            "sec_accounts_payable",
+            "sec_revenue_ttm",
+        ),
+        "fundamental_asset_turnover_ttm_ratio": ("sec_revenue_ttm", "sec_assets"),
+        "fundamental_diluted_share_pressure_ratio": (
+            "sec_weighted_avg_shares_diluted",
+            "sec_shares_outstanding",
+        ),
+        "fundamental_buyback_to_revenue_ttm_ratio": (
+            "sec_common_stock_repurchased_ttm",
+            "sec_revenue_ttm",
+        ),
+    }
+    for target, (numerator, denominator) in direct_ratios.items():
+        output.at[output_index, target] = _safe_scalar_divide(
+            selected[numerator], selected[denominator]
+        )
+    diluted_share_ratio = _finite_scalar(
+        output.at[output_index, "fundamental_diluted_share_pressure_ratio"]
+    )
+    if np.isfinite(diluted_share_ratio):
+        output.at[
+            output_index, "fundamental_diluted_share_pressure_ratio"
+        ] = diluted_share_ratio - 1.0
+
+    assets = _finite_scalar(selected["sec_assets"])
+    debt = _finite_scalar(selected["sec_total_debt"])
+    cash = _finite_scalar(selected["sec_cash_and_equivalents"])
+    net_debt = debt - cash if np.isfinite(debt) and np.isfinite(cash) else np.nan
+    if np.isfinite(net_debt) and np.isfinite(assets) and assets > 0:
+        output.at[output_index, "fundamental_net_debt_to_assets_ratio"] = (
+            net_debt / assets
+        )
+    operating_income = _finite_scalar(selected["sec_operating_income_ttm"])
+    if np.isfinite(debt) and np.isfinite(operating_income) and operating_income > 0:
+        output.at[
+            output_index, "fundamental_debt_to_operating_income_ttm_ratio"
+        ] = debt / operating_income
+    fcf = _finite_scalar(selected["sec_free_cashflow_ttm"])
+    if np.isfinite(net_debt) and np.isfinite(fcf) and fcf > 0:
+        output.at[output_index, "fundamental_net_debt_to_fcf_ttm_ratio"] = (
+            net_debt / fcf
+        )
+    current_assets = _finite_scalar(selected["sec_current_assets"])
+    current_liabilities = _finite_scalar(selected["sec_current_liabilities"])
+    inventory = _finite_scalar(selected["sec_inventory"])
+    if np.isfinite(current_liabilities) and current_liabilities > 0:
+        if np.isfinite(current_assets) and np.isfinite(inventory):
+            output.at[output_index, "fundamental_quick_ratio"] = (
+                current_assets - inventory
+            ) / current_liabilities
+    if np.isfinite(assets) and assets > 0:
+        if np.isfinite(current_assets) and np.isfinite(current_liabilities):
+            output.at[
+                output_index, "fundamental_working_capital_to_assets_ratio"
+            ] = (current_assets - current_liabilities) / assets
+        goodwill = _finite_scalar(selected["sec_goodwill"])
+        intangibles = _finite_scalar(selected["sec_intangible_assets"])
+        if np.isfinite(goodwill) and np.isfinite(intangibles):
+            output.at[
+                output_index,
+                "fundamental_goodwill_intangibles_to_assets_ratio",
+            ] = (goodwill + intangibles) / assets
+
+    selected_shares = _finite_scalar(selected["sec_shares_outstanding"])
+    older = eligible.loc[
+        eligible["period_end_date"].le(signal_date - pd.Timedelta(days=365))
+        & eligible["sec_shares_outstanding"].notna()
+    ]
+    if not older.empty and np.isfinite(selected_shares) and selected_shares > 0:
+        older_row = older.sort_values(
+            ["period_end_date", "sec_data_available_at"], kind="mergesort"
+        ).iloc[-1]
+        older_shares = _finite_scalar(older_row["sec_shares_outstanding"])
+        if np.isfinite(older_shares) and older_shares > 0:
+            output.at[
+                output_index, "fundamental_sec_shares_change_1y_ratio"
+            ] = selected_shares / older_shares - 1.0
+
 
 def _assign_quarterly_features(
     output: pd.DataFrame,
@@ -285,10 +556,11 @@ def _assign_quarterly_features(
     ]
     if eligible.empty:
         return
-    selected = eligible.sort_values(
+    ordered = eligible.sort_values(
         ["fiscal_period_end_date", "accepted_at", "accession_number"],
         kind="mergesort",
-    ).iloc[-1]
+    ).drop_duplicates("fiscal_period_end_date", keep="last")
+    selected = ordered.iloc[-1]
     accepted_at = pd.Timestamp(selected["accepted_at"])
     quarter_date = pd.Timestamp(selected["fiscal_period_end_date"])
     output.at[output_index, "fundamental_quarter_filing_age_days"] = (
@@ -314,6 +586,14 @@ def _assign_quarterly_features(
         output.at[output_index, "fundamental_quarterly_eps_yoy_change_ratio"] = (
             current_eps - prior_eps
         ) / eps_scale
+    if np.isfinite(current_eps) and np.isfinite(prior_eps):
+        if prior_eps > 0:
+            output.at[
+                output_index, "fundamental_quarterly_eps_yoy_growth_ratio"
+            ] = current_eps / prior_eps - 1.0
+        output.at[output_index, "fundamental_quarterly_loss_to_profit"] = float(
+            prior_eps <= 0 < current_eps
+        )
 
     for target, change_target, current_column, prior_column in (
         (
@@ -335,24 +615,149 @@ def _assign_quarterly_features(
         if np.isfinite(current) and np.isfinite(prior):
             output.at[output_index, change_target] = current - prior
 
+    recent = ordered.tail(5).copy()
+    if len(recent) >= 2:
+        revenue_growth = (
+            (
+                _numeric(recent["quarterly_revenue"])
+                - _numeric(recent["prior_year_quarterly_revenue"])
+            )
+            / _numeric(recent["prior_year_quarterly_revenue"]).abs()
+        ).where(_numeric(recent["prior_year_quarterly_revenue"]).ne(0))
+        eps_growth = (
+            _numeric(recent["diluted_eps"])
+            / _numeric(recent["prior_year_diluted_eps"])
+            - 1.0
+        ).where(_numeric(recent["prior_year_diluted_eps"]).gt(0))
+        latest_revenue_growth = _finite_scalar(revenue_growth.iloc[-1])
+        previous_revenue_growth = _finite_scalar(revenue_growth.iloc[-2])
+        if np.isfinite(latest_revenue_growth) and np.isfinite(
+            previous_revenue_growth
+        ):
+            output.at[
+                output_index, "fundamental_quarterly_revenue_growth_acceleration"
+            ] = latest_revenue_growth - previous_revenue_growth
+        latest_eps_growth = _finite_scalar(eps_growth.iloc[-1])
+        previous_eps_growth = _finite_scalar(eps_growth.iloc[-2])
+        if np.isfinite(latest_eps_growth) and np.isfinite(previous_eps_growth):
+            output.at[
+                output_index, "fundamental_quarterly_eps_growth_acceleration"
+            ] = latest_eps_growth - previous_eps_growth
+
+        previous_quarter = recent.iloc[-2]
+        previous_quarter_revenue = _finite_scalar(
+            previous_quarter["quarterly_revenue"]
+        )
+        if (
+            np.isfinite(current_revenue)
+            and np.isfinite(previous_quarter_revenue)
+            and previous_quarter_revenue != 0
+        ):
+            output.at[
+                output_index,
+                "fundamental_quarterly_revenue_sequential_growth_ratio",
+            ] = (current_revenue - previous_quarter_revenue) / abs(
+                previous_quarter_revenue
+            )
+        previous_quarter_eps = _finite_scalar(previous_quarter["diluted_eps"])
+        sequential_eps_scale = abs(current_eps) + abs(previous_quarter_eps)
+        if np.isfinite(sequential_eps_scale) and sequential_eps_scale > 0:
+            output.at[
+                output_index, "fundamental_quarterly_eps_sequential_change_ratio"
+            ] = (current_eps - previous_quarter_eps) / sequential_eps_scale
+
+        for target, values in (
+            (
+                "fundamental_quarterly_operating_margin_acceleration",
+                _numeric(recent["quarterly_operating_margin"])
+                - _numeric(recent["prior_year_quarterly_operating_margin"]),
+            ),
+            (
+                "fundamental_quarterly_net_margin_acceleration",
+                _numeric(recent["quarterly_net_margin"])
+                - _numeric(recent["prior_year_quarterly_net_margin"]),
+            ),
+        ):
+            latest = _finite_scalar(values.iloc[-1])
+            previous = _finite_scalar(values.iloc[-2])
+            if np.isfinite(latest) and np.isfinite(previous):
+                output.at[output_index, target] = latest - previous
+
+        revenue_streak_values = revenue_growth.tail(4)
+        if len(revenue_streak_values) == 4 and revenue_streak_values.notna().all():
+            output.at[output_index, "fundamental_revenue_growth_streak_4q"] = float(
+                revenue_streak_values.gt(0).sum()
+            )
+        eps_streak_values = eps_growth.tail(4)
+        if len(eps_streak_values) == 4 and eps_streak_values.notna().all():
+            output.at[output_index, "fundamental_eps_growth_streak_4q"] = float(
+                eps_streak_values.gt(0).sum()
+            )
+
+
+def _assign_earnings_event_features(
+    output: pd.DataFrame,
+    output_index: Any,
+    signal_date: pd.Timestamp,
+    decision_at: pd.Timestamp,
+    rows: pd.DataFrame,
+) -> None:
+    # Historical yfinance events are current snapshots and therefore excluded.
+    eligible = rows.loc[
+        rows["source"].eq("sec_8k_item_2_02")
+        & rows["is_confirmed"].eq(True).fillna(False)
+        & rows["known_as_of_ts"].le(decision_at)
+    ].copy()
+    if eligible.empty:
+        return
+    eligible["effective_at"] = eligible["announcement_ts"].fillna(
+        eligible["known_as_of_ts"]
+    )
+    eligible = eligible.loc[eligible["effective_at"].le(decision_at)]
+    if eligible.empty:
+        return
+    selected = eligible.sort_values(
+        ["effective_at", "known_as_of_ts", "source_event_id"], kind="mergesort"
+    ).iloc[-1]
+    effective_at = pd.Timestamp(selected["effective_at"])
+    age_days = (decision_at - effective_at).total_seconds() / 86_400.0
+    local_event_date = effective_at.tz_convert(_NEW_YORK).normalize().tz_localize(None)
+    output.at[output_index, "earnings_event_age_days"] = age_days
+    output.at[output_index, "earnings_event_on_signal_day"] = float(
+        local_event_date == signal_date
+    )
+    output.at[output_index, "earnings_event_within_5d"] = float(age_days <= 5.0)
+    output.at[output_index, "earnings_event_within_21d"] = float(age_days <= 21.0)
+
 
 def enrich_signal_fundamentals(
     signals: pd.DataFrame,
     fundamental_snapshots: pd.DataFrame,
     quarterly_fundamental_events: pd.DataFrame,
+    earnings_events: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Attach only SEC information public by the signal-day 16:00 ET boundary."""
 
     output = signals.copy()
     for column in FUNDAMENTAL_FEATURE_COLUMNS:
         output[column] = np.nan
+    for column in EARNINGS_EVENT_FEATURE_COLUMNS:
+        output[column] = np.nan
     if output.empty:
         return output.loc[:, SIGNAL_COLUMNS]
 
     snapshots = _prepare_fundamental_snapshots(fundamental_snapshots)
     events = _prepare_quarterly_fundamental_events(quarterly_fundamental_events)
+    prepared_earnings = _prepare_earnings_events(
+        pd.DataFrame(columns=EARNINGS_EVENT_SOURCE_COLUMNS)
+        if earnings_events is None
+        else earnings_events
+    )
     snapshot_groups = _identity_groups(snapshots) if not snapshots.empty else {}
     event_groups = _identity_groups(events) if not events.empty else {}
+    earnings_groups = (
+        _identity_groups(prepared_earnings) if not prepared_earnings.empty else {}
+    )
 
     for output_index, signal in output.iterrows():
         signal_date = pd.Timestamp(signal["signal_date"]).normalize()
@@ -372,6 +777,11 @@ def enrich_signal_fundamentals(
             _assign_quarterly_features(
                 output, output_index, signal_date, decision_at, event_rows
             )
+        earnings_rows = earnings_groups.get(identity)
+        if earnings_rows is not None:
+            _assign_earnings_event_features(
+                output, output_index, signal_date, decision_at, earnings_rows
+            )
     return output.loc[:, SIGNAL_COLUMNS]
 
 
@@ -384,6 +794,8 @@ def enrich_signal_market_metrics(
     output = signals.copy()
     for column in MARKET_CAP_FEATURE_COLUMNS:
         output[column] = np.nan
+    for column in SUPPLY_DEMAND_FEATURE_COLUMNS:
+        output[column] = np.nan
     if output.empty:
         return output.loc[:, SIGNAL_COLUMNS]
 
@@ -394,6 +806,7 @@ def enrich_signal_market_metrics(
         output["market_cap_shares_staleness_days"] = output[
             "market_cap_shares_staleness_days"
         ].astype("Int64")
+        output["shares_outstanding"] = output["shares_outstanding"].astype("Int64")
         return output.loc[:, SIGNAL_COLUMNS]
 
     metrics = _normalize_fundamental_identities(
@@ -405,12 +818,25 @@ def enrich_signal_market_metrics(
     metrics["market_cap_currency"] = _normalize_optional_currency_values(
         metrics["market_cap_currency"]
     )
+    metrics["shares_outstanding_source"] = metrics[
+        "shares_outstanding_source"
+    ].astype("string").str.strip().mask(lambda values: values.eq(""), pd.NA)
     _normalize_fundamental_numerics(
         metrics,
-        ("market_cap", "shares_outstanding_staleness_days"),
+        (
+            "market_cap",
+            "adjusted_open",
+            "raw_volume",
+            "shares_outstanding",
+            "shares_outstanding_staleness_days",
+        ),
         source_name,
     )
-    for column in ("market_cap", "shares_outstanding_staleness_days"):
+    for column in (
+        "market_cap",
+        "shares_outstanding",
+        "shares_outstanding_staleness_days",
+    ):
         values = pd.to_numeric(metrics[column], errors="coerce").dropna()
         if not values.eq(np.floor(values)).all():
             raise ValueError(f"market metric data column {column} must be integral")
@@ -442,18 +868,52 @@ def enrich_signal_market_metrics(
         if metric is None:
             continue
         currency = metric.market_cap_currency
-        if pd.isna(currency) or str(currency).strip().upper() != "USD":
-            continue
         market_cap = _finite_scalar(metric.market_cap)
         staleness = _finite_scalar(metric.shares_outstanding_staleness_days)
-        if not np.isfinite(market_cap) or market_cap <= 0:
-            continue
-        output.at[output_index, "market_cap_usd"] = int(round(market_cap))
-        output.at[output_index, "log_market_cap_usd"] = float(np.log(market_cap))
-        if np.isfinite(staleness) and staleness >= 0:
-            output.at[output_index, "market_cap_shares_staleness_days"] = int(
-                round(staleness)
+        if (
+            pd.notna(currency)
+            and str(currency).strip().upper() == "USD"
+            and np.isfinite(market_cap)
+            and market_cap > 0
+        ):
+            output.at[output_index, "market_cap_usd"] = int(round(market_cap))
+            output.at[output_index, "log_market_cap_usd"] = float(
+                np.log(market_cap)
             )
+            if np.isfinite(staleness) and staleness >= 0:
+                output.at[
+                    output_index, "market_cap_shares_staleness_days"
+                ] = int(round(staleness))
+        adjusted_open = _finite_scalar(metric.adjusted_open)
+        previous_close = _finite_scalar(signal.get("prior_adjusted_close"))
+        signal_close = _finite_scalar(signal.get("adjusted_close"))
+        if np.isfinite(adjusted_open) and adjusted_open > 0:
+            output.at[output_index, "signal_adjusted_open"] = adjusted_open
+            if np.isfinite(previous_close) and previous_close > 0:
+                output.at[output_index, "signal_gap_pct"] = (
+                    adjusted_open / previous_close - 1.0
+                ) * 100.0
+            if np.isfinite(signal_close) and signal_close > 0:
+                output.at[output_index, "signal_intraday_return_pct"] = (
+                    signal_close / adjusted_open - 1.0
+                ) * 100.0
+        shares = _finite_scalar(metric.shares_outstanding)
+        source = metric.shares_outstanding_source
+        if (
+            np.isfinite(shares)
+            and shares > 0
+            and np.isfinite(staleness)
+            and staleness >= 0
+            and pd.notna(source)
+            and str(source).startswith("sec_")
+        ):
+            output.at[output_index, "shares_outstanding"] = int(round(shares))
+            output.at[output_index, "log_shares_outstanding"] = float(np.log(shares))
+            raw_volume = _finite_scalar(metric.raw_volume)
+            if np.isfinite(raw_volume) and raw_volume >= 0:
+                output.at[output_index, "signal_turnover_ratio"] = (
+                    raw_volume / shares
+                )
 
     output["market_cap_usd"] = pd.to_numeric(
         output["market_cap_usd"], errors="coerce"
@@ -461,7 +921,206 @@ def enrich_signal_market_metrics(
     output["market_cap_shares_staleness_days"] = pd.to_numeric(
         output["market_cap_shares_staleness_days"], errors="coerce"
     ).astype("Int64")
+    output["shares_outstanding"] = pd.to_numeric(
+        output["shares_outstanding"], errors="coerce"
+    ).astype("Int64")
     return output.loc[:, SIGNAL_COLUMNS]
+
+
+_WORLD_SERIES_TO_FIELD = {
+    ("twelve_data", "SPY"): "_market_spy_level",
+    ("twelve_data", "QQQ"): "_market_qqq_level",
+    ("twelve_data", "IWM"): "_market_iwm_level",
+    ("twelve_data", "DIA"): "_market_dia_level",
+    ("cboe_vix", "VIX"): "market_vix_level",
+    ("cboe_vix", "VXN"): "market_vxn_level",
+    ("cboe_vix", "VVIX"): "market_vvix_level",
+    ("cboe_vix", "SKEW"): "market_skew_level",
+    ("cboe_vix", "VIX9D"): "_market_vix9d_level",
+    ("cboe_vix", "VIX3M"): "_market_vix3m_level",
+}
+
+
+def build_global_market_context(
+    trading_dates: pd.DatetimeIndex,
+    market_breadth: pd.DataFrame,
+    world_market_observations: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build one point-in-time market row for every global trading session."""
+
+    dates = pd.DatetimeIndex(trading_dates).normalize()
+    context = pd.DataFrame({"market_date": dates})
+    # Daily benchmark and volatility observations on the source VM are marked
+    # available 30-45 minutes after the regular close. Entry/early decisions
+    # take effect no earlier than the next session, so 17:00 New York is both
+    # causal and consistent with the same-close stock/breadth features.
+    context["decision_at"] = [
+        _signal_decision_timestamp(value) + pd.Timedelta(hours=1)
+        for value in context["market_date"]
+    ]
+
+    breadth_columns = (
+        "market_breadth_above_ma50_ratio",
+        "market_breadth_above_ma150_ratio",
+        "market_breadth_above_ma200_ratio",
+        "market_breadth_trend_template_ratio",
+        "market_breadth_rs70_ratio",
+        "market_breadth_rs90_ratio",
+        "market_advancer_ratio",
+        "market_median_daily_return_pct",
+    )
+    for column in breadth_columns:
+        context[column] = np.nan
+    if not market_breadth.empty:
+        breadth = market_breadth.copy()
+        breadth["market_date"] = pd.to_datetime(
+            breadth["market_date"], errors="raise"
+        ).dt.normalize()
+        if breadth.duplicated("market_date").any():
+            raise ValueError("market breadth contains duplicate dates")
+        breadth = breadth.set_index("market_date")
+        for column in breadth_columns:
+            context[column] = context["market_date"].map(breadth[column])
+    context["market_breadth_above_ma50_change_5d"] = (
+        context["market_breadth_above_ma50_ratio"]
+        - context["market_breadth_above_ma50_ratio"].shift(5)
+    )
+    context["market_breadth_above_ma200_change_21d"] = (
+        context["market_breadth_above_ma200_ratio"]
+        - context["market_breadth_above_ma200_ratio"].shift(21)
+    )
+
+    for field in _WORLD_SERIES_TO_FIELD.values():
+        context[field] = np.nan
+    if not world_market_observations.empty:
+        _require_columns(
+            world_market_observations,
+            WORLD_MARKET_SOURCE_COLUMNS,
+            "world market observations",
+        )
+        world = world_market_observations.loc[:, WORLD_MARKET_SOURCE_COLUMNS].copy()
+        for column in ("observation_time", "available_at", "asof_known_at"):
+            world[column] = pd.to_datetime(world[column], errors="raise", utc=True)
+        world["known_at"] = world[["available_at", "asof_known_at"]].max(axis=1)
+        decisions = context.loc[:, ["decision_at"]].sort_values("decision_at")
+        for key, target in _WORLD_SERIES_TO_FIELD.items():
+            source, series_id = key
+            observations = world.loc[
+                world["source"].eq(source) & world["series_id"].eq(series_id),
+                ["known_at", "observation_time", "value"],
+            ].copy()
+            if observations.empty:
+                continue
+            observations = observations.sort_values(
+                ["known_at", "observation_time"], kind="mergesort"
+            ).drop_duplicates("known_at", keep="last")
+            aligned = pd.merge_asof(
+                decisions,
+                observations,
+                left_on="decision_at",
+                right_on="known_at",
+                direction="backward",
+                allow_exact_matches=True,
+            )
+            context[target] = pd.to_numeric(
+                aligned["value"], errors="coerce"
+            ).to_numpy(dtype=float)
+
+    for ticker in ("spy", "qqq", "iwm"):
+        level = context[f"_market_{ticker}_level"]
+        for window in (5, 21, 63):
+            context[f"market_{ticker}_prior_return_{window}d_pct"] = (
+                level.shift(1) / level.shift(window + 1) - 1.0
+            ) * 100.0
+    dia = context["_market_dia_level"]
+    context["market_dia_prior_return_21d_pct"] = (
+        dia.shift(1) / dia.shift(22) - 1.0
+    ) * 100.0
+    context["market_vix9d_to_vix_ratio"] = (
+        context["_market_vix9d_level"] / context["market_vix_level"]
+    ).where(context["market_vix_level"].gt(0))
+    context["market_vix_to_vix3m_ratio"] = (
+        context["market_vix_level"] / context["_market_vix3m_level"]
+    ).where(context["_market_vix3m_level"].gt(0))
+    return context
+
+
+def enrich_global_features(
+    signals: pd.DataFrame,
+    early_cuts: pd.DataFrame,
+    market_context: pd.DataFrame,
+) -> CalculationBatchResult:
+    """Attach market context and signal-date cross-sectional leadership ranks."""
+
+    output = signals.copy()
+    early = early_cuts.copy()
+    for column in GLOBAL_MARKET_FEATURE_COLUMNS:
+        output[column] = np.nan
+    for column in EARLY_GLOBAL_MARKET_FEATURE_COLUMNS:
+        early[column] = np.nan
+    if output.empty:
+        return CalculationBatchResult(
+            output.loc[:, SIGNAL_COLUMNS], early.loc[:, EARLY_CUT_COLUMNS]
+        )
+
+    context = market_context.copy()
+    context["market_date"] = pd.to_datetime(
+        context["market_date"], errors="raise"
+    ).dt.normalize()
+    if context.duplicated("market_date").any():
+        raise ValueError("global market context contains duplicate dates")
+    context_lookup = context.set_index("market_date")
+
+    signal_dates = pd.to_datetime(output["signal_date"], errors="raise").dt.normalize()
+    direct_signal_context = tuple(
+        column
+        for column in GLOBAL_MARKET_FEATURE_COLUMNS
+        if not column.startswith("cross_sectional_")
+        and not column.startswith("relative_return_")
+    )
+    for column in direct_signal_context:
+        if column in context_lookup:
+            output[column] = signal_dates.map(context_lookup[column])
+
+    for window in (21, 63, 126, 252):
+        source_column = f"prior_return_{window}d_pct"
+        target_column = f"cross_sectional_rs_{window}d_pct_rank"
+        output[target_column] = output.groupby(
+            signal_dates, sort=False, observed=True
+        )[source_column].rank(method="average", pct=True)
+    for benchmark in ("spy", "qqq", "iwm"):
+        for window in (21, 63):
+            output[
+                f"relative_return_vs_{benchmark}_{window}d_pct_points"
+            ] = _numeric(output[f"prior_return_{window}d_pct"]) - _numeric(
+                output[f"market_{benchmark}_prior_return_{window}d_pct"]
+            )
+
+    if not early.empty:
+        landmark_dates = pd.to_datetime(
+            early["landmark_date"], errors="coerce"
+        ).dt.normalize()
+        for column in EARLY_GLOBAL_MARKET_FEATURE_COLUMNS:
+            if column in context_lookup:
+                early[column] = landmark_dates.map(context_lookup[column])
+        signal_dates_early = pd.to_datetime(
+            early["signal_date"], errors="raise"
+        ).dt.normalize()
+        for benchmark in ("spy", "qqq", "iwm"):
+            level_column = f"_market_{benchmark}_level"
+            landmark_level = landmark_dates.map(context_lookup[level_column])
+            signal_level = signal_dates_early.map(context_lookup[level_column])
+            market_return = (
+                (landmark_level / signal_level - 1.0) * 100.0
+            ).where(signal_level.gt(0))
+            early[f"market_{benchmark}_return_since_signal_pct"] = market_return
+            early[
+                f"relative_return_vs_{benchmark}_since_signal_pct_points"
+            ] = _numeric(early["close_return_from_signal_pct"]) - market_return
+
+    return CalculationBatchResult(
+        output.loc[:, SIGNAL_COLUMNS], early.loc[:, EARLY_CUT_COLUMNS]
+    )
 
 
 def _numeric(series: pd.Series) -> pd.Series:
@@ -684,6 +1343,8 @@ def _entry_path_outcome(
         "forward_5d_label_end_date": label_end_date,
         "terminal_close_return_5d_pct": np.nan,
         "first_gain_2pct_day": pd.NA,
+        "first_gain_1pct_day": pd.NA,
+        "first_gain_3pct_day": pd.NA,
         "first_gain_5pct_day": pd.NA,
         "first_loss_5pct_day": pd.NA,
         "gain_loss_order_5d": pd.NA,
@@ -693,6 +1354,10 @@ def _entry_path_outcome(
         "bad_5d": pd.NA,
         "loss_first_5d": pd.NA,
         "strong_first_5d": pd.NA,
+        "terminal_stagnant_5d": pd.NA,
+        "terminal_winner_5d": pd.NA,
+        "mfe_to_abs_mae_5d_ratio": np.nan,
+        "terminal_return_to_mfe_5d_ratio": np.nan,
         "_full_path_available": False,
     }
     if pd.isna(label_end_date):
@@ -717,21 +1382,24 @@ def _entry_path_outcome(
     max_gain = max(0.0, float(high_returns.max()))
     max_loss = min(0.0, float(low_returns.min()))
     first_gain_2 = _first_hit_day(high_returns >= cfg.weak_5d_max_gain_pct, 1)
+    first_gain_1 = _first_hit_day(high_returns >= 1.0, 1)
+    first_gain_3 = _first_hit_day(high_returns >= 3.0, 1)
     first_gain_5 = _first_hit_day(high_returns >= cfg.strong_5d_min_gain_pct, 1)
     first_loss_5 = _first_hit_day(low_returns <= cfg.deep_loss_5d_max_loss_pct, 1)
     order = _gain_loss_order(first_gain_5, first_loss_5)
     weak = max_gain < cfg.weak_5d_max_gain_pct
     strong = max_gain >= cfg.strong_5d_min_gain_pct
     deep_loss = max_loss <= cfg.deep_loss_5d_max_loss_pct
+    terminal_return = (terminal_close / signal_close - 1.0) * 100.0
 
     result.update(
         {
             "forward_5d_max_gain_pct": max_gain,
             "forward_5d_max_loss_pct": max_loss,
-            "terminal_close_return_5d_pct": (
-                (terminal_close / signal_close - 1.0) * 100.0
-            ),
+            "terminal_close_return_5d_pct": terminal_return,
+            "first_gain_1pct_day": (pd.NA if first_gain_1 is None else first_gain_1),
             "first_gain_2pct_day": (pd.NA if first_gain_2 is None else first_gain_2),
+            "first_gain_3pct_day": (pd.NA if first_gain_3 is None else first_gain_3),
             "first_gain_5pct_day": (pd.NA if first_gain_5 is None else first_gain_5),
             "first_loss_5pct_day": (pd.NA if first_loss_5 is None else first_loss_5),
             "gain_loss_order_5d": order,
@@ -748,6 +1416,18 @@ def _entry_path_outcome(
                 None
                 if order == "same_day_ambiguous"
                 else order in {"gain_first", "gain_only"}
+            ),
+            "terminal_stagnant_5d": (
+                terminal_return < cfg.terminal_stagnant_5d_max_return_pct
+            ),
+            "terminal_winner_5d": (
+                terminal_return >= cfg.terminal_winner_5d_min_return_pct
+            ),
+            "mfe_to_abs_mae_5d_ratio": (
+                max_gain / abs(max_loss) if max_loss < 0 else np.nan
+            ),
+            "terminal_return_to_mfe_5d_ratio": (
+                terminal_return / max_gain if max_gain > 0 else np.nan
             ),
             "_full_path_available": True,
         }
@@ -894,6 +1574,164 @@ def _event_prior_chart_features(
     return result
 
 
+def _event_v3_chart_features(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    segment: pd.Series,
+    signal_positions: np.ndarray,
+) -> dict[str, pd.Series]:
+    """Calculate base, supply and contraction geometry without future bars."""
+
+    names = (
+        "prior_base_width_10_pct",
+        "prior_base_width_40_pct",
+        "prior_base_width_63_pct",
+        "prior_tight_close_range_5_pct",
+        "prior_tight_close_range_10_pct",
+        "prior_tight_close_range_15_pct",
+        "prior_overhead_supply_share63",
+        "prior_high_test_count_20",
+        "prior_high_slope_20_pct_per_session",
+        "prior_low_slope_20_pct_per_session",
+        "prior_contraction_count_40",
+        "prior_return_efficiency_63",
+        "signal_undercut_reclaim_10",
+    )
+    result = {
+        name: pd.Series(np.nan, index=close.index, dtype=float) for name in names
+    }
+
+    for position in signal_positions:
+        current_segment = segment.iloc[position]
+        if pd.isna(current_segment):
+            continue
+        for window, target in (
+            (10, "prior_base_width_10_pct"),
+            (40, "prior_base_width_40_pct"),
+            (63, "prior_base_width_63_pct"),
+        ):
+            if position < window:
+                continue
+            history_segment = segment.iloc[position - window : position]
+            highs = high.iloc[position - window : position].to_numpy(dtype=float)
+            lows = low.iloc[position - window : position].to_numpy(dtype=float)
+            if (
+                history_segment.eq(current_segment).all()
+                and np.isfinite(highs).all()
+                and np.isfinite(lows).all()
+                and np.all(highs >= lows)
+                and np.all(lows > 0)
+            ):
+                result[target].iloc[position] = (
+                    float(np.max(highs) / np.min(lows) - 1.0) * 100.0
+                )
+
+        if position >= 10:
+            closes10 = close.iloc[position - 10 : position].to_numpy(dtype=float)
+            if (
+                segment.iloc[position - 10 : position].eq(current_segment).all()
+                and np.isfinite(closes10).all()
+                and np.all(closes10 > 0)
+            ):
+                result["prior_tight_close_range_5_pct"].iloc[position] = float(
+                    (np.max(closes10[-5:]) / np.min(closes10[-5:]) - 1.0) * 100.0
+                )
+                result["prior_tight_close_range_10_pct"].iloc[position] = float(
+                    (np.max(closes10) / np.min(closes10) - 1.0) * 100.0
+                )
+                prior_low10 = float(
+                    np.min(low.iloc[position - 10 : position].to_numpy(dtype=float))
+                )
+                current_low = _finite_scalar(low.iloc[position])
+                current_close = _finite_scalar(close.iloc[position])
+                if (
+                    np.isfinite(prior_low10)
+                    and prior_low10 > 0
+                    and np.isfinite(current_low)
+                    and np.isfinite(current_close)
+                ):
+                    result["signal_undercut_reclaim_10"].iloc[position] = float(
+                        current_low < prior_low10 and current_close > prior_low10
+                    )
+
+        if position >= 15:
+            closes15 = close.iloc[position - 15 : position].to_numpy(dtype=float)
+            if (
+                segment.iloc[position - 15 : position].eq(current_segment).all()
+                and np.isfinite(closes15).all()
+                and np.all(closes15 > 0)
+            ):
+                result["prior_tight_close_range_15_pct"].iloc[position] = float(
+                    (np.max(closes15) / np.min(closes15) - 1.0) * 100.0
+                )
+
+        if position >= 20:
+            highs20 = high.iloc[position - 20 : position].to_numpy(dtype=float)
+            lows20 = low.iloc[position - 20 : position].to_numpy(dtype=float)
+            if (
+                segment.iloc[position - 20 : position].eq(current_segment).all()
+                and np.isfinite(highs20).all()
+                and np.isfinite(lows20).all()
+                and np.all(highs20 > 0)
+                and np.all(lows20 > 0)
+            ):
+                x = np.arange(20, dtype=float)
+                high_beta = float(np.polyfit(x, np.log(highs20), 1)[0])
+                low_beta = float(np.polyfit(x, np.log(lows20), 1)[0])
+                result["prior_high_slope_20_pct_per_session"].iloc[position] = (
+                    np.expm1(high_beta) * 100.0
+                )
+                result["prior_low_slope_20_pct_per_session"].iloc[position] = (
+                    np.expm1(low_beta) * 100.0
+                )
+                recent_high = float(np.max(highs20))
+                tolerance = recent_high * 0.01
+                result["prior_high_test_count_20"].iloc[position] = float(
+                    np.sum(highs20 >= recent_high - tolerance)
+                )
+
+        if position >= 40:
+            highs40 = high.iloc[position - 40 : position].to_numpy(dtype=float)
+            lows40 = low.iloc[position - 40 : position].to_numpy(dtype=float)
+            if (
+                segment.iloc[position - 40 : position].eq(current_segment).all()
+                and np.isfinite(highs40).all()
+                and np.isfinite(lows40).all()
+                and np.all(lows40 > 0)
+            ):
+                widths = np.asarray(
+                    [
+                        np.max(highs40[start : start + 10])
+                        / np.min(lows40[start : start + 10])
+                        - 1.0
+                        for start in (0, 10, 20, 30)
+                    ],
+                    dtype=float,
+                )
+                result["prior_contraction_count_40"].iloc[position] = float(
+                    np.sum(np.diff(widths) < 0)
+                )
+
+        if position >= 63:
+            closes63 = close.iloc[position - 63 : position].to_numpy(dtype=float)
+            if (
+                segment.iloc[position - 63 : position].eq(current_segment).all()
+                and np.isfinite(closes63).all()
+                and np.all(closes63 > 0)
+            ):
+                current_prior_close = closes63[-1]
+                result["prior_overhead_supply_share63"].iloc[position] = float(
+                    np.mean(closes63 > current_prior_close)
+                )
+                path = float(np.abs(np.diff(closes63)).sum())
+                if path > 0:
+                    result["prior_return_efficiency_63"].iloc[position] = float(
+                        abs(closes63[-1] - closes63[0]) / path
+                    )
+    return result
+
+
 def _event_text_and_history(
     criteria: dict[str, pd.Series],
     trend_pass: pd.Series,
@@ -1011,6 +1849,8 @@ def calculate_identity_signals(
     prior_close = _lag_in_segment(close, segment, 1)
     prior_high20 = _rolling_in_segment(high, segment, 20, "max", offset=1)
     prior_high63 = _rolling_in_segment(high, segment, 63, "max", offset=1)
+    prior_high126 = _rolling_in_segment(high, segment, 126, "max", offset=1)
+    prior_high252 = _rolling_in_segment(high, segment, 252, "max", offset=1)
     recent_normalized_range10 = _rolling_in_segment(
         normalized_true_range, segment, 10, "mean", offset=1
     )
@@ -1021,9 +1861,11 @@ def calculate_identity_signals(
     prior_volume5 = _rolling_in_segment(volume, segment, 5, "mean", offset=1)
     prior_volume10 = _rolling_in_segment(volume, segment, 10, "mean", offset=1)
     prior_volume21 = _rolling_in_segment(volume, segment, 21, "mean", offset=1)
+    prior_volume50 = _rolling_in_segment(volume, segment, 50, "mean", offset=1)
     prior_notional5 = _rolling_in_segment(notional, segment, 5, "mean", offset=1)
     prior_notional10 = _rolling_in_segment(notional, segment, 10, "mean", offset=1)
     prior_notional21 = _rolling_in_segment(notional, segment, 21, "mean", offset=1)
+    prior_notional50 = _rolling_in_segment(notional, segment, 50, "mean", offset=1)
 
     up_volume = volume.where(daily_return.gt(0), 0.0).where(
         volume.notna() & daily_return.notna()
@@ -1068,15 +1910,43 @@ def calculate_identity_signals(
     prior_return5 = _prior_return(close, segment, 5)
     prior_return10 = _prior_return(close, segment, 10)
     prior_return21 = _prior_return(close, segment, 21)
+    prior_return42 = _prior_return(close, segment, 42)
+    prior_return63 = _prior_return(close, segment, 63)
+    prior_return126 = _prior_return(close, segment, 126)
+    prior_return252 = _prior_return(close, segment, 252)
     prior_return_previous5 = _pct_ratio(
         _lag_in_segment(close, segment, 6),
         _lag_in_segment(close, segment, 11),
     ).where(_complete_prior_window(close, segment, 11))
     prior_momentum_acceleration = prior_return5 - prior_return_previous5
+    prior_return_previous21 = _pct_ratio(
+        _lag_in_segment(close, segment, 22),
+        _lag_in_segment(close, segment, 43),
+    ).where(_complete_prior_window(close, segment, 43))
+    prior_return_acceleration21 = prior_return21 - prior_return_previous21
 
+    prior_atr5 = _rolling_in_segment(true_range, segment, 5, "mean", offset=1)
+    prior_atr10 = _rolling_in_segment(true_range, segment, 10, "mean", offset=1)
     prior_atr14 = _rolling_in_segment(true_range, segment, 14, "mean", offset=1)
+    prior_atr21 = _rolling_in_segment(true_range, segment, 21, "mean", offset=1)
+    prior_atr5_pct = (prior_atr5 / prior_close).mul(100.0).where(prior_close.gt(0))
     prior_atr14_pct = (prior_atr14 / prior_close).mul(100.0).where(prior_close.gt(0))
+    prior_atr21_pct = (prior_atr21 / prior_close).mul(100.0).where(prior_close.gt(0))
+    prior_daily_std21 = _rolling_in_segment(
+        daily_return, segment, 21, "std", offset=1
+    ).mul(100.0)
+    prior_daily_std63 = _rolling_in_segment(
+        daily_return, segment, 63, "std", offset=1
+    ).mul(100.0)
+    downside_return = daily_return.where(daily_return.lt(0), 0.0).where(
+        daily_return.notna()
+    )
+    prior_downside_std21 = _rolling_in_segment(
+        downside_return, segment, 21, "std", offset=1
+    ).mul(100.0)
     max_drawdown21 = _event_max_drawdown(close, segment, signal_positions, 21)
+    max_drawdown63 = _event_max_drawdown(close, segment, signal_positions, 63)
+    max_drawdown126 = _event_max_drawdown(close, segment, signal_positions, 126)
     close_location = ((close - low) / (high - low)).where(high.gt(low))
     prior_normalized_range14 = _rolling_in_segment(
         normalized_true_range, segment, 14, "mean", offset=1
@@ -1124,9 +1994,73 @@ def calculate_identity_signals(
     prior_chart_features = _event_prior_chart_features(
         close, high, low, segment, signal_positions
     )
+    v3_chart_features = _event_v3_chart_features(
+        close, high, low, segment, signal_positions
+    )
     prior_rs_change5 = (
         _lag_in_segment(rs_rating, segment, 1) - _lag_in_segment(rs_rating, segment, 6)
     ).where(_complete_prior_window(rs_rating, segment, 6))
+    prior_rs_change21 = (
+        _lag_in_segment(rs_rating, segment, 1) - _lag_in_segment(rs_rating, segment, 22)
+    ).where(_complete_prior_window(rs_rating, segment, 22))
+
+    volume_vs_sma50 = _numeric(indexed["adjusted_volume_vs_sma50_prior_ratio"])
+    volume_dryup = volume_vs_sma50.lt(0.75).astype(float).where(
+        volume_vs_sma50.notna()
+    )
+    prior_volume_dryup_share10 = _rolling_in_segment(
+        volume_dryup, segment, 10, "mean", offset=1
+    )
+    prior_volume_dryup_share20 = _rolling_in_segment(
+        volume_dryup, segment, 20, "mean", offset=1
+    )
+
+    signed_volume = np.sign(daily_return).mul(volume).where(
+        daily_return.notna() & volume.notna()
+    )
+    prior_signed_volume20 = _rolling_in_segment(
+        signed_volume, segment, 20, "sum", offset=1
+    )
+    prior_total_volume20 = _rolling_in_segment(volume, segment, 20, "sum", offset=1)
+    prior_obv_slope20 = (prior_signed_volume20 / prior_total_volume20).where(
+        prior_total_volume20.gt(0)
+    )
+    accumulation_event = (
+        daily_return.ge(0.005)
+        & volume.ge(prior_volume21.mul(1.20))
+        & close_location.ge(0.60)
+    ).astype(float).where(distribution_available & close_location.notna())
+    high_volume_down_event = (
+        daily_return.lt(0)
+        & volume.ge(prior_volume21.mul(1.50))
+        & close_location.le(0.40)
+    ).astype(float).where(distribution_available & close_location.notna())
+    prior_accumulation_count20 = _rolling_in_segment(
+        accumulation_event, segment, 20, "sum", offset=1
+    )
+    prior_high_volume_down_count20 = _rolling_in_segment(
+        high_volume_down_event, segment, 20, "sum", offset=1
+    )
+    down_volume = volume.where(daily_return.lt(0), 0.0).where(
+        daily_return.notna() & volume.notna()
+    )
+    prior_max_down_volume10 = _rolling_in_segment(
+        down_volume, segment, 10, "max", offset=1
+    )
+
+    recent_normalized_range5 = _rolling_in_segment(
+        normalized_true_range, segment, 5, "mean", offset=1
+    )
+    prior_normalized_range20 = _rolling_in_segment(
+        normalized_true_range, segment, 20, "mean", offset=1
+    )
+    ma50_slope21 = _pct_ratio(ma50, _lag_in_segment(ma50, segment, 21))
+    ma150_slope21 = _pct_ratio(ma150, _lag_in_segment(ma150, segment, 21))
+    ma200_slope63 = _pct_ratio(ma200, _lag_in_segment(ma200, segment, 63))
+    observed_run = (~same_previous_segment).cumsum()
+    history_sessions = observed.groupby(observed_run, sort=False).cumsum().sub(1).where(
+        observed
+    )
 
     log_volume = np.log1p(volume.where(volume.ge(0)))
     log_notional = np.log1p(notional.where(notional.ge(0)))
@@ -1149,11 +2083,32 @@ def calculate_identity_signals(
         "prior_return_5d_pct": prior_return5,
         "prior_return_10d_pct": prior_return10,
         "prior_return_21d_pct": prior_return21,
+        "prior_adjusted_close": prior_close,
+        "prior_return_42d_pct": prior_return42,
+        "prior_return_63d_pct": prior_return63,
+        "prior_return_126d_pct": prior_return126,
+        "prior_return_252d_pct": prior_return252,
+        "prior_return_acceleration_21d_pct_points": prior_return_acceleration21,
+        "prior_daily_return_std_21d_pct": prior_daily_std21,
+        "prior_daily_return_std_63d_pct": prior_daily_std63,
+        "prior_downside_return_std_21d_pct": prior_downside_std21,
+        "prior_max_drawdown_63d_pct": max_drawdown63,
+        "prior_max_drawdown_126d_pct": max_drawdown126,
         "prior_momentum_acceleration_5d_pct_points": (prior_momentum_acceleration),
         "prior_atr_14d_pct": prior_atr14_pct,
+        "prior_atr_5d_pct": prior_atr5_pct,
+        "prior_atr_21d_pct": prior_atr21_pct,
+        "prior_atr_5_vs21_ratio": (prior_atr5 / prior_atr21).where(
+            prior_atr21.gt(0)
+        ),
+        "prior_atr_10_vs21_ratio": (prior_atr10 / prior_atr21).where(
+            prior_atr21.gt(0)
+        ),
         "prior_max_drawdown_21d_pct": max_drawdown21,
         "prior_close_vs_20d_high_pct": _pct_ratio(prior_close, prior_high20),
         "prior_close_vs_63d_high_pct": _pct_ratio(prior_close, prior_high63),
+        "prior_close_vs_126d_high_pct": _pct_ratio(prior_close, prior_high126),
+        "prior_close_vs_252d_high_pct": _pct_ratio(prior_close, prior_high252),
         "signal_close_vs_prior_20d_high_pct": _pct_ratio(close, prior_high20),
         "prior_range_compression_10_vs_10_ratio": (
             recent_normalized_range10 / older_normalized_range10
@@ -1166,18 +2121,47 @@ def calculate_identity_signals(
         "prior_volume_sma10_vs21_ratio": (prior_volume10 / prior_volume21).where(
             prior_volume21.gt(0)
         ),
+        "prior_volume_sma5_vs50_ratio": (prior_volume5 / prior_volume50).where(
+            prior_volume50.gt(0)
+        ),
+        "prior_volume_sma10_vs50_ratio": (prior_volume10 / prior_volume50).where(
+            prior_volume50.gt(0)
+        ),
+        "prior_volume_sma21_vs50_ratio": (prior_volume21 / prior_volume50).where(
+            prior_volume50.gt(0)
+        ),
         "prior_notional_sma5_vs21_ratio": (prior_notional5 / prior_notional21).where(
             prior_notional21.gt(0)
         ),
         "prior_notional_sma10_vs21_ratio": (prior_notional10 / prior_notional21).where(
             prior_notional21.gt(0)
         ),
+        "prior_notional_sma5_vs50_ratio": (prior_notional5 / prior_notional50).where(
+            prior_notional50.gt(0)
+        ),
+        "prior_notional_sma10_vs50_ratio": (
+            prior_notional10 / prior_notional50
+        ).where(prior_notional50.gt(0)),
+        "prior_notional_sma21_vs50_ratio": (
+            prior_notional21 / prior_notional50
+        ).where(prior_notional50.gt(0)),
         "prior_up_volume_share21": (prior_up_volume / prior_nonflat_volume).where(
             prior_nonflat_volume.gt(0)
         ),
         "prior_up_notional_share21": (prior_up_notional / prior_nonflat_notional).where(
             prior_nonflat_notional.gt(0)
         ),
+        "prior_up_down_volume_ratio21": (
+            prior_up_volume / (prior_nonflat_volume - prior_up_volume)
+        ).where((prior_nonflat_volume - prior_up_volume).gt(0)),
+        "prior_up_down_notional_ratio21": (
+            prior_up_notional / (prior_nonflat_notional - prior_up_notional)
+        ).where((prior_nonflat_notional - prior_up_notional).gt(0)),
+        "prior_volume_dryup_share10": prior_volume_dryup_share10,
+        "prior_volume_dryup_share20": prior_volume_dryup_share20,
+        "prior_obv_slope_20": prior_obv_slope20,
+        "prior_accumulation_day_count_20": prior_accumulation_count20,
+        "prior_high_volume_down_day_count_20": prior_high_volume_down_count20,
         "prior_price_volume_corr21": _prior_correlation(
             daily_return, log_volume, segment, 21
         ),
@@ -1185,6 +2169,18 @@ def calculate_identity_signals(
             daily_return, log_notional, segment, 21
         ),
         **prior_chart_features,
+        **v3_chart_features,
+        "prior_range_compression_5_vs20_ratio": (
+            recent_normalized_range5 / prior_normalized_range20
+        ).where(prior_normalized_range20.gt(0)),
+        "ma50_slope_21d_pct": ma50_slope21,
+        "ma150_slope_21d_pct": ma150_slope21,
+        "ma200_slope_63d_pct": ma200_slope63,
+        "prior_rs_rating_change_21d": prior_rs_change21,
+        "prior_history_sessions": history_sessions,
+        "signal_volume_vs_prior_10d_max_down_volume_ratio": (
+            volume / prior_max_down_volume10
+        ).where(prior_max_down_volume10.gt(0)),
         "prior_distribution_day_count_20": prior_distribution_count20,
         "prior_churning_day_count_20": prior_churning_count20,
         "prior_failed_breakout_count_20": prior_failed_breakout_count20,
@@ -1235,8 +2231,14 @@ def calculate_identity_signals(
         "previous_session_date",
         trading_dates[signal_positions - 1],
     )
-    for name, values in features.items():
-        output[name] = values.loc[signal_index].to_numpy()
+    feature_frame = pd.DataFrame(
+        {
+            name: values.loc[signal_index].to_numpy()
+            for name, values in features.items()
+        },
+        index=output.index,
+    )
+    output = pd.concat([output, feature_frame], axis=1)
 
     output = output.reset_index(drop=True)
     output["signal_date"] = pd.to_datetime(output["signal_date"])
@@ -1259,6 +2261,8 @@ def calculate_identity_signals(
         "forward_5d_label_end_date",
         "terminal_close_return_5d_pct",
         "first_gain_2pct_day",
+        "first_gain_1pct_day",
+        "first_gain_3pct_day",
         "first_gain_5pct_day",
         "first_loss_5pct_day",
         "gain_loss_order_5d",
@@ -1268,6 +2272,10 @@ def calculate_identity_signals(
         "bad_5d",
         "loss_first_5d",
         "strong_first_5d",
+        "terminal_stagnant_5d",
+        "terminal_winner_5d",
+        "mfe_to_abs_mae_5d_ratio",
+        "terminal_return_to_mfe_5d_ratio",
     ):
         output[column] = [item[column] for item in path_outcomes]
 
@@ -1298,19 +2306,37 @@ def calculate_identity_signals(
     output["include_weak_filter"] = True
     output["include_loss_first_filter"] = True
     output["include_final"] = True
+    output["strong_confirmation"] = False
     output["weak_matched_rule_ids"] = pd.NA
     output["loss_first_matched_rule_ids"] = pd.NA
     output["matched_rule_ids"] = pd.NA
+    output["confirmation_matched_rule_ids"] = pd.NA
+    output["confirmation_reason"] = pd.NA
     output["filter_decision"] = "include"
     output["exclusion_reason"] = pd.NA
 
     # Fundamental data is joined once per bounded identity batch so that the
     # same point-in-time enrichment code is used for every worker. Direct
     # identity calculations retain the complete result contract with nulls.
-    for column in FUNDAMENTAL_FEATURE_COLUMNS:
-        output[column] = np.nan
-    for column in MARKET_CAP_FEATURE_COLUMNS:
-        output[column] = np.nan
+    nullable_enrichment_columns = tuple(
+        dict.fromkeys(
+            (
+                *FUNDAMENTAL_FEATURE_COLUMNS,
+                *EARNINGS_EVENT_FEATURE_COLUMNS,
+                *MARKET_CAP_FEATURE_COLUMNS,
+                *SUPPLY_DEMAND_FEATURE_COLUMNS,
+                *GLOBAL_MARKET_FEATURE_COLUMNS,
+            )
+        )
+    )
+    missing_enrichment_columns = [
+        column for column in nullable_enrichment_columns if column not in output
+    ]
+    if missing_enrichment_columns:
+        output = output.reindex(
+            columns=[*output.columns, *missing_enrichment_columns],
+            fill_value=np.nan,
+        )
 
     for column in SIGNAL_COLUMNS:
         if column not in output:
@@ -1772,6 +2798,7 @@ def calculate_signal_batch(
     *,
     fundamental_snapshots: pd.DataFrame | None = None,
     quarterly_fundamental_events: pd.DataFrame | None = None,
+    earnings_events: pd.DataFrame | None = None,
 ) -> CalculationBatchResult:
     missing = sorted(set(SOURCE_COLUMNS) - set(source.columns))
     if missing:
@@ -1815,8 +2842,27 @@ def calculate_signal_batch(
         if quarterly_fundamental_events is not None
         else pd.DataFrame(columns=QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS)
     )
-    signals = enrich_signal_fundamentals(signals, snapshots, events)
+    earnings = (
+        earnings_events
+        if earnings_events is not None
+        else pd.DataFrame(columns=EARNINGS_EVENT_SOURCE_COLUMNS)
+    )
+    signals = enrich_signal_fundamentals(signals, snapshots, events, earnings)
     early_cut = pd.concat(early_cut_frames, ignore_index=True).loc[:, EARLY_CUT_COLUMNS]
+    signals = _normalize_result_dtypes(
+        signals,
+        integer_columns=SIGNAL_INTEGER_COLUMNS,
+        boolean_columns=SIGNAL_BOOLEAN_COLUMNS,
+        text_columns=_SIGNAL_TEXT_COLUMNS,
+        date_columns=_SIGNAL_DATE_COLUMNS,
+    )
+    early_cut = _normalize_result_dtypes(
+        early_cut,
+        integer_columns=EARLY_CUT_INTEGER_COLUMNS,
+        boolean_columns=EARLY_CUT_BOOLEAN_COLUMNS,
+        text_columns=_EARLY_CUT_TEXT_COLUMNS,
+        date_columns=_EARLY_CUT_DATE_COLUMNS,
+    )
     expected = len(signals) * len(EARLY_CUT_LANDMARK_DAYS)
     if len(early_cut) != expected:
         raise AssertionError(

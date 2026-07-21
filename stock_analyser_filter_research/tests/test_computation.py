@@ -10,6 +10,8 @@ from stock_analyser_filter_research.computation import (
     calculate_identity_results,
     calculate_identity_signals,
     calculate_signal_batch,
+    build_global_market_context,
+    enrich_global_features,
 )
 from stock_analyser_filter_research.contracts import (
     CRITERION_COLUMNS,
@@ -214,6 +216,8 @@ def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
         "prior_return_21d_pct",
         "prior_atr_14d_pct",
         "prior_max_drawdown_21d_pct",
+        "prior_max_drawdown_63d_pct",
+        "prior_max_drawdown_126d_pct",
         "prior_price_volume_corr21",
         "prior_price_notional_corr21",
         "prior_base_width_20_pct",
@@ -230,6 +234,33 @@ def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
         "prior_distribution_day_count_20",
         "prior_churning_day_count_20",
         "prior_failed_breakout_count_20",
+        "prior_return_42d_pct",
+        "prior_daily_return_std_21d_pct",
+        "prior_downside_return_std_21d_pct",
+        "prior_atr_5d_pct",
+        "prior_atr_21d_pct",
+        "prior_atr_5_vs21_ratio",
+        "prior_volume_sma5_vs50_ratio",
+        "prior_volume_sma21_vs50_ratio",
+        "prior_notional_sma5_vs50_ratio",
+        "prior_notional_sma21_vs50_ratio",
+        "prior_up_down_volume_ratio21",
+        "prior_volume_dryup_share10",
+        "prior_obv_slope_20",
+        "prior_accumulation_day_count_20",
+        "prior_high_volume_down_day_count_20",
+        "prior_base_width_10_pct",
+        "prior_base_width_40_pct",
+        "prior_tight_close_range_5_pct",
+        "prior_tight_close_range_15_pct",
+        "prior_range_compression_5_vs20_ratio",
+        "prior_overhead_supply_share63",
+        "prior_high_test_count_20",
+        "prior_high_slope_20_pct_per_session",
+        "prior_low_slope_20_pct_per_session",
+        "prior_contraction_count_40",
+        "prior_return_efficiency_63",
+        "prior_rs_rating_change_21d",
     ]
     pd.testing.assert_series_equal(
         baseline_row[prior_features],
@@ -283,6 +314,75 @@ def test_prior_chart_geometry_distinguishes_ordered_trend_and_v_recovery(
     assert v_row["prior_recovery_from_trough_40_pct"] > 50.0
     assert v_row["prior_v_recovery_fraction_40"] > 0.80
     assert v_row["prior_trough_age_40_sessions"] > 0
+
+
+def test_global_market_context_is_same_close_causal_and_prior_returns_exclude_signal_day() -> None:
+    dates = pd.bdate_range("2026-06-01", periods=30)
+    rows: list[dict[str, object]] = []
+    for position, market_date in enumerate(dates):
+        close_at = pd.Timestamp(market_date, tz="America/New_York") + pd.Timedelta(
+            hours=16
+        )
+        rows.append(
+            {
+                "source": "twelve_data",
+                "series_id": "SPY",
+                "observation_time": close_at,
+                "value": 100.0 + position,
+                "available_at": close_at + pd.Timedelta(minutes=30),
+                "asof_known_at": close_at + pd.Timedelta(minutes=30),
+                "is_revision_prone": False,
+                "is_final": True,
+                "source_local_date": market_date.date(),
+            }
+        )
+    last_close = pd.Timestamp(dates[-1], tz="America/New_York") + pd.Timedelta(
+        hours=16
+    )
+    rows.append(
+        {
+            **rows[-1],
+            "value": 999.0,
+            "available_at": last_close + pd.Timedelta(hours=2),
+            "asof_known_at": last_close + pd.Timedelta(hours=2),
+        }
+    )
+
+    context = build_global_market_context(
+        dates,
+        pd.DataFrame(),
+        pd.DataFrame(rows),
+    )
+    last = context.iloc[-1]
+    assert last["_market_spy_level"] == pytest.approx(129.0)
+    assert last["market_spy_prior_return_5d_pct"] == pytest.approx(
+        (128.0 / 123.0 - 1.0) * 100.0
+    )
+
+    signal_rows = []
+    for symbol, return_21d in (("LOW", 5.0), ("HIGH", 15.0)):
+        row = {column: pd.NA for column in SIGNAL_COLUMNS}
+        row.update(
+            {
+                "signal_date": dates[-1],
+                "symbol": symbol,
+                "prior_return_21d_pct": return_21d,
+                "prior_return_63d_pct": return_21d,
+                "prior_return_126d_pct": return_21d,
+                "prior_return_252d_pct": return_21d,
+            }
+        )
+        signal_rows.append(row)
+    enriched = enrich_global_features(
+        pd.DataFrame(signal_rows, columns=SIGNAL_COLUMNS),
+        pd.DataFrame(columns=EARLY_CUT_COLUMNS),
+        context,
+    ).signals
+    assert enriched["cross_sectional_rs_21d_pct_rank"].tolist() == [0.5, 1.0]
+    expected_market_21d = (128.0 / 107.0 - 1.0) * 100.0
+    assert enriched.loc[1, "relative_return_vs_spy_21d_pct_points"] == (
+        pytest.approx(15.0 - expected_market_21d)
+    )
 
 
 def test_prior_distribution_churning_and_failed_breakout_counts_are_causal(

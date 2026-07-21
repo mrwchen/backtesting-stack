@@ -63,6 +63,9 @@ def test_v2_split_dates_must_be_strictly_ordered(cfg_factory, changes, message) 
             {"min_selection_score_improvement": 1.01},
             "MIN_SELECTION_SCORE_IMPROVEMENT",
         ),
+        ({"permutation_trial_count": 18}, "PERMUTATION_TRIAL_COUNT"),
+        ({"max_stat_permutation_p_value": 0.0}, "MAX_STAT_PERMUTATION_P_VALUE"),
+        ({"permutation_random_seed": -1}, "PERMUTATION_RANDOM_SEED"),
         ({"max_workers": 0}, "MAX_WORKERS"),
         ({"worker_identity_batch_size": 0}, "WORKER_IDENTITY_BATCH_SIZE"),
         ({"db_fetch_batch_size": 0}, "database batch sizes"),
@@ -131,6 +134,9 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
         "MIN_WALK_FORWARD_FOLDS": "4",
         "MIN_MATCHED_LABEL_COVERAGE_PCT": "0.93",
         "MIN_SELECTION_SCORE_IMPROVEMENT": "0.02",
+        "PERMUTATION_TRIAL_COUNT": "99",
+        "MAX_STAT_PERMUTATION_P_VALUE": "0.04",
+        "PERMUTATION_RANDOM_SEED": "31415",
         "MIN_HOLDOUT_SAMPLE_COUNT": "321",
         "WORKER_IDENTITY_BATCH_SIZE": "11",
         "DB_COPY_BATCH_SIZE": "1234",
@@ -154,6 +160,9 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
     assert cfg.min_protected_retention_pct == pytest.approx(0.92)
     assert cfg.min_matched_label_coverage_pct == pytest.approx(0.93)
     assert cfg.min_selection_score_improvement == pytest.approx(0.02)
+    assert cfg.permutation_trial_count == 99
+    assert cfg.max_stat_permutation_p_value == pytest.approx(0.04)
+    assert cfg.permutation_random_seed == 31415
     assert cfg.min_holdout_sample_count == 321
     assert cfg.worker_identity_batch_size == 11
     assert cfg.db_copy_batch_size == 1234

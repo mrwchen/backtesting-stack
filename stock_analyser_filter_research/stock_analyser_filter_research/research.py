@@ -33,21 +33,31 @@ class ObjectiveSpec:
     @property
     def date_column(self) -> str:
         return (
-            "signal_date" if self.decision_family == "entry_filter" else "landmark_date"
+            "signal_date"
+            if self.decision_family.startswith("entry_")
+            else "landmark_date"
         )
 
     @property
     def label_end_column(self) -> str:
         return (
             "forward_5d_label_end_date"
-            if self.decision_family == "entry_filter"
+            if self.decision_family.startswith("entry_")
             else "horizon_end_date"
         )
 
 
-ENTRY_SPECS = (
+ENTRY_EXCLUSION_SPECS = (
     ObjectiveSpec("entry_filter", "weak_5d", "strong_first_5d"),
     ObjectiveSpec("entry_filter", "loss_first_5d", "strong_first_5d"),
+    ObjectiveSpec("entry_filter", "terminal_stagnant_5d", "terminal_winner_5d"),
+)
+
+ENTRY_CONFIRMATION_SPECS = (
+    ObjectiveSpec("entry_confirmation", "strong_first_5d", "bad_5d"),
+    ObjectiveSpec(
+        "entry_confirmation", "terminal_winner_5d", "terminal_stagnant_5d"
+    ),
 )
 
 
@@ -173,6 +183,10 @@ class CandidateEvaluation:
     passes_stability_gates: bool
     stability: dict[str, object]
     selection_score: float | None
+    multiple_testing_candidate_count: int | None = None
+    permutation_trial_count: int | None = None
+    max_stat_permutation_p_value: float | None = None
+    passes_multiple_testing: bool | None = None
 
     @property
     def rule_id(self) -> str:
@@ -193,14 +207,20 @@ class ObjectiveSelection:
 @dataclass
 class SelectedSummary:
     entry: dict[str, ObjectiveSelection]
+    confirmation: dict[str, ObjectiveSelection]
     early_cut: dict[int, dict[str, ObjectiveSelection]]
     entry_prefix_lengths: dict[str, int]
+    confirmation_prefix_lengths: dict[str, int]
     early_cut_prefix_lengths: dict[int, dict[str, int]]
 
     @property
     def condition_count(self) -> int:
-        return sum(self.entry_prefix_lengths.values()) + sum(
+        return (
+            sum(self.entry_prefix_lengths.values())
+            + sum(self.confirmation_prefix_lengths.values())
+            + sum(
             sum(values.values()) for values in self.early_cut_prefix_lengths.values()
+            )
         )
 
     @property
@@ -216,6 +236,16 @@ class SelectedSummary:
                 or "no filter"
             )
             parts.append(f"entry/{objective}: {text}")
+        for objective, selection in self.confirmation.items():
+            length = self.confirmation_prefix_lengths.get(objective, 0)
+            text = (
+                " OR ".join(
+                    condition.text
+                    for condition in selection.selected.final_conditions[:length]
+                )
+                or "no confirmation"
+            )
+            parts.append(f"confirmation/{objective}: {text}")
         for day in sorted(self.early_cut):
             for objective, selection in self.early_cut[day].items():
                 length = self.early_cut_prefix_lengths.get(day, {}).get(objective, 0)
@@ -389,9 +419,9 @@ def build_candidate_templates(
     landmark_day: int | None = None,
     quantile_count: int = 20,
 ) -> tuple[CandidateTemplate, ...]:
-    if decision_family == "entry_filter":
+    if decision_family in {"entry_filter", "entry_confirmation"}:
         groups = ENTRY_FEATURE_GROUPS
-        prefix = "ENTRY"
+        prefix = "ENTRY" if decision_family == "entry_filter" else "CONFIRM"
     elif decision_family == "early_cut":
         if landmark_day not in EARLY_CUT_LANDMARK_DAYS:
             raise ValueError("early-cut templates require landmark day 1, 2, or 3")
@@ -420,8 +450,9 @@ def build_candidate_templates(
                         quantile,
                     )
                 )
-    if decision_family == "entry_filter":
+    if decision_family in {"entry_filter", "entry_confirmation"}:
         templates.extend(_entry_pattern_templates())
+        templates.extend(_interaction_pattern_templates(prefix))
     return tuple(sorted(templates, key=lambda item: item.rule_id))
 
 
@@ -509,7 +540,264 @@ def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
         chart_patterns
         + _fundamental_pattern_templates()
         + _market_cap_pattern_templates()
+        + _trader_pattern_templates()
     )
+
+
+def _trader_pattern_templates() -> tuple[PatternTemplate, ...]:
+    """Predeclared Minervini/Ryan/O'Neil/Zanger/Weinstein-style templates."""
+
+    def build(
+        group: str,
+        name: str,
+        clauses: tuple[
+            tuple[str, str, float | None, float | None], ...
+        ],
+    ) -> PatternTemplate:
+        rule_id = f"ENTRY_{group}_PATTERN_{name}"
+        return PatternTemplate(
+            rule_id,
+            group,
+            name.lower(),
+            tuple(
+                ConditionTemplate(
+                    f"{rule_id}_C{number}",
+                    group,
+                    feature,
+                    operator,
+                    quantile,
+                    fixed_threshold=fixed,
+                )
+                for number, (feature, operator, quantile, fixed) in enumerate(
+                    clauses, start=1
+                )
+            ),
+        )
+
+    return (
+        build(
+            "T",
+            "VCP",
+            (
+                ("prior_atr_5_vs21_ratio", "le", 0.20, None),
+                ("prior_contraction_count_40", "ge", 0.80, None),
+                ("prior_volume_sma5_vs50_ratio", "le", 0.20, None),
+                ("prior_close_vs_63d_high_pct", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "T",
+            "HIGH_TIGHT_FLAG",
+            (
+                ("prior_return_42d_pct", "ge", 0.90, None),
+                ("prior_base_width_10_pct", "le", 0.20, None),
+                ("prior_tight_close_range_5_pct", "le", 0.20, None),
+                ("prior_close_vs_63d_high_pct", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "T",
+            "BULL_FLAG",
+            (
+                ("prior_return_21d_pct", "ge", 0.80, None),
+                ("prior_base_width_10_pct", "le", 0.30, None),
+                ("prior_pullback_from_40d_high_pct", "ge", 0.30, None),
+                ("prior_close_vs_63d_high_pct", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "T",
+            "DARVAS_BOX",
+            (
+                ("prior_base_width_20_pct", "le", 0.20, None),
+                ("prior_high_test_count_20", "ge", 0.70, None),
+                ("prior_tight_close_range_10_pct", "le", 0.30, None),
+                ("signal_close_vs_prior_20d_high_pct", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "T",
+            "ASCENDING_TRIANGLE",
+            (
+                ("prior_high_slope_20_pct_per_session", "le", 0.30, None),
+                ("prior_low_slope_20_pct_per_session", "ge", 0.70, None),
+                ("prior_high_test_count_20", "ge", 0.70, None),
+                ("signal_close_vs_prior_20d_high_pct", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "T",
+            "CUP_WITH_HANDLE",
+            (
+                ("prior_max_drawdown_126d_pct", "le", 0.20, None),
+                ("prior_close_vs_126d_high_pct", "ge", 0.70, None),
+                ("prior_tight_close_range_15_pct", "le", 0.30, None),
+                ("prior_volume_sma5_vs50_ratio", "le", 0.30, None),
+            ),
+        ),
+        build(
+            "T",
+            "THREE_WEEKS_TIGHT",
+            (
+                ("prior_tight_close_range_15_pct", "le", 0.20, None),
+                ("prior_close_vs_63d_high_pct", "ge", 0.80, None),
+                ("prior_volume_sma5_vs50_ratio", "le", 0.30, None),
+            ),
+        ),
+        build(
+            "S",
+            "POCKET_PIVOT",
+            (
+                (
+                    "signal_volume_vs_prior_10d_max_down_volume_ratio",
+                    "ge",
+                    None,
+                    1.0,
+                ),
+                ("daily_price_change_pct", "ge", None, 0.0),
+                ("signal_close_location_value", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "R",
+            "RS_LEADER",
+            (
+                ("rs_rating", "ge", None, 90.0),
+                ("prior_rs_rating_change_21d", "ge", 0.70, None),
+                ("relative_return_vs_spy_63d_pct_points", "ge", 0.70, None),
+                ("prior_close_vs_63d_high_pct", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "T",
+            "WEINSTEIN_STAGE2",
+            (
+                ("distance_to_ma150_pct", "ge", 0.70, None),
+                ("ma150_slope_21d_pct", "ge", 0.70, None),
+                ("ma200_slope_63d_pct", "ge", 0.70, None),
+                ("cross_sectional_rs_126d_pct_rank", "ge", 0.80, None),
+            ),
+        ),
+        build(
+            "S",
+            "ZANGER_VOLUME_BREAKOUT",
+            (
+                ("adjusted_volume_vs_sma21_prior_ratio", "ge", 0.80, None),
+                ("signal_close_location_value", "ge", 0.70, None),
+                ("signal_close_vs_prior_20d_high_pct", "ge", 0.80, None),
+                ("prior_volume_dryup_share10", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "F",
+            "GROWTH_LEADER",
+            (
+                ("fundamental_quarterly_revenue_yoy_growth_ratio", "ge", 0.80, None),
+                ("fundamental_quarterly_eps_yoy_growth_ratio", "ge", 0.80, None),
+                ("fundamental_quarterly_revenue_growth_acceleration", "ge", 0.70, None),
+                ("fundamental_roe_ttm_ratio", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "F",
+            "QUALITY_GROWTH",
+            (
+                ("fundamental_roe_ttm_ratio", "ge", 0.70, None),
+                ("fundamental_cash_conversion_ttm_ratio", "ge", 0.70, None),
+                ("fundamental_debt_to_assets_ratio", "le", 0.30, None),
+                ("fundamental_accruals_ratio", "le", 0.30, None),
+            ),
+        ),
+        build(
+            "N",
+            "POST_EARNINGS_POWER",
+            (
+                ("earnings_event_age_days", "le", None, 5.0),
+                ("signal_gap_pct", "ge", 0.70, None),
+                ("adjusted_volume_vs_sma21_prior_ratio", "ge", 0.80, None),
+                ("signal_close_location_value", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "R",
+            "MARKET_CONFIRMED_LEADER",
+            (
+                ("market_breadth_above_ma50_ratio", "ge", 0.70, None),
+                ("market_breadth_trend_template_ratio", "ge", 0.70, None),
+                ("cross_sectional_rs_63d_pct_rank", "ge", 0.80, None),
+                ("market_vix_to_vix3m_ratio", "le", 0.30, None),
+            ),
+        ),
+    )
+
+
+def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
+    """Generate all tail combinations for predeclared causal feature pairs."""
+
+    pairs = (
+        ("log_market_cap_usd", "prior_atr_14d_pct"),
+        ("log_market_cap_usd", "adjusted_volume_vs_sma21_prior_ratio"),
+        ("log_market_cap_usd", "daily_traded_notional_vs_sma21_prior_ratio"),
+        ("log_market_cap_usd", "cross_sectional_rs_63d_pct_rank"),
+        ("prior_atr_14d_pct", "adjusted_volume_vs_sma21_prior_ratio"),
+        ("prior_atr_5_vs21_ratio", "prior_volume_sma5_vs50_ratio"),
+        ("prior_atr_5_vs21_ratio", "prior_base_width_20_pct"),
+        ("prior_base_width_20_pct", "prior_volume_dryup_share10"),
+        ("prior_base_width_20_pct", "signal_close_vs_prior_20d_high_pct"),
+        ("prior_tight_close_range_5_pct", "prior_close_vs_63d_high_pct"),
+        ("prior_contraction_count_40", "prior_volume_dryup_share20"),
+        ("prior_distribution_day_count_20", "prior_failed_breakout_count_20"),
+        ("fundamental_quarterly_revenue_yoy_growth_ratio", "cross_sectional_rs_63d_pct_rank"),
+        ("fundamental_quarterly_eps_yoy_growth_ratio", "cross_sectional_rs_63d_pct_rank"),
+        ("fundamental_quarterly_revenue_growth_acceleration", "adjusted_volume_vs_sma21_prior_ratio"),
+        ("fundamental_roe_ttm_ratio", "fundamental_cash_conversion_ttm_ratio"),
+        ("fundamental_debt_to_assets_ratio", "fundamental_fcf_margin_ttm_ratio"),
+        ("earnings_event_age_days", "adjusted_volume_vs_sma21_prior_ratio"),
+        ("earnings_event_age_days", "signal_gap_pct"),
+        ("market_breadth_above_ma50_ratio", "cross_sectional_rs_63d_pct_rank"),
+        ("market_breadth_trend_template_ratio", "prior_trend_slope_20_pct_per_session"),
+        ("market_vix_level", "prior_atr_14d_pct"),
+        ("market_vix_to_vix3m_ratio", "prior_base_width_20_pct"),
+        ("relative_return_vs_spy_63d_pct_points", "adjusted_volume_vs_sma21_prior_ratio"),
+        ("signal_turnover_ratio", "signal_close_location_value"),
+    )
+    templates: list[PatternTemplate] = []
+    for pair_number, (left, right) in enumerate(pairs, start=1):
+        for left_operator, left_quantile, left_tag in (
+            ("le", 0.20, "LL"),
+            ("ge", 0.80, "LH"),
+        ):
+            for right_operator, right_quantile, right_tag in (
+                ("le", 0.20, "RL"),
+                ("ge", 0.80, "RH"),
+            ):
+                rule_id = (
+                    f"{prefix}_I_PAIR_{pair_number:02d}_{left_tag}_{right_tag}"
+                )
+                templates.append(
+                    PatternTemplate(
+                        rule_id,
+                        "I",
+                        f"{left}_{left_operator}_{right}_{right_operator}",
+                        (
+                            ConditionTemplate(
+                                f"{rule_id}_C1",
+                                "I",
+                                left,
+                                left_operator,
+                                left_quantile,
+                            ),
+                            ConditionTemplate(
+                                f"{rule_id}_C2",
+                                "I",
+                                right,
+                                right_operator,
+                                right_quantile,
+                            ),
+                        ),
+                    )
+                )
+    return tuple(templates)
 
 
 def _fundamental_pattern_templates() -> tuple[PatternTemplate, ...]:
@@ -606,7 +894,7 @@ def _market_cap_pattern_templates() -> tuple[PatternTemplate, ...]:
     large_cap_rule = "ENTRY_M_PATTERN_LARGE_CAP_LOW_ATR_STAGNATION"
     small_cap_rule = "ENTRY_M_PATTERN_SMALL_CAP_BEARISH_HIGH_VOLUME"
     confirmation_rule = "ENTRY_M_PATTERN_HIGH_VOLUME_STRONG_CLOSE"
-    return (
+    legacy_patterns = (
         PatternTemplate(
             large_cap_rule,
             "M",
@@ -692,6 +980,88 @@ def _market_cap_pattern_templates() -> tuple[PatternTemplate, ...]:
             ),
         ),
     )
+    bands = (
+        ("MICRO_CAP", None, 299_999_999.0),
+        ("SMALL_CAP", 300_000_000.0, 1_999_999_999.0),
+        ("MID_CAP", 2_000_000_000.0, 9_999_999_999.0),
+        ("LARGE_CAP", 10_000_000_000.0, 199_999_999_999.0),
+        ("MEGA_CAP", 200_000_000_000.0, None),
+    )
+    band_patterns: list[PatternTemplate] = []
+    for name, lower, upper in bands:
+        rule_id = f"ENTRY_M_PATTERN_{name}_RANGE"
+        clauses: list[ConditionTemplate] = []
+        if lower is not None:
+            clauses.append(
+                clause(
+                    rule_id,
+                    len(clauses) + 1,
+                    "market_cap_usd",
+                    "ge",
+                    fixed_threshold=lower,
+                )
+            )
+        if upper is not None:
+            clauses.append(
+                clause(
+                    rule_id,
+                    len(clauses) + 1,
+                    "market_cap_usd",
+                    "le",
+                    fixed_threshold=upper,
+                )
+            )
+        band_patterns.append(
+            PatternTemplate(
+                rule_id,
+                "M",
+                f"{name.lower()}_range",
+                tuple(clauses),
+            )
+        )
+        for activity_name, activity_feature in (
+            ("VOLUME21", "adjusted_volume_vs_sma21_prior_ratio"),
+            ("NOTIONAL21", "daily_traded_notional_vs_sma21_prior_ratio"),
+        ):
+            for operator, quantile, tail in (
+                ("le", 0.20, "LOW"),
+                ("ge", 0.80, "HIGH"),
+            ):
+                interaction_id = (
+                    f"ENTRY_I_PATTERN_{name}_{activity_name}_{tail}"
+                )
+                interaction_clauses = [
+                    ConditionTemplate(
+                        f"{interaction_id}_C{position}",
+                        "I",
+                        item.feature_name,
+                        item.operator,
+                        item.quantile,
+                        fixed_threshold=item.fixed_threshold,
+                    )
+                    for position, item in enumerate(clauses, start=1)
+                ]
+                interaction_clauses.append(
+                    ConditionTemplate(
+                        f"{interaction_id}_C{len(interaction_clauses) + 1}",
+                        "I",
+                        activity_feature,
+                        operator,
+                        quantile,
+                    )
+                )
+                band_patterns.append(
+                    PatternTemplate(
+                        interaction_id,
+                        "I",
+                        (
+                            f"{name.lower()}_range_"
+                            f"{activity_name.lower()}_{tail.lower()}"
+                        ),
+                        tuple(interaction_clauses),
+                    )
+                )
+    return (*legacy_patterns, *band_patterns)
 
 
 def build_walk_forward_folds(cfg: Config) -> tuple[WalkForwardFold, ...]:
@@ -1130,6 +1500,123 @@ def _rank(candidate: CandidateEvaluation) -> tuple[object, ...]:
     )
 
 
+def _apply_max_stat_permutation_gate(
+    frame: pd.DataFrame,
+    spec: ObjectiveSpec,
+    candidates: Iterable[CandidateEvaluation],
+    cfg: Config,
+) -> None:
+    """Apply a deterministic family-wise max-statistic gate on validation data.
+
+    The three-class label (objective/protected/other) is permuted within
+    calendar years.  Every candidate is compared with the maximum null score
+    across the complete evaluable candidate family, so adding many features or
+    interactions cannot silently increase the false-positive budget.
+    """
+
+    candidate_list = list(candidates)
+    evaluable = [
+        candidate
+        for candidate in candidate_list
+        if candidate.templates
+        and len(candidate.final_conditions) == len(candidate.templates)
+    ]
+    candidate_count = len(evaluable)
+    for candidate in candidate_list:
+        candidate.multiple_testing_candidate_count = candidate_count or None
+        candidate.permutation_trial_count = (
+            cfg.permutation_trial_count if candidate_count else None
+        )
+        candidate.max_stat_permutation_p_value = None
+        candidate.passes_multiple_testing = None
+    if not evaluable:
+        return
+
+    validation = _period_frame(
+        _universe(frame, spec),
+        spec,
+        cfg.discovery_end_date + timedelta(days=1),
+        cfg.validation_end_date,
+    )
+    available = _available(validation, spec, cfg.validation_end_date)
+    validation = validation.loc[available].copy()
+    objective = _truthy(validation[spec.objective]).to_numpy(dtype=bool)
+    protected = _truthy(validation[spec.protected_outcome]).to_numpy(dtype=bool)
+    if not len(validation) or not objective.any() or not protected.any():
+        for candidate in evaluable:
+            candidate.passes_multiple_testing = False
+        return
+    if np.logical_and(objective, protected).any():
+        raise ValueError(
+            f"objective {spec.objective} and protected outcome "
+            f"{spec.protected_outcome} overlap"
+        )
+
+    masks = np.column_stack(
+        [
+            _combined_mask(validation, candidate.final_conditions)
+            .to_numpy(dtype=bool)
+            for candidate in evaluable
+        ]
+    )
+    mask_matrix = masks.astype(np.float32, copy=False)
+    objective_count = float(objective.sum())
+    protected_count = float(protected.sum())
+    observed = (
+        mask_matrix.T @ objective.astype(np.float32) / objective_count
+        - mask_matrix.T @ protected.astype(np.float32) / protected_count
+    )
+
+    label_codes = np.zeros(len(validation), dtype=np.uint8)
+    label_codes[objective] = 1
+    label_codes[protected] = 2
+    years = pd.to_datetime(validation[spec.date_column], errors="raise").dt.year
+    strata = [
+        np.flatnonzero(years.to_numpy() == year)
+        for year in sorted(years.unique())
+    ]
+    seed_text = (
+        f"{spec.decision_family}|{spec.objective}|{spec.protected_outcome}|"
+        f"{spec.landmark_day or 0}"
+    ).encode("utf-8")
+    seed_offset = sum(
+        (position + 1) * value for position, value in enumerate(seed_text)
+    ) % (2**32)
+    rng = np.random.default_rng(
+        (cfg.permutation_random_seed + seed_offset) % (2**32)
+    )
+    null_maxima = np.empty(cfg.permutation_trial_count, dtype=float)
+    batch_size = min(25, cfg.permutation_trial_count)
+    for start in range(0, cfg.permutation_trial_count, batch_size):
+        stop = min(start + batch_size, cfg.permutation_trial_count)
+        trial_count = stop - start
+        objective_permutations = np.zeros(
+            (len(validation), trial_count), dtype=np.float32
+        )
+        protected_permutations = np.zeros_like(objective_permutations)
+        for trial in range(trial_count):
+            permuted = label_codes.copy()
+            for positions in strata:
+                permuted[positions] = rng.permutation(permuted[positions])
+            objective_permutations[:, trial] = permuted == 1
+            protected_permutations[:, trial] = permuted == 2
+        null_scores = (
+            mask_matrix.T @ objective_permutations / objective_count
+            - mask_matrix.T @ protected_permutations / protected_count
+        )
+        null_maxima[start:stop] = np.max(null_scores, axis=0)
+
+    for position, candidate in enumerate(evaluable):
+        p_value = float(
+            (1 + np.count_nonzero(null_maxima >= observed[position] - 1e-12))
+            / (cfg.permutation_trial_count + 1)
+        )
+        candidate.max_stat_permutation_p_value = p_value
+        candidate.passes_multiple_testing = bool(
+            p_value <= cfg.max_stat_permutation_p_value
+        )
+
+
 def select_objective(
     frame: pd.DataFrame,
     spec: ObjectiveSpec,
@@ -1147,6 +1634,7 @@ def select_objective(
     eligible_singles.sort(key=_rank)
     beam = eligible_singles[: cfg.rule_search_beam_width]
     pairs: list[CandidateEvaluation] = []
+    tested_pairs: list[CandidateEvaluation] = []
     seen: set[tuple[str, str]] = set()
     single_by_id = {item.templates[0].rule_id: item for item in singles}
     pair_bases = beam if cfg.max_conditions_per_objective >= 2 else []
@@ -1177,6 +1665,7 @@ def select_objective(
             pair = evaluator.evaluate(
                 (first_eval.templates[0], second_eval.templates[0])
             )
+            tested_pairs.append(pair)
             base_score = first_eval.selection_score
             pair_score = pair.selection_score
             if (
@@ -1188,14 +1677,26 @@ def select_objective(
                 >= base_score + cfg.min_selection_score_improvement
             ):
                 pairs.append(pair)
-    eligible = [*eligible_singles, *pairs]
+    _apply_max_stat_permutation_gate(
+        frame, spec, [*singles, *tested_pairs], cfg
+    )
+    eligible_singles = [
+        item for item in eligible_singles if item.passes_multiple_testing is True
+    ]
+    eligible_pairs = [
+        item
+        for item in pairs
+        if item.passes_multiple_testing is True
+        and single_by_id[item.templates[0].rule_id].passes_multiple_testing is True
+    ]
+    eligible = [*eligible_singles, *eligible_pairs]
     selected = min(eligible, key=_rank) if eligible else empty
     prefixes: list[CandidateEvaluation] = [empty]
     if selected.templates:
         prefixes.append(evaluator.evaluate((selected.templates[0],)))
     if len(selected.templates) == 2:
         prefixes.append(selected)
-    candidates = tuple(sorted([*singles, *pairs], key=_rank))
+    candidates = tuple(sorted([*singles, *tested_pairs], key=_rank))
     return ObjectiveSelection(spec, selected, candidates, tuple(prefixes))
 
 
@@ -1850,37 +2351,79 @@ def apply_entry_decisions(
     signals: pd.DataFrame, selected: SelectedSummary
 ) -> pd.DataFrame:
     result = signals.copy()
-    weak_selection = selected.entry["weak_5d"]
-    loss_selection = selected.entry["loss_first_5d"]
-    weak_len = selected.entry_prefix_lengths["weak_5d"]
-    loss_len = selected.entry_prefix_lengths["loss_first_5d"]
-    weak_conditions = weak_selection.selected.final_conditions[:weak_len]
-    loss_conditions = loss_selection.selected.final_conditions[:loss_len]
-    weak_mask, weak_ids, weak_reasons = _row_matches(result, weak_conditions)
-    loss_mask, loss_ids, loss_reasons = _row_matches(result, loss_conditions)
-    final_mask = weak_mask | loss_mask
+    exclusion_results: dict[
+        str, tuple[pd.Series, list[str | None], list[str | None]]
+    ] = {}
+    for objective, selection in selected.entry.items():
+        length = selected.entry_prefix_lengths[objective]
+        exclusion_results[objective] = _row_matches(
+            result, selection.selected.final_conditions[:length]
+        )
+    weak_mask, weak_ids, _ = exclusion_results["weak_5d"]
+    loss_mask, loss_ids, _ = exclusion_results["loss_first_5d"]
+    final_mask = pd.Series(False, index=result.index, dtype=bool)
+    for mask, _, _ in exclusion_results.values():
+        final_mask |= mask
     result["include_weak_filter"] = ~weak_mask
     result["include_loss_first_filter"] = ~loss_mask
     result["include_final"] = ~final_mask
     result["weak_matched_rule_ids"] = weak_ids
     result["loss_first_matched_rule_ids"] = loss_ids
     result["matched_rule_ids"] = [
-        ",".join(filter(None, (weak_id, loss_id))) or None
-        for weak_id, loss_id in zip(weak_ids, loss_ids)
+        ",".join(
+            filter(
+                None,
+                (exclusion_results[objective][1][position] for objective in selected.entry),
+            )
+        )
+        or None
+        for position in range(len(result))
     ]
     result["exclusion_reason"] = [
         "; ".join(
-            part
-            for part in (
-                f"weak_5d: {weak_reason}" if weak_reason else "",
-                f"loss_first_5d: {loss_reason}" if loss_reason else "",
-            )
-            if part
+            f"{objective}: {exclusion_results[objective][2][position]}"
+            for objective in selected.entry
+            if exclusion_results[objective][2][position]
         )
         or None
-        for weak_reason, loss_reason in zip(weak_reasons, loss_reasons)
+        for position in range(len(result))
     ]
     result["filter_decision"] = np.where(final_mask, "exclude", "include")
+
+    confirmation_results: dict[
+        str, tuple[pd.Series, list[str | None], list[str | None]]
+    ] = {}
+    confirmation_mask = pd.Series(False, index=result.index, dtype=bool)
+    for objective, selection in selected.confirmation.items():
+        length = selected.confirmation_prefix_lengths[objective]
+        evaluated = _row_matches(
+            result, selection.selected.final_conditions[:length]
+        )
+        confirmation_results[objective] = evaluated
+        confirmation_mask |= evaluated[0]
+    result["strong_confirmation"] = confirmation_mask
+    result["confirmation_matched_rule_ids"] = [
+        ",".join(
+            filter(
+                None,
+                (
+                    confirmation_results[objective][1][position]
+                    for objective in selected.confirmation
+                ),
+            )
+        )
+        or None
+        for position in range(len(result))
+    ]
+    result["confirmation_reason"] = [
+        "; ".join(
+            f"{objective}: {confirmation_results[objective][2][position]}"
+            for objective in selected.confirmation
+            if confirmation_results[objective][2][position]
+        )
+        or None
+        for position in range(len(result))
+    ]
     return result.loc[:, SIGNAL_COLUMNS]
 
 
@@ -2110,6 +2653,10 @@ def _rule_row(
     passes_holdout: bool | None = None,
     passes_development_gates: bool | None = None,
     passes_stability_gates: bool | None = None,
+    passes_multiple_testing: bool | None = None,
+    multiple_testing_candidate_count: int | None = None,
+    permutation_trial_count: int | None = None,
+    max_stat_permutation_p_value: float | None = None,
     stability: Mapping[str, object] | None = None,
     selection_order: int | None = None,
     threshold_fit_end_date: date | None = None,
@@ -2145,6 +2692,10 @@ def _rule_row(
         "passes_holdout": passes_holdout,
         "passes_development_gates": passes_development_gates,
         "passes_stability_gates": passes_stability_gates,
+        "passes_multiple_testing": passes_multiple_testing,
+        "multiple_testing_candidate_count": multiple_testing_candidate_count,
+        "permutation_trial_count": permutation_trial_count,
+        "max_stat_permutation_p_value": max_stat_permutation_p_value,
         "component_count": sum(
             len(item.clauses)
             if isinstance(item, (CompositeCondition, PatternTemplate))
@@ -2234,11 +2785,12 @@ def _append_final_union_rows(
         template for objective in objectives for template in chosen[objective].templates
     )
     first = selections[objectives[0]].spec
-    base_id = (
-        "ENTRY_FILTER_FINAL"
-        if first.decision_family == "entry_filter"
-        else f"EARLY_CUT_D{first.landmark_day}_POLICY_COMPONENT"
-    )
+    if first.decision_family == "entry_filter":
+        base_id = "ENTRY_FILTER_FINAL"
+    elif first.decision_family == "entry_confirmation":
+        base_id = "ENTRY_CONFIRMATION_FINAL"
+    else:
+        base_id = f"EARLY_CUT_D{first.landmark_day}_POLICY_COMPONENT"
     holdout_dates = trading_dates[trading_dates.date > cfg.holdout_cutoff_date]
     holdout_start = holdout_dates[0].date() if len(holdout_dates) else None
     as_of = trading_dates[-1].date() if len(trading_dates) else cfg.holdout_cutoff_date
@@ -2291,7 +2843,7 @@ def _append_final_union_rows(
         objective_stability_pass, stability = _stability(union_fold_results, cfg)
         stability_pass = (
             objective_stability_pass
-            if first.decision_family != "entry_filter"
+            if not first.decision_family.startswith("entry_")
             else _fold_safety_gates(union_fold_results, cfg)
         )
         rows.append(
@@ -2722,6 +3274,14 @@ def build_rule_results(
         portfolios.append(
             (signals, selection, selected.entry_prefix_lengths[objective])
         )
+    for objective, selection in selected.confirmation.items():
+        portfolios.append(
+            (
+                signals,
+                selection,
+                selected.confirmation_prefix_lengths[objective],
+            )
+        )
     for day, selections in selected.early_cut.items():
         for objective, selection in selections.items():
             portfolios.append(
@@ -2738,11 +3298,13 @@ def build_rule_results(
         base_id = f"{spec.decision_family.upper()}_{spec.objective.upper()}" + (
             f"_D{spec.landmark_day}" if spec.landmark_day else ""
         )
-        # Singleton rows keep every A/B/C/D/E candidate visible without
-        # leaking diagnostic or holdout results into selection.
+        # Persist every evaluated atomic, composite and OR-pair candidate.
+        # Diagnostic and holdout outcomes remain outside candidate selection.
         for candidate in selection.candidates:
-            if len(candidate.templates) != 1:
-                continue
+            selected_candidate = candidate.templates == chosen.templates or (
+                len(candidate.templates) == 1
+                and candidate.templates[0] in chosen.templates
+            )
             rows.append(
                 _rule_row(
                     rule_id=candidate.rule_id,
@@ -2754,14 +3316,23 @@ def build_rule_results(
                     period_start=date(cfg.walk_forward_first_year, 1, 1),
                     period_end=cfg.validation_end_date,
                     metrics=candidate.pooled_metrics,
-                    is_selected=candidate.templates[0] in chosen.templates,
+                    is_selected=selected_candidate,
                     is_final_filter=False,
                     passes_development_gates=candidate.passes_development_gates,
                     passes_stability_gates=candidate.passes_stability_gates,
+                    passes_multiple_testing=candidate.passes_multiple_testing,
+                    multiple_testing_candidate_count=(
+                        candidate.multiple_testing_candidate_count
+                    ),
+                    permutation_trial_count=candidate.permutation_trial_count,
+                    max_stat_permutation_p_value=(
+                        candidate.max_stat_permutation_p_value
+                    ),
                     stability=candidate.stability,
                     selection_order=(
                         chosen.templates.index(candidate.templates[0]) + 1
-                        if candidate.templates[0] in chosen.templates
+                        if len(candidate.templates) == 1
+                        and candidate.templates[0] in chosen.templates
                         else None
                     ),
                     templates=candidate.templates,
@@ -2836,6 +3407,14 @@ def build_rule_results(
                 is_final_filter=False,
                 passes_development_gates=chosen.passes_development_gates,
                 passes_stability_gates=chosen.passes_stability_gates,
+                passes_multiple_testing=chosen.passes_multiple_testing,
+                multiple_testing_candidate_count=(
+                    chosen.multiple_testing_candidate_count
+                ),
+                permutation_trial_count=chosen.permutation_trial_count,
+                max_stat_permutation_p_value=(
+                    chosen.max_stat_permutation_p_value
+                ),
                 stability=chosen.stability,
                 templates=chosen.templates,
             )
@@ -2941,6 +3520,14 @@ def build_rule_results(
         trading_dates,
         cfg,
     )
+    _append_final_union_rows(
+        rows,
+        signals,
+        selected.confirmation,
+        selected.confirmation_prefix_lengths,
+        trading_dates,
+        cfg,
+    )
     for day, day_selections in selected.early_cut.items():
         _append_final_union_rows(
             rows,
@@ -3014,9 +3601,11 @@ def run_research(
     )
     entry = {
         spec.objective: select_objective(signals, spec, entry_templates, cfg)
-        for spec in ENTRY_SPECS
+        for spec in ENTRY_EXCLUSION_SPECS
     }
-    entry_frame = _period_frame(signals, ENTRY_SPECS[0], None, cfg.validation_end_date)
+    entry_frame = _period_frame(
+        signals, ENTRY_EXCLUSION_SPECS[0], None, cfg.validation_end_date
+    )
     entry_lengths = _choose_prefixes(
         entry_frame,
         entry,
@@ -3024,6 +3613,30 @@ def run_research(
         require_cross_objective_lift=False,
     )
     entry_lengths = _gate_refit_prefixes(signals, entry, entry_lengths, cfg)
+    confirmation_templates = build_candidate_templates(
+        "entry_confirmation", quantile_count=cfg.quantile_count
+    )
+    confirmation = {
+        spec.objective: select_objective(
+            signals, spec, confirmation_templates, cfg
+        )
+        for spec in ENTRY_CONFIRMATION_SPECS
+    }
+    confirmation_frame = _period_frame(
+        signals,
+        ENTRY_CONFIRMATION_SPECS[0],
+        None,
+        cfg.validation_end_date,
+    )
+    confirmation_lengths = _choose_prefixes(
+        confirmation_frame,
+        confirmation,
+        cfg,
+        require_cross_objective_lift=False,
+    )
+    confirmation_lengths = _gate_refit_prefixes(
+        signals, confirmation, confirmation_lengths, cfg
+    )
     early: dict[int, dict[str, ObjectiveSelection]] = {}
     early_lengths: dict[int, dict[str, int]] = {}
     for day in EARLY_CUT_LANDMARK_DAYS:
@@ -3053,7 +3666,14 @@ def run_research(
     early_lengths = _choose_sequential_early_prefixes(
         early_cuts, early, early_lengths, cfg
     )
-    summary = SelectedSummary(entry, early, entry_lengths, early_lengths)
+    summary = SelectedSummary(
+        entry,
+        confirmation,
+        early,
+        entry_lengths,
+        confirmation_lengths,
+        early_lengths,
+    )
     decided_signals = apply_entry_decisions(signals, summary)
     decided_early = apply_early_decisions(early_cuts, summary)
     rules = build_rule_results(

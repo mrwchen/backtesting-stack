@@ -82,6 +82,14 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
         fake_quarterly_events,
     )
     monkeypatch.setattr(
+        runner.db,
+        "load_earnings_event_batch",
+        lambda connection, cfg, identities: events.append(
+            ("earnings_events", tuple(identities))
+        )
+        or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
         runner,
         "calculate_signal_batch",
         lambda source, dates, cfg, **kwargs: CalculationBatchResult(
@@ -109,11 +117,13 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
         "batch",
         "fundamental_snapshots",
         "quarterly_events",
+        "earnings_events",
         "batch",
         "fundamental_snapshots",
         "quarterly_events",
+        "earnings_events",
     ]
-    assert [len(event[1]) for event in events[2:]] == [2, 2, 2, 1, 1, 1]
+    assert [len(event[1]) for event in events[2:]] == [2, 2, 2, 2, 1, 1, 1, 1]
     assert result.loaded_rows == 3
     assert result.identity_count == 3
     assert result.signals.empty
@@ -146,6 +156,11 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
     monkeypatch.setattr(
         runner.db,
         "load_quarterly_fundamental_event_batch",
+        lambda connection, cfg, identities: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_earnings_event_batch",
         lambda connection, cfg, identities: pd.DataFrame(),
     )
 
@@ -266,6 +281,29 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         "load_identity_work",
         lambda connection, cfg: events.append("work") or [("A", "NYSE", 1, 2)],
     )
+    monkeypatch.setattr(
+        runner.db,
+        "load_market_breadth_daily",
+        lambda connection, cfg: events.append("breadth") or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_world_market_observations",
+        lambda connection, cfg: events.append("world") or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_global_market_context",
+        lambda dates, breadth, world: events.append("market_context")
+        or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "enrich_global_features",
+        lambda signals, early_cuts, context: SimpleNamespace(
+            signals=signals, early_cut=early_cuts
+        ),
+    )
     worker_result = runner.WorkerResult(
         signals=empty_signal_frame(),
         early_cuts=empty_early_cut_frame(),
@@ -314,6 +352,9 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         "empty",
         "dates",
         "work",
+        "breadth",
+        "world",
+        "market_context",
         "workers",
         "commit",
         "research",
@@ -421,6 +462,22 @@ def test_run_rejects_any_landmark_count_other_than_three_per_signal(
         runner.db,
         "load_identity_work",
         lambda *args: [("A", "NYSE", 1, 2)],
+    )
+    monkeypatch.setattr(
+        runner.db, "load_market_breadth_daily", lambda *args: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        runner.db, "load_world_market_observations", lambda *args: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        runner, "build_global_market_context", lambda *args: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        runner,
+        "enrich_global_features",
+        lambda signals, early_cuts, context: SimpleNamespace(
+            signals=signals, early_cut=early_cuts
+        ),
     )
     worker_result = runner.WorkerResult(
         signals=empty_signal_frame().reindex(range(2)),

@@ -1,13 +1,13 @@
-# Stock Analyser Filter Research V2.4 / Phase D.1
+# Stock Analyser Filter Research V3
 
-Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
-Ereignisse des 8-von-8-Trend-Templates aus
-`stock_analyser_trend_template_daily`. Es simuliert weder ein Portfolio noch
-Orders, Kosten oder Slippage. Das Ergebnis sind einfache, nachvollziehbare
-Include-/Exclude-Regeln am Signaltag sowie kausale Hold-/Cut-Regeln nach D+1,
-D+2 und D+3.
+Dieses eigenstaendige Research-Programm untersucht alle kausalen
+`false -> true`-Ereignisse des 8-von-8-Trend-Templates aus
+`stock_analyser_trend_template_daily`. Es simuliert weder Portfolio noch
+Orders, Kosten oder Slippage. Das Ergebnis ist eine breite, reproduzierbare
+Untersuchung von Entry-Ausschluessen, Entry-Bestaetigungen und einfachen
+D+1-bis-D+3-Cut-Regeln.
 
-## Signalvertrag
+## Signal und Entscheidungszeitpunkt
 
 Ein Signal entsteht nur, wenn dieselbe `(symbol, exchange, cik)` in der
 aktuellen globalen Handelssession alle acht Kriterien besteht und in der
@@ -16,153 +16,165 @@ muessen beobachtet sein und zum selben Kontinuitaetssegment gehoeren.
 `true -> true`, erste Beobachtungen, Luecken und Segmentwechsel erzeugen kein
 neues Signal.
 
-Die A-Features verwenden teilweise die komplette Signaltagskerze. Eine
-Signaltagsentscheidung ist daher erst nach Handelsschluss bekannt. Das Programm
-berechnet bewusst keinen fiktiven Same-Close- oder Next-Open-Return.
+Ein Teil der Merkmale verwendet die vollstaendige Signaltagskerze. Die
+Entry-Entscheidung ist daher eine Entscheidung nach dem Close, fruehestens fuer
+die naechste Session. SEC-Daten muessen am Signaltag bis 16:00 Uhr
+`America/New_York` bekannt sein. Marktindex- und Volatilitaetsdaten werden bis
+17:00 Uhr New York beruecksichtigt, weil die auf der Trading VM gespeicherten
+finalen Tageswerte erst 30 bis 45 Minuten nach dem Close verfuegbar sind.
 
-## Getrennte Entry-Ziele
+## Untersuchte Outcomes
 
-V2.2 vermischt schwache und stark verlierende Signale nicht zu einem
-Optimierungsziel:
+Die Entry-Ausschluesse werden getrennt fuer drei negative Outcomes gesucht:
 
-- `weak_5d`: In D+1 bis D+5 wird ausgehend vom Signaltags-Close nie +2 %
-  erreicht.
-- `loss_first_5d`: Die -5-%-Barriere wird vor der +5-%-Barriere erreicht.
-- `strong_first_5d`: Die +5-%-Barriere wird vor der -5-%-Barriere erreicht und
-  bildet die geschuetzte Klasse.
+- `weak_5d`: D+1 bis D+5 erreicht nie +2 % gegenueber dem Signaltags-Close.
+- `loss_first_5d`: -5 % wird vor +5 % erreicht.
+- `terminal_stagnant_5d`: Der D+5-Close liegt unter +1 %.
 
-Wenn beide Barrieren in derselben Tageskerze erreicht werden, ist die
-Intraday-Reihenfolge mit Tagesdaten unbekannt. Solche Faelle werden als
-`same_day_ambiguous` gespeichert und nicht gewaltsam einem der beiden
-Reihenfolgeziele zugeordnet. `deep_loss_5d`, `strong_5d` und `bad_5d` bleiben
-als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
+Dabei werden die jeweils passenden positiven Klassen geschuetzt:
 
-## Feature-Gruppen A-D, F und M
+- `strong_first_5d`: +5 % wird vor -5 % erreicht.
+- `terminal_winner_5d`: Der D+5-Close liegt bei mindestens +3 %.
 
-- **A – Zustand am Signaltag:** Volume/21d, Volume/50d, Notional/21d,
-  Notional/50d, Liquiditaet, RS, Triggerkontext, Trendgeometrie und Position zu
-  den 52-Wochen-Grenzen.
-- **B – Chartverlauf bis D-1:** Renditen, Beschleunigung, ATR, Drawdown,
-  vorherige Hochs, Range-Kompression und RS-Aenderung.
+Wenn +5 % und -5 % innerhalb derselben Tageskerze erstmals erreicht werden,
+ist die Reihenfolge mit Tagesdaten unbekannt. Der Fall wird als
+`same_day_ambiguous` gespeichert und nicht einer Reihenfolgeklasse zugerechnet.
+
+Zusaetzlich sucht V3 unabhaengige Entry-Bestaetigungen fuer
+`strong_first_5d` und `terminal_winner_5d`. Sie ueberschreiben keinen
+Ausschluss. `include_final` bleibt die gemeinsame Ausschlussentscheidung;
+`strong_confirmation` kann zum Priorisieren oder fuer eine spaetere zweite
+Research-Stufe verwendet werden.
+
+Gespeichert werden ferner der erste +1-%-, +2-%-, +3-%-, +5-%- und -5-%-Tag,
+der D+5-Schlussreturn, MFE/MAE und deren Verhaeltnisse. So ist sichtbar, ob ein
+Signal nur intraday kurz steigt oder den Gewinn bis D+5 behaelt.
+
+## Entry-Merkmale A bis V3
+
+Alle Merkmalsgruppen konkurrieren gleichzeitig; es gibt keine irreversible
+Abfolge A -> B -> C -> D.
+
+- **A – Signaltag:** Volume/21D, Volume/50D, Notional/21D, Notional/50D,
+  Liquiditaet, RS, Triggerkontext, Trendgeometrie, 52-Wochen-Position und
+  Kerzenqualitaet.
+- **B – Preisverlauf bis D-1:** Rendite und Beschleunigung, ATR, Drawdown,
+  Abstand zu vorherigen Hochs, Range-Kompression und RS-Aenderung.
 - **C – Aktivitaetsverlauf bis D-1:** kurz-/mittelfristige Volume- und
-  Notional-Verhaeltnisse, Up-Session-Anteile sowie Preis-Aktivitaets-
+  Notional-Verhaeltnisse, Up-/Down-Aktivitaet und Preis-Aktivitaets-
   Korrelationen.
-- **D – geordnete Chart- und Volumenmuster:** Basisbreite, logarithmische
-  Trendsteigung und R², Trend-Effizienz, Anteil positiver Sessions, Alter und
-  Abstand des letzten Hochs, Tiefe/Alter/Erholung des letzten V-Tiefs sowie
-  Distribution-, Churning- und Failed-Breakout-Zaehler.
-- **F – SEC-Fundamentaldaten:** Alter des verfuegbaren Snapshots und Berichts,
-  TTM-Margen, Verschuldung, Liquiditaet, Accruals, SBC/Revenue sowie
-  waehrungsneutrale Quartalsveraenderungen von Umsatz, EPS und Margen.
-- **M – point-in-time Unternehmensgroesse:** logarithmische Market Cap in USD
-  und Alter des zur Market-Cap-Berechnung verwendeten Aktienstands.
+- **D – Chartstruktur bis D-1:** Basisbreite, Trendsteigung und R²,
+  Trend-Effizienz, Pullback-, Hoch-/Tiefalter, V-Erholung sowie Distribution-,
+  Churning- und Failed-Breakout-Tage.
+- **T – erweiterte Technik:** 42/63/126/252-Tage-Momentum, Volatilitaets-
+  Kontraktion, mehrere Basisbreiten, Tight Closes, MA-Steigungen,
+  Overhead-Supply, High Tests, steigende Tiefs, Kontraktionsfolgen und
+  Undercut/Reclaim.
+- **S – Supply/Demand:** Gap und Intraday-Staerke des Signaltags, SEC-basierte
+  Aktienzahl und Turnover aus as-traded Raw Volume.
+- **F – Fundamentals:** Profitabilitaet, Margen, Cash Conversion, ROE/ROA,
+  Verschuldung, Liquiditaet, Accruals, SBC, Investitionsintensitaet,
+  Asset-Qualitaet, Verwässerungs-/Buyback-Proxies sowie Quartalswachstum,
+  Beschleunigung, Streaks und Margin-Entwicklung.
+- **N – Earnings-Naehe:** Alter eines bestaetigten SEC-8-K-Item-2.02-Ereignisses
+  und Ereignisfenster von 0, 5 und 21 Tagen.
+- **M – Unternehmensgroesse:** point-in-time Market Cap in USD, logarithmische
+  Market Cap und Alter des verwendeten Aktienstands.
+- **R – Markt und Leadership:** Marktbreite, Breitenveraenderung, SPY-/QQQ-/
+  IWM-/DIA-Momentum, relative Rendite, VIX/VXN/VVIX/SKEW und VIX-Termstruktur.
+  Die gespeicherten `cross_sectional_rs_*`-Ränge vergleichen die an demselben
+  Tag neu ausgeloesten 8-von-8-Signale; der vorhandene `rs_rating` bleibt der
+  breitere Universe-Rang des Stock Analysers.
 
-A, B, C, D, F und M sind bei der Entry-Auswahl gleichberechtigt. Es gibt keine
-irreversible Reihenfolge A -> B -> C -> D -> F -> M. Neben einfachen
-Quantilbedingungen konkurrieren sechs vorab festgelegte Chartmuster:
-`flat_base`, `ordered_uptrend`,
-`pullback_from_high`, `v_recovery`, `volume_dry_up_breakout` und
-`distribution_top` sowie vier feste Fundamental-Muster:
-`earnings_deterioration`, `margin_compression`, `balance_sheet_stress` und
-`cashflow_weakness` sowie genau drei vorab festgelegte Market-/Volumen-
-Interaktionen:
+Die atomare Quantilsuche prueft fuer jedes numerische Merkmal die unteren und
+oberen Tails. Zusaetzlich werden 25 fachlich vorab definierte Faktorenpaare in
+allen vier Tail-Kombinationen mit `AND` untersucht, unter anderem Market Cap ×
+ATR, Market Cap × Volume/Notional, Kompression × Dry-up, Wachstum × RS,
+Earnings-Naehe × Gap/Volume und Marktbreite × Leadership.
 
-- `large_cap_low_atr_stagnation`: Market Cap mindestens 10 Mrd. USD und ATR
-  im unteren 30-%-Quantil,
-- `small_cap_bearish_high_volume`: Market Cap hoechstens 3 Mrd. USD, Volume/21D
-  im oberen 30-%-Quantil, negativer Signaltag und Close Location hoechstens
-  0,35,
-- `high_volume_strong_close`: Volume/21D im oberen 30-%-Quantil, nicht
-  negativer Signaltag und Close Location mindestens 0,65.
+## Vordefinierte Setups
 
-Die Teilbedingungen innerhalb eines solchen Musters werden zwingend mit `AND`
-verbunden. Die absoluten Market-Cap- und Kerzen-Schwellen sind vorab fest und
-werden nicht aus Ergebnislabels optimiert; Quantilschwellen werden weiterhin
-kausal gefittet. Das Strong-Close-Muster macht in den Kandidatenmetriken
-sichtbar, ob diese Bestaetigung Gewinner schuetzt; es ist kein ungepruefter
-Include-Override. Maximal zwei vollstaendige Kandidaten
-werden pro Ziel mit `OR` verbunden; es gibt keine freie kombinatorische Suche
-nach beliebigen AND-Mustern. Weak- und Loss-First-
-Spezialregeln muessen nur ihr eigenes Ziel stabil anreichern. Eine valide
-Weak-Regel wird daher nicht mehr verworfen, nur weil sie kein Loss-First-Signal
-liefert. Ihre gemeinsame Entry-Union wird ausschliesslich auf Matchrate,
-Labelabdeckung und Strong-Retention geprueft. Das Ranking maximiert
-`Objective-Capture - Protected-Rejection`; eine zweite Bedingung muss diesen
-Netto-Score um mindestens den konfigurierten Wert verbessern.
+Neben den atomaren Merkmalen untersucht das Programm nachvollziehbare,
+vorab definierte Mehrfaktor-Setups:
 
-Alle Vorlaufmerkmale verwenden nur zusammenhaengende Sessions bis D-1. Das
-Volume-Dry-up-Breakout-Muster kombiniert diesen Vorlauf mit Volumen und
-Breakout-Bestaetigung der Signaltagskerze; es ist deshalb wie alle A-Features
-erst nach dem Signaltags-Close entscheidbar.
+- flache Basis, geordneter Aufwaertstrend, Pullback vom Hoch, V-Erholung,
+  Volume-Dry-up-Breakout und Distribution Top,
+- VCP, High Tight Flag, Bull Flag, Darvas Box, Ascending Triangle,
+  Cup-with-Handle, Three-Weeks-Tight und Weinstein Stage 2,
+- Pocket Pivot und RS Leader,
+- Zanger-Volume-Breakout,
+- Growth Leader und Quality Growth,
+- Post-Earnings Power und Market-Confirmed Leader,
+- feste Market-Cap-/Volumen-Setups fuer Large-Cap-Low-ATR,
+  Small-Cap-Bearish-High-Volume und High-Volume-Strong-Close.
 
-Die Gruppe F liest ausschliesslich
+Market Cap wird ausserdem in feste, disjunkte Baender unterteilt: Micro unter
+300 Mio. USD, Small 300 Mio. bis unter 2 Mrd., Mid 2 bis unter 10 Mrd., Large
+10 bis unter 200 Mrd. und Mega ab 200 Mrd. USD. Jedes Band wird allein sowie
+mit niedrigem/hohem Volume/21D und Notional/21D untersucht.
+
+Diese Namen bezeichnen messbare, datenbasierte Annaeherungen an Ideen von
+Minervini, Ryan/O'Neil, Weinstein, Darvas und Zanger. Sie sind keine Behauptung,
+dass ein diskretionaerer Trader einen Chart genauso klassifiziert haette.
+Nicht point-in-time abgesicherte Sektorzuordnung, Fondsbesitz, Analysten-
+Schaetzungen und Revisionen werden bewusst nicht geraten oder rueckwirkend
+verwendet.
+
+Maximal zwei vollstaendige Kandidaten koennen je Outcome mit `OR` verbunden
+werden. Jede vordefinierte Mehrfaktor-Regel bleibt intern ein `AND`. Auch
+verworfene Zweierkombinationen werden als Kandidatenzeilen gespeichert und in
+der Korrektur fuer multiples Testen mitgezaehlt.
+
+## Point-in-time-Fundamentals und Earnings
+
+Fundamentals stammen ausschliesslich aus
 `stock_core_sec_fundamentals_asof_daily` und
-`stock_core_sec_quarterly_fundamental_events`. Fuer jedes Signal wird je Quelle
-der neueste passende SEC-Datensatz verwendet, dessen Berichtsperiode nicht in
-der Zukunft liegt und dessen `sec_data_available_at` beziehungsweise
-`accepted_at` spaetestens um 16:00 Uhr `America/New_York` am Signaltag liegt.
-Bei Quartalsevents muss zusaetzlich `effective_date <= signal_date` gelten. Die
-Zeitzonenumrechnung beruecksichtigt Sommer- und Winterzeit. Daten nach dieser
-Grenze, spaetere Amendments und zukuenftige Berichtsperioden bleiben fuer die
-historische Entscheidung unsichtbar.
+`stock_core_sec_quarterly_fundamental_events`. Pro Signal wird nur ein
+Datensatz verwendet, dessen Periode nicht in der Zukunft liegt und dessen
+`sec_data_available_at` beziehungsweise `accepted_at` bis zum Signaltags-Close
+bekannt war. Spaetere Amendments bleiben fuer die historische Entscheidung
+unsichtbar.
 
-Es werden keine absoluten Geldbetraege zwischen Aktien verglichen. Ratios und
-innerhalb derselben SEC-Meldung berechnete Veraenderungen sind auch fuer
-Nicht-USD-Berichte zulaessig; ohne bekannte Berichtswährung bleiben die
-Finanzkennzahlen NULL. Alte, aber damals neueste Daten werden nicht willkuerlich
-verworfen. Ihr Alter wird als eigenes Feature gespeichert, sodass die Forschung
-einen Staleness-Schwellenwert nur dann auswaehlt, wenn er stabil hilft. Gruppe F
-konkurriert ausschliesslich beim Entry-Filter; die bestehende D+1-bis-D+3-
-Early-Cut-Policy bleibt unveraendert.
+Earnings-Merkmale stammen nur aus bestaetigten
+`sec_8k_item_2_02`-Ereignissen in `stock_core_earnings_calendar_events`.
+Aktuelle historische Snapshots externer Kalender werden nicht als damaliges
+Wissen behandelt. Es wird keine neue Schaetzungsquelle abgefragt.
 
-Gruppe M liest `stock_core_market_metrics_daily` nur fuer die tatsaechlich
-erzeugten Signal-Keys. Verwendet wird ausschliesslich eine Zeile mit exakt
-gleichem `period_end_date`, `symbol`, `exchange` und `cik`; ein Forward-Fill
-oder Rueckgriff auf einen spaeteren Handelstag findet nicht statt. Die Quelle
-berechnet Market Cap aus dem damaligen Raw Close und dem an diesem Tag
-wirksamen, veroeffentlichten Aktienstand. Nur positive USD-Werte sind zwischen
-Aktien vergleichbar und werden uebernommen. Fehlende oder anders denominierte
-Werte bleiben NULL. `market_cap_usd` wird fuer die festen absoluten Ranges
-gespeichert, `log_market_cap_usd` nimmt an der normalen Quantilsuche teil und
-`market_cap_shares_staleness_days` macht veraltete Aktienstaende explizit
-testbar. Gruppe M ist ebenfalls ausschliesslich ein Entry-Merkmal; die
-Early-Cut-Policy bleibt unveraendert.
+Es werden keine absoluten Fundamentalbetraege zwischen Aktien verglichen.
+Ratios werden nur bei bekannter Berichtswährung gebildet. Das Alter der
+verwendeten SEC-Daten bleibt als eigenes Merkmal sichtbar.
 
-## Walk-forward und neuer Holdout
+`stock_core_market_metrics_daily` wird nur fuer exakte Signal-Keys geladen.
+Es gibt kein Forward-Fill. Market Cap wird nur in USD verglichen. Open- und
+SEC-Aktienzahl-Merkmale sind davon unabhaengig; nicht SEC-basierte Aktienzahlen
+werden nicht fuer Float-/Turnover-Research verwendet.
 
-Quantil-Policies werden expanding walk-forward geprueft. Standardmaessig wird
-fuer jedes Evaluationsjahr 2020 bis 2024 der Schwellenwert ausschliesslich aus
-frueheren Featurezeilen bestimmt. Die letzten Signale, deren D+5-Label erst im
-Folgejahr bekannt waere, bleiben sichtbar, werden fuer den Fold aber gepurgt.
+## Walk-forward, Refit und Multiple Testing
 
-Eine Regel muss neben den gepoolten Safety-Gates in mindestens vier
-aussagefaehigen Jahresfolds stabil sein. Standardbedingungen sind unter
-anderem:
+Quantilschwellen werden expanding walk-forward geprueft. Standardmaessig
+verwendet jeder Jahresfold 2020 bis 2024 nur fruehere Featurezeilen fuer seinen
+Schwellenwert. Signale, deren D+5-Label am Fold-Ende noch nicht vollstaendig
+bekannt ist, werden aus diesem Fold gepurgt.
 
-- mindestens `max(50, 1 %)` gelabelte Matches,
-- hoechstens 35 % Matches,
-- mindestens 92 % gepoolte und finale Retention der geschuetzten
-  Strong-First-Klasse,
-- mindestens 90 % Retention in jedem aussagefaehigen Walk-forward-Fold,
-- mindestens 90 % Labelabdeckung unter den Matches,
-- Objective-Lift mindestens 1,05,
-- positiver Lift in mindestens 75 % der aussagefaehigen Jahresfolds,
-- mindestens ein Prozentpunkt zusaetzlicher Netto-Score fuer eine zweite
-  Bedingung.
+Eine Regel muss Mindestanzahl, Matchrate, Label-Coverage, Objective-Lift und
+Retention der geschuetzten Klasse sowohl gepoolt als auch ueber ausreichend
+viele Jahresfolds bestehen. Eine zweite OR-Komponente muss den Netto-Score
+`Objective-Capture - Protected-Rejection` zusaetzlich verbessern.
 
-Nach der Walk-forward-Auswahl werden die finalen Schwellen bis zum
-Validation-Ende neu gefittet. Diese festen Schwellen muessen Development und
-Validation nochmals bestehen. Verletzt ein Refit Match-, Coverage-, Lift- oder
-Strong-Safety-Gates, faellt die Regel deterministisch auf einen kuerzeren
-Prefix bis hin zu `no filter` zurueck. Diagnostic und Holdout werden fuer diese
-Entscheidung nicht gelesen.
+Weil V3 sehr viele Merkmale und Kombinationen untersucht, reicht ein einfacher
+Lift nicht. Fuer jede Entscheidungsfamilie wird deshalb auf dem konfigurierten
+Validation-Zeitraum ein jahresstratifizierter Max-Statistic-Permutationstest
+ueber die komplette evaluierbare Kandidatenfamilie gerechnet. Standard sind
+999 deterministische Permutationen und eine family-wise Schwelle von 0,05.
+`passes_multiple_testing`, Kandidatenzahl, Trial-Zahl und korrigierter
+`max_stat_permutation_p_value` stehen in der Regeltabelle.
 
-Der bereits betrachtete Zeitraum 2025 bis einschliesslich 20.07.2026 ist nur
-`diagnostic` und darf die Auswahl oder den finalen Schwellenwert nicht aendern.
-Die erste globale Handelssession nach dem 20.07.2026 beginnt den neuen,
-unangetasteten `holdout`. Solange dort weniger als die konfigurierte
-Mindestanzahl gelabelter Beobachtungen vorliegt, bleibt `passes_holdout` NULL
-statt faelschlich `false` zu werden.
+Nach der Auswahl werden Schwellen bis zum Validation-Ende neu gefittet und
+erneut durch Safety-Gates geprueft. Der Zeitraum 2025 bis 20.07.2026 ist nur
+`diagnostic`. Die erste globale Handelssession danach beginnt den unangetasteten
+`holdout`; Diagnostic und Holdout beeinflussen Auswahl und Schwellen nicht.
+Ein positives Research-Ergebnis ist damit robuster, aber noch kein Beweis fuer
+zukuenftige Profitabilitaet.
 
 ## Early Cut D+1 bis D+3
 
@@ -172,98 +184,57 @@ Zu jedem Signal werden genau drei Landmark-Zeilen gespeichert:
 - Entscheidung nach Close D+2, wirksam ab D+3,
 - Entscheidung nach Close D+3, wirksam ab D+4.
 
-Jede Landmark-Zeile verwendet nur Informationen bis zu ihrem Close. Dazu
-gehoeren bisherige MFE/MAE, Rendite seit dem Signal, Drawdown/Rebound,
-Tagesrange, Close-Position, Volume-/Notional-Verhaeltnisse, RS- und
-Trendabstaende. Future-Spalten der Source werden nie als Feature verwendet.
+Jede Zeile verwendet nur Informationen bis zu ihrem Close. Neben Preis-,
+Volumen-, Notional-, RS- und Trenddaten stehen in V3 auch das bis dahin bekannte
+Marktregime und die relative Entwicklung gegen SPY, QQQ und IWM zur Auswahl.
+Die verbleibende Entwicklung wird erst ab der jeweils naechsten Session bis D+5
+bewertet.
 
-Die verbleibende Entwicklung beginnt strikt mit der naechsten Session
-`effective_session_date` und wird bis zum unveraenderten Ende D+5 bewertet.
-Alle zukuenftigen +2-%-, +5-%- und -5-%-Barrieren beziehen sich auf den Close
-des jeweiligen Landmarks, nicht mehr auf den urspruenglichen Signalkurs. Die
-pfadbewusste Klasse ist eine von:
-
-- `loss_first`,
-- `strong_first`,
-- `same_session_ambiguous`,
-- `stagnant`,
-- `neutral`.
-
-`bad_to_day5` fasst die beiden handlungsrelevanten Klassen `stagnant` und
-`loss_first` fuer die gemeinsame sequenzielle Policy zusammen.
-
-Bereits bis zum Landmark erreichte +/-5-%-Barrieren verlassen das primaere
-Early-Cut-Risk-Set. Luecken, Segmentwechsel, Delistings und unvollstaendige
-Horizonte werden zensiert und niemals als Verlust oder Erfolg unterstellt.
-Alle drei Landmark-Zeilen bleiben trotzdem gespeichert, damit Coverage
-sichtbar ist. Die Policy wird jedoch gemeinsam als D+1 -> D+2 -> D+3-Sequenz
-ausgewaehlt. Ein Cut an D+1 deaktiviert D+2 und D+3; ein Cut an D+2 deaktiviert
-D+3. `active_at_landmark` kennzeichnet das unmittelbar vor der jeweiligen
-Entscheidung noch aktive Risk-Set. `prior_policy_cut_day` verweist bei einer
-spaeteren `not_active`-Zeile auf den frueheren Cut-Tag. Die intrinsische
-`eligible_at_landmark`-Information bleibt davon unveraendert.
-
-Die kumulative Policy wird an der vollstaendigen D+1-Kohorte bewertet.
-Population und Objective-/Strong-Nenner bleiben fest am D+1-Outcome verankert.
-Ein spaeterer Cut erhaelt Objective-Credit aber nur, wenn dasselbe Outcome am
-tatsaechlichen ersten Cut-Landmark noch gilt. Jeder Cut eines am D+1
-geschuetzten Strong-Signals bleibt eine Protected-Rejection. Die Policy muss die
-gepoolte/finale 92-%- sowie die foldweise 90-%-Strong-Retention als Gesamtregel
-einhalten. Fuer die sequenzielle Auswahl wird jede vollstaendige
-D+1 -> D+3-Folge separat an ihrem D+1-Landmark einem Walk-forward-Fold
-zugeordnet. Reicht ihr unveraenderter D+5-Horizont ueber das Fold-Ende hinaus,
-wird die gesamte Folge aus dieser Auswahlkohorte gepurgt. Diagnostic und
-Holdout werden ebenfalls als D+1-geankerte Gesamtsequenzen ausgewertet; noch
-nicht abgeschlossene Horizonte bleiben dort ungelabelt. Der gespeicherte finale
-Aktivstatus wird nie fuer die Walk-forward-Auswahl wiederverwendet.
-
-Davon getrennt beschreibt `analysis_split` den Diagnose-Split jeder einzelnen
-gespeicherten Landmark-Zeile anhand ihres eigenen `landmark_date` und ihres
-D+5-Horizonts. Deshalb koennen die drei gespeicherten Zeilen eines Signals an
-einer Split-Grenze unterschiedliche Werte tragen; diese Zeilenwerte steuern
-nicht die D+1-geankerte sequenzielle Regelauswahl.
+Die Policy wird gemeinsam als D+1 -> D+2 -> D+3-Sequenz ausgewaehlt. Ein Cut
+deaktiviert spaetere Landmark-Entscheidungen. Luecken, Segmentwechsel,
+Delistings und unvollstaendige Horizonte werden zensiert und nicht als Verlust
+oder Erfolg unterstellt. Die Schutzklasse ist weiterhin
+`strong_first_to_day5`.
 
 ## Datenbanktabellen
 
-Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
+Das Init-SQL besitzt ausschliesslich drei serviceeigene Ergebnistabellen:
 
-- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D-, F- und
-  M-Features, pfadbewusste Labels und finale Entry-Entscheidungen.
-- `stock_analyser_filter_research_early_cut_results`: genau drei kausale
-  Landmark-Zeilen je Signal mit landmark-relativen Outcomes, intrinsischer
-  Eligibility und sequenziellem Aktiv-/Hold-/Cut-Status.
-- `stock_analyser_filter_research_rule_results`: generische Kandidaten-,
-  Walk-forward-, Diagnose-, Holdout- und ausgewählte Regelmetriken fuer beide
-  Entscheidungsfamilien und Ziele.
+- `stock_analyser_filter_research_signal_results`: Signale, alle Entry-
+  Merkmale und Outcomes sowie Ausschluss und Bestaetigung.
+- `stock_analyser_filter_research_early_cut_results`: drei kausale
+  Landmark-Zeilen je Signal mit sequenziellem Hold-/Cut-Status.
+- `stock_analyser_filter_research_rule_results`: alle atomaren, Pattern-,
+  Interaktions- und OR-Kandidaten, Walk-forward-/Stabilitaetsmetriken,
+  Multiple-Testing-Ergebnisse sowie Diagnostic und Holdout.
 
 Signal- und Early-Cut-Tabelle sind unkomprimierte Timescale-Hypertables mit
-365-Tage-Chunks. Es gibt keine JSON-, Audit- oder Run-Tabelle. Runtime-Code
+365-Tage-Chunks. Es gibt keine JSON-, Audit- oder Run-Tabelle. Der Runtime-Code
 erzeugt oder aendert keine DB-Struktur; er validiert den vollstaendigen Vertrag
 und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Der inkompatible V2.4-Neuaufbau der freigegebenen, reproduzierbaren
-Research-Tabellen erfolgt einmalig mit:
+V3 ist ein inkompatibler Neuaufbau. Die vorhandenen Research-Tabellen werden
+einmalig explizit gedroppt und aus `init/schema.sql` neu erzeugt:
 
 ```bash
 DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START=true \
   docker compose up --build --force-recreate stock-analyser-filter-research
 ```
 
-Der Drop-Schalter ist und bleibt standardmaessig `false`. Ohne expliziten Drop
-bricht das Programm bei bereits vorhandenen Zielzeilen ab.
+Der Drop-Schalter ist standardmaessig `false`. Ohne expliziten Drop bricht das
+Programm bei einer alten Struktur oder bereits vorhandenen Zielzeilen ab.
 
-Die Berechnung nutzt disjunkte, nach Source-Zeilenzahl balancierte
-Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung,
-laedt Kurs-/SEC-Daten nur fuer seine Identitaeten und Market-Metric-Zeilen nur
-fuer seine exakten Signal-Keys. Jeder Prozess importiert denselben exportierten
-PostgreSQL-Snapshot. Damit koennen auch parallele Updates der Quelltabellen
-keinen gemischten Research-Stand erzeugen. Nur der Hauptprozess schreibt die
-drei Ergebnistabellen.
+Die Berechnung nutzt disjunkte, nach Quellzeilenzahl balancierte
+Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung mit
+AppName und importiert denselben exportierten PostgreSQL-Snapshot. Nur der
+Hauptprozess schreibt die drei Ergebnistabellen. Wegen der breiten Suche und
+999 Permutationen ist V3 bewusst deutlich rechenintensiver als V2.
 
 ## Tests
 
 ```bash
 python -m pytest -q
+docker compose config
 ```

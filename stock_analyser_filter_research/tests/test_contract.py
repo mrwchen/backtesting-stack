@@ -134,16 +134,17 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
     )
     assert "active_at_landmark" in sql_text
     assert "prior_policy_cut_day BETWEEN 1 AND landmark_day - 1" in sql_text
-    assert (
-        "include_final = (include_weak_filter AND include_loss_first_filter)"
-        in sql_text
-    )
+    assert "NOT include_final" in sql_text
+    assert "OR (include_weak_filter AND include_loss_first_filter)" in sql_text
+    assert "NULLIF(TRIM(confirmation_reason), '') IS NOT NULL" in sql_text
     assert (
         "include_final = (include_stagnation_filter AND include_loss_filter)"
         in sql_text
     )
     assert "objective_count + protected_count <= sample_count" in sql_text
-    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'M', 'multiple'" in sql_text
+    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N'" in sql_text
+    assert "'R', 'S', 'T', 'multiple'" in sql_text
+    assert "'entry_filter', 'entry_confirmation', 'early_cut'" in sql_text
     assert (
         "matched_objective_count + matched_protected_count <= matched_labeled_count"
         in sql_text

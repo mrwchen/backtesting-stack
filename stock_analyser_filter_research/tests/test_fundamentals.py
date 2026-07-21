@@ -10,6 +10,8 @@ from stock_analyser_filter_research.computation import (
 )
 from stock_analyser_filter_research.contracts import (
     EARLY_CUT_FEATURE_GROUPS,
+    EARNINGS_EVENT_FEATURE_COLUMNS,
+    EARNINGS_EVENT_SOURCE_COLUMNS,
     ENTRY_FEATURE_GROUPS,
     FUNDAMENTAL_FEATURE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
@@ -94,6 +96,23 @@ def _snapshot_frame(*rows: dict[str, object]) -> pd.DataFrame:
 
 def _event_frame(*rows: dict[str, object]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS)
+
+
+def _earnings(**overrides: object) -> dict[str, object]:
+    row = {column: pd.NA for column in EARNINGS_EVENT_SOURCE_COLUMNS}
+    row.update(
+        {
+            **IDENTITY,
+            "earnings_date": "2026-07-15",
+            "announcement_ts": "2026-07-15T19:00:00Z",
+            "source": "sec_8k_item_2_02",
+            "source_event_id": "sec-event-1",
+            "known_as_of_ts": "2026-07-15T19:00:00Z",
+            "is_confirmed": True,
+        }
+    )
+    row.update(overrides)
+    return row
 
 
 def test_decision_boundary_is_1600_new_york_with_dst() -> None:
@@ -224,3 +243,93 @@ def test_duplicate_source_keys_are_rejected() -> None:
             _snapshot_frame(duplicate, duplicate),
             _event_frame(_event()),
         )
+
+
+def test_extended_quality_and_growth_features_use_only_public_sec_rows() -> None:
+    current = _event(
+        accession_number="0002",
+        fiscal_period_end_date="2026-03-31",
+        quarterly_revenue=150.0,
+        prior_year_quarterly_revenue=100.0,
+        diluted_eps=3.0,
+        prior_year_diluted_eps=1.0,
+    )
+    previous = _event(
+        accession_number="0001",
+        accepted_at="2026-04-15T19:00:00Z",
+        effective_date="2026-04-15",
+        fiscal_period_end_date="2025-12-31",
+        quarterly_revenue=120.0,
+        prior_year_quarterly_revenue=100.0,
+        diluted_eps=1.5,
+        prior_year_diluted_eps=1.0,
+    )
+    output = enrich_signal_fundamentals(
+        _signals(),
+        _snapshot_frame(
+            _snapshot(
+                sec_operating_income_ttm=300,
+                sec_net_income_ttm=100,
+                sec_operating_cashflow_ttm=120,
+                sec_free_cashflow_ttm=90,
+                sec_free_cashflow_sbc_adjusted_ttm=50,
+                sec_research_and_development_ttm=100,
+                sec_selling_general_and_admin_ttm=150,
+                sec_interest_expense_ttm=50,
+                sec_assets=2_000,
+                sec_stockholders_equity=1_000,
+                sec_cash_and_equivalents=200,
+                sec_total_debt=400,
+                sec_current_assets=600,
+                sec_current_liabilities=300,
+                sec_inventory=100,
+                sec_weighted_avg_shares_diluted=110,
+                sec_shares_outstanding=100,
+            )
+        ),
+        _event_frame(previous, current),
+    ).iloc[0]
+
+    assert output["fundamental_roe_ttm_ratio"] == pytest.approx(0.10)
+    assert output["fundamental_cash_conversion_ttm_ratio"] == pytest.approx(1.20)
+    assert output["fundamental_interest_coverage_ttm_ratio"] == pytest.approx(6.0)
+    assert output["fundamental_debt_to_assets_ratio"] == pytest.approx(0.20)
+    assert output["fundamental_quick_ratio"] == pytest.approx(5 / 3)
+    assert output["fundamental_diluted_share_pressure_ratio"] == pytest.approx(0.10)
+    assert output["fundamental_quarterly_revenue_growth_acceleration"] == (
+        pytest.approx(0.30)
+    )
+    assert output["fundamental_quarterly_eps_growth_acceleration"] == (
+        pytest.approx(1.50)
+    )
+
+
+def test_only_confirmed_sec_earnings_known_by_close_are_features() -> None:
+    safe = _earnings()
+    unsafe_current_snapshot = _earnings(
+        source="yfinance_calendar",
+        source_event_id="yf-current",
+        announcement_ts="2026-07-15T18:00:00Z",
+        known_as_of_ts="2026-07-15T18:00:00Z",
+    )
+    after_close = _earnings(
+        source_event_id="sec-after-close",
+        announcement_ts="2026-07-15T20:01:00Z",
+        known_as_of_ts="2026-07-15T20:01:00Z",
+    )
+    earnings = pd.DataFrame(
+        [safe, unsafe_current_snapshot, after_close],
+        columns=EARNINGS_EVENT_SOURCE_COLUMNS,
+    )
+    output = enrich_signal_fundamentals(
+        _signals(),
+        _snapshot_frame(_snapshot()),
+        _event_frame(_event()),
+        earnings,
+    ).iloc[0]
+
+    assert output["earnings_event_age_days"] == pytest.approx(1 / 24)
+    assert output["earnings_event_on_signal_day"] == 1.0
+    assert output["earnings_event_within_5d"] == 1.0
+    assert output["earnings_event_within_21d"] == 1.0
+    assert set(EARNINGS_EVENT_FEATURE_COLUMNS) <= set(output.index)

@@ -12,10 +12,12 @@ import pandas as pd
 from . import db
 from .computation import (
     CalculationBatchResult,
+    build_global_market_context,
     calculate_signal_batch,
     empty_early_cut_frame,
     empty_signal_frame,
     enrich_signal_market_metrics,
+    enrich_global_features,
 )
 from .config import Config
 from .logging_utils import configure_logging
@@ -93,6 +95,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     loaded_fundamental_snapshot_rows = 0
     loaded_quarterly_event_rows = 0
     loaded_market_metric_rows = 0
+    loaded_earnings_event_rows = 0
     app_suffix = f"worker_{task.worker_number:02d}"
     with db.connect(task.cfg, app_suffix=app_suffix) as connection:
         db.import_snapshot(connection, task.snapshot_id)
@@ -108,15 +111,20 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
                     connection, task.cfg, identities
                 )
             )
+            earnings_events = db.load_earnings_event_batch(
+                connection, task.cfg, identities
+            )
             loaded_rows += len(source)
             loaded_fundamental_snapshot_rows += len(fundamental_snapshots)
             loaded_quarterly_event_rows += len(quarterly_fundamental_events)
+            loaded_earnings_event_rows += len(earnings_events)
             calculated = calculate_signal_batch(
                 source,
                 task.trading_dates,
                 task.cfg,
                 fundamental_snapshots=fundamental_snapshots,
                 quarterly_fundamental_events=quarterly_fundamental_events,
+                earnings_events=earnings_events,
             )
             signal_keys = [
                 (
@@ -147,6 +155,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
             del source
             del fundamental_snapshots
             del quarterly_fundamental_events
+            del earnings_events
             del market_metrics
             del calculated
             gc.collect()
@@ -163,7 +172,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     elapsed = time.monotonic() - started
     log.info(
         "Worker %d processed %d identities, %d market rows, %d SEC snapshot rows, "
-        "%d SEC quarterly event rows and %d exact signal-day market metric rows "
+        "%d SEC quarterly event rows, %d causal SEC earnings event rows and %d exact signal-day market metric rows "
         "into %d signals and %d early-cut rows "
         "in %.1f seconds",
         task.worker_number,
@@ -171,6 +180,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
         loaded_rows,
         loaded_fundamental_snapshot_rows,
         loaded_quarterly_event_rows,
+        loaded_earnings_event_rows,
         loaded_market_metric_rows,
         len(result),
         len(early_cuts),
@@ -215,6 +225,12 @@ def run(cfg: Config) -> tuple[int, int, int]:
                     log.info("No source rows available; no results written")
                     return (0, 0, 0)
 
+                market_breadth = db.load_market_breadth_daily(connection, cfg)
+                world_market = db.load_world_market_observations(connection, cfg)
+                market_context = build_global_market_context(
+                    trading_dates, market_breadth, world_market
+                )
+
                 partitions = balance_identity_work(identity_work, cfg.max_workers)
                 tasks = [
                     WorkerTask(
@@ -258,13 +274,26 @@ def run(cfg: Config) -> tuple[int, int, int]:
                     if early_cut_frames
                     else empty_early_cut_frame()
                 )
+                globally_enriched = enrich_global_features(
+                    signals, early_cuts, market_context
+                )
+                signals = globally_enriched.signals
+                early_cuts = globally_enriched.early_cut
                 if len(early_cuts) != 3 * len(signals):
                     raise RuntimeError(
                         "early-cut landmark invariant failed: expected "
                         f"{3 * len(signals)} rows for {len(signals)} signals, "
                         f"received {len(early_cuts)}"
                     )
-                del frames, early_cut_frames, worker_results
+                del (
+                    frames,
+                    early_cut_frames,
+                    worker_results,
+                    market_breadth,
+                    world_market,
+                    market_context,
+                    globally_enriched,
+                )
                 gc.collect()
 
                 research_started = time.monotonic()

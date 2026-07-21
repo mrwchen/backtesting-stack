@@ -26,7 +26,9 @@ def cfg_factory():
             "quarterly_fundamental_event_table": (
                 "stock_core_sec_quarterly_fundamental_events"
             ),
+            "earnings_event_table": "stock_core_earnings_calendar_events",
             "market_metrics_table": "stock_core_market_metrics_daily",
+            "world_market_observation_table": "world_regime_observations",
             "signal_result_table": ("stock_analyser_filter_research_signal_results"),
             "early_cut_result_table": (
                 "stock_analyser_filter_research_early_cut_results"
@@ -41,6 +43,8 @@ def cfg_factory():
             "weak_5d_max_gain_pct": 2.0,
             "strong_5d_min_gain_pct": 5.0,
             "deep_loss_5d_max_loss_pct": -5.0,
+            "terminal_stagnant_5d_max_return_pct": 1.0,
+            "terminal_winner_5d_min_return_pct": 3.0,
             "quantile_count": 10,
             "max_conditions_per_objective": 2,
             "rule_search_beam_width": 10,
@@ -58,6 +62,9 @@ def cfg_factory():
             "min_matched_label_coverage_pct": 0.90,
             "min_objective_lift": 1.05,
             "min_selection_score_improvement": 0.01,
+            "permutation_trial_count": 49,
+            "max_stat_permutation_p_value": 0.05,
+            "permutation_random_seed": 1729,
             "min_holdout_sample_count": 50,
             "max_workers": 1,
             "worker_identity_batch_size": 2,
