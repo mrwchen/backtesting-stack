@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import timedelta
 from numbers import Integral
@@ -17,6 +17,9 @@ from .contracts import (
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
+    FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
+    IDENTITY_COLUMNS,
+    QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     RULE_BOOLEAN_COLUMNS,
     RULE_COLUMNS,
     RULE_INTEGER_COLUMNS,
@@ -41,6 +44,18 @@ EXPECTED_EARLY_CUT_PRIMARY_KEY = (
     "landmark_day",
 )
 EXPECTED_RULE_PRIMARY_KEY = ("result_id",)
+EXPECTED_FUNDAMENTAL_SNAPSHOT_PRIMARY_KEY = (
+    "symbol",
+    "exchange",
+    "cik",
+    "period_end_date",
+)
+EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY = (
+    "symbol",
+    "exchange",
+    "cik",
+    "accession_number",
+)
 EXPECTED_CHUNK_INTERVAL = timedelta(days=365)
 COPY_NULL = r"\N"
 
@@ -125,6 +140,71 @@ def _source_column_contracts() -> dict[str, ColumnContract]:
     )
     if set(contracts) != set(SOURCE_COLUMNS):
         raise AssertionError("source database column contract is incomplete")
+    return contracts
+
+
+def _fundamental_snapshot_source_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts, ("symbol", "exchange"), "text", nullable=False
+    )
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(contracts, ("period_end_date",), "date", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("sec_fundamental_currency",),
+        "text",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("sec_latest_period_end_date",),
+        "date",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("sec_data_available_at",),
+        "timestamptz",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts,
+        ("sec_revenue_ttm", "sec_share_based_compensation_ttm"),
+        "int8",
+        nullable=True,
+    )
+    remaining = set(FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS) - set(contracts)
+    _add_column_contracts(contracts, remaining, "numeric", nullable=True)
+    if set(contracts) != set(FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS):
+        raise AssertionError("fundamental snapshot source contract is incomplete")
+    return contracts
+
+
+def _quarterly_fundamental_event_source_column_contracts(
+) -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts,
+        ("symbol", "exchange", "accession_number"),
+        "text",
+        nullable=False,
+    )
+    _add_column_contracts(contracts, ("currency",), "text", nullable=True)
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("effective_date", "fiscal_period_end_date"),
+        "date",
+        nullable=False,
+    )
+    _add_column_contracts(
+        contracts, ("accepted_at",), "timestamptz", nullable=True
+    )
+    remaining = set(QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS) - set(contracts)
+    _add_column_contracts(contracts, remaining, "numeric", nullable=True)
+    if set(contracts) != set(QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS):
+        raise AssertionError("quarterly fundamental event source contract is incomplete")
     return contracts
 
 
@@ -453,6 +533,12 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
 
 
 SOURCE_COLUMN_CONTRACTS = _source_column_contracts()
+FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS = (
+    _fundamental_snapshot_source_column_contracts()
+)
+QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS = (
+    _quarterly_fundamental_event_source_column_contracts()
+)
 SIGNAL_COLUMN_CONTRACTS = _signal_column_contracts()
 EARLY_CUT_COLUMN_CONTRACTS = _early_cut_column_contracts()
 RULE_COLUMN_CONTRACTS = _rule_column_contracts()
@@ -820,6 +906,18 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_required_columns(
         connection,
+        cfg.fundamental_snapshot_table,
+        FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
+        cfg.quarterly_fundamental_event_table,
+        QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
         cfg.signal_result_table,
         SIGNAL_COLUMNS,
         reject_extra=True,
@@ -838,6 +936,16 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_column_definitions(connection, cfg.source_table, SOURCE_COLUMN_CONTRACTS)
     _validate_column_definitions(
+        connection,
+        cfg.fundamental_snapshot_table,
+        FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
+        connection,
+        cfg.quarterly_fundamental_event_table,
+        QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
         connection, cfg.signal_result_table, SIGNAL_COLUMN_CONTRACTS
     )
     _validate_column_definitions(
@@ -850,6 +958,16 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         connection,
         cfg.signal_result_table,
         EXPECTED_SIGNAL_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
+        cfg.fundamental_snapshot_table,
+        EXPECTED_FUNDAMENTAL_SNAPSHOT_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
+        cfg.quarterly_fundamental_event_table,
+        EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY,
     )
     _validate_primary_key(
         connection,
@@ -1065,6 +1183,198 @@ def load_source_batch(
     if not frames:
         return pd.DataFrame(columns=SOURCE_COLUMNS)
     return pd.concat(frames, ignore_index=True).loc[:, SOURCE_COLUMNS]
+
+
+def _normalize_required_text(
+    frame: pd.DataFrame, columns: Sequence[str], source_name: str
+) -> None:
+    for column in columns:
+        if frame[column].isna().any():
+            raise RuntimeError(
+                f"{source_name} column {column} unexpectedly contains null"
+            )
+        frame[column] = frame[column].astype("string")
+
+
+def _normalize_cik(frame: pd.DataFrame, source_name: str) -> None:
+    original = frame["cik"]
+    numeric = pd.to_numeric(original, errors="coerce")
+    values = numeric.dropna().to_numpy(dtype=float)
+    if (
+        original.isna().any()
+        or numeric.isna().any()
+        or (values.size and not np.isfinite(values).all())
+        or (values.size and not np.equal(values, np.floor(values)).all())
+    ):
+        raise RuntimeError(f"{source_name} column cik contains invalid integers")
+    try:
+        frame["cik"] = numeric.astype("Int64")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(f"{source_name} column cik exceeds int64") from exc
+
+
+def _normalize_optional_currency(frame: pd.DataFrame, column: str) -> None:
+    currency = frame[column].astype("string").str.strip().str.upper()
+    frame[column] = currency.mask(currency.eq(""), pd.NA)
+
+
+def _normalize_numeric_columns(
+    frame: pd.DataFrame, columns: Sequence[str], source_name: str
+) -> None:
+    for column in columns:
+        original = frame[column]
+        numeric = pd.to_numeric(original, errors="coerce")
+        if (original.notna() & numeric.isna()).any():
+            raise RuntimeError(
+                f"{source_name} column {column} contains invalid numerics"
+            )
+        frame[column] = numeric.astype("float64").replace([np.inf, -np.inf], np.nan)
+
+
+def _normalize_fundamental_snapshot_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "fundamental snapshot source"
+    frame = frame.loc[:, FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS].copy()
+    _normalize_required_text(frame, ("symbol", "exchange"), source_name)
+    _normalize_cik(frame, source_name)
+    frame["period_end_date"] = pd.to_datetime(
+        frame["period_end_date"], errors="raise"
+    ).dt.normalize()
+    frame["sec_latest_period_end_date"] = pd.to_datetime(
+        frame["sec_latest_period_end_date"], errors="coerce"
+    ).dt.normalize()
+    frame["sec_data_available_at"] = pd.to_datetime(
+        frame["sec_data_available_at"], errors="coerce", utc=True
+    )
+    _normalize_optional_currency(frame, "sec_fundamental_currency")
+    non_numeric = {
+        *IDENTITY_COLUMNS,
+        "period_end_date",
+        "sec_fundamental_currency",
+        "sec_latest_period_end_date",
+        "sec_data_available_at",
+    }
+    _normalize_numeric_columns(
+        frame,
+        tuple(set(FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS) - non_numeric),
+        source_name,
+    )
+    return frame.loc[:, FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS]
+
+
+def _normalize_quarterly_fundamental_event_frame(
+    frame: pd.DataFrame,
+) -> pd.DataFrame:
+    source_name = "quarterly fundamental event source"
+    frame = frame.loc[:, QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS].copy()
+    _normalize_required_text(
+        frame, ("symbol", "exchange", "accession_number"), source_name
+    )
+    _normalize_cik(frame, source_name)
+    for column in ("effective_date", "fiscal_period_end_date"):
+        frame[column] = pd.to_datetime(frame[column], errors="raise").dt.normalize()
+    frame["accepted_at"] = pd.to_datetime(
+        frame["accepted_at"], errors="coerce", utc=True
+    )
+    _normalize_optional_currency(frame, "currency")
+    non_numeric = {
+        *IDENTITY_COLUMNS,
+        "accession_number",
+        "accepted_at",
+        "effective_date",
+        "fiscal_period_end_date",
+        "currency",
+    }
+    _normalize_numeric_columns(
+        frame,
+        tuple(set(QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS) - non_numeric),
+        source_name,
+    )
+    return frame.loc[:, QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS]
+
+
+def _load_fundamental_identity_batch(
+    connection: extensions.connection,
+    cfg: Config,
+    identities: Sequence[StockIdentity],
+    *,
+    table_name: str,
+    columns: Sequence[str],
+    order_columns: Sequence[str],
+    cursor_prefix: str,
+    normalize: Callable[[pd.DataFrame], pd.DataFrame],
+) -> pd.DataFrame:
+    if not identities:
+        return pd.DataFrame(columns=columns)
+    symbols, exchanges, ciks = _validate_identities(identities)
+    selected_columns = sql.SQL(", ").join(
+        sql.SQL("source.{}").format(sql.Identifier(column)) for column in columns
+    )
+    ordering = sql.SQL(", ").join(
+        sql.SQL("source.{}").format(sql.Identifier(column))
+        for column in order_columns
+    )
+    statement = sql.SQL(
+        "SELECT {} FROM {} AS source "
+        "JOIN unnest(%s::text[], %s::text[], %s::bigint[]) "
+        "AS selected(symbol, exchange, cik) "
+        "ON source.symbol = selected.symbol "
+        "AND source.exchange = selected.exchange "
+        "AND source.cik = selected.cik "
+        "ORDER BY {}"
+    ).format(selected_columns, _qualified_identifier(table_name), ordering)
+    parameters: list[Any] = [symbols, exchanges, ciks]
+    frames: list[pd.DataFrame] = []
+    cursor_name = f"{cursor_prefix}_{uuid4().hex[:20]}"
+    with connection.cursor(name=cursor_name) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(statement, parameters)
+        while True:
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            if not rows:
+                break
+            raw = pd.DataFrame.from_records(rows, columns=columns)
+            frames.append(normalize(raw))
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True).loc[:, columns]
+
+
+def load_fundamental_snapshot_batch(
+    connection: extensions.connection,
+    cfg: Config,
+    identities: Sequence[StockIdentity],
+) -> pd.DataFrame:
+    """Load SEC snapshots for a bounded identity batch in the shared DB snapshot."""
+
+    return _load_fundamental_identity_batch(
+        connection,
+        cfg,
+        identities,
+        table_name=cfg.fundamental_snapshot_table,
+        columns=FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
+        order_columns=(*IDENTITY_COLUMNS, "period_end_date"),
+        cursor_prefix="safr_fund_snapshot",
+        normalize=_normalize_fundamental_snapshot_frame,
+    )
+
+
+def load_quarterly_fundamental_event_batch(
+    connection: extensions.connection,
+    cfg: Config,
+    identities: Sequence[StockIdentity],
+) -> pd.DataFrame:
+    """Load SEC quarterly events for a bounded identity batch in the DB snapshot."""
+
+    return _load_fundamental_identity_batch(
+        connection,
+        cfg,
+        identities,
+        table_name=cfg.quarterly_fundamental_event_table,
+        columns=QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
+        order_columns=(*IDENTITY_COLUMNS, "fiscal_period_end_date", "accepted_at"),
+        cursor_prefix="safr_fund_event",
+        normalize=_normalize_quarterly_fundamental_event_frame,
+    )
 
 
 def _normalize_boolean_value(value: Any, column: str) -> Any:

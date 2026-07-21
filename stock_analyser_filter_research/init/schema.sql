@@ -110,6 +110,27 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     prior_churning_day_count_20                  SMALLINT,
     prior_failed_breakout_count_20               SMALLINT,
 
+    fundamental_snapshot_age_days                NUMERIC(20,8),
+    fundamental_report_age_days                  NUMERIC(20,8),
+    fundamental_gross_margin_ttm_ratio           NUMERIC(20,8),
+    fundamental_operating_margin_ttm_ratio       NUMERIC(20,8),
+    fundamental_net_margin_ttm_ratio             NUMERIC(20,8),
+    fundamental_fcf_margin_ttm_ratio             NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_margin_ttm_ratio NUMERIC(20,8),
+    fundamental_debt_to_capital_ratio            NUMERIC(20,8),
+    fundamental_cash_to_assets_ratio             NUMERIC(20,8),
+    fundamental_current_ratio                    NUMERIC(20,8),
+    fundamental_accruals_ratio                   NUMERIC(20,8),
+    fundamental_sbc_to_revenue_ttm_ratio         NUMERIC(20,8),
+    fundamental_quarter_filing_age_days          NUMERIC(20,8),
+    fundamental_quarter_age_days                 NUMERIC(20,8),
+    fundamental_quarterly_revenue_yoy_growth_ratio NUMERIC(20,8),
+    fundamental_quarterly_eps_yoy_change_ratio   NUMERIC(20,8),
+    fundamental_quarterly_operating_margin_ratio NUMERIC(20,8),
+    fundamental_quarterly_operating_margin_yoy_change NUMERIC(20,8),
+    fundamental_quarterly_net_margin_ratio       NUMERIC(20,8),
+    fundamental_quarterly_net_margin_yoy_change  NUMERIC(20,8),
+
     forward_5d_max_gain_pct                      NUMERIC(20,8),
     forward_5d_max_loss_pct                      NUMERIC(20,8),
     forward_10d_max_gain_pct                     NUMERIC(20,8),
@@ -162,6 +183,14 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (prior_distribution_day_count_20 IS NULL OR prior_distribution_day_count_20 BETWEEN 0 AND 20),
     CHECK (prior_churning_day_count_20 IS NULL OR prior_churning_day_count_20 BETWEEN 0 AND 20),
     CHECK (prior_failed_breakout_count_20 IS NULL OR prior_failed_breakout_count_20 BETWEEN 0 AND 20),
+    CHECK (fundamental_snapshot_age_days IS NULL OR fundamental_snapshot_age_days >= 0),
+    CHECK (fundamental_report_age_days IS NULL OR fundamental_report_age_days >= 0),
+    CHECK (fundamental_quarter_filing_age_days IS NULL OR fundamental_quarter_filing_age_days >= 0),
+    CHECK (fundamental_quarter_age_days IS NULL OR fundamental_quarter_age_days >= 0),
+    CHECK (
+        fundamental_quarterly_eps_yoy_change_ratio IS NULL
+        OR fundamental_quarterly_eps_yoy_change_ratio BETWEEN -1 AND 1
+    ),
     CHECK (forward_5d_max_gain_pct IS NULL OR forward_5d_max_gain_pct >= 0),
     CHECK (forward_5d_max_loss_pct IS NULL OR forward_5d_max_loss_pct <= 0),
     CHECK (forward_10d_max_gain_pct IS NULL OR forward_10d_max_gain_pct >= 0),
@@ -500,7 +529,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
          )
          AND protected_outcome = 'strong_first_to_day5')
     ),
-    CHECK (feature_group IN ('none', 'A', 'B', 'C', 'D', 'E', 'multiple')),
+    CHECK (feature_group IN ('none', 'A', 'B', 'C', 'D', 'E', 'F', 'multiple')),
     CHECK (operator IS NULL OR operator IN ('le', 'ge')),
     CHECK (quantile_value IS NULL OR quantile_value BETWEEN 0 AND 1),
     CHECK (

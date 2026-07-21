@@ -217,6 +217,10 @@ def test_quantile_count_controls_template_grid() -> None:
         "v_recovery",
         "volume_dry_up_breakout",
         "distribution_top",
+        "earnings_deterioration",
+        "margin_compression",
+        "balance_sheet_stress",
+        "cashflow_weakness",
     }
     assert all(
         isinstance(item, ConditionTemplate)
@@ -1132,7 +1136,9 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "A",
         "B",
         "C",
+        "D",
         "E",
+        "F",
         "multiple",
     }
     assert set(result.rules["operator"].dropna()) <= {"le", "ge"}

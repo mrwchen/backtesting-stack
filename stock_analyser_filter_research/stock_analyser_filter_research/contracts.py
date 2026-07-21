@@ -54,6 +54,65 @@ SOURCE_COLUMNS = (
     "trend_template_pass",
 )
 
+FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS = (
+    *IDENTITY_COLUMNS,
+    "period_end_date",
+    "sec_fundamental_currency",
+    "sec_latest_period_end_date",
+    "sec_data_available_at",
+    "sec_revenue_ttm",
+    "sec_share_based_compensation_ttm",
+    "sec_gross_margin_ttm",
+    "sec_operating_margin_ttm",
+    "sec_net_margin_ttm",
+    "sec_fcf_margin_ttm",
+    "sec_fcf_sbc_adjusted_margin_ttm",
+    "sec_debt_to_capital",
+    "sec_cash_to_assets",
+    "sec_current_ratio",
+    "sec_accruals_ratio",
+)
+
+QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS = (
+    *IDENTITY_COLUMNS,
+    "accession_number",
+    "accepted_at",
+    "effective_date",
+    "fiscal_period_end_date",
+    "diluted_eps",
+    "prior_year_diluted_eps",
+    "currency",
+    "quarterly_revenue",
+    "prior_year_quarterly_revenue",
+    "quarterly_operating_margin",
+    "prior_year_quarterly_operating_margin",
+    "quarterly_net_margin",
+    "prior_year_quarterly_net_margin",
+)
+
+FUNDAMENTAL_FEATURE_COLUMNS = (
+    "fundamental_snapshot_age_days",
+    "fundamental_report_age_days",
+    "fundamental_gross_margin_ttm_ratio",
+    "fundamental_operating_margin_ttm_ratio",
+    "fundamental_net_margin_ttm_ratio",
+    "fundamental_fcf_margin_ttm_ratio",
+    "fundamental_fcf_sbc_adjusted_margin_ttm_ratio",
+    "fundamental_debt_to_capital_ratio",
+    "fundamental_cash_to_assets_ratio",
+    "fundamental_current_ratio",
+    "fundamental_accruals_ratio",
+    "fundamental_sbc_to_revenue_ttm_ratio",
+    "fundamental_quarter_filing_age_days",
+    "fundamental_quarter_age_days",
+    "fundamental_quarterly_revenue_yoy_growth_ratio",
+    "fundamental_quarterly_eps_yoy_change_ratio",
+    "fundamental_quarterly_operating_margin_ratio",
+    "fundamental_quarterly_operating_margin_yoy_change",
+    "fundamental_quarterly_net_margin_ratio",
+    "fundamental_quarterly_net_margin_yoy_change",
+)
+
 SIGNAL_COLUMNS = (
     "signal_date",
     "previous_session_date",
@@ -132,6 +191,7 @@ SIGNAL_COLUMNS = (
     "prior_distribution_day_count_20",
     "prior_churning_day_count_20",
     "prior_failed_breakout_count_20",
+    *FUNDAMENTAL_FEATURE_COLUMNS,
     "forward_5d_max_gain_pct",
     "forward_5d_max_loss_pct",
     "forward_10d_max_gain_pct",
@@ -360,6 +420,7 @@ ENTRY_FEATURE_GROUPS = {
         "prior_churning_day_count_20",
         "prior_failed_breakout_count_20",
     ),
+    "F": FUNDAMENTAL_FEATURE_COLUMNS,
 }
 
 EARLY_CUT_FEATURE_GROUPS = {

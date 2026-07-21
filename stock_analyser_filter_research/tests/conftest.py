@@ -20,6 +20,12 @@ def cfg_factory():
             "db_connect_timeout_seconds": 5,
             "db_statement_timeout_ms": 0,
             "source_table": "stock_analyser_trend_template_daily",
+            "fundamental_snapshot_table": (
+                "stock_core_sec_fundamentals_asof_daily"
+            ),
+            "quarterly_fundamental_event_table": (
+                "stock_core_sec_quarterly_fundamental_events"
+            ),
             "signal_result_table": ("stock_analyser_filter_research_signal_results"),
             "early_cut_result_table": (
                 "stock_analyser_filter_research_early_cut_results"

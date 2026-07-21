@@ -452,7 +452,7 @@ def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
             ),
         )
 
-    return (
+    chart_patterns = (
         pattern(
             "FLAT_BASE",
             (
@@ -501,6 +501,79 @@ def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
                 ("prior_distribution_day_count_20", "ge", 0.80, 1.0),
                 ("prior_failed_breakout_count_20", "ge", 0.80, 1.0),
                 ("prior_close_vs_63d_high_pct", "ge", 0.70, None),
+            ),
+        ),
+    )
+    return chart_patterns + _fundamental_pattern_templates()
+
+
+def _fundamental_pattern_templates() -> tuple[PatternTemplate, ...]:
+    def pattern(
+        name: str,
+        clauses: tuple[tuple[str, str, float], ...],
+    ) -> PatternTemplate:
+        rule_id = f"ENTRY_F_PATTERN_{name}"
+        return PatternTemplate(
+            rule_id,
+            "F",
+            name.lower(),
+            tuple(
+                ConditionTemplate(
+                    f"{rule_id}_C{number}",
+                    "F",
+                    feature_name,
+                    operator,
+                    quantile,
+                )
+                for number, (feature_name, operator, quantile) in enumerate(
+                    clauses, start=1
+                )
+            ),
+        )
+
+    return (
+        pattern(
+            "EARNINGS_DETERIORATION",
+            (
+                ("fundamental_quarterly_revenue_yoy_growth_ratio", "le", 0.30),
+                ("fundamental_quarterly_eps_yoy_change_ratio", "le", 0.30),
+                (
+                    "fundamental_quarterly_operating_margin_yoy_change",
+                    "le",
+                    0.30,
+                ),
+            ),
+        ),
+        pattern(
+            "MARGIN_COMPRESSION",
+            (
+                ("fundamental_operating_margin_ttm_ratio", "le", 0.30),
+                ("fundamental_fcf_margin_ttm_ratio", "le", 0.30),
+                (
+                    "fundamental_quarterly_operating_margin_yoy_change",
+                    "le",
+                    0.30,
+                ),
+            ),
+        ),
+        pattern(
+            "BALANCE_SHEET_STRESS",
+            (
+                ("fundamental_debt_to_capital_ratio", "ge", 0.70),
+                ("fundamental_cash_to_assets_ratio", "le", 0.30),
+                ("fundamental_current_ratio", "le", 0.30),
+            ),
+        ),
+        pattern(
+            "CASHFLOW_WEAKNESS",
+            (
+                ("fundamental_fcf_margin_ttm_ratio", "le", 0.30),
+                (
+                    "fundamental_fcf_sbc_adjusted_margin_ttm_ratio",
+                    "le",
+                    0.30,
+                ),
+                ("fundamental_accruals_ratio", "ge", 0.70),
             ),
         ),
     )

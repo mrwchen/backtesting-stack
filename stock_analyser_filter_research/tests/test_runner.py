@@ -61,10 +61,29 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
         return pd.DataFrame(index=range(len(identities)))
 
     monkeypatch.setattr(runner.db, "load_source_batch", fake_load)
+
+    def fake_fundamental_snapshots(connection, cfg, identities):
+        events.append(("fundamental_snapshots", tuple(identities)))
+        return pd.DataFrame()
+
+    def fake_quarterly_events(connection, cfg, identities):
+        events.append(("quarterly_events", tuple(identities)))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        runner.db,
+        "load_fundamental_snapshot_batch",
+        fake_fundamental_snapshots,
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_quarterly_fundamental_event_batch",
+        fake_quarterly_events,
+    )
     monkeypatch.setattr(
         runner,
         "calculate_signal_batch",
-        lambda source, dates, cfg: CalculationBatchResult(
+        lambda source, dates, cfg, **kwargs: CalculationBatchResult(
             signals=empty_signal_frame(),
             early_cut=empty_early_cut_frame(),
         ),
@@ -85,8 +104,15 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
     result = runner._calculate_worker(task)
 
     assert events[:2] == [("connect", "worker_02"), ("snapshot", "snapshot-1")]
-    assert [event[0] for event in events[2:]] == ["batch", "batch"]
-    assert [len(event[1]) for event in events[2:]] == [2, 1]
+    assert [event[0] for event in events[2:]] == [
+        "batch",
+        "fundamental_snapshots",
+        "quarterly_events",
+        "batch",
+        "fundamental_snapshots",
+        "quarterly_events",
+    ]
+    assert [len(event[1]) for event in events[2:]] == [2, 2, 2, 1, 1, 1]
     assert result.loaded_rows == 3
     assert result.identity_count == 3
     assert result.signals.empty
@@ -111,8 +137,18 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
             {"identity": list(identities)}
         ),
     )
+    monkeypatch.setattr(
+        runner.db,
+        "load_fundamental_snapshot_batch",
+        lambda connection, cfg, identities: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_quarterly_fundamental_event_batch",
+        lambda connection, cfg, identities: pd.DataFrame(),
+    )
 
-    def fake_calculate(source, dates, cfg):
+    def fake_calculate(source, dates, cfg, **kwargs):
         signal_count = len(source)
         signals = empty_signal_frame().reindex(range(signal_count))
         early_cuts = empty_early_cut_frame().reindex(range(3 * signal_count))

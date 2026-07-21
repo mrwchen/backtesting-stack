@@ -50,6 +50,8 @@ class Config:
     db_connect_timeout_seconds: int
     db_statement_timeout_ms: int
     source_table: str
+    fundamental_snapshot_table: str
+    quarterly_fundamental_event_table: str
     signal_result_table: str
     early_cut_result_table: str
     rule_result_table: str
@@ -104,6 +106,20 @@ class Config:
             source_table=_table_name(
                 "SOURCE_TABLE",
                 os.getenv("SOURCE_TABLE", "stock_analyser_trend_template_daily"),
+            ),
+            fundamental_snapshot_table=_table_name(
+                "FUNDAMENTAL_SNAPSHOT_TABLE",
+                os.getenv(
+                    "FUNDAMENTAL_SNAPSHOT_TABLE",
+                    "stock_core_sec_fundamentals_asof_daily",
+                ),
+            ),
+            quarterly_fundamental_event_table=_table_name(
+                "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
+                os.getenv(
+                    "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
+                    "stock_core_sec_quarterly_fundamental_events",
+                ),
             ),
             signal_result_table=_table_name(
                 "SIGNAL_RESULT_TABLE",
@@ -285,7 +301,16 @@ class Config:
             ("EARLY_CUT_RESULT_TABLE", self.early_cut_result_table),
             ("RULE_RESULT_TABLE", self.rule_result_table),
         )
-        _table_name("SOURCE_TABLE", self.source_table)
+        source_tables = (
+            ("SOURCE_TABLE", self.source_table),
+            ("FUNDAMENTAL_SNAPSHOT_TABLE", self.fundamental_snapshot_table),
+            (
+                "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
+                self.quarterly_fundamental_event_table,
+            ),
+        )
+        for name, table in source_tables:
+            _table_name(name, table)
         for name, table in target_tables:
             _table_name(name, table)
             if not table.split(".")[-1].startswith(_TARGET_PREFIX):

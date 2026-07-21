@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -12,11 +14,18 @@ from .contracts import (
     CRITERION_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_LANDMARK_DAYS,
+    FUNDAMENTAL_FEATURE_COLUMNS,
+    FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     IDENTITY_COLUMNS,
+    QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     SIGNAL_COLUMNS,
     SOURCE_BOOLEAN_COLUMNS,
     SOURCE_COLUMNS,
 )
+
+
+_NEW_YORK = ZoneInfo("America/New_York")
+_UTC = ZoneInfo("UTC")
 
 
 @dataclass(frozen=True)
@@ -46,6 +55,322 @@ def empty_calculation_batch() -> CalculationBatchResult:
         signals=empty_signal_frame(),
         early_cut=empty_early_cut_frame(),
     )
+
+
+def _signal_decision_timestamp(signal_date: Any) -> pd.Timestamp:
+    """Return the causal information boundary: 16:00 America/New_York."""
+
+    normalized = pd.Timestamp(signal_date)
+    if pd.isna(normalized):
+        raise ValueError("signal date must not be null")
+    local_close = datetime.combine(
+        normalized.date(), time(hour=16), tzinfo=_NEW_YORK
+    )
+    return pd.Timestamp(local_close.astimezone(_UTC))
+
+
+def _require_columns(
+    frame: pd.DataFrame, required: tuple[str, ...], source_name: str
+) -> None:
+    missing = sorted(set(required) - set(frame.columns))
+    if missing:
+        raise ValueError(f"{source_name} is missing columns: " + ", ".join(missing))
+
+
+def _normalize_fundamental_identities(
+    frame: pd.DataFrame, source_name: str
+) -> pd.DataFrame:
+    result = frame.copy()
+    if result.loc[:, list(IDENTITY_COLUMNS)].isna().any().any():
+        raise ValueError(f"{source_name} identity columns must not be null")
+    result["symbol"] = result["symbol"].astype("string")
+    result["exchange"] = result["exchange"].astype("string")
+    cik = pd.to_numeric(result["cik"], errors="coerce")
+    finite = cik.dropna().to_numpy(dtype=float)
+    if (
+        cik.isna().any()
+        or (finite.size and not np.isfinite(finite).all())
+        or (finite.size and not np.equal(finite, np.floor(finite)).all())
+    ):
+        raise ValueError(f"{source_name} cik values must be integers")
+    result["cik"] = cik.astype("Int64")
+    return result
+
+
+def _normalize_optional_currency_values(series: pd.Series) -> pd.Series:
+    values = series.astype("string").str.strip().str.upper()
+    return values.mask(values.eq(""), pd.NA)
+
+
+def _normalize_fundamental_numerics(
+    frame: pd.DataFrame, columns: tuple[str, ...], source_name: str
+) -> None:
+    for column in columns:
+        original = frame[column]
+        numeric = pd.to_numeric(original, errors="coerce")
+        if (original.notna() & numeric.isna()).any():
+            raise ValueError(f"{source_name} column {column} is not numeric")
+        frame[column] = numeric.astype(float).replace([np.inf, -np.inf], np.nan)
+
+
+def _prepare_fundamental_snapshots(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "fundamental snapshot data"
+    _require_columns(frame, FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS, source_name)
+    if frame.empty:
+        return pd.DataFrame(columns=FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS)
+    result = _normalize_fundamental_identities(
+        frame.loc[:, FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS], source_name
+    )
+    result["period_end_date"] = pd.to_datetime(
+        result["period_end_date"], errors="raise"
+    ).dt.normalize()
+    result["sec_latest_period_end_date"] = pd.to_datetime(
+        result["sec_latest_period_end_date"], errors="raise"
+    ).dt.normalize()
+    result["sec_data_available_at"] = pd.to_datetime(
+        result["sec_data_available_at"], errors="raise", utc=True
+    )
+    result["sec_fundamental_currency"] = _normalize_optional_currency_values(
+        result["sec_fundamental_currency"]
+    )
+    numeric_columns = tuple(
+        column
+        for column in FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS
+        if column
+        not in {
+            *IDENTITY_COLUMNS,
+            "period_end_date",
+            "sec_latest_period_end_date",
+            "sec_data_available_at",
+            "sec_fundamental_currency",
+        }
+    )
+    _normalize_fundamental_numerics(result, numeric_columns, source_name)
+    if result.duplicated([*IDENTITY_COLUMNS, "period_end_date"]).any():
+        raise ValueError("fundamental snapshot data contains duplicate identity/date rows")
+    return result
+
+
+def _prepare_quarterly_fundamental_events(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "quarterly fundamental event data"
+    _require_columns(frame, QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS, source_name)
+    if frame.empty:
+        return pd.DataFrame(columns=QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS)
+    result = _normalize_fundamental_identities(
+        frame.loc[:, QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS], source_name
+    )
+    if result["accession_number"].isna().any():
+        raise ValueError("quarterly fundamental event accession number must not be null")
+    result["accession_number"] = result["accession_number"].astype("string")
+    for column in ("effective_date", "fiscal_period_end_date"):
+        result[column] = pd.to_datetime(result[column], errors="raise").dt.normalize()
+    result["accepted_at"] = pd.to_datetime(
+        result["accepted_at"], errors="raise", utc=True
+    )
+    result["currency"] = _normalize_optional_currency_values(result["currency"])
+    numeric_columns = tuple(
+        column
+        for column in QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS
+        if column
+        not in {
+            *IDENTITY_COLUMNS,
+            "accession_number",
+            "accepted_at",
+            "effective_date",
+            "fiscal_period_end_date",
+            "currency",
+        }
+    )
+    _normalize_fundamental_numerics(result, numeric_columns, source_name)
+    if result.duplicated([*IDENTITY_COLUMNS, "accession_number"]).any():
+        raise ValueError(
+            "quarterly fundamental event data contains duplicate identity/accession rows"
+        )
+    return result
+
+
+def _identity_groups(frame: pd.DataFrame) -> dict[tuple[str, str, int], pd.DataFrame]:
+    return {
+        (str(symbol), str(exchange), int(cik)): group.reset_index(drop=True)
+        for (symbol, exchange, cik), group in frame.groupby(
+            list(IDENTITY_COLUMNS), sort=False, observed=True
+        )
+    }
+
+
+def _finite_scalar(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return numeric if np.isfinite(numeric) else np.nan
+
+
+def _verified_currency(value: Any) -> bool:
+    return bool(pd.notna(value) and str(value).strip())
+
+
+def _assign_snapshot_features(
+    output: pd.DataFrame,
+    output_index: Any,
+    signal_date: pd.Timestamp,
+    decision_at: pd.Timestamp,
+    rows: pd.DataFrame,
+) -> None:
+    eligible = rows.loc[
+        rows["period_end_date"].le(signal_date)
+        & rows["sec_latest_period_end_date"].notna()
+        & rows["sec_latest_period_end_date"].le(signal_date)
+        & rows["sec_data_available_at"].notna()
+        & rows["sec_data_available_at"].le(decision_at)
+    ]
+    if eligible.empty:
+        return
+    selected = eligible.sort_values(
+        [
+            "sec_latest_period_end_date",
+            "sec_data_available_at",
+            "period_end_date",
+        ],
+        kind="mergesort",
+    ).iloc[-1]
+    available_at = pd.Timestamp(selected["sec_data_available_at"])
+    report_date = pd.Timestamp(selected["sec_latest_period_end_date"])
+    output.at[output_index, "fundamental_snapshot_age_days"] = (
+        decision_at - available_at
+    ).total_seconds() / 86_400.0
+    output.at[output_index, "fundamental_report_age_days"] = float(
+        (signal_date - report_date).days
+    )
+    if not _verified_currency(selected["sec_fundamental_currency"]):
+        return
+
+    direct = {
+        "fundamental_gross_margin_ttm_ratio": "sec_gross_margin_ttm",
+        "fundamental_operating_margin_ttm_ratio": "sec_operating_margin_ttm",
+        "fundamental_net_margin_ttm_ratio": "sec_net_margin_ttm",
+        "fundamental_fcf_margin_ttm_ratio": "sec_fcf_margin_ttm",
+        "fundamental_fcf_sbc_adjusted_margin_ttm_ratio": (
+            "sec_fcf_sbc_adjusted_margin_ttm"
+        ),
+        "fundamental_debt_to_capital_ratio": "sec_debt_to_capital",
+        "fundamental_cash_to_assets_ratio": "sec_cash_to_assets",
+        "fundamental_current_ratio": "sec_current_ratio",
+        "fundamental_accruals_ratio": "sec_accruals_ratio",
+    }
+    for target, source in direct.items():
+        output.at[output_index, target] = _finite_scalar(selected[source])
+    revenue = _finite_scalar(selected["sec_revenue_ttm"])
+    sbc = _finite_scalar(selected["sec_share_based_compensation_ttm"])
+    if np.isfinite(revenue) and revenue > 0 and np.isfinite(sbc):
+        output.at[output_index, "fundamental_sbc_to_revenue_ttm_ratio"] = (
+            sbc / revenue
+        )
+
+
+def _assign_quarterly_features(
+    output: pd.DataFrame,
+    output_index: Any,
+    signal_date: pd.Timestamp,
+    decision_at: pd.Timestamp,
+    rows: pd.DataFrame,
+) -> None:
+    eligible = rows.loc[
+        rows["effective_date"].le(signal_date)
+        & rows["fiscal_period_end_date"].le(signal_date)
+        & rows["accepted_at"].notna()
+        & rows["accepted_at"].le(decision_at)
+    ]
+    if eligible.empty:
+        return
+    selected = eligible.sort_values(
+        ["fiscal_period_end_date", "accepted_at", "accession_number"],
+        kind="mergesort",
+    ).iloc[-1]
+    accepted_at = pd.Timestamp(selected["accepted_at"])
+    quarter_date = pd.Timestamp(selected["fiscal_period_end_date"])
+    output.at[output_index, "fundamental_quarter_filing_age_days"] = (
+        decision_at - accepted_at
+    ).total_seconds() / 86_400.0
+    output.at[output_index, "fundamental_quarter_age_days"] = float(
+        (signal_date - quarter_date).days
+    )
+    if not _verified_currency(selected["currency"]):
+        return
+
+    current_revenue = _finite_scalar(selected["quarterly_revenue"])
+    prior_revenue = _finite_scalar(selected["prior_year_quarterly_revenue"])
+    if np.isfinite(current_revenue) and np.isfinite(prior_revenue) and prior_revenue != 0:
+        output.at[
+            output_index, "fundamental_quarterly_revenue_yoy_growth_ratio"
+        ] = (current_revenue - prior_revenue) / abs(prior_revenue)
+
+    current_eps = _finite_scalar(selected["diluted_eps"])
+    prior_eps = _finite_scalar(selected["prior_year_diluted_eps"])
+    eps_scale = abs(current_eps) + abs(prior_eps)
+    if np.isfinite(eps_scale) and eps_scale > 0:
+        output.at[output_index, "fundamental_quarterly_eps_yoy_change_ratio"] = (
+            current_eps - prior_eps
+        ) / eps_scale
+
+    for target, change_target, current_column, prior_column in (
+        (
+            "fundamental_quarterly_operating_margin_ratio",
+            "fundamental_quarterly_operating_margin_yoy_change",
+            "quarterly_operating_margin",
+            "prior_year_quarterly_operating_margin",
+        ),
+        (
+            "fundamental_quarterly_net_margin_ratio",
+            "fundamental_quarterly_net_margin_yoy_change",
+            "quarterly_net_margin",
+            "prior_year_quarterly_net_margin",
+        ),
+    ):
+        current = _finite_scalar(selected[current_column])
+        prior = _finite_scalar(selected[prior_column])
+        output.at[output_index, target] = current
+        if np.isfinite(current) and np.isfinite(prior):
+            output.at[output_index, change_target] = current - prior
+
+
+def enrich_signal_fundamentals(
+    signals: pd.DataFrame,
+    fundamental_snapshots: pd.DataFrame,
+    quarterly_fundamental_events: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach only SEC information public by the signal-day 16:00 ET boundary."""
+
+    output = signals.copy()
+    for column in FUNDAMENTAL_FEATURE_COLUMNS:
+        output[column] = np.nan
+    if output.empty:
+        return output.loc[:, SIGNAL_COLUMNS]
+
+    snapshots = _prepare_fundamental_snapshots(fundamental_snapshots)
+    events = _prepare_quarterly_fundamental_events(quarterly_fundamental_events)
+    snapshot_groups = _identity_groups(snapshots) if not snapshots.empty else {}
+    event_groups = _identity_groups(events) if not events.empty else {}
+
+    for output_index, signal in output.iterrows():
+        signal_date = pd.Timestamp(signal["signal_date"]).normalize()
+        decision_at = _signal_decision_timestamp(signal_date)
+        identity = (
+            str(signal["symbol"]),
+            str(signal["exchange"]),
+            int(signal["cik"]),
+        )
+        snapshot_rows = snapshot_groups.get(identity)
+        if snapshot_rows is not None:
+            _assign_snapshot_features(
+                output, output_index, signal_date, decision_at, snapshot_rows
+            )
+        event_rows = event_groups.get(identity)
+        if event_rows is not None:
+            _assign_quarterly_features(
+                output, output_index, signal_date, decision_at, event_rows
+            )
+    return output.loc[:, SIGNAL_COLUMNS]
 
 
 def _numeric(series: pd.Series) -> pd.Series:
@@ -888,6 +1213,12 @@ def calculate_identity_signals(
     output["filter_decision"] = "include"
     output["exclusion_reason"] = pd.NA
 
+    # Fundamental data is joined once per bounded identity batch so that the
+    # same point-in-time enrichment code is used for every worker. Direct
+    # identity calculations retain the complete result contract with nulls.
+    for column in FUNDAMENTAL_FEATURE_COLUMNS:
+        output[column] = np.nan
+
     for column in SIGNAL_COLUMNS:
         if column not in output:
             raise AssertionError(f"calculation did not produce {column}")
@@ -1345,6 +1676,9 @@ def calculate_signal_batch(
     source: pd.DataFrame,
     trading_dates: pd.DatetimeIndex,
     cfg: Config,
+    *,
+    fundamental_snapshots: pd.DataFrame | None = None,
+    quarterly_fundamental_events: pd.DataFrame | None = None,
 ) -> CalculationBatchResult:
     missing = sorted(set(SOURCE_COLUMNS) - set(source.columns))
     if missing:
@@ -1378,6 +1712,17 @@ def calculate_signal_batch(
     if not signal_frames:
         return empty_calculation_batch()
     signals = pd.concat(signal_frames, ignore_index=True).loc[:, SIGNAL_COLUMNS]
+    snapshots = (
+        fundamental_snapshots
+        if fundamental_snapshots is not None
+        else pd.DataFrame(columns=FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS)
+    )
+    events = (
+        quarterly_fundamental_events
+        if quarterly_fundamental_events is not None
+        else pd.DataFrame(columns=QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS)
+    )
+    signals = enrich_signal_fundamentals(signals, snapshots, events)
     early_cut = pd.concat(early_cut_frames, ignore_index=True).loc[:, EARLY_CUT_COLUMNS]
     expected = len(signals) * len(EARLY_CUT_LANDMARK_DAYS)
     if len(early_cut) != expected:

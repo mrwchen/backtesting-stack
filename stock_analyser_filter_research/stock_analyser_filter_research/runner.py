@@ -88,6 +88,8 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     frames: list[pd.DataFrame] = []
     early_cut_frames: list[pd.DataFrame] = []
     loaded_rows = 0
+    loaded_fundamental_snapshot_rows = 0
+    loaded_quarterly_event_rows = 0
     app_suffix = f"worker_{task.worker_number:02d}"
     with db.connect(task.cfg, app_suffix=app_suffix) as connection:
         db.import_snapshot(connection, task.snapshot_id)
@@ -95,13 +97,32 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
             task.identities, task.cfg.worker_identity_batch_size
         ):
             source = db.load_source_batch(connection, task.cfg, identities)
+            fundamental_snapshots = db.load_fundamental_snapshot_batch(
+                connection, task.cfg, identities
+            )
+            quarterly_fundamental_events = (
+                db.load_quarterly_fundamental_event_batch(
+                    connection, task.cfg, identities
+                )
+            )
             loaded_rows += len(source)
-            calculated = calculate_signal_batch(source, task.trading_dates, task.cfg)
+            loaded_fundamental_snapshot_rows += len(fundamental_snapshots)
+            loaded_quarterly_event_rows += len(quarterly_fundamental_events)
+            calculated = calculate_signal_batch(
+                source,
+                task.trading_dates,
+                task.cfg,
+                fundamental_snapshots=fundamental_snapshots,
+                quarterly_fundamental_events=quarterly_fundamental_events,
+            )
             if not calculated.signals.empty:
                 frames.append(calculated.signals)
             if not calculated.early_cut.empty:
                 early_cut_frames.append(calculated.early_cut)
-            del source, calculated
+            del source
+            del fundamental_snapshots
+            del quarterly_fundamental_events
+            del calculated
             gc.collect()
         # An imported snapshot is read-only. Rollback closes it without an
         # unnecessary commit and leaves no transaction behind on close.
@@ -115,10 +136,14 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     )
     elapsed = time.monotonic() - started
     log.info(
-        "Worker %d processed %d identities and %d source rows into %d signals and %d early-cut rows in %.1f seconds",
+        "Worker %d processed %d identities, %d market rows, %d SEC snapshot rows "
+        "and %d SEC quarterly event rows into %d signals and %d early-cut rows "
+        "in %.1f seconds",
         task.worker_number,
         len(task.identities),
         loaded_rows,
+        loaded_fundamental_snapshot_rows,
+        loaded_quarterly_event_rows,
         len(result),
         len(early_cuts),
         elapsed,

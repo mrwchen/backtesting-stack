@@ -1,4 +1,4 @@
-# Stock Analyser Filter Research V2.2 / C3
+# Stock Analyser Filter Research V2.3 / Phase D
 
 Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
 Ereignisse des 8-von-8-Trend-Templates aus
@@ -37,7 +37,7 @@ Intraday-Reihenfolge mit Tagesdaten unbekannt. Solche Faelle werden als
 Reihenfolgeziele zugeordnet. `deep_loss_5d`, `strong_5d` und `bad_5d` bleiben
 als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 
-## Feature-Gruppen A-D
+## Feature-Gruppen A-D und F
 
 - **A – Zustand am Signaltag:** Volume/21d, Volume/50d, Notional/21d,
   Notional/50d, Liquiditaet, RS, Triggerkontext, Trendgeometrie und Position zu
@@ -51,13 +51,19 @@ als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
   Trendsteigung und R², Trend-Effizienz, Anteil positiver Sessions, Alter und
   Abstand des letzten Hochs, Tiefe/Alter/Erholung des letzten V-Tiefs sowie
   Distribution-, Churning- und Failed-Breakout-Zaehler.
+- **F – SEC-Fundamentaldaten:** Alter des verfuegbaren Snapshots und Berichts,
+  TTM-Margen, Verschuldung, Liquiditaet, Accruals, SBC/Revenue sowie
+  waehrungsneutrale Quartalsveraenderungen von Umsatz, EPS und Margen.
 
-A, B, C und D sind bei der Auswahl gleichberechtigt. Es gibt keine irreversible
-Reihenfolge A -> B -> C -> D. Neben einfachen Quantilbedingungen konkurrieren
-sechs vorab festgelegte Musterkandidaten: `flat_base`, `ordered_uptrend`,
+A, B, C, D und F sind bei der Entry-Auswahl gleichberechtigt. Es gibt keine
+irreversible Reihenfolge A -> B -> C -> D -> F. Neben einfachen
+Quantilbedingungen konkurrieren sechs vorab festgelegte Chartmuster:
+`flat_base`, `ordered_uptrend`,
 `pullback_from_high`, `v_recovery`, `volume_dry_up_breakout` und
-`distribution_top`. Die Teilbedingungen innerhalb eines solchen Musters
-werden zwingend mit `AND` verbunden. Maximal zwei vollstaendige Kandidaten
+`distribution_top` sowie vier feste Fundamental-Muster:
+`earnings_deterioration`, `margin_compression`, `balance_sheet_stress` und
+`cashflow_weakness`. Die Teilbedingungen innerhalb eines solchen Musters werden
+zwingend mit `AND` verbunden. Maximal zwei vollstaendige Kandidaten
 werden pro Ziel mit `OR` verbunden; es gibt keine freie kombinatorische Suche
 nach beliebigen AND-Mustern. Weak- und Loss-First-
 Spezialregeln muessen nur ihr eigenes Ziel stabil anreichern. Eine valide
@@ -70,8 +76,27 @@ Netto-Score um mindestens den konfigurierten Wert verbessern.
 Alle Vorlaufmerkmale verwenden nur zusammenhaengende Sessions bis D-1. Das
 Volume-Dry-up-Breakout-Muster kombiniert diesen Vorlauf mit Volumen und
 Breakout-Bestaetigung der Signaltagskerze; es ist deshalb wie alle A-Features
-erst nach dem Signaltags-Close entscheidbar. Fundamentaldaten sind weiterhin
-nicht Teil von C3.
+erst nach dem Signaltags-Close entscheidbar.
+
+Die Gruppe F liest ausschliesslich
+`stock_core_sec_fundamentals_asof_daily` und
+`stock_core_sec_quarterly_fundamental_events`. Fuer jedes Signal wird je Quelle
+der neueste passende SEC-Datensatz verwendet, dessen Berichtsperiode nicht in
+der Zukunft liegt und dessen `sec_data_available_at` beziehungsweise
+`accepted_at` spaetestens um 16:00 Uhr `America/New_York` am Signaltag liegt.
+Bei Quartalsevents muss zusaetzlich `effective_date <= signal_date` gelten. Die
+Zeitzonenumrechnung beruecksichtigt Sommer- und Winterzeit. Daten nach dieser
+Grenze, spaetere Amendments und zukuenftige Berichtsperioden bleiben fuer die
+historische Entscheidung unsichtbar.
+
+Es werden keine absoluten Geldbetraege zwischen Aktien verglichen. Ratios und
+innerhalb derselben SEC-Meldung berechnete Veraenderungen sind auch fuer
+Nicht-USD-Berichte zulaessig; ohne bekannte Berichtswährung bleiben die
+Finanzkennzahlen NULL. Alte, aber damals neueste Daten werden nicht willkuerlich
+verworfen. Ihr Alter wird als eigenes Feature gespeichert, sodass die Forschung
+einen Staleness-Schwellenwert nur dann auswaehlt, wenn er stabil hilft. Gruppe F
+konkurriert ausschliesslich beim Entry-Filter; die bestehende D+1-bis-D+3-
+Early-Cut-Policy bleibt unveraendert.
 
 ## Walk-forward und neuer Holdout
 
@@ -172,8 +197,8 @@ nicht die D+1-geankerte sequenzielle Regelauswahl.
 
 Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
 
-- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D-Features,
-  pfadbewusste Labels und finale Entry-Entscheidungen.
+- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D- und
+  F-Features, pfadbewusste Labels und finale Entry-Entscheidungen.
 - `stock_analyser_filter_research_early_cut_results`: genau drei kausale
   Landmark-Zeilen je Signal mit landmark-relativen Outcomes, intrinsischer
   Eligibility und sequenziellem Aktiv-/Hold-/Cut-Status.
@@ -188,7 +213,7 @@ und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Der inkompatible V2.2-Neuaufbau der freigegebenen, reproduzierbaren
+Der inkompatible V2.3-Neuaufbau der freigegebenen, reproduzierbaren
 Research-Tabellen erfolgt einmalig mit:
 
 ```bash
@@ -200,8 +225,10 @@ Der Drop-Schalter ist und bleibt standardmaessig `false`. Ohne expliziten Drop
 bricht das Programm bei bereits vorhandenen Zielzeilen ab.
 
 Die Berechnung nutzt disjunkte, nach Source-Zeilenzahl balancierte
-Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung und
-importiert denselben exportierten PostgreSQL-Snapshot. Nur der Hauptprozess
+Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung,
+laedt Markt- und SEC-Daten nur fuer seine Identitaeten und importiert denselben
+exportierten PostgreSQL-Snapshot. Damit koennen auch parallele Updates der
+Quelltabellen keinen gemischten Research-Stand erzeugen. Nur der Hauptprozess
 schreibt die drei Ergebnistabellen.
 
 ## Tests
