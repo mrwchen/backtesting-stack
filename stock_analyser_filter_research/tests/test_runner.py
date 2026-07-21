@@ -11,6 +11,7 @@ from stock_analyser_filter_research.computation import (
     empty_early_cut_frame,
     empty_signal_frame,
 )
+from stock_analyser_filter_research.contracts import MARKET_METRIC_SOURCE_COLUMNS
 from stock_analyser_filter_research import runner
 
 
@@ -148,9 +149,26 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
         lambda connection, cfg, identities: pd.DataFrame(),
     )
 
+    loaded_keys = []
+
+    def fake_market_metrics(connection, cfg, signal_keys):
+        loaded_keys.extend(signal_keys)
+        return pd.DataFrame(columns=MARKET_METRIC_SOURCE_COLUMNS)
+
+    monkeypatch.setattr(
+        runner.db,
+        "load_market_metrics_for_signals",
+        fake_market_metrics,
+    )
+
     def fake_calculate(source, dates, cfg, **kwargs):
         signal_count = len(source)
         signals = empty_signal_frame().reindex(range(signal_count))
+        identities = source["identity"].tolist()
+        signals["signal_date"] = pd.Timestamp("2020-01-02")
+        signals["symbol"] = [identity[0] for identity in identities]
+        signals["exchange"] = [identity[1] for identity in identities]
+        signals["cik"] = [identity[2] for identity in identities]
         early_cuts = empty_early_cut_frame().reindex(range(3 * signal_count))
         early_cuts["landmark_day"] = [1, 2, 3] * signal_count
         return CalculationBatchResult(signals=signals, early_cut=early_cuts)
@@ -172,6 +190,11 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
 
     assert result.loaded_rows == 3
     assert len(result.signals) == 3
+    assert sorted(loaded_keys) == [
+        (pd.Timestamp("2020-01-02").date(), "A", "NYSE", 1),
+        (pd.Timestamp("2020-01-02").date(), "B", "NYSE", 2),
+        (pd.Timestamp("2020-01-02").date(), "C", "NASDAQ", 3),
+    ]
     assert len(result.early_cuts) == 9
     assert result.early_cuts["landmark_day"].tolist() == [
         1,

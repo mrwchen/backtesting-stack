@@ -52,6 +52,7 @@ class Config:
     source_table: str
     fundamental_snapshot_table: str
     quarterly_fundamental_event_table: str
+    market_metrics_table: str
     signal_result_table: str
     early_cut_result_table: str
     rule_result_table: str
@@ -119,6 +120,13 @@ class Config:
                 os.getenv(
                     "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
                     "stock_core_sec_quarterly_fundamental_events",
+                ),
+            ),
+            market_metrics_table=_table_name(
+                "MARKET_METRICS_TABLE",
+                os.getenv(
+                    "MARKET_METRICS_TABLE",
+                    "stock_core_market_metrics_daily",
                 ),
             ),
             signal_result_table=_table_name(
@@ -308,6 +316,7 @@ class Config:
                 "QUARTERLY_FUNDAMENTAL_EVENT_TABLE",
                 self.quarterly_fundamental_event_table,
             ),
+            ("MARKET_METRICS_TABLE", self.market_metrics_table),
         )
         for name, table in source_tables:
             _table_name(name, table)

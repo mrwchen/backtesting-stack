@@ -17,6 +17,8 @@ from .contracts import (
     FUNDAMENTAL_FEATURE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     IDENTITY_COLUMNS,
+    MARKET_CAP_FEATURE_COLUMNS,
+    MARKET_METRIC_SOURCE_COLUMNS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     SIGNAL_COLUMNS,
     SOURCE_BOOLEAN_COLUMNS,
@@ -370,6 +372,95 @@ def enrich_signal_fundamentals(
             _assign_quarterly_features(
                 output, output_index, signal_date, decision_at, event_rows
             )
+    return output.loc[:, SIGNAL_COLUMNS]
+
+
+def enrich_signal_market_metrics(
+    signals: pd.DataFrame,
+    market_metrics: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach exact signal-close USD market cap without forward-filled rows."""
+
+    output = signals.copy()
+    for column in MARKET_CAP_FEATURE_COLUMNS:
+        output[column] = np.nan
+    if output.empty:
+        return output.loc[:, SIGNAL_COLUMNS]
+
+    source_name = "market metric data"
+    _require_columns(market_metrics, MARKET_METRIC_SOURCE_COLUMNS, source_name)
+    if market_metrics.empty:
+        output["market_cap_usd"] = output["market_cap_usd"].astype("Int64")
+        output["market_cap_shares_staleness_days"] = output[
+            "market_cap_shares_staleness_days"
+        ].astype("Int64")
+        return output.loc[:, SIGNAL_COLUMNS]
+
+    metrics = _normalize_fundamental_identities(
+        market_metrics.loc[:, MARKET_METRIC_SOURCE_COLUMNS], source_name
+    )
+    metrics["period_end_date"] = pd.to_datetime(
+        metrics["period_end_date"], errors="raise"
+    ).dt.normalize()
+    metrics["market_cap_currency"] = _normalize_optional_currency_values(
+        metrics["market_cap_currency"]
+    )
+    _normalize_fundamental_numerics(
+        metrics,
+        ("market_cap", "shares_outstanding_staleness_days"),
+        source_name,
+    )
+    for column in ("market_cap", "shares_outstanding_staleness_days"):
+        values = pd.to_numeric(metrics[column], errors="coerce").dropna()
+        if not values.eq(np.floor(values)).all():
+            raise ValueError(f"market metric data column {column} must be integral")
+    if metrics.duplicated(["period_end_date", *IDENTITY_COLUMNS]).any():
+        raise ValueError("market metric data contains duplicate identity/date rows")
+    negative_staleness = pd.to_numeric(
+        metrics["shares_outstanding_staleness_days"], errors="coerce"
+    ).dropna().lt(0)
+    if negative_staleness.any():
+        raise ValueError("market metric share-count staleness must not be negative")
+
+    lookup = {
+        (
+            pd.Timestamp(row.period_end_date).normalize(),
+            str(row.symbol),
+            str(row.exchange),
+            int(row.cik),
+        ): row
+        for row in metrics.itertuples(index=False)
+    }
+    for output_index, signal in output.iterrows():
+        key = (
+            pd.Timestamp(signal["signal_date"]).normalize(),
+            str(signal["symbol"]),
+            str(signal["exchange"]),
+            int(signal["cik"]),
+        )
+        metric = lookup.get(key)
+        if metric is None:
+            continue
+        currency = metric.market_cap_currency
+        if pd.isna(currency) or str(currency).strip().upper() != "USD":
+            continue
+        market_cap = _finite_scalar(metric.market_cap)
+        staleness = _finite_scalar(metric.shares_outstanding_staleness_days)
+        if not np.isfinite(market_cap) or market_cap <= 0:
+            continue
+        output.at[output_index, "market_cap_usd"] = int(round(market_cap))
+        output.at[output_index, "log_market_cap_usd"] = float(np.log(market_cap))
+        if np.isfinite(staleness) and staleness >= 0:
+            output.at[output_index, "market_cap_shares_staleness_days"] = int(
+                round(staleness)
+            )
+
+    output["market_cap_usd"] = pd.to_numeric(
+        output["market_cap_usd"], errors="coerce"
+    ).astype("Int64")
+    output["market_cap_shares_staleness_days"] = pd.to_numeric(
+        output["market_cap_shares_staleness_days"], errors="coerce"
+    ).astype("Int64")
     return output.loc[:, SIGNAL_COLUMNS]
 
 
@@ -1217,6 +1308,8 @@ def calculate_identity_signals(
     # same point-in-time enrichment code is used for every worker. Direct
     # identity calculations retain the complete result contract with nulls.
     for column in FUNDAMENTAL_FEATURE_COLUMNS:
+        output[column] = np.nan
+    for column in MARKET_CAP_FEATURE_COLUMNS:
         output[column] = np.nan
 
     for column in SIGNAL_COLUMNS:

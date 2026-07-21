@@ -11,9 +11,11 @@ import pandas as pd
 
 from . import db
 from .computation import (
+    CalculationBatchResult,
     calculate_signal_batch,
     empty_early_cut_frame,
     empty_signal_frame,
+    enrich_signal_market_metrics,
 )
 from .config import Config
 from .logging_utils import configure_logging
@@ -90,6 +92,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     loaded_rows = 0
     loaded_fundamental_snapshot_rows = 0
     loaded_quarterly_event_rows = 0
+    loaded_market_metric_rows = 0
     app_suffix = f"worker_{task.worker_number:02d}"
     with db.connect(task.cfg, app_suffix=app_suffix) as connection:
         db.import_snapshot(connection, task.snapshot_id)
@@ -115,6 +118,28 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
                 fundamental_snapshots=fundamental_snapshots,
                 quarterly_fundamental_events=quarterly_fundamental_events,
             )
+            signal_keys = [
+                (
+                    pd.Timestamp(row.signal_date).date(),
+                    str(row.symbol),
+                    str(row.exchange),
+                    int(row.cik),
+                )
+                for row in calculated.signals.itertuples(index=False)
+            ]
+            market_metrics = db.load_market_metrics_for_signals(
+                connection,
+                task.cfg,
+                signal_keys,
+            )
+            loaded_market_metric_rows += len(market_metrics)
+            calculated = CalculationBatchResult(
+                signals=enrich_signal_market_metrics(
+                    calculated.signals,
+                    market_metrics,
+                ),
+                early_cut=calculated.early_cut,
+            )
             if not calculated.signals.empty:
                 frames.append(calculated.signals)
             if not calculated.early_cut.empty:
@@ -122,6 +147,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
             del source
             del fundamental_snapshots
             del quarterly_fundamental_events
+            del market_metrics
             del calculated
             gc.collect()
         # An imported snapshot is read-only. Rollback closes it without an
@@ -136,14 +162,16 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     )
     elapsed = time.monotonic() - started
     log.info(
-        "Worker %d processed %d identities, %d market rows, %d SEC snapshot rows "
-        "and %d SEC quarterly event rows into %d signals and %d early-cut rows "
+        "Worker %d processed %d identities, %d market rows, %d SEC snapshot rows, "
+        "%d SEC quarterly event rows and %d exact signal-day market metric rows "
+        "into %d signals and %d early-cut rows "
         "in %.1f seconds",
         task.worker_number,
         len(task.identities),
         loaded_rows,
         loaded_fundamental_snapshot_rows,
         loaded_quarterly_event_rows,
+        loaded_market_metric_rows,
         len(result),
         len(early_cuts),
         elapsed,

@@ -73,8 +73,9 @@ class ConditionTemplate:
     feature_group: str
     feature_name: str
     operator: str
-    quantile: float
+    quantile: float | None
     minimum_threshold: float | None = None
+    fixed_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,7 @@ class Condition:
     feature_name: str
     operator: str
     threshold: float
-    quantile: float
+    quantile: float | None
     threshold_fit_end_date: date | None = None
 
     @property
@@ -504,7 +505,11 @@ def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
             ),
         ),
     )
-    return chart_patterns + _fundamental_pattern_templates()
+    return (
+        chart_patterns
+        + _fundamental_pattern_templates()
+        + _market_cap_pattern_templates()
+    )
 
 
 def _fundamental_pattern_templates() -> tuple[PatternTemplate, ...]:
@@ -579,6 +584,116 @@ def _fundamental_pattern_templates() -> tuple[PatternTemplate, ...]:
     )
 
 
+def _market_cap_pattern_templates() -> tuple[PatternTemplate, ...]:
+    def clause(
+        rule_id: str,
+        number: int,
+        feature_name: str,
+        operator: str,
+        *,
+        quantile: float | None = None,
+        fixed_threshold: float | None = None,
+    ) -> ConditionTemplate:
+        return ConditionTemplate(
+            f"{rule_id}_C{number}",
+            "M",
+            feature_name,
+            operator,
+            quantile,
+            fixed_threshold=fixed_threshold,
+        )
+
+    large_cap_rule = "ENTRY_M_PATTERN_LARGE_CAP_LOW_ATR_STAGNATION"
+    small_cap_rule = "ENTRY_M_PATTERN_SMALL_CAP_BEARISH_HIGH_VOLUME"
+    confirmation_rule = "ENTRY_M_PATTERN_HIGH_VOLUME_STRONG_CLOSE"
+    return (
+        PatternTemplate(
+            large_cap_rule,
+            "M",
+            "large_cap_low_atr_stagnation",
+            (
+                clause(
+                    large_cap_rule,
+                    1,
+                    "market_cap_usd",
+                    "ge",
+                    fixed_threshold=10_000_000_000.0,
+                ),
+                clause(
+                    large_cap_rule,
+                    2,
+                    "prior_atr_14d_pct",
+                    "le",
+                    quantile=0.30,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            small_cap_rule,
+            "M",
+            "small_cap_bearish_high_volume",
+            (
+                clause(
+                    small_cap_rule,
+                    1,
+                    "market_cap_usd",
+                    "le",
+                    fixed_threshold=3_000_000_000.0,
+                ),
+                clause(
+                    small_cap_rule,
+                    2,
+                    "adjusted_volume_vs_sma21_prior_ratio",
+                    "ge",
+                    quantile=0.70,
+                ),
+                clause(
+                    small_cap_rule,
+                    3,
+                    "daily_price_change_pct",
+                    "le",
+                    fixed_threshold=0.0,
+                ),
+                clause(
+                    small_cap_rule,
+                    4,
+                    "signal_close_location_value",
+                    "le",
+                    fixed_threshold=0.35,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            confirmation_rule,
+            "M",
+            "high_volume_strong_close",
+            (
+                clause(
+                    confirmation_rule,
+                    1,
+                    "adjusted_volume_vs_sma21_prior_ratio",
+                    "ge",
+                    quantile=0.70,
+                ),
+                clause(
+                    confirmation_rule,
+                    2,
+                    "daily_price_change_pct",
+                    "ge",
+                    fixed_threshold=0.0,
+                ),
+                clause(
+                    confirmation_rule,
+                    3,
+                    "signal_close_location_value",
+                    "ge",
+                    fixed_threshold=0.65,
+                ),
+            ),
+        ),
+    )
+
+
 def build_walk_forward_folds(cfg: Config) -> tuple[WalkForwardFold, ...]:
     folds: list[WalkForwardFold] = []
     for year in range(cfg.walk_forward_first_year, cfg.validation_end_date.year + 1):
@@ -601,9 +716,14 @@ def fit_template(
     ).dropna()
     if values.empty:
         return None
-    threshold = float(
-        np.quantile(values.to_numpy(), template.quantile, method="nearest")
-    )
+    if template.fixed_threshold is not None:
+        threshold = float(template.fixed_threshold)
+    elif template.quantile is not None:
+        threshold = float(
+            np.quantile(values.to_numpy(), template.quantile, method="nearest")
+        )
+    else:
+        return None
     if not np.isfinite(threshold):
         return None
     if template.minimum_threshold is not None:
@@ -853,36 +973,49 @@ class _Evaluator:
         if key not in self._fit_cache:
             end = fold.threshold_fit_end_date if fold else self.cfg.validation_end_date
             period_key: int | str = fold.year if fold else "final"
-            threshold_key = (period_key, template.feature_name)
-            if threshold_key not in self._threshold_cache:
-                if template.feature_name not in self._numeric_cache:
-                    self._numeric_cache[template.feature_name] = _finite_numeric(
-                        self.frame, template.feature_name
-                    )
-                values = (
-                    self._numeric_cache[template.feature_name]
-                    .loc[self._dates.le(end)]
-                    .dropna()
+            if template.feature_name not in self._numeric_cache:
+                self._numeric_cache[template.feature_name] = _finite_numeric(
+                    self.frame, template.feature_name
                 )
-                feature_templates = tuple(
-                    item
-                    for item in self.atomic_templates
-                    if item.feature_name == template.feature_name
+            values = (
+                self._numeric_cache[template.feature_name]
+                .loc[self._dates.le(end)]
+                .dropna()
+            )
+            if template.fixed_threshold is not None:
+                threshold = (
+                    float(template.fixed_threshold) if not values.empty else None
                 )
-                quantiles = tuple(sorted({item.quantile for item in feature_templates}))
-                if values.empty or not quantiles:
-                    thresholds: dict[float, float] = {}
-                else:
-                    calculated = np.atleast_1d(
-                        np.quantile(values.to_numpy(), quantiles, method="nearest")
+            else:
+                threshold_key = (period_key, template.feature_name)
+                if threshold_key not in self._threshold_cache:
+                    feature_templates = tuple(
+                        item
+                        for item in self.atomic_templates
+                        if item.feature_name == template.feature_name
+                        and item.quantile is not None
+                        and item.fixed_threshold is None
                     )
-                    thresholds = {
-                        quantile: float(value)
-                        for quantile, value in zip(quantiles, calculated)
-                        if np.isfinite(value)
-                    }
-                self._threshold_cache[threshold_key] = thresholds
-            threshold = self._threshold_cache[threshold_key].get(template.quantile)
+                    quantiles = tuple(
+                        sorted({item.quantile for item in feature_templates})
+                    )
+                    if values.empty or not quantiles:
+                        thresholds: dict[float, float] = {}
+                    else:
+                        calculated = np.atleast_1d(
+                            np.quantile(
+                                values.to_numpy(), quantiles, method="nearest"
+                            )
+                        )
+                        thresholds = {
+                            quantile: float(value)
+                            for quantile, value in zip(quantiles, calculated)
+                            if np.isfinite(value)
+                        }
+                    self._threshold_cache[threshold_key] = thresholds
+                threshold = self._threshold_cache[threshold_key].get(
+                    template.quantile
+                )
             if threshold is not None and template.minimum_threshold is not None:
                 threshold = max(threshold, template.minimum_threshold)
             self._fit_cache[key] = (
@@ -1943,7 +2076,12 @@ def _template_text(templates: tuple[CandidateTemplate, ...]) -> str:
         clause_text = []
         for clause in clauses:
             symbol = "<=" if clause.operator == "le" else ">="
-            threshold_text = f"causal Q{clause.quantile:.4g} threshold"
+            if clause.fixed_threshold is not None:
+                threshold_text = f"fixed {clause.fixed_threshold:.10g} threshold"
+            elif clause.quantile is not None:
+                threshold_text = f"causal Q{clause.quantile:.4g} threshold"
+            else:
+                threshold_text = "unavailable threshold"
             if clause.minimum_threshold is not None:
                 threshold_text = (
                     f"max({threshold_text}, {clause.minimum_threshold:.10g})"

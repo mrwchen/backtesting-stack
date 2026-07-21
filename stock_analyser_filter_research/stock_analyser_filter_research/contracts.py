@@ -90,6 +90,14 @@ QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS = (
     "prior_year_quarterly_net_margin",
 )
 
+MARKET_METRIC_SOURCE_COLUMNS = (
+    "period_end_date",
+    *IDENTITY_COLUMNS,
+    "market_cap",
+    "market_cap_currency",
+    "shares_outstanding_staleness_days",
+)
+
 FUNDAMENTAL_FEATURE_COLUMNS = (
     "fundamental_snapshot_age_days",
     "fundamental_report_age_days",
@@ -111,6 +119,12 @@ FUNDAMENTAL_FEATURE_COLUMNS = (
     "fundamental_quarterly_operating_margin_yoy_change",
     "fundamental_quarterly_net_margin_ratio",
     "fundamental_quarterly_net_margin_yoy_change",
+)
+
+MARKET_CAP_FEATURE_COLUMNS = (
+    "market_cap_usd",
+    "log_market_cap_usd",
+    "market_cap_shares_staleness_days",
 )
 
 SIGNAL_COLUMNS = (
@@ -192,6 +206,7 @@ SIGNAL_COLUMNS = (
     "prior_churning_day_count_20",
     "prior_failed_breakout_count_20",
     *FUNDAMENTAL_FEATURE_COLUMNS,
+    *MARKET_CAP_FEATURE_COLUMNS,
     "forward_5d_max_gain_pct",
     "forward_5d_max_loss_pct",
     "forward_10d_max_gain_pct",
@@ -421,6 +436,12 @@ ENTRY_FEATURE_GROUPS = {
         "prior_failed_breakout_count_20",
     ),
     "F": FUNDAMENTAL_FEATURE_COLUMNS,
+    # Raw market cap is retained for fixed absolute-range interactions. Its log
+    # transform is the non-redundant atomic size feature used for quantiles.
+    "M": (
+        "log_market_cap_usd",
+        "market_cap_shares_staleness_days",
+    ),
 }
 
 EARLY_CUT_FEATURE_GROUPS = {
@@ -489,6 +510,8 @@ SIGNAL_INTEGER_COLUMNS = (
     "prior_distribution_day_count_20",
     "prior_churning_day_count_20",
     "prior_failed_breakout_count_20",
+    "market_cap_usd",
+    "market_cap_shares_staleness_days",
     "first_gain_2pct_day",
     "first_gain_5pct_day",
     "first_loss_5pct_day",

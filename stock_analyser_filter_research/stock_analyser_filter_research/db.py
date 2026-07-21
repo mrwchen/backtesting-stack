@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from numbers import Integral
 from typing import Any, TypeAlias
 from uuid import uuid4
@@ -19,6 +19,7 @@ from .contracts import (
     EARLY_CUT_INTEGER_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
     IDENTITY_COLUMNS,
+    MARKET_METRIC_SOURCE_COLUMNS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     RULE_BOOLEAN_COLUMNS,
     RULE_COLUMNS,
@@ -56,11 +57,18 @@ EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY = (
     "cik",
     "accession_number",
 )
+EXPECTED_MARKET_METRIC_PRIMARY_KEY = (
+    "symbol",
+    "exchange",
+    "cik",
+    "period_end_date",
+)
 EXPECTED_CHUNK_INTERVAL = timedelta(days=365)
 COPY_NULL = r"\N"
 
 StockIdentity: TypeAlias = tuple[str, str, int]
 IdentityWork: TypeAlias = tuple[str, str, int, int]
+StockSignalKey: TypeAlias = tuple[date, str, str, int]
 ColumnContract: TypeAlias = tuple[str, bool, int | None, int | None]
 
 
@@ -238,6 +246,28 @@ def _quarterly_fundamental_event_source_column_contracts(
     return contracts
 
 
+def _market_metric_source_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts, ("symbol", "exchange"), "text", nullable=False
+    )
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(contracts, ("period_end_date",), "date", nullable=False)
+    _add_column_contracts(contracts, ("market_cap",), "int8", nullable=True)
+    _add_column_contracts(
+        contracts, ("market_cap_currency",), "text", nullable=True
+    )
+    _add_column_contracts(
+        contracts,
+        ("shares_outstanding_staleness_days",),
+        "int4",
+        nullable=True,
+    )
+    if set(contracts) != set(MARKET_METRIC_SOURCE_COLUMNS):
+        raise AssertionError("market metric source contract is incomplete")
+    return contracts
+
+
 def _signal_column_contracts() -> dict[str, ColumnContract]:
     contracts: dict[str, ColumnContract] = {}
     _add_column_contracts(
@@ -297,7 +327,13 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         nullable=True,
     )
     _add_column_contracts(
-        contracts, ("sessions_since_previous_pass",), "int4", nullable=True
+        contracts,
+        ("sessions_since_previous_pass", "market_cap_shares_staleness_days"),
+        "int4",
+        nullable=True,
+    )
+    _add_column_contracts(
+        contracts, ("market_cap_usd",), "int8", nullable=True
     )
     _add_column_contracts(
         contracts,
@@ -569,6 +605,7 @@ FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS = (
 QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS = (
     _quarterly_fundamental_event_source_column_contracts()
 )
+MARKET_METRIC_SOURCE_COLUMN_CONTRACTS = _market_metric_source_column_contracts()
 SIGNAL_COLUMN_CONTRACTS = _signal_column_contracts()
 EARLY_CUT_COLUMN_CONTRACTS = _early_cut_column_contracts()
 RULE_COLUMN_CONTRACTS = _rule_column_contracts()
@@ -948,6 +985,12 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_required_columns(
         connection,
+        cfg.market_metrics_table,
+        MARKET_METRIC_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
         cfg.signal_result_table,
         SIGNAL_COLUMNS,
         reject_extra=True,
@@ -976,6 +1019,11 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS,
     )
     _validate_column_definitions(
+        connection,
+        cfg.market_metrics_table,
+        MARKET_METRIC_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
         connection, cfg.signal_result_table, SIGNAL_COLUMN_CONTRACTS
     )
     _validate_column_definitions(
@@ -998,6 +1046,11 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         connection,
         cfg.quarterly_fundamental_event_table,
         EXPECTED_QUARTERLY_FUNDAMENTAL_EVENT_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
+        cfg.market_metrics_table,
+        EXPECTED_MARKET_METRIC_PRIMARY_KEY,
     )
     _validate_primary_key(
         connection,
@@ -1405,6 +1458,122 @@ def load_quarterly_fundamental_event_batch(
         cursor_prefix="safr_fund_event",
         normalize=_normalize_quarterly_fundamental_event_frame,
     )
+
+
+def _normalize_nullable_integer_column(
+    frame: pd.DataFrame, column: str, source_name: str
+) -> None:
+    original = frame[column]
+    numeric = pd.to_numeric(original, errors="coerce")
+    values = numeric.dropna().to_numpy(dtype=float)
+    if (
+        (original.notna() & numeric.isna()).any()
+        or (values.size and not np.isfinite(values).all())
+        or (values.size and not np.equal(values, np.floor(values)).all())
+    ):
+        raise RuntimeError(f"{source_name} column {column} contains invalid integers")
+    try:
+        frame[column] = numeric.astype("Int64")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(f"{source_name} column {column} exceeds int64") from exc
+
+
+def _normalize_market_metric_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    source_name = "market metric source"
+    frame = frame.loc[:, MARKET_METRIC_SOURCE_COLUMNS].copy()
+    _normalize_required_text(frame, ("symbol", "exchange"), source_name)
+    _normalize_cik(frame, source_name)
+    frame["period_end_date"] = pd.to_datetime(
+        frame["period_end_date"], errors="raise"
+    ).dt.normalize()
+    _normalize_optional_currency(frame, "market_cap_currency")
+    _normalize_nullable_integer_column(frame, "market_cap", source_name)
+    _normalize_nullable_integer_column(
+        frame, "shares_outstanding_staleness_days", source_name
+    )
+    return frame.loc[:, MARKET_METRIC_SOURCE_COLUMNS]
+
+
+def _validate_signal_keys(
+    signal_keys: Sequence[StockSignalKey],
+) -> tuple[list[date], list[str], list[str], list[int]]:
+    normalized: list[StockSignalKey] = []
+    for key in signal_keys:
+        if len(key) != 4:
+            raise ValueError(
+                "each signal key must contain signal_date, symbol, exchange, cik"
+            )
+        signal_date, symbol, exchange, cik = key
+        if pd.isna(signal_date):
+            raise ValueError("signal key date must be a valid date")
+        try:
+            normalized_date = pd.Timestamp(signal_date).date()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("signal key date must be a valid date") from exc
+        if not isinstance(symbol, str) or not symbol or "\x00" in symbol:
+            raise ValueError("signal key symbol must be a non-empty string")
+        if not isinstance(exchange, str) or not exchange or "\x00" in exchange:
+            raise ValueError("signal key exchange must be a non-empty string")
+        if not isinstance(cik, Integral) or isinstance(cik, bool):
+            raise ValueError("signal key cik must be an integer")
+        normalized.append((normalized_date, symbol, exchange, int(cik)))
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("signal key batch contains duplicates")
+    return (
+        [item[0] for item in normalized],
+        [item[1] for item in normalized],
+        [item[2] for item in normalized],
+        [item[3] for item in normalized],
+    )
+
+
+def load_market_metrics_for_signals(
+    connection: extensions.connection,
+    cfg: Config,
+    signal_keys: Sequence[StockSignalKey],
+) -> pd.DataFrame:
+    """Load only exact signal-day market metrics from the shared DB snapshot."""
+
+    if not signal_keys:
+        return pd.DataFrame(columns=MARKET_METRIC_SOURCE_COLUMNS)
+    dates, symbols, exchanges, ciks = _validate_signal_keys(signal_keys)
+    selected_columns = sql.SQL(", ").join(
+        sql.SQL("source.{}").format(sql.Identifier(column))
+        for column in MARKET_METRIC_SOURCE_COLUMNS
+    )
+    statement = sql.SQL(
+        "SELECT {} FROM {} AS source "
+        "JOIN unnest(%s::date[], %s::text[], %s::text[], %s::bigint[]) "
+        "AS selected(period_end_date, symbol, exchange, cik) "
+        "ON source.period_end_date = selected.period_end_date "
+        "AND source.symbol = selected.symbol "
+        "AND source.exchange = selected.exchange "
+        "AND source.cik = selected.cik "
+        "ORDER BY source.symbol, source.exchange, source.cik, "
+        "source.period_end_date"
+    ).format(selected_columns, _qualified_identifier(cfg.market_metrics_table))
+    parameters: list[Any] = [dates, symbols, exchanges, ciks]
+    frames: list[pd.DataFrame] = []
+    cursor_name = f"safr_market_metric_{uuid4().hex[:20]}"
+    with connection.cursor(name=cursor_name) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(statement, parameters)
+        while True:
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            if not rows:
+                break
+            raw = pd.DataFrame.from_records(
+                rows, columns=MARKET_METRIC_SOURCE_COLUMNS
+            )
+            frames.append(_normalize_market_metric_frame(raw))
+    if not frames:
+        return pd.DataFrame(columns=MARKET_METRIC_SOURCE_COLUMNS)
+    result = pd.concat(frames, ignore_index=True).loc[
+        :, MARKET_METRIC_SOURCE_COLUMNS
+    ]
+    if result.duplicated(["period_end_date", *IDENTITY_COLUMNS]).any():
+        raise RuntimeError("market metric source returned duplicate signal keys")
+    return result
 
 
 def _normalize_boolean_value(value: Any, column: str) -> Any:

@@ -1,4 +1,4 @@
-# Stock Analyser Filter Research V2.3 / Phase D
+# Stock Analyser Filter Research V2.4 / Phase D.1
 
 Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
 Ereignisse des 8-von-8-Trend-Templates aus
@@ -37,7 +37,7 @@ Intraday-Reihenfolge mit Tagesdaten unbekannt. Solche Faelle werden als
 Reihenfolgeziele zugeordnet. `deep_loss_5d`, `strong_5d` und `bad_5d` bleiben
 als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 
-## Feature-Gruppen A-D und F
+## Feature-Gruppen A-D, F und M
 
 - **A – Zustand am Signaltag:** Volume/21d, Volume/50d, Notional/21d,
   Notional/50d, Liquiditaet, RS, Triggerkontext, Trendgeometrie und Position zu
@@ -54,16 +54,33 @@ als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 - **F – SEC-Fundamentaldaten:** Alter des verfuegbaren Snapshots und Berichts,
   TTM-Margen, Verschuldung, Liquiditaet, Accruals, SBC/Revenue sowie
   waehrungsneutrale Quartalsveraenderungen von Umsatz, EPS und Margen.
+- **M – point-in-time Unternehmensgroesse:** logarithmische Market Cap in USD
+  und Alter des zur Market-Cap-Berechnung verwendeten Aktienstands.
 
-A, B, C, D und F sind bei der Entry-Auswahl gleichberechtigt. Es gibt keine
-irreversible Reihenfolge A -> B -> C -> D -> F. Neben einfachen
+A, B, C, D, F und M sind bei der Entry-Auswahl gleichberechtigt. Es gibt keine
+irreversible Reihenfolge A -> B -> C -> D -> F -> M. Neben einfachen
 Quantilbedingungen konkurrieren sechs vorab festgelegte Chartmuster:
 `flat_base`, `ordered_uptrend`,
 `pullback_from_high`, `v_recovery`, `volume_dry_up_breakout` und
 `distribution_top` sowie vier feste Fundamental-Muster:
 `earnings_deterioration`, `margin_compression`, `balance_sheet_stress` und
-`cashflow_weakness`. Die Teilbedingungen innerhalb eines solchen Musters werden
-zwingend mit `AND` verbunden. Maximal zwei vollstaendige Kandidaten
+`cashflow_weakness` sowie genau drei vorab festgelegte Market-/Volumen-
+Interaktionen:
+
+- `large_cap_low_atr_stagnation`: Market Cap mindestens 10 Mrd. USD und ATR
+  im unteren 30-%-Quantil,
+- `small_cap_bearish_high_volume`: Market Cap hoechstens 3 Mrd. USD, Volume/21D
+  im oberen 30-%-Quantil, negativer Signaltag und Close Location hoechstens
+  0,35,
+- `high_volume_strong_close`: Volume/21D im oberen 30-%-Quantil, nicht
+  negativer Signaltag und Close Location mindestens 0,65.
+
+Die Teilbedingungen innerhalb eines solchen Musters werden zwingend mit `AND`
+verbunden. Die absoluten Market-Cap- und Kerzen-Schwellen sind vorab fest und
+werden nicht aus Ergebnislabels optimiert; Quantilschwellen werden weiterhin
+kausal gefittet. Das Strong-Close-Muster macht in den Kandidatenmetriken
+sichtbar, ob diese Bestaetigung Gewinner schuetzt; es ist kein ungepruefter
+Include-Override. Maximal zwei vollstaendige Kandidaten
 werden pro Ziel mit `OR` verbunden; es gibt keine freie kombinatorische Suche
 nach beliebigen AND-Mustern. Weak- und Loss-First-
 Spezialregeln muessen nur ihr eigenes Ziel stabil anreichern. Eine valide
@@ -96,6 +113,19 @@ Finanzkennzahlen NULL. Alte, aber damals neueste Daten werden nicht willkuerlich
 verworfen. Ihr Alter wird als eigenes Feature gespeichert, sodass die Forschung
 einen Staleness-Schwellenwert nur dann auswaehlt, wenn er stabil hilft. Gruppe F
 konkurriert ausschliesslich beim Entry-Filter; die bestehende D+1-bis-D+3-
+Early-Cut-Policy bleibt unveraendert.
+
+Gruppe M liest `stock_core_market_metrics_daily` nur fuer die tatsaechlich
+erzeugten Signal-Keys. Verwendet wird ausschliesslich eine Zeile mit exakt
+gleichem `period_end_date`, `symbol`, `exchange` und `cik`; ein Forward-Fill
+oder Rueckgriff auf einen spaeteren Handelstag findet nicht statt. Die Quelle
+berechnet Market Cap aus dem damaligen Raw Close und dem an diesem Tag
+wirksamen, veroeffentlichten Aktienstand. Nur positive USD-Werte sind zwischen
+Aktien vergleichbar und werden uebernommen. Fehlende oder anders denominierte
+Werte bleiben NULL. `market_cap_usd` wird fuer die festen absoluten Ranges
+gespeichert, `log_market_cap_usd` nimmt an der normalen Quantilsuche teil und
+`market_cap_shares_staleness_days` macht veraltete Aktienstaende explizit
+testbar. Gruppe M ist ebenfalls ausschliesslich ein Entry-Merkmal; die
 Early-Cut-Policy bleibt unveraendert.
 
 ## Walk-forward und neuer Holdout
@@ -197,8 +227,8 @@ nicht die D+1-geankerte sequenzielle Regelauswahl.
 
 Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
 
-- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D- und
-  F-Features, pfadbewusste Labels und finale Entry-Entscheidungen.
+- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D-, F- und
+  M-Features, pfadbewusste Labels und finale Entry-Entscheidungen.
 - `stock_analyser_filter_research_early_cut_results`: genau drei kausale
   Landmark-Zeilen je Signal mit landmark-relativen Outcomes, intrinsischer
   Eligibility und sequenziellem Aktiv-/Hold-/Cut-Status.
@@ -213,7 +243,7 @@ und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Der inkompatible V2.3-Neuaufbau der freigegebenen, reproduzierbaren
+Der inkompatible V2.4-Neuaufbau der freigegebenen, reproduzierbaren
 Research-Tabellen erfolgt einmalig mit:
 
 ```bash
@@ -226,10 +256,11 @@ bricht das Programm bei bereits vorhandenen Zielzeilen ab.
 
 Die Berechnung nutzt disjunkte, nach Source-Zeilenzahl balancierte
 Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung,
-laedt Markt- und SEC-Daten nur fuer seine Identitaeten und importiert denselben
-exportierten PostgreSQL-Snapshot. Damit koennen auch parallele Updates der
-Quelltabellen keinen gemischten Research-Stand erzeugen. Nur der Hauptprozess
-schreibt die drei Ergebnistabellen.
+laedt Kurs-/SEC-Daten nur fuer seine Identitaeten und Market-Metric-Zeilen nur
+fuer seine exakten Signal-Keys. Jeder Prozess importiert denselben exportierten
+PostgreSQL-Snapshot. Damit koennen auch parallele Updates der Quelltabellen
+keinen gemischten Research-Stand erzeugen. Nur der Hauptprozess schreibt die
+drei Ergebnistabellen.
 
 ## Tests
 

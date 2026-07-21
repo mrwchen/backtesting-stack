@@ -11,6 +11,7 @@ from stock_analyser_filter_research import db
 from stock_analyser_filter_research.contracts import (
     EARLY_CUT_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
+    MARKET_METRIC_SOURCE_COLUMNS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     RULE_COLUMNS,
     SIGNAL_BOOLEAN_COLUMNS,
@@ -203,6 +204,15 @@ def test_database_column_contracts_cover_every_written_column(
     assert set(db.QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS) == set(
         QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS
     )
+    assert set(db.MARKET_METRIC_SOURCE_COLUMN_CONTRACTS) == set(
+        MARKET_METRIC_SOURCE_COLUMNS
+    )
+    assert db.MARKET_METRIC_SOURCE_COLUMN_CONTRACTS["market_cap"] == (
+        "int8",
+        True,
+        None,
+        None,
+    )
     assert db.FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS[
         "sec_operating_margin_ttm"
     ] == ("numeric", True, 18, 6)
@@ -386,6 +396,55 @@ def test_fundamental_loaders_are_identity_bounded_and_normalized(cfg_factory) ->
     assert "unnest" in event_statement
     assert event_parameters == [["ABC"], ["NYSE"], [123]]
     assert event_connection.cursor_names[0].startswith("safr_fund_event_")
+
+
+def test_market_metric_loader_is_exact_signal_key_bounded_and_normalized(
+    cfg_factory,
+) -> None:
+    cfg = cfg_factory()
+    signal_key = (date(2026, 7, 15), "ABC", "NYSE", 123)
+    values = {
+        "period_end_date": signal_key[0],
+        "symbol": signal_key[1],
+        "exchange": signal_key[2],
+        "cik": signal_key[3],
+        "market_cap": 12_345_678_901,
+        "market_cap_currency": "usd",
+        "shares_outstanding_staleness_days": 17,
+    }
+    connection = _StreamingConnection(
+        [tuple(values[column] for column in MARKET_METRIC_SOURCE_COLUMNS)]
+    )
+
+    metrics = db.load_market_metrics_for_signals(connection, cfg, [signal_key])
+
+    assert metrics.loc[0, "market_cap"] == 12_345_678_901
+    assert metrics.loc[0, "market_cap_currency"] == "USD"
+    assert metrics.loc[0, "shares_outstanding_staleness_days"] == 17
+    statement, parameters = connection.executed[0]
+    assert cfg.market_metrics_table in statement
+    assert "unnest" in statement
+    assert "source.period_end_date = selected.period_end_date" in statement
+    assert parameters == [
+        [date(2026, 7, 15)],
+        ["ABC"],
+        ["NYSE"],
+        [123],
+    ]
+    assert connection.cursor_names[0].startswith("safr_market_metric_")
+
+
+def test_market_metric_loader_rejects_duplicate_or_invalid_signal_keys(
+    cfg_factory,
+) -> None:
+    cfg = cfg_factory()
+    key = (date(2026, 7, 15), "ABC", "NYSE", 123)
+    with pytest.raises(ValueError, match="duplicates"):
+        db.load_market_metrics_for_signals(object(), cfg, [key, key])
+    with pytest.raises(ValueError, match="valid date"):
+        db.load_market_metrics_for_signals(
+            object(), cfg, [(pd.NaT, "ABC", "NYSE", 123)]
+        )
 
 
 def test_empty_rebuild_guard_checks_all_three_targets(cfg_factory, monkeypatch) -> None:

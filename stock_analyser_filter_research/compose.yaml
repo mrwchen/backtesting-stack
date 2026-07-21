@@ -42,6 +42,7 @@ services:
       SOURCE_TABLE: "stock_analyser_trend_template_daily"
       FUNDAMENTAL_SNAPSHOT_TABLE: "stock_core_sec_fundamentals_asof_daily"
       QUARTERLY_FUNDAMENTAL_EVENT_TABLE: "stock_core_sec_quarterly_fundamental_events"
+      MARKET_METRICS_TABLE: "stock_core_market_metrics_daily"
       SIGNAL_RESULT_TABLE: "stock_analyser_filter_research_signal_results"
       EARLY_CUT_RESULT_TABLE: "stock_analyser_filter_research_early_cut_results"
       RULE_RESULT_TABLE: "stock_analyser_filter_research_rule_results"

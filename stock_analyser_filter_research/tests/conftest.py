@@ -26,6 +26,7 @@ def cfg_factory():
             "quarterly_fundamental_event_table": (
                 "stock_core_sec_quarterly_fundamental_events"
             ),
+            "market_metrics_table": "stock_core_market_metrics_daily",
             "signal_result_table": ("stock_analyser_filter_research_signal_results"),
             "early_cut_result_table": (
                 "stock_analyser_filter_research_early_cut_results"

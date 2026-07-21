@@ -24,6 +24,7 @@ from stock_analyser_filter_research.research import (
     _choose_sequential_early_prefixes,
     _sequential_policy_metrics,
     _sequential_policy_state,
+    _template_text,
     apply_early_decisions,
     build_candidate_templates,
     build_walk_forward_folds,
@@ -221,6 +222,9 @@ def test_quantile_count_controls_template_grid() -> None:
         "margin_compression",
         "balance_sheet_stress",
         "cashflow_weakness",
+        "large_cap_low_atr_stagnation",
+        "small_cap_bearish_high_volume",
+        "high_volume_strong_close",
     }
     assert all(
         isinstance(item, ConditionTemplate)
@@ -285,6 +289,104 @@ def test_structural_minimum_prevents_zero_count_distribution_clause(
     assert condition is not None
     assert condition.threshold == 1.0
     assert not condition.matches(frame).any()
+
+
+def test_market_cap_patterns_use_only_the_three_predefined_and_interactions() -> None:
+    patterns = [
+        item
+        for item in build_candidate_templates("entry_filter")
+        if isinstance(item, PatternTemplate) and item.feature_group == "M"
+    ]
+
+    assert [item.pattern_name for item in patterns] == [
+        "high_volume_strong_close",
+        "large_cap_low_atr_stagnation",
+        "small_cap_bearish_high_volume",
+    ]
+    clauses = {
+        pattern.pattern_name: {
+            clause.feature_name: clause for clause in pattern.clauses
+        }
+        for pattern in patterns
+    }
+    assert clauses["large_cap_low_atr_stagnation"][
+        "market_cap_usd"
+    ].fixed_threshold == 10_000_000_000.0
+    assert clauses["small_cap_bearish_high_volume"][
+        "market_cap_usd"
+    ].fixed_threshold == 3_000_000_000.0
+    assert clauses["small_cap_bearish_high_volume"][
+        "adjusted_volume_vs_sma21_prior_ratio"
+    ].quantile == 0.70
+    assert clauses["high_volume_strong_close"][
+        "signal_close_location_value"
+    ].fixed_threshold == 0.65
+    assert all(len(pattern.clauses) >= 2 for pattern in patterns)
+
+
+def test_fixed_threshold_is_not_refit_and_is_identified_in_rule_text() -> None:
+    frame = _signals()
+    frame["fixed_feature"] = np.arange(len(frame), dtype=float)
+    template = ConditionTemplate(
+        "FIXED_RULE",
+        "M",
+        "fixed_feature",
+        "ge",
+        None,
+        fixed_threshold=10_000_000_000.0,
+    )
+
+    first = fit_template(frame, template, "signal_date", date(2020, 12, 31))
+    second = fit_template(frame, template, "signal_date", date(2024, 12, 31))
+
+    assert first is not None
+    assert second is not None
+    assert first.threshold == second.threshold == 10_000_000_000.0
+    assert first.quantile is None
+    assert "fixed 1e+10 threshold" in _template_text((template,))
+
+
+def test_evaluator_compiles_fixed_and_quantile_clauses_together(
+    cfg_factory,
+) -> None:
+    frame = _signals()
+    frame["fixed_feature"] = 20.0
+    frame["quantile_feature"] = np.tile(np.arange(100), 11)
+    template = PatternTemplate(
+        "ENTRY_M_PATTERN_TEST",
+        "M",
+        "fixed_quantile_test",
+        (
+            ConditionTemplate(
+                "ENTRY_M_PATTERN_TEST_C1",
+                "M",
+                "fixed_feature",
+                "ge",
+                None,
+                fixed_threshold=10.0,
+            ),
+            ConditionTemplate(
+                "ENTRY_M_PATTERN_TEST_C2",
+                "M",
+                "quantile_feature",
+                "le",
+                0.30,
+            ),
+        ),
+    )
+
+    candidate = _Evaluator(
+        frame,
+        ENTRY_SPECS[0],
+        (template,),
+        _cfg(cfg_factory),
+    ).evaluate((template,))
+
+    compiled = candidate.final_conditions[0]
+    assert isinstance(compiled, CompositeCondition)
+    assert compiled.clauses[0].threshold == 10.0
+    assert compiled.clauses[0].quantile is None
+    assert compiled.clauses[1].quantile == 0.30
 
 
 def test_a_b_c_templates_compete_globally_and_future_diagnostic_is_frozen(

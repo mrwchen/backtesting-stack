@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     fundamental_quarterly_net_margin_ratio       NUMERIC(20,8),
     fundamental_quarterly_net_margin_yoy_change  NUMERIC(20,8),
 
+    market_cap_usd                              BIGINT,
+    log_market_cap_usd                          NUMERIC(20,8),
+    market_cap_shares_staleness_days            INTEGER,
+
     forward_5d_max_gain_pct                      NUMERIC(20,8),
     forward_5d_max_loss_pct                      NUMERIC(20,8),
     forward_10d_max_gain_pct                     NUMERIC(20,8),
@@ -187,6 +191,13 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (fundamental_report_age_days IS NULL OR fundamental_report_age_days >= 0),
     CHECK (fundamental_quarter_filing_age_days IS NULL OR fundamental_quarter_filing_age_days >= 0),
     CHECK (fundamental_quarter_age_days IS NULL OR fundamental_quarter_age_days >= 0),
+    CHECK (market_cap_usd IS NULL OR market_cap_usd > 0),
+    CHECK (log_market_cap_usd IS NULL OR log_market_cap_usd >= 0),
+    CHECK ((market_cap_usd IS NULL) = (log_market_cap_usd IS NULL)),
+    CHECK (
+        market_cap_shares_staleness_days IS NULL
+        OR market_cap_shares_staleness_days >= 0
+    ),
     CHECK (
         fundamental_quarterly_eps_yoy_change_ratio IS NULL
         OR fundamental_quarterly_eps_yoy_change_ratio BETWEEN -1 AND 1
@@ -529,7 +540,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
          )
          AND protected_outcome = 'strong_first_to_day5')
     ),
-    CHECK (feature_group IN ('none', 'A', 'B', 'C', 'D', 'E', 'F', 'multiple')),
+    CHECK (feature_group IN ('none', 'A', 'B', 'C', 'D', 'E', 'F', 'M', 'multiple')),
     CHECK (operator IS NULL OR operator IN ('le', 'ge')),
     CHECK (quantile_value IS NULL OR quantile_value BETWEEN 0 AND 1),
     CHECK (

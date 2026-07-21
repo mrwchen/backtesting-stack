@@ -134,6 +134,7 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
         "MIN_HOLDOUT_SAMPLE_COUNT": "321",
         "WORKER_IDENTITY_BATCH_SIZE": "11",
         "DB_COPY_BATCH_SIZE": "1234",
+        "MARKET_METRICS_TABLE": "research.stock_core_market_metrics_daily",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -156,6 +157,7 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
     assert cfg.min_holdout_sample_count == 321
     assert cfg.worker_identity_batch_size == 11
     assert cfg.db_copy_batch_size == 1234
+    assert cfg.market_metrics_table == values["MARKET_METRICS_TABLE"]
 
 
 def test_v2_from_env_rejects_invalid_holdout_date(monkeypatch) -> None:
