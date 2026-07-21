@@ -182,6 +182,32 @@ def test_objective_metrics_have_exact_target_specific_denominators() -> None:
     assert metrics["protected_retention_rate"] == 0.0
 
 
+def test_objective_metrics_allow_overlapping_objective_and_protected_labels() -> None:
+    frame = pd.DataFrame(
+        {
+            "target": [True, True, False],
+            "protected": [True, False, True],
+        }
+    )
+    metrics = objective_metrics(
+        frame,
+        pd.Series([True, True, True]),
+        "target",
+        "protected",
+    )
+    assert metrics["sample_count"] == 3
+    assert metrics["objective_count"] == 2
+    assert metrics["protected_count"] == 2
+    assert metrics["matched_labeled_count"] == 3
+    assert metrics["matched_objective_count"] == 2
+    assert metrics["matched_protected_count"] == 2
+    assert metrics["objective_count"] + metrics["protected_count"] > metrics["sample_count"]
+    assert (
+        metrics["matched_objective_count"] + metrics["matched_protected_count"]
+        > metrics["matched_labeled_count"]
+    )
+
+
 def test_fold_threshold_uses_only_rows_before_fold_year(cfg_factory) -> None:
     cfg = _cfg(cfg_factory)
     signals = _signals()

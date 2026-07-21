@@ -141,13 +141,13 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
         "include_final = (include_stagnation_filter AND include_loss_filter)"
         in sql_text
     )
-    assert "objective_count + protected_count <= sample_count" in sql_text
+    assert "objective_count + protected_count <= sample_count" not in sql_text
     assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N'" in sql_text
     assert "'R', 'S', 'T', 'multiple'" in sql_text
     assert "'entry_filter', 'entry_confirmation', 'early_cut'" in sql_text
     assert (
         "matched_objective_count + matched_protected_count <= matched_labeled_count"
-        in sql_text
+        not in sql_text
     )
     assert (
         "active_at_landmark AND include_final AND cut_decision = 'hold'" in sql_text

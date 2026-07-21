@@ -795,8 +795,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     CHECK (matched_protected_count BETWEEN 0 AND protected_count),
     CHECK (matched_objective_count <= matched_labeled_count),
     CHECK (matched_protected_count <= matched_labeled_count),
-    CHECK (objective_count + protected_count <= sample_count),
-    CHECK (matched_objective_count + matched_protected_count <= matched_labeled_count),
+    -- Objective and protected outcomes are independent labels and may overlap.
     CHECK (eligible_fold_count >= 0),
     CHECK (positive_lift_fold_count BETWEEN 0 AND eligible_fold_count),
     CHECK (label_coverage_rate IS NULL OR label_coverage_rate BETWEEN 0 AND 1),
