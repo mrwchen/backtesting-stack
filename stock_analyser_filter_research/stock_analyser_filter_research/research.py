@@ -14,9 +14,13 @@ from .contracts import (
     EARLY_CUT_FEATURE_GROUPS,
     EARLY_CUT_LANDMARK_DAYS,
     ENTRY_FEATURE_GROUPS,
+    IDENTITY_COLUMNS,
     RULE_COLUMNS,
     SIGNAL_COLUMNS,
 )
+
+
+POLICY_KEY_COLUMNS = ("signal_date", *IDENTITY_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,11 @@ def early_specs(landmark_day: int) -> tuple[ObjectiveSpec, ...]:
             "early_cut", "loss_first_to_day5", "strong_first_to_day5", landmark_day
         ),
     )
+
+
+SEQUENTIAL_EARLY_SPEC = ObjectiveSpec(
+    "early_cut", "bad_to_day5", "strong_first_to_day5", 1
+)
 
 
 @dataclass(frozen=True)
@@ -471,6 +480,14 @@ def _safety_gates(metrics: Mapping[str, object], cfg: Config) -> bool:
     )
 
 
+def _selection_score(metrics: Mapping[str, object]) -> float | None:
+    capture = metrics.get("objective_capture_rate")
+    protected_rejection = metrics.get("protected_rejection_rate")
+    if capture is None or protected_rejection is None:
+        return None
+    return float(capture) - float(protected_rejection)
+
+
 def _stability(
     folds: Iterable[FoldResult], cfg: Config
 ) -> tuple[bool, dict[str, object]]:
@@ -518,6 +535,32 @@ def _stability(
         "max_fold_match_rate": max(match_rates) if match_rates else None,
     }
     return passes, stats
+
+
+def _fold_safety_gates(folds: Iterable[FoldResult], cfg: Config) -> bool:
+    """Apply only target-neutral match and protected-outcome fold gates."""
+    eligible = [
+        item.metrics
+        for item in folds
+        if int(item.metrics["sample_count"]) >= cfg.min_fold_sample_count
+    ]
+    retentions = [
+        float(item["protected_retention_rate"])
+        for item in eligible
+        if item["protected_retention_rate"] is not None
+    ]
+    match_rates = [
+        float(item["match_rate"])
+        for item in eligible
+        if item["match_rate"] is not None
+    ]
+    return bool(
+        len(eligible) >= cfg.min_walk_forward_folds
+        and len(retentions) == len(eligible)
+        and min(retentions) >= cfg.min_fold_protected_retention_pct
+        and len(match_rates) == len(eligible)
+        and max(match_rates) <= cfg.max_fold_match_pct
+    )
 
 
 def _prepared_metrics(
@@ -681,7 +724,7 @@ class _Evaluator:
             passes_development,
             stability_pass,
             stability,
-            pooled["objective_capture_rate"],
+            _selection_score(pooled),
         )
         self._eval_cache[key] = result
         return result
@@ -695,6 +738,7 @@ def _rank(candidate: CandidateEvaluation) -> tuple[object, ...]:
         return float("inf") if value is None else -float(value)
 
     return (
+        desc(candidate.selection_score),
         desc(metrics["objective_capture_rate"]),
         desc(stability["positive_lift_fold_fraction"]),
         desc(stability["median_fold_objective_lift"]),
@@ -750,14 +794,15 @@ def select_objective(
             pair = evaluator.evaluate(
                 (first_eval.templates[0], second_eval.templates[0])
             )
-            base_capture = float(
-                first_eval.pooled_metrics["objective_capture_rate"] or 0.0
-            )
-            pair_capture = float(pair.pooled_metrics["objective_capture_rate"] or 0.0)
+            base_score = first_eval.selection_score
+            pair_score = pair.selection_score
             if (
                 pair.passes_development_gates
                 and pair.passes_stability_gates
-                and pair_capture >= base_capture + cfg.min_selection_capture_improvement
+                and base_score is not None
+                and pair_score is not None
+                and pair_score
+                >= base_score + cfg.min_selection_score_improvement
             ):
                 pairs.append(pair)
     eligible = [*eligible_singles, *pairs]
@@ -775,6 +820,8 @@ def _choose_prefixes(
     frame: pd.DataFrame,
     selections: Mapping[str, ObjectiveSelection],
     cfg: Config,
+    *,
+    require_cross_objective_lift: bool = True,
 ) -> dict[str, int]:
     objectives = tuple(selections)
     best_rank: tuple[object, ...] | None = None
@@ -833,7 +880,11 @@ def _choose_prefixes(
                         reference_folds, fold_metrics[objective]
                     )
                 )
-                stable &= _stability(union_folds, cfg)[0]
+                stable &= (
+                    _stability(union_folds, cfg)[0]
+                    if require_cross_objective_lift
+                    else _fold_safety_gates(union_folds, cfg)
+                )
             safe = pooled_safe and stable
         if not safe:
             continue
@@ -858,6 +909,537 @@ def _choose_prefixes(
         if best_rank is None or rank < best_rank:
             best_rank = rank
             best = dict(zip(objectives, lengths))
+    return best
+
+
+def _gate_refit_prefixes(
+    frame: pd.DataFrame,
+    selections: Mapping[str, ObjectiveSelection],
+    prefix_lengths: Mapping[str, int],
+    cfg: Config,
+) -> dict[str, int]:
+    """Keep only prefixes whose final, fixed thresholds still pass all gates.
+
+    Walk-forward selection uses thresholds fitted before each fold.  The final
+    conditions are subsequently refitted through ``validation_end_date`` and
+    can therefore have materially different match and protected-rejection
+    rates.  Only the development and validation scopes may veto that refit;
+    diagnostic and holdout data are deliberately not inspected here.
+    """
+    objectives = tuple(selections)
+    if not objectives:
+        return {}
+    capped = {
+        objective: min(
+            max(int(prefix_lengths.get(objective, 0)), 0),
+            len(selections[objective].prefixes) - 1,
+        )
+        for objective in objectives
+    }
+    combinations = list(
+        __import__("itertools").product(
+            *(range(capped[objective] + 1) for objective in objectives)
+        )
+    )
+    combinations.sort(
+        key=lambda lengths: (
+            -sum(
+                len(selections[objective].prefixes[length].templates)
+                for objective, length in zip(objectives, lengths)
+            ),
+            tuple(-length for length in lengths),
+        )
+    )
+    scopes = (
+        (cfg.signal_start_date, cfg.validation_end_date),
+        (cfg.discovery_end_date + timedelta(days=1), cfg.validation_end_date),
+    )
+    for lengths in combinations:
+        chosen = {
+            objective: selections[objective].prefixes[length]
+            for objective, length in zip(objectives, lengths)
+        }
+        valid = True
+        for objective, candidate in chosen.items():
+            if not candidate.templates:
+                continue
+            if len(candidate.final_conditions) != len(candidate.templates):
+                valid = False
+                break
+            spec = selections[objective].spec
+            for start, end in scopes:
+                _, metrics = _scope_metrics(
+                    frame,
+                    spec,
+                    candidate.final_conditions,
+                    start,
+                    end,
+                    cfg.validation_end_date,
+                )
+                if not _development_gates(metrics, cfg):
+                    valid = False
+                    break
+            if not valid:
+                break
+        if not valid:
+            continue
+        union_conditions = _unique_conditions(
+            condition
+            for candidate in chosen.values()
+            for condition in candidate.final_conditions
+        )
+        if union_conditions:
+            for objective in objectives:
+                spec = selections[objective].spec
+                for start, end in scopes:
+                    _, metrics = _scope_metrics(
+                        frame,
+                        spec,
+                        union_conditions,
+                        start,
+                        end,
+                        cfg.validation_end_date,
+                    )
+                    if not _safety_gates(metrics, cfg):
+                        valid = False
+                        break
+                if not valid:
+                    break
+        if valid:
+            return dict(zip(objectives, lengths))
+    return {objective: 0 for objective in objectives}
+
+
+def _policy_keys(frame: pd.DataFrame) -> pd.Series:
+    return pd.Series(
+        list(frame.loc[:, POLICY_KEY_COLUMNS].itertuples(index=False, name=None)),
+        index=frame.index,
+        dtype="object",
+    )
+
+
+def _policy_period_mask(
+    frame: pd.DataFrame, start: date | None, end: date | None
+) -> pd.Series:
+    dates = pd.to_datetime(frame["landmark_date"], errors="coerce").dt.date
+    mask = dates.notna()
+    if start is not None:
+        mask &= dates.ge(start)
+    if end is not None:
+        mask &= dates.le(end)
+    return mask
+
+
+def _sequential_policy_state(
+    frame: pd.DataFrame,
+    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    complete_only: bool = False,
+) -> tuple[
+    pd.DataFrame,
+    pd.Series,
+    dict[int, pd.Series],
+    dict[int, pd.Series],
+    dict[tuple[object, ...], int],
+]:
+    """Evaluate one D+1 -> D+2 -> D+3 policy from a D+1 anchor cohort.
+
+    ``eligible_at_landmark`` remains the intrinsic chart/path eligibility.
+    Active state is rebuilt for every candidate and every fold, so final-policy
+    state persisted in the result table can never leak into selection.
+    """
+    day_values = pd.to_numeric(frame["landmark_day"], errors="coerce")
+    period = _policy_period_mask(frame, start, end)
+    anchor_mask = day_values.eq(1) & _truthy(frame["eligible_at_landmark"]) & period
+    if complete_only:
+        horizon_end = pd.to_datetime(frame["horizon_end_date"], errors="coerce").dt.date
+        anchor_mask &= _truthy(frame["full_outcome_available"])
+        if end is not None:
+            anchor_mask &= horizon_end.notna() & horizon_end.le(end)
+    anchor = frame.loc[anchor_mask].copy()
+    anchor_keys = _policy_keys(anchor)
+    active_keys = set(anchor_keys.tolist())
+    cut_day_by_key: dict[tuple[object, ...], int] = {}
+    active_masks = {
+        day: pd.Series(False, index=frame.index, dtype=bool)
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    cut_masks = {
+        day: pd.Series(False, index=frame.index, dtype=bool)
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    for day in EARLY_CUT_LANDMARK_DAYS:
+        row_mask = (
+            day_values.eq(day)
+            & _truthy(frame["eligible_at_landmark"])
+            & period
+        )
+        local = frame.loc[row_mask]
+        if local.empty or not active_keys:
+            continue
+        local_keys = _policy_keys(local)
+        active = local_keys.isin(active_keys)
+        active_masks[day].loc[local.index] = active.to_numpy()
+        matched = _combined_mask(
+            local, conditions_by_day.get(day, ())
+        ) & active
+        cut_masks[day].loc[local.index] = matched.to_numpy()
+        if matched.any():
+            for key in local_keys.loc[matched].tolist():
+                cut_day_by_key[key] = day
+                active_keys.discard(key)
+    anchor_matched = anchor_keys.isin(cut_day_by_key)
+    return anchor, anchor_matched, active_masks, cut_masks, cut_day_by_key
+
+
+def _local_objective_keys_by_day(
+    frame: pd.DataFrame, objectives: Iterable[str]
+) -> dict[str, dict[int, set[object]]]:
+    """Return intrinsic, landmark-local positive labels keyed by signal."""
+    objective_names = tuple(objectives)
+    result = {
+        objective: {day: set() for day in EARLY_CUT_LANDMARK_DAYS}
+        for objective in objective_names
+    }
+    day_values = pd.to_numeric(frame["landmark_day"], errors="coerce")
+    eligible = _truthy(frame["eligible_at_landmark"])
+    for day in EARLY_CUT_LANDMARK_DAYS:
+        local = frame.loc[day_values.eq(day) & eligible]
+        if local.empty:
+            continue
+        keys = _policy_keys(local)
+        for objective in objective_names:
+            result[objective][day] = set(
+                keys.loc[_truthy(local[objective])].tolist()
+            )
+    return result
+
+
+def _anchored_actual_metrics_from_sets(
+    *,
+    population_count: int,
+    anchor_keys: set[object],
+    labeled_keys: set[object],
+    objective_keys: set[object],
+    protected_keys: set[object],
+    cut_day_by_key: Mapping[object, int],
+    local_objective_keys_by_day: Mapping[int, set[object]],
+) -> dict[str, object]:
+    """Score one cut per D+1 anchor against its actual cut-landmark label.
+
+    Population, labels and objective/protected denominators remain fixed at
+    D+1.  A cut receives objective credit only when that same objective is
+    still true at the first cut landmark.  Any cut of a D+1 protected signal
+    remains a protected rejection, irrespective of its later local label.
+    """
+    matched_keys = set(cut_day_by_key) & anchor_keys
+    matched_labeled = matched_keys & labeled_keys
+    matched_objective = {
+        key
+        for key in matched_labeled & objective_keys
+        if key in local_objective_keys_by_day.get(cut_day_by_key[key], set())
+    }
+    matched_protected = matched_labeled & protected_keys
+    return _metrics_from_counts(
+        {
+            "population_count": population_count,
+            "sample_count": len(labeled_keys),
+            "unlabeled_count": population_count - len(labeled_keys),
+            "matched_count": len(matched_keys),
+            "matched_labeled_count": len(matched_labeled),
+            "matched_unlabeled_count": len(matched_keys - labeled_keys),
+            "objective_count": len(objective_keys),
+            "protected_count": len(protected_keys),
+            "matched_objective_count": len(matched_objective),
+            "matched_protected_count": len(matched_protected),
+        }
+    )
+
+
+def _sequential_policy_metrics(
+    frame: pd.DataFrame,
+    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+    *,
+    start: date | None,
+    end: date | None,
+    available_through: date,
+    complete_only: bool,
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    anchor, _, _, _, cut_day_by_key = _sequential_policy_state(
+        frame,
+        conditions_by_day,
+        start=start,
+        end=end,
+        complete_only=complete_only,
+    )
+    specs = {
+        spec.objective: spec
+        for spec in (*early_specs(1), SEQUENTIAL_EARLY_SPEC)
+    }
+    anchor_key_series = _policy_keys(anchor)
+    anchor_keys = set(anchor_key_series.tolist())
+    local_keys = _local_objective_keys_by_day(frame, specs)
+    metrics: dict[str, dict[str, object]] = {}
+    for objective, spec in specs.items():
+        available = _available(anchor, spec, available_through)
+        labeled = (
+            anchor[objective].notna()
+            & anchor[spec.protected_outcome].notna()
+            & available
+        )
+        objective_values = labeled & _truthy(anchor[objective])
+        protected_values = labeled & _truthy(anchor[spec.protected_outcome])
+        metrics[objective] = _anchored_actual_metrics_from_sets(
+            population_count=len(anchor),
+            anchor_keys=anchor_keys,
+            labeled_keys=set(anchor_key_series.loc[labeled].tolist()),
+            objective_keys=set(anchor_key_series.loc[objective_values].tolist()),
+            protected_keys=set(anchor_key_series.loc[protected_values].tolist()),
+            cut_day_by_key=cut_day_by_key,
+            local_objective_keys_by_day=local_keys[objective],
+        )
+    bad_metrics = metrics.pop(SEQUENTIAL_EARLY_SPEC.objective)
+    return metrics, bad_metrics
+
+
+def _early_conditions_by_day(
+    selections: Mapping[int, Mapping[str, ObjectiveSelection]],
+    prefix_lengths: Mapping[int, Mapping[str, int]],
+    *,
+    fold_index: int | None = None,
+) -> dict[int, tuple[Condition, ...]]:
+    result: dict[int, tuple[Condition, ...]] = {}
+    for day in EARLY_CUT_LANDMARK_DAYS:
+        conditions: list[Condition] = []
+        for objective, selection in selections[day].items():
+            prefix = selection.prefixes[prefix_lengths[day][objective]]
+            selected_conditions = (
+                prefix.final_conditions
+                if fold_index is None
+                else prefix.fold_results[fold_index].conditions
+            )
+            conditions.extend(selected_conditions)
+        result[day] = _unique_conditions(conditions)
+    return result
+
+
+def _choose_sequential_early_prefixes(
+    frame: pd.DataFrame,
+    selections: Mapping[int, Mapping[str, ObjectiveSelection]],
+    maximum_lengths: Mapping[int, Mapping[str, int]],
+    cfg: Config,
+) -> dict[int, dict[str, int]]:
+    """Choose one cumulative early policy under pooled, fold and refit gates."""
+    slots = tuple(
+        (day, objective)
+        for day in EARLY_CUT_LANDMARK_DAYS
+        for objective in selections[day]
+    )
+    ranges = tuple(
+        range(int(maximum_lengths[day][objective]) + 1)
+        for day, objective in slots
+    )
+    folds = build_walk_forward_folds(cfg)
+    policy_specs = (*early_specs(1), SEQUENTIAL_EARLY_SPEC)
+    local_objective_keys = _local_objective_keys_by_day(
+        frame, (spec.objective for spec in policy_specs)
+    )
+
+    def build_context(
+        start: date,
+        end: date,
+        available_through: date,
+        fold_index: int | None,
+    ) -> dict[str, object]:
+        anchor, _, _, _, _ = _sequential_policy_state(
+            frame,
+            {day: () for day in EARLY_CUT_LANDMARK_DAYS},
+            start=start,
+            end=end,
+            complete_only=True,
+        )
+        keys = _policy_keys(anchor)
+        if keys.duplicated().any():
+            raise RuntimeError("sequential policy anchor contains duplicate signals")
+        key_sets: dict[str, tuple[set[object], set[object], set[object]]] = {}
+        for spec in policy_specs:
+            available = _available(anchor, spec, available_through)
+            labeled = (
+                anchor[spec.objective].notna()
+                & anchor[spec.protected_outcome].notna()
+                & available
+            )
+            objective = labeled & _truthy(anchor[spec.objective])
+            protected = labeled & _truthy(anchor[spec.protected_outcome])
+            key_sets[spec.objective] = (
+                set(keys.loc[labeled].tolist()),
+                set(keys.loc[objective].tolist()),
+                set(keys.loc[protected].tolist()),
+            )
+        matches: dict[tuple[int, str, int], set[object]] = {}
+        for day, objective in slots:
+            maximum = int(maximum_lengths[day][objective])
+            matches[(day, objective, 0)] = set()
+            for length in range(1, maximum + 1):
+                prefix = selections[day][objective].prefixes[length]
+                conditions = (
+                    prefix.final_conditions
+                    if fold_index is None
+                    else prefix.fold_results[fold_index].conditions
+                )
+                day_conditions = {
+                    item: (() if item != day else conditions)
+                    for item in EARLY_CUT_LANDMARK_DAYS
+                }
+                _, _, _, _, cut_days = _sequential_policy_state(
+                    frame,
+                    day_conditions,
+                    start=start,
+                    end=end,
+                    complete_only=True,
+                )
+                matches[(day, objective, length)] = set(cut_days)
+        return {
+            "population_count": len(anchor),
+            "anchor_keys": set(keys.tolist()),
+            "key_sets": key_sets,
+            "matches": matches,
+        }
+
+    def context_metrics(
+        context: Mapping[str, object],
+        objective: str,
+        cut_day_by_key: Mapping[object, int],
+    ) -> dict[str, object]:
+        labeled_keys, objective_keys, protected_keys = context["key_sets"][
+            objective
+        ]
+        return _anchored_actual_metrics_from_sets(
+            population_count=int(context["population_count"]),
+            anchor_keys=context["anchor_keys"],
+            labeled_keys=labeled_keys,
+            objective_keys=objective_keys,
+            protected_keys=protected_keys,
+            cut_day_by_key=cut_day_by_key,
+            local_objective_keys_by_day=local_objective_keys[objective],
+        )
+
+    def context_cut_days(
+        context: Mapping[str, object], values: tuple[int, ...]
+    ) -> dict[object, int]:
+        """Resolve the first selected cut day without rescanning the frame."""
+        result: dict[object, int] = {}
+        for day in EARLY_CUT_LANDMARK_DAYS:
+            matches: set[object] = set()
+            for (slot_day, objective), value in zip(slots, values):
+                if slot_day == day:
+                    matches.update(context["matches"][(day, objective, value)])
+            for key in matches:
+                result.setdefault(key, day)
+        return result
+
+    fold_contexts = [
+        build_context(
+            fold.start_date,
+            fold.end_date,
+            fold.end_date,
+            fold_index,
+        )
+        for fold_index, fold in enumerate(folds)
+    ]
+    fixed_contexts = [
+        build_context(start, end, cfg.validation_end_date, None)
+        for start, end in (
+            (cfg.signal_start_date, cfg.validation_end_date),
+            (cfg.discovery_end_date + timedelta(days=1), cfg.validation_end_date),
+        )
+    ]
+    best_rank: tuple[object, ...] | None = None
+    best = {
+        day: {objective: 0 for objective in selections[day]}
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    for values in __import__("itertools").product(*ranges):
+        lengths = {
+            day: {objective: 0 for objective in selections[day]}
+            for day in EARLY_CUT_LANDMARK_DAYS
+        }
+        for (day, objective), value in zip(slots, values):
+            lengths[day][objective] = value
+        total_conditions = sum(
+            len(selections[day][objective].prefixes[value].templates)
+            for (day, objective), value in zip(slots, values)
+        )
+        objective_folds: dict[str, list[FoldResult]] = {
+            spec.objective: [] for spec in early_specs(1)
+        }
+        bad_folds: list[FoldResult] = []
+        for fold, context in zip(folds, fold_contexts):
+            cut_day_by_key = context_cut_days(context, values)
+            for objective in objective_folds:
+                metrics = context_metrics(context, objective, cut_day_by_key)
+                objective_folds[objective].append(
+                    FoldResult(fold, (), metrics)
+                )
+            bad_folds.append(
+                FoldResult(
+                    fold,
+                    (),
+                    context_metrics(
+                        context,
+                        SEQUENTIAL_EARLY_SPEC.objective,
+                        cut_day_by_key,
+                    ),
+                )
+            )
+        pooled_by_objective = {
+            objective: _aggregate_metrics(item.metrics for item in results)
+            for objective, results in objective_folds.items()
+        }
+        pooled_bad = _aggregate_metrics(item.metrics for item in bad_folds)
+        valid = total_conditions == 0
+        if total_conditions:
+            valid = (
+                _development_gates(pooled_bad, cfg)
+                and _stability(bad_folds, cfg)[0]
+                and _fold_safety_gates(bad_folds, cfg)
+            )
+            for context in fixed_contexts:
+                cut_day_by_key = context_cut_days(context, values)
+                fixed_bad = context_metrics(
+                    context,
+                    SEQUENTIAL_EARLY_SPEC.objective,
+                    cut_day_by_key,
+                )
+                valid &= _development_gates(fixed_bad, cfg)
+                if not valid:
+                    break
+        if not valid:
+            continue
+        score = _selection_score(pooled_bad) or 0.0
+        captures = [
+            float(metrics["objective_capture_rate"] or 0.0)
+            for metrics in pooled_by_objective.values()
+        ]
+        retention = float(pooled_bad["protected_retention_rate"] or 0.0)
+        match_rate = float(pooled_bad["match_rate"] or 0.0)
+        complexity_adjusted_score = score - (
+            total_conditions * cfg.min_selection_score_improvement
+        )
+        rank = (
+            -complexity_adjusted_score,
+            -score,
+            -float(np.mean(captures)),
+            -retention,
+            match_rate,
+            total_conditions,
+            tuple(values),
+        )
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best = lengths
     return best
 
 
@@ -930,16 +1512,44 @@ def apply_early_decisions(
     result["loss_matched_rule_ids"] = pd.NA
     result["matched_rule_ids"] = pd.NA
     result["cut_reason"] = pd.NA
+    result["active_at_landmark"] = False
+    result["prior_policy_cut_day"] = pd.NA
     prior_state = result["cut_decision"].astype("string")
     preserved = prior_state.isin(("not_eligible", "not_evaluable"))
     result["cut_decision"] = prior_state.where(preserved, "not_evaluable")
     eligible = _truthy(result["eligible_at_landmark"])
     result.loc[eligible, "cut_decision"] = "hold"
-    result.loc[eligible, "include_stagnation_filter"] = True
-    result.loc[eligible, "include_loss_filter"] = True
-    result.loc[eligible, "include_final"] = True
+    conditions_by_day = _early_conditions_by_day(
+        selected.early_cut, selected.early_cut_prefix_lengths
+    )
+    _, _, active_masks, policy_cut_masks, cut_day_by_key = (
+        _sequential_policy_state(result, conditions_by_day)
+    )
     for day, objective_selections in selected.early_cut.items():
-        rows = pd.to_numeric(result["landmark_day"], errors="coerce").eq(day) & eligible
+        day_rows = pd.to_numeric(result["landmark_day"], errors="coerce").eq(day)
+        day_indices = result.index[day_rows]
+        if len(day_indices):
+            day_keys = _policy_keys(result.loc[day_indices])
+            prior_days = [
+                (
+                    cut_day_by_key.get(key)
+                    if cut_day_by_key.get(key, day) < day
+                    else pd.NA
+                )
+                for key in day_keys
+            ]
+            result.loc[day_indices, "prior_policy_cut_day"] = prior_days
+            prior_cut = pd.Series(
+                [not pd.isna(value) for value in prior_days],
+                index=day_indices,
+                dtype=bool,
+            )
+            result.loc[prior_cut.index[prior_cut], "cut_decision"] = "not_active"
+        rows = day_rows & active_masks[day]
+        result.loc[rows, "active_at_landmark"] = True
+        result.loc[rows, "include_stagnation_filter"] = True
+        result.loc[rows, "include_loss_filter"] = True
+        result.loc[rows, "include_final"] = True
         local = result.loc[rows]
         if local.empty:
             continue
@@ -953,6 +1563,9 @@ def apply_early_decisions(
             local, loss.selected.final_conditions[: lengths["loss_first_to_day5"]]
         )
         cut = stagnant_mask | loss_mask
+        expected_cut = policy_cut_masks[day].loc[local.index]
+        if not cut.equals(expected_cut):
+            raise AssertionError("sequential early-cut union mask is inconsistent")
         result.loc[rows, "include_stagnation_filter"] = (~stagnant_mask).to_numpy()
         result.loc[rows, "include_loss_filter"] = (~loss_mask).to_numpy()
         result.loc[rows, "include_final"] = (~cut).to_numpy()
@@ -978,11 +1591,53 @@ def apply_early_decisions(
         result.loc[cut_indices, "cut_decision"] = "cut"
         result.loc[rows, "cut_reason"] = reasons
         result.loc[local.index[~cut], "cut_reason"] = pd.NA
+    expected_active = eligible & result["prior_policy_cut_day"].isna()
+    if not _truthy(result["active_at_landmark"]).equals(expected_active):
+        raise AssertionError("sequential early-cut active state is inconsistent")
+    cuts = result.loc[
+        result["cut_decision"].astype("string").eq("cut"),
+        [*POLICY_KEY_COLUMNS, "landmark_day"],
+    ]
+    cut_lookup = {
+        (*key, int(day))
+        for *key, day in cuts.itertuples(index=False, name=None)
+    }
+    prior_rows = result.loc[result["prior_policy_cut_day"].notna()]
+    for row in prior_rows.loc[
+        :, [*POLICY_KEY_COLUMNS, "prior_policy_cut_day"]
+    ].itertuples(index=False, name=None):
+        *key, prior_day = row
+        if (*key, int(prior_day)) not in cut_lookup:
+            raise AssertionError(
+                "prior_policy_cut_day does not reference an earlier policy cut"
+            )
     return result.loc[:, EARLY_CUT_COLUMNS]
 
 
 def _rule_text(conditions: tuple[Condition, ...]) -> str:
     return " OR ".join(item.text for item in conditions) or "no exclusion condition"
+
+
+def _sequential_rule_text(
+    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+) -> str:
+    parts = [
+        f"D+{day}: " + " OR ".join(condition.text for condition in conditions)
+        for day, conditions in sorted(conditions_by_day.items())
+        if conditions
+    ]
+    return "; then ".join(parts) or "no sequential cut condition"
+
+
+def _sequential_template_text(
+    templates_by_day: Mapping[int, tuple[ConditionTemplate, ...]],
+) -> str:
+    parts = [
+        f"D+{day}: {_template_text(templates)}"
+        for day, templates in sorted(templates_by_day.items())
+        if templates
+    ]
+    return "; then ".join(parts) or "no sequential cut condition"
 
 
 def _feature_fields(
@@ -1057,6 +1712,7 @@ def _rule_row(
     selection_order: int | None = None,
     threshold_fit_end_date: date | None = None,
     templates: tuple[ConditionTemplate, ...] = (),
+    rule_text_override: str | None = None,
 ) -> dict[str, object]:
     feature_group, feature_name, operator, quantile, threshold = (
         _feature_fields(conditions) if conditions else _template_fields(templates)
@@ -1074,9 +1730,8 @@ def _rule_row(
         "operator": operator,
         "quantile_value": quantile,
         "threshold_value": threshold,
-        "rule_text": (
-            _rule_text(conditions) if conditions else _template_text(templates)
-        ),
+        "rule_text": rule_text_override
+        or (_rule_text(conditions) if conditions else _template_text(templates)),
         "selection_order": selection_order,
         "evaluation_scope": evaluation_scope,
         "scope_year": scope_year,
@@ -1099,7 +1754,7 @@ def _rule_row(
             "min_fold_protected_retention_rate"
         ),
         "max_fold_match_rate": stats.get("max_fold_match_rate"),
-        "selection_score": metrics.get("objective_capture_rate"),
+        "selection_score": _selection_score(metrics),
     }
     return row
 
@@ -1151,6 +1806,8 @@ def _append_final_union_rows(
     prefix_lengths: Mapping[str, int],
     trading_dates: pd.DatetimeIndex,
     cfg: Config,
+    *,
+    mark_final: bool = True,
 ) -> None:
     objectives = tuple(selections)
     if not objectives:
@@ -1171,7 +1828,7 @@ def _append_final_union_rows(
     base_id = (
         "ENTRY_FILTER_FINAL"
         if first.decision_family == "entry_filter"
-        else f"EARLY_CUT_D{first.landmark_day}_FINAL"
+        else f"EARLY_CUT_D{first.landmark_day}_POLICY_COMPONENT"
     )
     holdout_dates = trading_dates[trading_dates.date > cfg.holdout_cutoff_date]
     holdout_start = holdout_dates[0].date() if len(holdout_dates) else None
@@ -1215,14 +1872,19 @@ def _append_final_union_rows(
                     period_end=fold.end_date,
                     metrics=metrics,
                     is_selected=True,
-                    is_final_filter=True,
+                    is_final_filter=mark_final,
                     threshold_fit_end_date=(
                         fold.threshold_fit_end_date if conditions else None
                     ),
                 )
             )
         pooled = _aggregate_metrics(item.metrics for item in union_fold_results)
-        stability_pass, stability = _stability(union_fold_results, cfg)
+        objective_stability_pass, stability = _stability(union_fold_results, cfg)
+        stability_pass = (
+            objective_stability_pass
+            if first.decision_family != "entry_filter"
+            else _fold_safety_gates(union_fold_results, cfg)
+        )
         rows.append(
             _rule_row(
                 rule_id=base_id,
@@ -1236,7 +1898,7 @@ def _append_final_union_rows(
                 period_end=cfg.validation_end_date,
                 metrics=pooled,
                 is_selected=True,
-                is_final_filter=True,
+                is_final_filter=mark_final,
                 passes_development_gates=_safety_gates(pooled, cfg),
                 passes_stability_gates=stability_pass,
                 stability=stability,
@@ -1326,7 +1988,7 @@ def _append_final_union_rows(
                     period_end=period_end,
                     metrics=metrics,
                     is_selected=True,
-                    is_final_filter=True,
+                    is_final_filter=mark_final,
                     passes_holdout=holdout_pass,
                     passes_development_gates=(
                         _safety_gates(metrics, cfg) if scope == "development" else None
@@ -1354,6 +2016,280 @@ def _append_final_union_rows(
                         scope_year=None,
                         period_start=period_start,
                         period_end=period_end,
+                        metrics=_baseline_metrics(metrics),
+                        is_selected=False,
+                        is_final_filter=False,
+                    )
+                )
+
+
+def _append_sequential_policy_rows(
+    rows: list[dict[str, object]],
+    source: pd.DataFrame,
+    selections: Mapping[int, Mapping[str, ObjectiveSelection]],
+    prefix_lengths: Mapping[int, Mapping[str, int]],
+    trading_dates: pd.DatetimeIndex,
+    cfg: Config,
+) -> None:
+    base_id = "EARLY_CUT_D1_D3_SEQUENTIAL_D1_ANCHOR_FINAL"
+    specs = (SEQUENTIAL_EARLY_SPEC, *early_specs(1))
+    fold_results: dict[str, list[FoldResult]] = {
+        spec.objective: [] for spec in specs
+    }
+    folds = build_walk_forward_folds(cfg)
+    for fold_index, fold in enumerate(folds):
+        conditions_by_day = _early_conditions_by_day(
+            selections, prefix_lengths, fold_index=fold_index
+        )
+        target_metrics, bad_metrics = _sequential_policy_metrics(
+            source,
+            conditions_by_day,
+            start=fold.start_date,
+            end=fold.end_date,
+            available_through=fold.end_date,
+            complete_only=True,
+        )
+        metrics_by_objective = {
+            **target_metrics,
+            SEQUENTIAL_EARLY_SPEC.objective: bad_metrics,
+        }
+        conditions = _unique_conditions(
+            condition
+            for day_conditions in conditions_by_day.values()
+            for condition in day_conditions
+        )
+        policy_text = _sequential_rule_text(conditions_by_day)
+        for spec in specs:
+            metrics = metrics_by_objective[spec.objective]
+            fold_results[spec.objective].append(
+                FoldResult(fold, conditions, metrics)
+            )
+            rows.append(
+                _rule_row(
+                    rule_id=base_id,
+                    result_kind="selected_filter",
+                    spec=spec,
+                    conditions=conditions,
+                    evaluation_scope="walk_forward_year",
+                    scope_year=fold.year,
+                    period_start=fold.start_date,
+                    period_end=fold.end_date,
+                    metrics=metrics,
+                    is_selected=True,
+                    is_final_filter=True,
+                    threshold_fit_end_date=(
+                        fold.threshold_fit_end_date if conditions else None
+                    ),
+                    rule_text_override=policy_text,
+                )
+            )
+    target_stability_pass, policy_stability = _stability(
+        fold_results[SEQUENTIAL_EARLY_SPEC.objective], cfg
+    )
+    policy_stability_pass = target_stability_pass and _fold_safety_gates(
+        fold_results[SEQUENTIAL_EARLY_SPEC.objective], cfg
+    )
+    final_conditions_by_day = _early_conditions_by_day(
+        selections, prefix_lengths
+    )
+    final_conditions = _unique_conditions(
+        condition
+        for day_conditions in final_conditions_by_day.values()
+        for condition in day_conditions
+    )
+    final_policy_text = _sequential_rule_text(final_conditions_by_day)
+    final_templates_by_day = {
+        day: _unique_templates(
+            template
+            for objective, selection in selections[day].items()
+            for template in selection.prefixes[
+                prefix_lengths[day][objective]
+            ].templates
+        )
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    final_templates = _unique_templates(
+        template
+        for day_templates in final_templates_by_day.values()
+        for template in day_templates
+    )
+    final_policy_template_text = _sequential_template_text(
+        final_templates_by_day
+    )
+    for spec in specs:
+        pooled = _aggregate_metrics(
+            item.metrics for item in fold_results[spec.objective]
+        )
+        _, objective_stability = _stability(
+            fold_results[spec.objective], cfg
+        )
+        rows.append(
+            _rule_row(
+                rule_id=base_id,
+                result_kind="selected_filter",
+                spec=spec,
+                conditions=(),
+                templates=final_templates,
+                evaluation_scope="walk_forward_pooled",
+                scope_year=None,
+                period_start=date(cfg.walk_forward_first_year, 1, 1),
+                period_end=cfg.validation_end_date,
+                metrics=pooled,
+                is_selected=True,
+                is_final_filter=True,
+                passes_development_gates=(
+                    _development_gates(pooled, cfg)
+                    if spec == SEQUENTIAL_EARLY_SPEC
+                    else _safety_gates(pooled, cfg)
+                ),
+                passes_stability_gates=policy_stability_pass,
+                stability=(
+                    policy_stability
+                    if spec == SEQUENTIAL_EARLY_SPEC
+                    else objective_stability
+                ),
+                rule_text_override=final_policy_template_text,
+            )
+        )
+        rows.append(
+            _rule_row(
+                rule_id=f"BASELINE_{base_id}_{spec.objective.upper()}",
+                result_kind="baseline",
+                spec=spec,
+                conditions=(),
+                evaluation_scope="walk_forward_pooled",
+                scope_year=None,
+                period_start=date(cfg.walk_forward_first_year, 1, 1),
+                period_end=cfg.validation_end_date,
+                metrics=_baseline_metrics(pooled),
+                is_selected=False,
+                is_final_filter=False,
+            )
+        )
+    holdout_dates = trading_dates[trading_dates.date > cfg.holdout_cutoff_date]
+    holdout_start = holdout_dates[0].date() if len(holdout_dates) else None
+    as_of = trading_dates[-1].date() if len(trading_dates) else cfg.holdout_cutoff_date
+    scopes = (
+        (
+            "development",
+            cfg.signal_start_date,
+            cfg.validation_end_date,
+            cfg.validation_end_date,
+        ),
+        (
+            "validation",
+            cfg.discovery_end_date + timedelta(days=1),
+            cfg.validation_end_date,
+            cfg.validation_end_date,
+        ),
+        (
+            "diagnostic",
+            cfg.validation_end_date + timedelta(days=1),
+            cfg.holdout_cutoff_date,
+            cfg.holdout_cutoff_date,
+        ),
+        ("holdout", holdout_start, None, as_of),
+        ("all_signals", cfg.signal_start_date, None, as_of),
+    )
+    for scope, start, end, available_through in scopes:
+        if scope == "holdout" and holdout_start is None:
+            metrics_by_objective = {
+                spec.objective: objective_metrics(
+                    source.iloc[0:0],
+                    pd.Series(dtype=bool),
+                    spec.objective,
+                    spec.protected_outcome,
+                )
+                for spec in specs
+            }
+        else:
+            target_metrics, bad_metrics = _sequential_policy_metrics(
+                source,
+                final_conditions_by_day,
+                start=start,
+                end=end,
+                available_through=available_through,
+                complete_only=False,
+            )
+            metrics_by_objective = {
+                **target_metrics,
+                SEQUENTIAL_EARLY_SPEC.objective: bad_metrics,
+            }
+        for spec in specs:
+            metrics = metrics_by_objective[spec.objective]
+            holdout_pass = None
+            if (
+                scope == "holdout"
+                and int(metrics["sample_count"]) >= cfg.min_holdout_sample_count
+            ):
+                holdout_pass = (
+                    _development_gates(metrics, cfg)
+                    if spec == SEQUENTIAL_EARLY_SPEC
+                    else _safety_gates(metrics, cfg)
+                )
+            rows.append(
+                _rule_row(
+                    rule_id=base_id,
+                    result_kind="selected_filter",
+                    spec=spec,
+                    conditions=final_conditions,
+                    evaluation_scope=scope,
+                    scope_year=None,
+                    period_start=(
+                        None if scope == "holdout" and holdout_start is None else start
+                    ),
+                    period_end=(
+                        None
+                        if scope == "holdout" and holdout_start is None
+                        else (end if end is not None else as_of)
+                    ),
+                    metrics=metrics,
+                    is_selected=True,
+                    is_final_filter=True,
+                    passes_holdout=holdout_pass,
+                    passes_development_gates=(
+                        (
+                            _development_gates(metrics, cfg)
+                            if spec == SEQUENTIAL_EARLY_SPEC
+                            else _safety_gates(metrics, cfg)
+                        )
+                        if scope == "development"
+                        else None
+                    ),
+                    passes_stability_gates=(
+                        policy_stability_pass if scope == "development" else None
+                    ),
+                    stability=(
+                        policy_stability if scope == "development" else None
+                    ),
+                    threshold_fit_end_date=(
+                        cfg.validation_end_date
+                        if final_conditions
+                        and not (scope == "holdout" and holdout_start is None)
+                        else None
+                    ),
+                    rule_text_override=final_policy_text,
+                )
+            )
+            if scope in {"development", "diagnostic", "holdout"}:
+                rows.append(
+                    _rule_row(
+                        rule_id=f"BASELINE_{base_id}_{spec.objective.upper()}",
+                        result_kind="baseline",
+                        spec=spec,
+                        conditions=(),
+                        evaluation_scope=scope,
+                        scope_year=None,
+                        period_start=(
+                            None
+                            if scope == "holdout" and holdout_start is None
+                            else start
+                        ),
+                        period_end=(
+                            None
+                            if scope == "holdout" and holdout_start is None
+                            else (end if end is not None else as_of)
+                        ),
                         metrics=_baseline_metrics(metrics),
                         is_selected=False,
                         is_final_filter=False,
@@ -1603,7 +2539,16 @@ def build_rule_results(
             selected.early_cut_prefix_lengths[day],
             trading_dates,
             cfg,
+            mark_final=False,
         )
+    _append_sequential_policy_rows(
+        rows,
+        early_cuts,
+        selected.early_cut,
+        selected.early_cut_prefix_lengths,
+        trading_dates,
+        cfg,
+    )
     result = pd.DataFrame(rows)
     if result.empty:
         return pd.DataFrame(columns=RULE_COLUMNS)
@@ -1662,7 +2607,13 @@ def run_research(
         for spec in ENTRY_SPECS
     }
     entry_frame = _period_frame(signals, ENTRY_SPECS[0], None, cfg.validation_end_date)
-    entry_lengths = _choose_prefixes(entry_frame, entry, cfg)
+    entry_lengths = _choose_prefixes(
+        entry_frame,
+        entry,
+        cfg,
+        require_cross_objective_lift=False,
+    )
+    entry_lengths = _gate_refit_prefixes(signals, entry, entry_lengths, cfg)
     early: dict[int, dict[str, ObjectiveSelection]] = {}
     early_lengths: dict[int, dict[str, int]] = {}
     for day in EARLY_CUT_LANDMARK_DAYS:
@@ -1680,7 +2631,18 @@ def run_research(
             None,
             cfg.validation_end_date,
         )
-        early_lengths[day] = _choose_prefixes(day_frame, selections, cfg)
+        early_lengths[day] = _choose_prefixes(
+            day_frame,
+            selections,
+            cfg,
+            require_cross_objective_lift=False,
+        )
+        early_lengths[day] = _gate_refit_prefixes(
+            early_cuts, selections, early_lengths[day], cfg
+        )
+    early_lengths = _choose_sequential_early_prefixes(
+        early_cuts, early, early_lengths, cfg
+    )
     summary = SelectedSummary(entry, early, entry_lengths, early_lengths)
     decided_signals = apply_entry_decisions(signals, summary)
     decided_early = apply_early_decisions(early_cuts, summary)

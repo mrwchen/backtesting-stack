@@ -81,7 +81,7 @@ class Config:
     min_protected_retention_pct: float
     min_matched_label_coverage_pct: float
     min_objective_lift: float
-    min_selection_capture_improvement: float
+    min_selection_score_improvement: float
     min_holdout_sample_count: int
 
     max_workers: int
@@ -145,18 +145,18 @@ class Config:
             min_fold_sample_count=_env_int("MIN_FOLD_SAMPLE_COUNT", 200),
             min_fold_objective_count=_env_int("MIN_FOLD_OBJECTIVE_COUNT", 20),
             min_fold_protected_retention_pct=_env_float(
-                "MIN_FOLD_PROTECTED_RETENTION_PCT", 0.85
+                "MIN_FOLD_PROTECTED_RETENTION_PCT", 0.90
             ),
             max_fold_match_pct=_env_float("MAX_FOLD_MATCH_PCT", 0.40),
             min_candidate_match_pct=_env_float("MIN_CANDIDATE_MATCH_PCT", 0.01),
             max_candidate_match_pct=_env_float("MAX_CANDIDATE_MATCH_PCT", 0.35),
-            min_protected_retention_pct=_env_float("MIN_PROTECTED_RETENTION_PCT", 0.90),
+            min_protected_retention_pct=_env_float("MIN_PROTECTED_RETENTION_PCT", 0.92),
             min_matched_label_coverage_pct=_env_float(
                 "MIN_MATCHED_LABEL_COVERAGE_PCT", 0.90
             ),
             min_objective_lift=_env_float("MIN_OBJECTIVE_LIFT", 1.05),
-            min_selection_capture_improvement=_env_float(
-                "MIN_SELECTION_CAPTURE_IMPROVEMENT", 0.01
+            min_selection_score_improvement=_env_float(
+                "MIN_SELECTION_SCORE_IMPROVEMENT", 0.01
             ),
             min_holdout_sample_count=_env_int("MIN_HOLDOUT_SAMPLE_COUNT", 500),
             max_workers=_env_int("MAX_WORKERS", cpu_default),
@@ -205,8 +205,8 @@ class Config:
             "MIN_PROTECTED_RETENTION_PCT": (self.min_protected_retention_pct),
             "MIN_MATCHED_LABEL_COVERAGE_PCT": (self.min_matched_label_coverage_pct),
             "MIN_OBJECTIVE_LIFT": self.min_objective_lift,
-            "MIN_SELECTION_CAPTURE_IMPROVEMENT": (
-                self.min_selection_capture_improvement
+            "MIN_SELECTION_SCORE_IMPROVEMENT": (
+                self.min_selection_score_improvement
             ),
         }
         for name, value in float_values.items():
@@ -269,9 +269,9 @@ class Config:
             )
         if self.min_objective_lift < 1 or self.min_fold_objective_lift < 1:
             raise ValueError("objective lift minimums must be >= 1")
-        if not 0 <= self.min_selection_capture_improvement <= 1:
+        if not 0 <= self.min_selection_score_improvement <= 1:
             raise ValueError(
-                "MIN_SELECTION_CAPTURE_IMPROVEMENT must be between 0 and 1"
+                "MIN_SELECTION_SCORE_IMPROVEMENT must be between 0 and 1"
             )
         if self.max_workers < 1:
             raise ValueError("MAX_WORKERS must be >= 1")

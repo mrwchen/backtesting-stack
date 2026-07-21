@@ -286,6 +286,9 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(contracts, ("landmark_day",), "int2", nullable=False)
     _add_column_contracts(
+        contracts, ("prior_policy_cut_day",), "int2", nullable=True
+    )
+    _add_column_contracts(
         contracts, ("landmark_adjusted_volume",), "int8", nullable=True
     )
     _add_column_contracts(
@@ -309,6 +312,7 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
             "landmark_observed",
             "same_continuity_segment",
             "eligible_at_landmark",
+            "active_at_landmark",
             "full_outcome_available",
             "include_stagnation_filter",
             "include_loss_filter",
@@ -321,6 +325,7 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
         "landmark_observed",
         "same_continuity_segment",
         "eligible_at_landmark",
+        "active_at_landmark",
         "full_outcome_available",
         "include_stagnation_filter",
         "include_loss_filter",

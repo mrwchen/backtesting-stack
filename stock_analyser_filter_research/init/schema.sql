@@ -208,6 +208,8 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     landmark_observed                                BOOLEAN NOT NULL,
     same_continuity_segment                          BOOLEAN NOT NULL,
     eligible_at_landmark                             BOOLEAN NOT NULL,
+    active_at_landmark                               BOOLEAN NOT NULL,
+    prior_policy_cut_day                             SMALLINT,
     full_outcome_available                           BOOLEAN NOT NULL,
     signal_adjusted_close                            NUMERIC(20,8),
     landmark_adjusted_close                          NUMERIC(20,8),
@@ -261,6 +263,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     stagnant_to_day5                                  BOOLEAN,
     loss_first_to_day5                                BOOLEAN,
     strong_first_to_day5                              BOOLEAN,
+    bad_to_day5                                       BOOLEAN,
 
     analysis_split                                    TEXT NOT NULL,
     include_stagnation_filter                         BOOLEAN NOT NULL,
@@ -299,21 +302,75 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
             'stagnant', 'neutral'
         )
     ),
+    CHECK (
+        CASE
+            WHEN continuation_outcome IS NULL THEN
+                stagnant_to_day5 IS NULL
+                AND loss_first_to_day5 IS NULL
+                AND strong_first_to_day5 IS NULL
+                AND bad_to_day5 IS NULL
+            WHEN continuation_outcome = 'same_session_ambiguous' THEN
+                stagnant_to_day5 IS NULL
+                AND loss_first_to_day5 IS NULL
+                AND strong_first_to_day5 IS NULL
+                AND bad_to_day5 IS NULL
+            WHEN continuation_outcome = 'loss_first' THEN
+                stagnant_to_day5 IS FALSE
+                AND loss_first_to_day5 IS TRUE
+                AND strong_first_to_day5 IS FALSE
+                AND bad_to_day5 IS TRUE
+            WHEN continuation_outcome = 'strong_first' THEN
+                stagnant_to_day5 IS FALSE
+                AND loss_first_to_day5 IS FALSE
+                AND strong_first_to_day5 IS TRUE
+                AND bad_to_day5 IS FALSE
+            WHEN continuation_outcome = 'stagnant' THEN
+                stagnant_to_day5 IS TRUE
+                AND loss_first_to_day5 IS FALSE
+                AND strong_first_to_day5 IS FALSE
+                AND bad_to_day5 IS TRUE
+            WHEN continuation_outcome = 'neutral' THEN
+                stagnant_to_day5 IS FALSE
+                AND loss_first_to_day5 IS FALSE
+                AND strong_first_to_day5 IS FALSE
+                AND bad_to_day5 IS FALSE
+            ELSE FALSE
+        END
+    ),
     CHECK (analysis_split IN ('discovery', 'validation', 'diagnostic', 'holdout', 'purged')),
     CHECK (NOT same_continuity_segment OR landmark_observed),
     CHECK (NOT eligible_at_landmark OR (landmark_observed AND same_continuity_segment)),
-    CHECK (include_final = (include_stagnation_filter AND include_loss_filter)),
-    CHECK (cut_decision IN ('cut', 'hold', 'not_eligible', 'not_evaluable')),
     CHECK (
-        (eligible_at_landmark AND include_final AND cut_decision = 'hold')
+        prior_policy_cut_day IS NULL
+        OR prior_policy_cut_day BETWEEN 1 AND landmark_day - 1
+    ),
+    CHECK (
+        active_at_landmark = (
+            eligible_at_landmark AND prior_policy_cut_day IS NULL
+        )
+    ),
+    CHECK (include_final = (include_stagnation_filter AND include_loss_filter)),
+    CHECK (
+        cut_decision IN (
+            'cut', 'hold', 'not_active', 'not_eligible', 'not_evaluable'
+        )
+    ),
+    CHECK (
+        (active_at_landmark AND include_final AND cut_decision = 'hold')
         OR
-        (eligible_at_landmark AND NOT include_final AND cut_decision = 'cut')
+        (active_at_landmark AND NOT include_final AND cut_decision = 'cut')
         OR
-        (NOT eligible_at_landmark
+        (NOT active_at_landmark
          AND NOT include_stagnation_filter
          AND NOT include_loss_filter
          AND NOT include_final
-         AND cut_decision IN ('not_eligible', 'not_evaluable'))
+         AND (
+             (prior_policy_cut_day IS NOT NULL AND cut_decision = 'not_active')
+             OR
+             (prior_policy_cut_day IS NULL
+              AND NOT eligible_at_landmark
+              AND cut_decision IN ('not_eligible', 'not_evaluable'))
+         ))
     ),
     CHECK (
         (cut_decision = 'cut' AND NULLIF(TRIM(cut_reason), '') IS NOT NULL)
@@ -395,7 +452,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
 
     CHECK (result_kind IN ('baseline', 'candidate_rule', 'selected_filter')),
     CHECK (decision_family IN ('entry_filter', 'early_cut')),
-    CHECK (objective IN ('weak_5d', 'loss_first_5d', 'stagnant_to_day5', 'loss_first_to_day5')),
+    CHECK (
+        objective IN (
+            'weak_5d', 'loss_first_5d', 'stagnant_to_day5',
+            'loss_first_to_day5', 'bad_to_day5'
+        )
+    ),
     CHECK (protected_outcome IN ('strong_first_5d', 'strong_first_to_day5')),
     CHECK (
         (decision_family = 'entry_filter'
@@ -405,7 +467,10 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
         OR
         (decision_family = 'early_cut'
          AND landmark_day BETWEEN 1 AND 3
-         AND objective IN ('stagnant_to_day5', 'loss_first_to_day5')
+         AND (
+             objective IN ('stagnant_to_day5', 'loss_first_to_day5')
+             OR (objective = 'bad_to_day5' AND landmark_day = 1)
+         )
          AND protected_outcome = 'strong_first_to_day5')
     ),
     CHECK (feature_group IN ('none', 'A', 'B', 'C', 'E', 'multiple')),
@@ -490,6 +555,6 @@ GRANT USAGE, SELECT
 COMMENT ON TABLE stock_analyser_filter_research_signal_results IS
     'One continuity-safe false-to-true trend-template event per stock, with causal entry features, forward outcomes and entry-filter decisions.';
 COMMENT ON TABLE stock_analyser_filter_research_early_cut_results IS
-    'D+1, D+2 and D+3 landmark observations for each signal, with point-in-time features, continuation outcomes and early-cut decisions.';
+    'D+1, D+2 and D+3 landmark observations for each signal, with point-in-time features, landmark-relative continuation outcomes and sequential early-cut decisions.';
 COMMENT ON TABLE stock_analyser_filter_research_rule_results IS
     'Entry-filter and early-cut rule candidates, stability gates and out-of-sample evaluations.';

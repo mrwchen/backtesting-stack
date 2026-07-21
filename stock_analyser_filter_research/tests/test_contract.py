@@ -43,6 +43,19 @@ def _declared_columns(create_block: str) -> set[str]:
     )
 
 
+def _declared_column_order(create_block: str) -> tuple[str, ...]:
+    type_pattern = (
+        r"BIGSERIAL|BIGINT|SMALLINT|INTEGER|NUMERIC(?:\([^)]*\))?" r"|BOOLEAN|TEXT|DATE"
+    )
+    return tuple(
+        re.findall(
+            rf"^\s{{4}}([a-z][a-z0-9_]*)\s+(?:{type_pattern})(?:\s|,)",
+            create_block,
+            flags=re.MULTILINE,
+        )
+    )
+
+
 def _declared_contracts(
     create_block: str,
 ) -> dict[str, tuple[str, bool, int | None, int | None]]:
@@ -82,6 +95,10 @@ def _declared_contracts(
     return contracts
 
 
+def _normalized_sql(sql_text: str) -> str:
+    return " ".join(sql_text.split())
+
+
 def test_init_sql_is_the_complete_runtime_contract() -> None:
     sql_text = (PROJECT_ROOT / "init" / "schema.sql").read_text(encoding="utf-8")
     signal_table = "stock_analyser_filter_research_signal_results"
@@ -97,6 +114,9 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
     assert signal_columns == set(SIGNAL_COLUMNS)
     assert early_cut_columns == set(EARLY_CUT_COLUMNS)
     assert rule_columns == {*RULE_COLUMNS, "result_id"}
+    assert _declared_column_order(signal_block) == SIGNAL_COLUMNS
+    assert _declared_column_order(early_cut_block) == EARLY_CUT_COLUMNS
+    assert _declared_column_order(rule_block) == ("result_id", *RULE_COLUMNS)
     assert _declared_contracts(signal_block) == db.SIGNAL_COLUMN_CONTRACTS
     assert _declared_contracts(early_cut_block) == db.EARLY_CUT_COLUMN_CONTRACTS
     assert _declared_contracts(rule_block) == db.RULE_COLUMN_CONTRACTS
@@ -110,8 +130,10 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
     assert "PRIMARY KEY (signal_date, symbol, exchange, cik, landmark_day)" in sql_text
     assert "DROP TABLE IF EXISTS " + early_cut_table in sql_text
     assert (
-        "cut_decision IN ('cut', 'hold', 'not_eligible', 'not_evaluable')" in sql_text
+        "'cut', 'hold', 'not_active', 'not_eligible', 'not_evaluable'" in sql_text
     )
+    assert "active_at_landmark" in sql_text
+    assert "prior_policy_cut_day BETWEEN 1 AND landmark_day - 1" in sql_text
     assert (
         "include_final = (include_weak_filter AND include_loss_first_filter)"
         in sql_text
@@ -126,7 +148,7 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
         in sql_text
     )
     assert (
-        "eligible_at_landmark AND include_final AND cut_decision = 'hold'" in sql_text
+        "active_at_landmark AND include_final AND cut_decision = 'hold'" in sql_text
     )
     assert "threshold_fit_end_date < period_start" in sql_text
     assert "json" not in sql_text.lower()
@@ -143,6 +165,54 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
     assert "create table" not in runtime_text
     assert "alter table" not in runtime_text
     assert "drop table" not in runtime_text
+
+
+def test_early_cut_outcome_check_enforces_exact_label_states() -> None:
+    sql_text = (PROJECT_ROOT / "init" / "schema.sql").read_text(encoding="utf-8")
+    early_cut_block = _normalized_sql(
+        _create_table_block(
+            sql_text, "stock_analyser_filter_research_early_cut_results"
+        )
+    )
+
+    expected_states = (
+        "WHEN continuation_outcome IS NULL THEN stagnant_to_day5 IS NULL "
+        "AND loss_first_to_day5 IS NULL AND strong_first_to_day5 IS NULL "
+        "AND bad_to_day5 IS NULL",
+        "WHEN continuation_outcome = 'same_session_ambiguous' THEN "
+        "stagnant_to_day5 IS NULL AND loss_first_to_day5 IS NULL "
+        "AND strong_first_to_day5 IS NULL AND bad_to_day5 IS NULL",
+        "WHEN continuation_outcome = 'loss_first' THEN stagnant_to_day5 IS FALSE "
+        "AND loss_first_to_day5 IS TRUE AND strong_first_to_day5 IS FALSE "
+        "AND bad_to_day5 IS TRUE",
+        "WHEN continuation_outcome = 'strong_first' THEN stagnant_to_day5 IS FALSE "
+        "AND loss_first_to_day5 IS FALSE AND strong_first_to_day5 IS TRUE "
+        "AND bad_to_day5 IS FALSE",
+        "WHEN continuation_outcome = 'stagnant' THEN stagnant_to_day5 IS TRUE "
+        "AND loss_first_to_day5 IS FALSE AND strong_first_to_day5 IS FALSE "
+        "AND bad_to_day5 IS TRUE",
+        "WHEN continuation_outcome = 'neutral' THEN stagnant_to_day5 IS FALSE "
+        "AND loss_first_to_day5 IS FALSE AND strong_first_to_day5 IS FALSE "
+        "AND bad_to_day5 IS FALSE",
+    )
+    for expected_state in expected_states:
+        assert expected_state in early_cut_block
+    assert "ELSE FALSE END" in early_cut_block
+
+
+def test_rule_objective_check_anchors_only_sequential_bad_metric_at_day_one() -> None:
+    sql_text = (PROJECT_ROOT / "init" / "schema.sql").read_text(encoding="utf-8")
+    rule_block = _normalized_sql(
+        _create_table_block(
+            sql_text, "stock_analyser_filter_research_rule_results"
+        )
+    )
+
+    assert "landmark_day BETWEEN 1 AND 3" in rule_block
+    assert (
+        "objective IN ('stagnant_to_day5', 'loss_first_to_day5') OR "
+        "(objective = 'bad_to_day5' AND landmark_day = 1)"
+    ) in rule_block
 
 
 def test_config_rejects_non_owned_target_names(cfg_factory) -> None:

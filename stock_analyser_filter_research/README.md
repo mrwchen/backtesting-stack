@@ -1,4 +1,4 @@
-# Stock Analyser Filter Research V2
+# Stock Analyser Filter Research V2.1 / C2
 
 Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
 Ereignisse des 8-von-8-Trend-Templates aus
@@ -22,7 +22,7 @@ berechnet bewusst keinen fiktiven Same-Close- oder Next-Open-Return.
 
 ## Getrennte Entry-Ziele
 
-V2 vermischt schwache und stark verlierende Signale nicht mehr zu einem
+V2.1 vermischt schwache und stark verlierende Signale nicht zu einem
 Optimierungsziel:
 
 - `weak_5d`: In D+1 bis D+5 wird ausgehend vom Signaltags-Close nie +2 %
@@ -49,12 +49,17 @@ als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
   Korrelationen.
 
 A, B und C sind bei der Auswahl gleichberechtigt. Es gibt keine irreversible
-Reihenfolge A -> B -> C mehr. Pro Ziel werden hoechstens zwei einfache
-Quantilbedingungen gewaehlt und mit `OR` verknuepft. Die beiden Zielregeln
-werden anschliessend nur in einer Kombination verwendet, welche die gemeinsame
-Strong-Retention- und Ausschlussgrenze weiterhin einhaelt.
+Reihenfolge A -> B -> C. Pro Ziel werden hoechstens zwei einfache
+Quantilbedingungen gewaehlt und mit `OR` verknuepft. Weak- und Loss-First-
+Spezialregeln muessen nur ihr eigenes Ziel stabil anreichern. Eine valide
+Weak-Regel wird daher nicht mehr verworfen, nur weil sie kein Loss-First-Signal
+liefert. Ihre gemeinsame Entry-Union wird ausschliesslich auf Matchrate,
+Labelabdeckung und Strong-Retention geprueft. Das Ranking maximiert
+`Objective-Capture - Protected-Rejection`; eine zweite Bedingung muss diesen
+Netto-Score um mindestens den konfigurierten Wert verbessern.
 
-Fundamentaldaten sind weiterhin nicht Teil von V2.
+Fundamentaldaten sind weiterhin nicht Teil von V2.1; Phase D folgt erst nach
+dieser methodischen Kalibrierung.
 
 ## Walk-forward und neuer Holdout
 
@@ -69,11 +74,21 @@ anderem:
 
 - mindestens `max(50, 1 %)` gelabelte Matches,
 - hoechstens 35 % Matches,
-- mindestens 90 % Retention der geschuetzten Strong-First-Klasse,
+- mindestens 92 % gepoolte und finale Retention der geschuetzten
+  Strong-First-Klasse,
+- mindestens 90 % Retention in jedem aussagefaehigen Walk-forward-Fold,
 - mindestens 90 % Labelabdeckung unter den Matches,
 - Objective-Lift mindestens 1,05,
 - positiver Lift in mindestens 75 % der aussagefaehigen Jahresfolds,
-- mindestens ein Prozentpunkt zusaetzliche Capture fuer eine zweite Bedingung.
+- mindestens ein Prozentpunkt zusaetzlicher Netto-Score fuer eine zweite
+  Bedingung.
+
+Nach der Walk-forward-Auswahl werden die finalen Schwellen bis zum
+Validation-Ende neu gefittet. Diese festen Schwellen muessen Development und
+Validation nochmals bestehen. Verletzt ein Refit Match-, Coverage-, Lift- oder
+Strong-Safety-Gates, faellt die Regel deterministisch auf einen kuerzeren
+Prefix bis hin zu `no filter` zurueck. Diagnostic und Holdout werden fuer diese
+Entscheidung nicht gelesen.
 
 Der bereits betrachtete Zeitraum 2025 bis einschliesslich 20.07.2026 ist nur
 `diagnostic` und darf die Auswahl oder den finalen Schwellenwert nicht aendern.
@@ -95,8 +110,11 @@ gehoeren bisherige MFE/MAE, Rendite seit dem Signal, Drawdown/Rebound,
 Tagesrange, Close-Position, Volume-/Notional-Verhaeltnisse, RS- und
 Trendabstaende. Future-Spalten der Source werden nie als Feature verwendet.
 
-Die verbleibende Entwicklung wird bis zum unveraenderten Ende D+5 bewertet.
-Die pfadbewusste Klasse ist eine von:
+Die verbleibende Entwicklung beginnt strikt mit der naechsten Session
+`effective_session_date` und wird bis zum unveraenderten Ende D+5 bewertet.
+Alle zukuenftigen +2-%-, +5-%- und -5-%-Barrieren beziehen sich auf den Close
+des jeweiligen Landmarks, nicht mehr auf den urspruenglichen Signalkurs. Die
+pfadbewusste Klasse ist eine von:
 
 - `loss_first`,
 - `strong_first`,
@@ -104,15 +122,39 @@ Die pfadbewusste Klasse ist eine von:
 - `stagnant`,
 - `neutral`.
 
+`bad_to_day5` fasst die beiden handlungsrelevanten Klassen `stagnant` und
+`loss_first` fuer die gemeinsame sequenzielle Policy zusammen.
+
 Bereits bis zum Landmark erreichte +/-5-%-Barrieren verlassen das primaere
 Early-Cut-Risk-Set. Luecken, Segmentwechsel, Delistings und unvollstaendige
 Horizonte werden zensiert und niemals als Verlust oder Erfolg unterstellt.
 Alle drei Landmark-Zeilen bleiben trotzdem gespeichert, damit Coverage
-sichtbar ist. Die drei Landmarks sind unabhaengige Research-Entscheidungen;
-eine hypothetische fruehere Cut-Regel entfernt keine spaetere Zeile.
-Der Split einer Landmark-Zeile richtet sich nach ihrem eigenen
-`landmark_date`; ein Entry unmittelbar vor einer Jahres- oder Holdout-Grenze
-zieht seine spaeteren Early-Cut-Entscheidungen daher nicht in den alten Split.
+sichtbar ist. Die Policy wird jedoch gemeinsam als D+1 -> D+2 -> D+3-Sequenz
+ausgewaehlt. Ein Cut an D+1 deaktiviert D+2 und D+3; ein Cut an D+2 deaktiviert
+D+3. `active_at_landmark` kennzeichnet das unmittelbar vor der jeweiligen
+Entscheidung noch aktive Risk-Set. `prior_policy_cut_day` verweist bei einer
+spaeteren `not_active`-Zeile auf den frueheren Cut-Tag. Die intrinsische
+`eligible_at_landmark`-Information bleibt davon unveraendert.
+
+Die kumulative Policy wird an der vollstaendigen D+1-Kohorte bewertet.
+Population und Objective-/Strong-Nenner bleiben fest am D+1-Outcome verankert.
+Ein spaeterer Cut erhaelt Objective-Credit aber nur, wenn dasselbe Outcome am
+tatsaechlichen ersten Cut-Landmark noch gilt. Jeder Cut eines am D+1
+geschuetzten Strong-Signals bleibt eine Protected-Rejection. Die Policy muss die
+gepoolte/finale 92-%- sowie die foldweise 90-%-Strong-Retention als Gesamtregel
+einhalten. Fuer die sequenzielle Auswahl wird jede vollstaendige
+D+1 -> D+3-Folge separat an ihrem D+1-Landmark einem Walk-forward-Fold
+zugeordnet. Reicht ihr unveraenderter D+5-Horizont ueber das Fold-Ende hinaus,
+wird die gesamte Folge aus dieser Auswahlkohorte gepurgt. Diagnostic und
+Holdout werden ebenfalls als D+1-geankerte Gesamtsequenzen ausgewertet; noch
+nicht abgeschlossene Horizonte bleiben dort ungelabelt. Der gespeicherte finale
+Aktivstatus wird nie fuer die Walk-forward-Auswahl wiederverwendet.
+
+Davon getrennt beschreibt `analysis_split` den Diagnose-Split jeder einzelnen
+gespeicherten Landmark-Zeile anhand ihres eigenen `landmark_date` und ihres
+D+5-Horizonts. Deshalb koennen die drei gespeicherten Zeilen eines Signals an
+einer Split-Grenze unterschiedliche Werte tragen; diese Zeilenwerte steuern
+nicht die D+1-geankerte sequenzielle Regelauswahl.
 
 ## Datenbanktabellen
 
@@ -121,7 +163,8 @@ Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
 - `stock_analyser_filter_research_signal_results`: Entry-Signale, A-C-Features,
   pfadbewusste Labels und finale Entry-Entscheidungen.
 - `stock_analyser_filter_research_early_cut_results`: genau drei kausale
-  Landmark-Zeilen je Signal mit Hold-/Cut-Entscheidungen.
+  Landmark-Zeilen je Signal mit landmark-relativen Outcomes, intrinsischer
+  Eligibility und sequenziellem Aktiv-/Hold-/Cut-Status.
 - `stock_analyser_filter_research_rule_results`: generische Kandidaten-,
   Walk-forward-, Diagnose-, Holdout- und ausgewählte Regelmetriken fuer beide
   Entscheidungsfamilien und Ziele.
@@ -133,7 +176,7 @@ und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Der inkompatible V2-Neuaufbau der freigegebenen, reproduzierbaren
+Der inkompatible V2.1-Neuaufbau der freigegebenen, reproduzierbaren
 Research-Tabellen erfolgt einmalig mit:
 
 ```bash

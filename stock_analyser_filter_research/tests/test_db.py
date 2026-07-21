@@ -173,6 +173,18 @@ def test_database_column_contracts_cover_every_written_column(
     assert set(db.SIGNAL_COLUMN_CONTRACTS) == set(SIGNAL_COLUMNS)
     assert set(db.EARLY_CUT_COLUMN_CONTRACTS) == set(EARLY_CUT_COLUMNS)
     assert set(db.RULE_COLUMN_CONTRACTS) == {"result_id", *RULE_COLUMNS}
+    assert db.EARLY_CUT_COLUMN_CONTRACTS["active_at_landmark"] == (
+        "bool",
+        False,
+        None,
+        None,
+    )
+    assert db.EARLY_CUT_COLUMN_CONTRACTS["prior_policy_cut_day"] == (
+        "int2",
+        True,
+        None,
+        None,
+    )
     wrong = dict(db.SIGNAL_COLUMN_CONTRACTS)
     wrong["signal_date"] = ("text", False, None, None)
     monkeypatch.setattr(db, "_column_definitions", lambda connection, table: wrong)

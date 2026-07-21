@@ -745,6 +745,8 @@ def _empty_early_cut_row(signal: pd.Series, landmark_day: int) -> dict[str, Any]
             "landmark_observed": False,
             "same_continuity_segment": False,
             "eligible_at_landmark": False,
+            "active_at_landmark": False,
+            "prior_policy_cut_day": pd.NA,
             "full_outcome_available": False,
             "analysis_split": signal["analysis_split"],
             "include_stagnation_filter": False,
@@ -1004,6 +1006,7 @@ def _early_cut_landmark_row(
         row["eligible_at_landmark"] = bool(
             same_through_landmark and not hit_gain_5 and not hit_loss_5
         )
+        row["active_at_landmark"] = row["eligible_at_landmark"]
         row["cut_decision"] = (
             "hold"
             if row["eligible_at_landmark"]
@@ -1025,15 +1028,15 @@ def _early_cut_landmark_row(
         landmark_high_returns = (future_highs / landmark_close - 1.0) * 100.0
         landmark_low_returns = (future_lows / landmark_close - 1.0) * 100.0
         first_future_gain_2 = _first_hit_day(
-            signal_high_returns >= cfg.weak_5d_max_gain_pct,
+            landmark_high_returns >= cfg.weak_5d_max_gain_pct,
             landmark_day + 1,
         )
         first_future_gain_5 = _first_hit_day(
-            signal_high_returns >= cfg.strong_5d_min_gain_pct,
+            landmark_high_returns >= cfg.strong_5d_min_gain_pct,
             landmark_day + 1,
         )
         first_future_loss_5 = _first_hit_day(
-            signal_low_returns <= cfg.deep_loss_5d_max_loss_pct,
+            landmark_low_returns <= cfg.deep_loss_5d_max_loss_pct,
             landmark_day + 1,
         )
         terminal_close = float(indexed["adjusted_close"].iloc[horizon_position])
@@ -1072,15 +1075,10 @@ def _early_cut_landmark_row(
         if bool(row["eligible_at_landmark"]):
             continuation = _continuation_order(first_future_gain_5, first_future_loss_5)
             if continuation == "neither":
-                full_path = indexed.iloc[signal_position + 1 : horizon_position + 1]
-                full_high_returns = (
-                    _numeric(full_path["adjusted_high"]).to_numpy(dtype=float)
-                    / signal_close
-                    - 1.0
-                ) * 100.0
                 continuation = (
                     "stagnant"
-                    if float(full_high_returns.max()) < cfg.weak_5d_max_gain_pct
+                    if float(landmark_high_returns.max())
+                    < cfg.weak_5d_max_gain_pct
                     else "neutral"
                 )
             row["continuation_outcome"] = continuation
@@ -1088,10 +1086,12 @@ def _early_cut_landmark_row(
                 row["stagnant_to_day5"] = pd.NA
                 row["loss_first_to_day5"] = pd.NA
                 row["strong_first_to_day5"] = pd.NA
+                row["bad_to_day5"] = pd.NA
             else:
                 row["stagnant_to_day5"] = continuation == "stagnant"
                 row["loss_first_to_day5"] = continuation == "loss_first"
                 row["strong_first_to_day5"] = continuation == "strong_first"
+                row["bad_to_day5"] = continuation in ("stagnant", "loss_first")
 
     return row
 

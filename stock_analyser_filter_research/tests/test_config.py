@@ -56,12 +56,12 @@ def test_v2_split_dates_must_be_strictly_ordered(cfg_factory, changes, message) 
         ({"min_objective_lift": 0.99}, "objective lift"),
         ({"min_fold_objective_lift": 0.99}, "objective lift"),
         (
-            {"min_selection_capture_improvement": -0.01},
-            "MIN_SELECTION_CAPTURE_IMPROVEMENT",
+            {"min_selection_score_improvement": -0.01},
+            "MIN_SELECTION_SCORE_IMPROVEMENT",
         ),
         (
-            {"min_selection_capture_improvement": 1.01},
-            "MIN_SELECTION_CAPTURE_IMPROVEMENT",
+            {"min_selection_score_improvement": 1.01},
+            "MIN_SELECTION_SCORE_IMPROVEMENT",
         ),
         ({"max_workers": 0}, "MAX_WORKERS"),
         ({"worker_identity_batch_size": 0}, "WORKER_IDENTITY_BATCH_SIZE"),
@@ -130,6 +130,7 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
         "WALK_FORWARD_FIRST_YEAR": "2020",
         "MIN_WALK_FORWARD_FOLDS": "4",
         "MIN_MATCHED_LABEL_COVERAGE_PCT": "0.93",
+        "MIN_SELECTION_SCORE_IMPROVEMENT": "0.02",
         "MIN_HOLDOUT_SAMPLE_COUNT": "321",
         "WORKER_IDENTITY_BATCH_SIZE": "11",
         "DB_COPY_BATCH_SIZE": "1234",
@@ -148,7 +149,10 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
     assert cfg.rule_search_beam_width == 7
     assert cfg.walk_forward_first_year == 2020
     assert cfg.min_walk_forward_folds == 4
+    assert cfg.min_fold_protected_retention_pct == pytest.approx(0.90)
+    assert cfg.min_protected_retention_pct == pytest.approx(0.92)
     assert cfg.min_matched_label_coverage_pct == pytest.approx(0.93)
+    assert cfg.min_selection_score_improvement == pytest.approx(0.02)
     assert cfg.min_holdout_sample_count == 321
     assert cfg.worker_identity_batch_size == 11
     assert cfg.db_copy_batch_size == 1234

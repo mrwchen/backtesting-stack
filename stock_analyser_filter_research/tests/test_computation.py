@@ -422,6 +422,10 @@ def test_early_cut_emits_exactly_three_rows_with_causal_feature_formulas(
 
     assert list(result.early_cut.columns) == list(EARLY_CUT_COLUMNS)
     assert result.early_cut["landmark_day"].tolist() == [1, 2, 3]
+    assert result.early_cut["active_at_landmark"].astype(bool).equals(
+        result.early_cut["eligible_at_landmark"].astype(bool)
+    )
+    assert result.early_cut["prior_policy_cut_day"].isna().all()
     day1 = _landmark_row(result.early_cut, 1)
     assert day1["landmark_date"] == dates[position + 1]
     assert day1["effective_session_date"] == dates[position + 2]
@@ -575,8 +579,108 @@ def test_early_continuation_outcome_classes_and_nullable_objectives(
     ]
     if flags is None:
         assert day1[label_columns].isna().all()
+        assert pd.isna(day1["bad_to_day5"])
     else:
         assert tuple(bool(day1[column]) for column in label_columns) == flags
+        assert bool(day1["bad_to_day5"]) is bool(flags[0] or flags[1])
+
+
+def test_prior_decline_without_further_landmark_loss_is_not_loss_first(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-10-01", periods=40, freq="D")
+    position = 25
+    source = _source_frame(dates)
+    _set_pass(source, position)
+    _set_path(
+        source,
+        position,
+        closes=[100, 96, 95, 95, 95, 95],
+        highs=[101, 97, 96, 96, 96, 96],
+        lows=[99, 95.1, 94.9, 94.9, 94.9, 94.9],
+    )
+
+    day1 = _landmark_row(
+        calculate_identity_results(source, dates, cfg_factory()).early_cut,
+        1,
+    )
+
+    assert bool(day1["eligible_at_landmark"])
+    assert day1["remaining_max_loss_from_signal_pct"] == pytest.approx(-5.1)
+    assert day1["remaining_max_loss_from_landmark_pct"] == pytest.approx(
+        (94.9 / 96 - 1) * 100
+    )
+    assert pd.isna(day1["future_first_loss_5pct_day"])
+    assert day1["continuation_outcome"] == "stagnant"
+    assert not bool(day1["loss_first_to_day5"])
+    assert bool(day1["stagnant_to_day5"])
+
+
+@pytest.mark.parametrize(
+    ("landmark_close", "future_high", "future_low", "outcome", "hit_column"),
+    [
+        (96.0, 100.9, 95.0, "strong_first", "future_first_gain_5pct_day"),
+        (104.0, 105.0, 98.7, "loss_first", "future_first_loss_5pct_day"),
+    ],
+)
+def test_future_gain_and_loss_barriers_are_relative_to_landmark_close(
+    cfg_factory,
+    landmark_close,
+    future_high,
+    future_low,
+    outcome,
+    hit_column,
+) -> None:
+    dates = pd.date_range("2022-10-01", periods=40, freq="D")
+    position = 25
+    source = _source_frame(dates)
+    _set_pass(source, position)
+    landmark_high = min(104.9, landmark_close + 1.0)
+    landmark_low = max(95.1, landmark_close - 1.0)
+    _set_path(
+        source,
+        position,
+        closes=[
+            100,
+            landmark_close,
+            landmark_close,
+            landmark_close,
+            landmark_close,
+            landmark_close,
+        ],
+        highs=[
+            101,
+            landmark_high,
+            future_high,
+            landmark_close + 1,
+            landmark_close + 1,
+            landmark_close + 1,
+        ],
+        lows=[
+            99,
+            landmark_low,
+            future_low,
+            landmark_close - 1,
+            landmark_close - 1,
+            landmark_close - 1,
+        ],
+    )
+
+    day1 = _landmark_row(
+        calculate_identity_results(source, dates, cfg_factory()).early_cut,
+        1,
+    )
+
+    assert bool(day1["eligible_at_landmark"])
+    assert day1[hit_column] == 2
+    assert day1["continuation_outcome"] == outcome
+    assert bool(day1[f"{outcome}_to_day5"])
+    if outcome == "strong_first":
+        assert day1["remaining_max_gain_from_signal_pct"] < 5.0
+        assert day1["remaining_max_gain_from_landmark_pct"] > 5.0
+    else:
+        assert day1["remaining_max_loss_from_signal_pct"] > -5.0
+        assert day1["remaining_max_loss_from_landmark_pct"] < -5.0
 
 
 def test_prior_barrier_hit_removes_later_landmarks_from_risk_set(
