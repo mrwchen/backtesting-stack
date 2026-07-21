@@ -2081,7 +2081,7 @@ def _sequential_policy_state(
             anchor_mask &= horizon_end.notna() & horizon_end.le(end)
     anchor = frame.loc[anchor_mask].copy()
     anchor_keys = _policy_keys(anchor)
-    active_keys = set(anchor_keys.tolist())
+    anchor_key_set = set(anchor_keys.tolist())
     cut_day_by_key: dict[tuple[object, ...], int] = {}
     active_masks = {
         day: pd.Series(False, index=frame.index, dtype=bool)
@@ -2098,10 +2098,21 @@ def _sequential_policy_state(
             & period
         )
         local = frame.loc[row_mask]
-        if local.empty or not active_keys:
+        if local.empty or not anchor_key_set:
             continue
         local_keys = _policy_keys(local)
-        active = local_keys.isin(active_keys)
+        # Use the same exact Python tuple-key semantics for active state,
+        # first-cut storage and later prior-cut lookup. Pandas ``isin`` over a
+        # large object Series of tuples can otherwise disagree with the dict
+        # lookup used when decisions are persisted.
+        active = pd.Series(
+            [
+                key in anchor_key_set and key not in cut_day_by_key
+                for key in local_keys.tolist()
+            ],
+            index=local.index,
+            dtype=bool,
+        )
         active_masks[day].loc[local.index] = active.to_numpy()
         matched = _combined_mask(
             local, conditions_by_day.get(day, ())
@@ -2109,9 +2120,12 @@ def _sequential_policy_state(
         cut_masks[day].loc[local.index] = matched.to_numpy()
         if matched.any():
             for key in local_keys.loc[matched].tolist():
-                cut_day_by_key[key] = day
-                active_keys.discard(key)
-    anchor_matched = anchor_keys.isin(cut_day_by_key)
+                cut_day_by_key.setdefault(key, day)
+    anchor_matched = pd.Series(
+        [key in cut_day_by_key for key in anchor_keys.tolist()],
+        index=anchor.index,
+        dtype=bool,
+    )
     return anchor, anchor_matched, active_masks, cut_masks, cut_day_by_key
 
 
@@ -2662,6 +2676,21 @@ def apply_early_decisions(
         policy_active |= active_masks[day]
     if not _truthy(result["active_at_landmark"]).equals(policy_active):
         raise AssertionError("sequential early-cut active state is inconsistent")
+    active_with_prior_cut = policy_active & result[
+        "prior_policy_cut_day"
+    ].notna()
+    if active_with_prior_cut.any():
+        log.warning(
+            "Corrected %d active D1-D3 policy rows carrying a contradictory prior cut",
+            int(active_with_prior_cut.sum()),
+        )
+        result.loc[active_with_prior_cut, "prior_policy_cut_day"] = pd.NA
+    result.loc[policy_active, "eligible_at_landmark"] = True
+    active_holds = policy_active & _truthy(result["include_final"])
+    active_cuts = policy_active & ~_truthy(result["include_final"])
+    result.loc[active_holds, "cut_decision"] = "hold"
+    result.loc[active_holds, "cut_reason"] = pd.NA
+    result.loc[active_cuts, "cut_decision"] = "cut"
     # A later landmark can be intrinsically evaluable even when its D+1 row
     # was not part of the anchor cohort (for example around sparse identity
     # history). Such a row is not eligible for the sequential D+1 -> D+3
@@ -2691,7 +2720,10 @@ def apply_early_decisions(
         & early_rows
         & result["prior_policy_cut_day"].isna()
     )
-    if not policy_active.equals(expected_active):
+    if not np.array_equal(
+        policy_active.to_numpy(dtype=bool),
+        expected_active.to_numpy(dtype=bool),
+    ):
         raise AssertionError(
             "sequential early-cut policy eligibility is inconsistent"
         )

@@ -978,6 +978,42 @@ def test_early_decisions_are_sequential_across_days_and_identities() -> None:
     assert inactive["cut_reason"].isna().all()
 
 
+def test_large_sequential_state_never_reactivates_a_cut_tuple_key() -> None:
+    identity_count = 20_000
+    frame = pd.DataFrame(
+        {
+            "signal_date": np.repeat(pd.Timestamp("2024-01-02"), identity_count * 3),
+            "landmark_day": np.repeat([1, 2, 3], identity_count),
+            "landmark_date": np.repeat(
+                pd.to_datetime(["2024-01-03", "2024-01-04", "2024-01-05"]),
+                identity_count,
+            ),
+            "symbol": np.tile(
+                [f"S{position:05d}" for position in range(identity_count)], 3
+            ),
+            "exchange": "NYSE",
+            "cik": np.tile(np.arange(1, identity_count + 1), 3),
+            "eligible_at_landmark": True,
+            E_FEATURE: np.tile(
+                np.where(np.arange(identity_count) < identity_count // 2, -1.0, 1.0),
+                3,
+            ),
+        }
+    )
+    condition = Condition("CUT_HALF", "E", E_FEATURE, "le", 0.0, None)
+
+    _, _, active, _, cut_days = _sequential_policy_state(
+        frame,
+        {1: (condition,), 2: (), 3: ()},
+    )
+
+    assert int(active[1].sum()) == identity_count
+    assert int(active[2].sum()) == identity_count // 2
+    assert int(active[3].sum()) == identity_count // 2
+    assert len(cut_days) == identity_count // 2
+    assert set(cut_days.values()) == {1}
+
+
 def test_early_policy_normalizes_later_rows_without_d1_anchor_and_ignores_management() -> None:
     empty = SimpleNamespace(final_conditions=())
     selection = SimpleNamespace(selected=empty, prefixes=(empty,))
