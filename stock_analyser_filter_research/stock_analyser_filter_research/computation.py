@@ -365,6 +365,119 @@ def _event_max_drawdown(
     return result
 
 
+def _event_prior_chart_features(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    segment: pd.Series,
+    signal_positions: np.ndarray,
+) -> dict[str, pd.Series]:
+    """Calculate time-ordered OHLC features using sessions t-40 through t-1."""
+
+    names = (
+        "prior_base_width_20_pct",
+        "prior_trend_slope_20_pct_per_session",
+        "prior_trend_r2_20",
+        "prior_trend_efficiency_20",
+        "prior_positive_return_share_20",
+        "prior_peak_age_40_sessions",
+        "prior_pullback_from_40d_high_pct",
+        "prior_trough_age_40_sessions",
+        "prior_drawdown_to_trough_40_pct",
+        "prior_recovery_from_trough_40_pct",
+        "prior_v_recovery_fraction_40",
+    )
+    result = {
+        name: pd.Series(np.nan, index=close.index, dtype=float) for name in names
+    }
+    x = np.arange(20, dtype=float)
+    centered_x = x - x.mean()
+    x_sum_squares = float(np.square(centered_x).sum())
+
+    for position in signal_positions:
+        if position < 40:
+            continue
+        current_segment = segment.iloc[position]
+        history_segment = segment.iloc[position - 40 : position]
+        close40 = close.iloc[position - 40 : position].to_numpy(dtype=float)
+        high40 = high.iloc[position - 40 : position].to_numpy(dtype=float)
+        low40 = low.iloc[position - 40 : position].to_numpy(dtype=float)
+        if (
+            pd.isna(current_segment)
+            or not history_segment.eq(current_segment).all()
+            or not np.isfinite(close40).all()
+            or not np.isfinite(high40).all()
+            or not np.isfinite(low40).all()
+            or np.any(close40 <= 0)
+            or np.any(high40 <= 0)
+            or np.any(low40 <= 0)
+            or np.any(high40 < low40)
+            or np.any(close40 > high40)
+            or np.any(close40 < low40)
+        ):
+            continue
+
+        close20 = close40[-20:]
+        high20 = high40[-20:]
+        low20 = low40[-20:]
+        result["prior_base_width_20_pct"].iloc[position] = float(
+            (np.max(high20) / np.min(low20) - 1.0) * 100.0
+        )
+
+        log_close20 = np.log(close20)
+        centered_y = log_close20 - log_close20.mean()
+        beta = float(np.dot(centered_x, centered_y) / x_sum_squares)
+        fitted = log_close20.mean() + beta * centered_x
+        residual_sum_squares = float(np.square(log_close20 - fitted).sum())
+        total_sum_squares = float(np.square(centered_y).sum())
+        r_squared = (
+            max(0.0, min(1.0, 1.0 - residual_sum_squares / total_sum_squares))
+            if total_sum_squares > 0
+            else 0.0
+        )
+        close_changes = np.diff(close20)
+        absolute_path = float(np.abs(close_changes).sum())
+        efficiency = (
+            min(1.0, abs(float(close20[-1] - close20[0])) / absolute_path)
+            if absolute_path > 0
+            else 0.0
+        )
+        result["prior_trend_slope_20_pct_per_session"].iloc[position] = float(
+            np.expm1(beta) * 100.0
+        )
+        result["prior_trend_r2_20"].iloc[position] = r_squared
+        result["prior_trend_efficiency_20"].iloc[position] = efficiency
+        result["prior_positive_return_share_20"].iloc[position] = float(
+            np.mean(close_changes > 0)
+        )
+
+        peak_value = float(np.max(high40))
+        peak_position = int(np.flatnonzero(high40 == peak_value)[-1])
+        result["prior_peak_age_40_sessions"].iloc[position] = 39 - peak_position
+        result["prior_pullback_from_40d_high_pct"].iloc[position] = float(
+            (close40[-1] / peak_value - 1.0) * 100.0
+        )
+
+        running_peak = np.maximum.accumulate(high40)
+        drawdowns = low40 / running_peak - 1.0
+        trough_position = int(np.argmin(drawdowns))
+        trough_value = float(low40[trough_position])
+        peak_at_trough = float(running_peak[trough_position])
+        recovery_denominator = peak_at_trough - trough_value
+        result["prior_trough_age_40_sessions"].iloc[position] = 39 - trough_position
+        result["prior_drawdown_to_trough_40_pct"].iloc[position] = float(
+            drawdowns[trough_position] * 100.0
+        )
+        result["prior_recovery_from_trough_40_pct"].iloc[position] = float(
+            (close40[-1] / trough_value - 1.0) * 100.0
+        )
+        if recovery_denominator > 0:
+            result["prior_v_recovery_fraction_40"].iloc[position] = float(
+                (close40[-1] - trough_value) / recovery_denominator
+            )
+    return result
+
+
 def _event_text_and_history(
     criteria: dict[str, pd.Series],
     trend_pass: pd.Series,
@@ -549,6 +662,52 @@ def calculate_identity_signals(
     prior_atr14_pct = (prior_atr14 / prior_close).mul(100.0).where(prior_close.gt(0))
     max_drawdown21 = _event_max_drawdown(close, segment, signal_positions, 21)
     close_location = ((close - low) / (high - low)).where(high.gt(low))
+    prior_normalized_range14 = _rolling_in_segment(
+        normalized_true_range, segment, 14, "mean", offset=1
+    )
+    distribution_available = (
+        daily_return.notna() & volume.notna() & prior_volume21.gt(0)
+    )
+    distribution_event = (
+        daily_return.le(-0.002) & volume.ge(prior_volume21.mul(1.20))
+    ).astype(float).where(distribution_available)
+    churning_available = (
+        daily_return.notna()
+        & volume.notna()
+        & prior_volume21.gt(0)
+        & normalized_true_range.notna()
+        & prior_normalized_range14.gt(0)
+        & close_location.notna()
+    )
+    churning_event = (
+        daily_return.abs().le(0.005)
+        & volume.ge(prior_volume21.mul(1.20))
+        & normalized_true_range.ge(prior_normalized_range14)
+        & close_location.le(0.50)
+    ).astype(float).where(churning_available)
+    failed_breakout_available = (
+        high.notna()
+        & close.notna()
+        & daily_return.notna()
+        & prior_high20.gt(0)
+    )
+    failed_breakout_event = (
+        high.ge(prior_high20.mul(1.001))
+        & close.lt(prior_high20)
+        & daily_return.lt(0)
+    ).astype(float).where(failed_breakout_available)
+    prior_distribution_count20 = _rolling_in_segment(
+        distribution_event, segment, 20, "sum", offset=1
+    )
+    prior_churning_count20 = _rolling_in_segment(
+        churning_event, segment, 20, "sum", offset=1
+    )
+    prior_failed_breakout_count20 = _rolling_in_segment(
+        failed_breakout_event, segment, 20, "sum", offset=1
+    )
+    prior_chart_features = _event_prior_chart_features(
+        close, high, low, segment, signal_positions
+    )
     prior_rs_change5 = (
         _lag_in_segment(rs_rating, segment, 1) - _lag_in_segment(rs_rating, segment, 6)
     ).where(_complete_prior_window(rs_rating, segment, 6))
@@ -609,6 +768,10 @@ def calculate_identity_signals(
         "prior_price_notional_corr21": _prior_correlation(
             daily_return, log_notional, segment, 21
         ),
+        **prior_chart_features,
+        "prior_distribution_day_count_20": prior_distribution_count20,
+        "prior_churning_day_count_20": prior_churning_count20,
+        "prior_failed_breakout_count_20": prior_failed_breakout_count20,
     }
 
     signal_index = trading_dates[signal_positions]

@@ -164,8 +164,8 @@ def test_missing_global_session_resets_previous_pass_history(cfg_factory) -> Non
 
 
 def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
-    dates = pd.date_range("2022-03-01", periods=45, freq="D")
-    signal_position = 30
+    dates = pd.date_range("2022-03-01", periods=60, freq="D")
+    signal_position = 45
     source = _source_frame(dates)
     _set_pass(source, signal_position)
 
@@ -198,6 +198,8 @@ def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
     mutated.loc[mutated.index[signal_position], "adjusted_volume"] = 10**12
     mutated.loc[mutated.index[signal_position], "daily_traded_notional_usd"] = 10**15
     mutated.loc[mutated.index[signal_position], "adjusted_close"] = 10**6
+    mutated.loc[mutated.index[signal_position], "adjusted_high"] = 10**7
+    mutated.loc[mutated.index[signal_position], "adjusted_low"] = 0.01
     mutated_row = _row_for_date(
         calculate_identity_signals(mutated, dates, cfg_factory()),
         dates[signal_position],
@@ -214,12 +216,124 @@ def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
         "prior_max_drawdown_21d_pct",
         "prior_price_volume_corr21",
         "prior_price_notional_corr21",
+        "prior_base_width_20_pct",
+        "prior_trend_slope_20_pct_per_session",
+        "prior_trend_r2_20",
+        "prior_trend_efficiency_20",
+        "prior_positive_return_share_20",
+        "prior_peak_age_40_sessions",
+        "prior_pullback_from_40d_high_pct",
+        "prior_trough_age_40_sessions",
+        "prior_drawdown_to_trough_40_pct",
+        "prior_recovery_from_trough_40_pct",
+        "prior_v_recovery_fraction_40",
+        "prior_distribution_day_count_20",
+        "prior_churning_day_count_20",
+        "prior_failed_breakout_count_20",
     ]
     pd.testing.assert_series_equal(
         baseline_row[prior_features],
         mutated_row[prior_features],
         check_names=False,
     )
+
+
+def test_prior_chart_geometry_distinguishes_ordered_trend_and_v_recovery(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-08-01", periods=75, freq="D")
+    signal_position = 60
+
+    ordered = _source_frame(dates)
+    ordered_close = np.linspace(80.0, 119.0, 40)
+    prior_index = ordered.index[signal_position - 40 : signal_position]
+    ordered.loc[prior_index, "adjusted_close"] = ordered_close
+    ordered.loc[prior_index, "adjusted_high"] = ordered_close * 1.005
+    ordered.loc[prior_index, "adjusted_low"] = ordered_close * 0.995
+    _set_pass(ordered, signal_position)
+    ordered_row = _row_for_date(
+        calculate_identity_signals(ordered, dates, cfg_factory()),
+        dates[signal_position],
+    )
+
+    assert ordered_row["prior_trend_slope_20_pct_per_session"] > 0
+    assert ordered_row["prior_trend_r2_20"] > 0.99
+    assert ordered_row["prior_trend_efficiency_20"] == pytest.approx(1.0)
+    assert ordered_row["prior_positive_return_share_20"] == pytest.approx(1.0)
+    assert ordered_row["prior_peak_age_40_sessions"] == 0
+
+    v_shape = _source_frame(dates)
+    v_close = np.concatenate(
+        [
+            np.linspace(100.0, 120.0, 12),
+            np.linspace(116.0, 75.0, 10),
+            np.linspace(78.0, 116.0, 18),
+        ]
+    )
+    v_shape.loc[prior_index, "adjusted_close"] = v_close
+    v_shape.loc[prior_index, "adjusted_high"] = v_close + 1.0
+    v_shape.loc[prior_index, "adjusted_low"] = v_close - 1.0
+    _set_pass(v_shape, signal_position)
+    v_row = _row_for_date(
+        calculate_identity_signals(v_shape, dates, cfg_factory()),
+        dates[signal_position],
+    )
+
+    assert v_row["prior_drawdown_to_trough_40_pct"] < -35.0
+    assert v_row["prior_recovery_from_trough_40_pct"] > 50.0
+    assert v_row["prior_v_recovery_fraction_40"] > 0.80
+    assert v_row["prior_trough_age_40_sessions"] > 0
+
+
+def test_prior_distribution_churning_and_failed_breakout_counts_are_causal(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-11-01", periods=80, freq="D")
+    signal_position = 65
+    source = _source_frame(dates)
+    source["adjusted_close"] = 100.0
+    source["adjusted_high"] = 101.0
+    source["adjusted_low"] = 99.0
+    source["adjusted_volume"] = 1_000.0
+
+    churning_position = signal_position - 10
+    source.loc[source.index[churning_position], "adjusted_high"] = 102.0
+    source.loc[source.index[churning_position], "adjusted_low"] = 98.0
+    source.loc[source.index[churning_position], "adjusted_volume"] = 2_000.0
+
+    distribution_position = signal_position - 5
+    source.loc[source.index[distribution_position], "adjusted_close"] = 99.0
+    source.loc[source.index[distribution_position], "adjusted_high"] = 103.0
+    source.loc[source.index[distribution_position], "adjusted_low"] = 98.5
+    source.loc[source.index[distribution_position], "adjusted_volume"] = 2_000.0
+    _set_pass(source, signal_position)
+
+    row = _row_for_date(
+        calculate_identity_signals(source, dates, cfg_factory()),
+        dates[signal_position],
+    )
+    assert row["prior_distribution_day_count_20"] == 1
+    assert row["prior_churning_day_count_20"] == 1
+    assert row["prior_failed_breakout_count_20"] == 1
+
+
+def test_gap_inside_pattern_history_invalidates_ordered_features(cfg_factory) -> None:
+    dates = pd.date_range("2023-02-01", periods=80, freq="D")
+    signal_position = 65
+    source = _source_frame(dates)
+    source = source.loc[source["period_end_date"].ne(dates[50])].copy()
+    signal_index = source.index[source["period_end_date"].eq(dates[signal_position])][0]
+    _set_pass(source, source.index.get_loc(signal_index))
+
+    row = _row_for_date(
+        calculate_identity_signals(source, dates, cfg_factory()),
+        dates[signal_position],
+    )
+
+    assert pd.isna(row["prior_base_width_20_pct"])
+    assert pd.isna(row["prior_trend_r2_20"])
+    assert pd.isna(row["prior_v_recovery_fraction_40"])
+    assert pd.isna(row["prior_distribution_day_count_20"])
 
 
 @pytest.mark.parametrize(

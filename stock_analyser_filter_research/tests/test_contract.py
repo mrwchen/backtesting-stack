@@ -143,6 +143,7 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
         in sql_text
     )
     assert "objective_count + protected_count <= sample_count" in sql_text
+    assert "'none', 'A', 'B', 'C', 'D', 'E', 'multiple'" in sql_text
     assert (
         "matched_objective_count + matched_protected_count <= matched_labeled_count"
         in sql_text

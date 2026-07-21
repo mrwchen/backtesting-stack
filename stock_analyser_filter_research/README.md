@@ -1,4 +1,4 @@
-# Stock Analyser Filter Research V2.1 / C2
+# Stock Analyser Filter Research V2.2 / C3
 
 Dieses eigenstaendige Research-Programm untersucht kausale `false -> true`-
 Ereignisse des 8-von-8-Trend-Templates aus
@@ -22,7 +22,7 @@ berechnet bewusst keinen fiktiven Same-Close- oder Next-Open-Return.
 
 ## Getrennte Entry-Ziele
 
-V2.1 vermischt schwache und stark verlierende Signale nicht zu einem
+V2.2 vermischt schwache und stark verlierende Signale nicht zu einem
 Optimierungsziel:
 
 - `weak_5d`: In D+1 bis D+5 wird ausgehend vom Signaltags-Close nie +2 %
@@ -37,7 +37,7 @@ Intraday-Reihenfolge mit Tagesdaten unbekannt. Solche Faelle werden als
 Reihenfolgeziele zugeordnet. `deep_loss_5d`, `strong_5d` und `bad_5d` bleiben
 als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 
-## Feature-Gruppen A-C
+## Feature-Gruppen A-D
 
 - **A – Zustand am Signaltag:** Volume/21d, Volume/50d, Notional/21d,
   Notional/50d, Liquiditaet, RS, Triggerkontext, Trendgeometrie und Position zu
@@ -47,10 +47,19 @@ als Diagnosen erhalten, steuern die Auswahl aber nicht gemeinsam.
 - **C – Aktivitaetsverlauf bis D-1:** kurz-/mittelfristige Volume- und
   Notional-Verhaeltnisse, Up-Session-Anteile sowie Preis-Aktivitaets-
   Korrelationen.
+- **D – geordnete Chart- und Volumenmuster:** Basisbreite, logarithmische
+  Trendsteigung und R², Trend-Effizienz, Anteil positiver Sessions, Alter und
+  Abstand des letzten Hochs, Tiefe/Alter/Erholung des letzten V-Tiefs sowie
+  Distribution-, Churning- und Failed-Breakout-Zaehler.
 
-A, B und C sind bei der Auswahl gleichberechtigt. Es gibt keine irreversible
-Reihenfolge A -> B -> C. Pro Ziel werden hoechstens zwei einfache
-Quantilbedingungen gewaehlt und mit `OR` verknuepft. Weak- und Loss-First-
+A, B, C und D sind bei der Auswahl gleichberechtigt. Es gibt keine irreversible
+Reihenfolge A -> B -> C -> D. Neben einfachen Quantilbedingungen konkurrieren
+sechs vorab festgelegte Musterkandidaten: `flat_base`, `ordered_uptrend`,
+`pullback_from_high`, `v_recovery`, `volume_dry_up_breakout` und
+`distribution_top`. Die Teilbedingungen innerhalb eines solchen Musters
+werden zwingend mit `AND` verbunden. Maximal zwei vollstaendige Kandidaten
+werden pro Ziel mit `OR` verbunden; es gibt keine freie kombinatorische Suche
+nach beliebigen AND-Mustern. Weak- und Loss-First-
 Spezialregeln muessen nur ihr eigenes Ziel stabil anreichern. Eine valide
 Weak-Regel wird daher nicht mehr verworfen, nur weil sie kein Loss-First-Signal
 liefert. Ihre gemeinsame Entry-Union wird ausschliesslich auf Matchrate,
@@ -58,8 +67,11 @@ Labelabdeckung und Strong-Retention geprueft. Das Ranking maximiert
 `Objective-Capture - Protected-Rejection`; eine zweite Bedingung muss diesen
 Netto-Score um mindestens den konfigurierten Wert verbessern.
 
-Fundamentaldaten sind weiterhin nicht Teil von V2.1; Phase D folgt erst nach
-dieser methodischen Kalibrierung.
+Alle Vorlaufmerkmale verwenden nur zusammenhaengende Sessions bis D-1. Das
+Volume-Dry-up-Breakout-Muster kombiniert diesen Vorlauf mit Volumen und
+Breakout-Bestaetigung der Signaltagskerze; es ist deshalb wie alle A-Features
+erst nach dem Signaltags-Close entscheidbar. Fundamentaldaten sind weiterhin
+nicht Teil von C3.
 
 ## Walk-forward und neuer Holdout
 
@@ -160,7 +172,7 @@ nicht die D+1-geankerte sequenzielle Regelauswahl.
 
 Das Init-SQL besitzt ausschliesslich diese serviceeigenen Ergebnistabellen:
 
-- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-C-Features,
+- `stock_analyser_filter_research_signal_results`: Entry-Signale, A-D-Features,
   pfadbewusste Labels und finale Entry-Entscheidungen.
 - `stock_analyser_filter_research_early_cut_results`: genau drei kausale
   Landmark-Zeilen je Signal mit landmark-relativen Outcomes, intrinsischer
@@ -176,7 +188,7 @@ und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-Der inkompatible V2.1-Neuaufbau der freigegebenen, reproduzierbaren
+Der inkompatible V2.2-Neuaufbau der freigegebenen, reproduzierbaren
 Research-Tabellen erfolgt einmalig mit:
 
 ```bash

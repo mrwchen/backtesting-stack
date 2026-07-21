@@ -14,10 +14,13 @@ from stock_analyser_filter_research.contracts import (
     SIGNAL_COLUMNS,
 )
 from stock_analyser_filter_research.research import (
+    CompositeCondition,
     Condition,
     ConditionTemplate,
     ENTRY_SPECS,
     FoldResult,
+    PatternTemplate,
+    _Evaluator,
     _choose_sequential_early_prefixes,
     _sequential_policy_metrics,
     _sequential_policy_state,
@@ -204,7 +207,80 @@ def test_quantile_count_controls_template_grid() -> None:
     coarse = build_candidate_templates("entry_filter", quantile_count=4)
     fine = build_candidate_templates("entry_filter", quantile_count=20)
     assert len(coarse) < len(fine)
-    assert {item.quantile for item in coarse} == {0.25, 0.75}
+    atomic = [item for item in coarse if isinstance(item, ConditionTemplate)]
+    patterns = [item for item in coarse if isinstance(item, PatternTemplate)]
+    assert {item.quantile for item in atomic} == {0.25, 0.75}
+    assert {item.pattern_name for item in patterns} == {
+        "flat_base",
+        "ordered_uptrend",
+        "pullback_from_high",
+        "v_recovery",
+        "volume_dry_up_breakout",
+        "distribution_top",
+    }
+    assert all(
+        isinstance(item, ConditionTemplate)
+        for item in build_candidate_templates("early_cut", 1, quantile_count=4)
+    )
+
+
+def test_pattern_candidate_uses_and_inside_pattern_and_causal_thresholds(
+    cfg_factory,
+) -> None:
+    frame = _signals()
+    local = np.tile(np.arange(100), 11)
+    frame["pattern_left"] = np.where(local < 45, 0.0, 1.0)
+    frame["pattern_right"] = np.where((local >= 20) & (local < 65), 0.0, 1.0)
+    template = PatternTemplate(
+        "ENTRY_D_PATTERN_TEST",
+        "D",
+        "test_pattern",
+        (
+            ConditionTemplate(
+                "ENTRY_D_PATTERN_TEST_C1", "D", "pattern_left", "le", 0.30
+            ),
+            ConditionTemplate(
+                "ENTRY_D_PATTERN_TEST_C2", "D", "pattern_right", "le", 0.30
+            ),
+        ),
+    )
+    evaluator = _Evaluator(frame, ENTRY_SPECS[0], (template,), _cfg(cfg_factory))
+
+    candidate = evaluator.evaluate((template,))
+
+    assert len(candidate.final_conditions) == 1
+    compiled = candidate.final_conditions[0]
+    assert isinstance(compiled, CompositeCondition)
+    expected = compiled.clauses[0].matches(frame) & compiled.clauses[1].matches(frame)
+    union = compiled.clauses[0].matches(frame) | compiled.clauses[1].matches(frame)
+    pd.testing.assert_series_equal(compiled.matches(frame), expected)
+    assert not expected.equals(union)
+    assert " AND " in compiled.text
+    assert all(
+        condition.threshold_fit_end_date == date(2024, 12, 31)
+        for condition in compiled.clauses
+    )
+
+
+def test_structural_minimum_prevents_zero_count_distribution_clause(
+    cfg_factory,
+) -> None:
+    frame = _signals()
+    frame["distribution_count"] = 0.0
+    template = ConditionTemplate(
+        "COUNT_RULE", "D", "distribution_count", "ge", 0.80, 1.0
+    )
+
+    condition = fit_template(
+        frame,
+        template,
+        "signal_date",
+        date(2024, 12, 31),
+    )
+
+    assert condition is not None
+    assert condition.threshold == 1.0
+    assert not condition.matches(frame).any()
 
 
 def test_a_b_c_templates_compete_globally_and_future_diagnostic_is_frozen(

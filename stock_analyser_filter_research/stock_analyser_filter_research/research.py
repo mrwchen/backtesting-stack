@@ -74,6 +74,7 @@ class ConditionTemplate:
     feature_name: str
     operator: str
     quantile: float
+    minimum_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,49 @@ class Condition:
 
 
 @dataclass(frozen=True)
+class PatternTemplate:
+    rule_id: str
+    feature_group: str
+    pattern_name: str
+    clauses: tuple[ConditionTemplate, ...]
+
+
+@dataclass(frozen=True)
+class CompositeCondition:
+    rule_id: str
+    feature_group: str
+    pattern_name: str
+    clauses: tuple[Condition, ...]
+
+    @property
+    def text(self) -> str:
+        return f"{self.pattern_name} (" + " AND ".join(
+            clause.text for clause in self.clauses
+        ) + ")"
+
+    @property
+    def threshold_fit_end_date(self) -> date | None:
+        dates = [
+            clause.threshold_fit_end_date
+            for clause in self.clauses
+            if clause.threshold_fit_end_date is not None
+        ]
+        return max(dates) if dates else None
+
+    def matches(self, frame: pd.DataFrame) -> pd.Series:
+        result = pd.Series(True, index=frame.index, dtype=bool)
+        if not self.clauses:
+            return pd.Series(False, index=frame.index, dtype=bool)
+        for clause in self.clauses:
+            result &= clause.matches(frame)
+        return result
+
+
+CandidateTemplate = ConditionTemplate | PatternTemplate
+ExecutableCondition = Condition | CompositeCondition
+
+
+@dataclass(frozen=True)
 class WalkForwardFold:
     year: int
     start_date: date
@@ -113,16 +157,16 @@ class WalkForwardFold:
 @dataclass
 class FoldResult:
     fold: WalkForwardFold
-    conditions: tuple[Condition, ...]
+    conditions: tuple[ExecutableCondition, ...]
     metrics: dict[str, object]
 
 
 @dataclass
 class CandidateEvaluation:
-    templates: tuple[ConditionTemplate, ...]
+    templates: tuple[CandidateTemplate, ...]
     fold_results: tuple[FoldResult, ...]
     pooled_metrics: dict[str, object]
-    final_conditions: tuple[Condition, ...]
+    final_conditions: tuple[ExecutableCondition, ...]
     development_metrics: dict[str, object]
     passes_development_gates: bool
     passes_stability_gates: bool
@@ -330,7 +374,9 @@ def _baseline_metrics(metrics: Mapping[str, object]) -> dict[str, object]:
     )
 
 
-def _combined_mask(frame: pd.DataFrame, conditions: Iterable[Condition]) -> pd.Series:
+def _combined_mask(
+    frame: pd.DataFrame, conditions: Iterable[ExecutableCondition]
+) -> pd.Series:
     result = pd.Series(False, index=frame.index, dtype=bool)
     for condition in conditions:
         result |= condition.matches(frame)
@@ -341,7 +387,7 @@ def build_candidate_templates(
     decision_family: str,
     landmark_day: int | None = None,
     quantile_count: int = 20,
-) -> tuple[ConditionTemplate, ...]:
+) -> tuple[CandidateTemplate, ...]:
     if decision_family == "entry_filter":
         groups = ENTRY_FEATURE_GROUPS
         prefix = "ENTRY"
@@ -355,7 +401,7 @@ def build_candidate_templates(
     grid = np.linspace(0.0, 1.0, quantile_count + 1)[1:-1]
     lower = tuple(float(value) for value in grid if value <= 0.30 + 1e-12)
     upper = tuple(float(value) for value in grid if value >= 0.70 - 1e-12)
-    templates: list[ConditionTemplate] = []
+    templates: list[CandidateTemplate] = []
     for group, features in groups.items():
         for feature in features:
             for quantile, operator in (
@@ -373,7 +419,91 @@ def build_candidate_templates(
                         quantile,
                     )
                 )
+    if decision_family == "entry_filter":
+        templates.extend(_entry_pattern_templates())
     return tuple(sorted(templates, key=lambda item: item.rule_id))
+
+
+def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
+    def pattern(
+        name: str,
+        clauses: tuple[tuple[str, str, float, float | None], ...],
+    ) -> PatternTemplate:
+        rule_id = f"ENTRY_D_PATTERN_{name}"
+        return PatternTemplate(
+            rule_id,
+            "D",
+            name.lower(),
+            tuple(
+                ConditionTemplate(
+                    f"{rule_id}_C{number}",
+                    "D",
+                    feature_name,
+                    operator,
+                    quantile,
+                    minimum_threshold,
+                )
+                for number, (
+                    feature_name,
+                    operator,
+                    quantile,
+                    minimum_threshold,
+                ) in enumerate(clauses, start=1)
+            ),
+        )
+
+    return (
+        pattern(
+            "FLAT_BASE",
+            (
+                ("prior_base_width_20_pct", "le", 0.30, None),
+                ("prior_trend_efficiency_20", "le", 0.30, None),
+                ("prior_range_compression_10_vs_10_ratio", "le", 0.30, None),
+            ),
+        ),
+        pattern(
+            "ORDERED_UPTREND",
+            (
+                ("prior_trend_slope_20_pct_per_session", "ge", 0.70, None),
+                ("prior_trend_r2_20", "ge", 0.70, None),
+                ("prior_positive_return_share_20", "ge", 0.70, None),
+                ("prior_max_drawdown_21d_pct", "ge", 0.70, None),
+            ),
+        ),
+        pattern(
+            "PULLBACK_FROM_HIGH",
+            (
+                ("prior_pullback_from_40d_high_pct", "le", 0.30, None),
+                ("prior_peak_age_40_sessions", "ge", 0.30, None),
+                ("signal_close_vs_prior_20d_high_pct", "ge", 0.70, None),
+            ),
+        ),
+        pattern(
+            "V_RECOVERY",
+            (
+                ("prior_drawdown_to_trough_40_pct", "le", 0.30, None),
+                ("prior_v_recovery_fraction_40", "ge", 0.70, None),
+                ("prior_trough_age_40_sessions", "ge", 0.30, None),
+            ),
+        ),
+        pattern(
+            "VOLUME_DRY_UP_BREAKOUT",
+            (
+                ("prior_volume_sma5_vs21_ratio", "le", 0.20, None),
+                ("prior_range_compression_10_vs_10_ratio", "le", 0.30, None),
+                ("adjusted_volume_vs_sma21_prior_ratio", "ge", 0.70, None),
+                ("signal_close_vs_prior_20d_high_pct", "ge", 0.70, None),
+            ),
+        ),
+        pattern(
+            "DISTRIBUTION_TOP",
+            (
+                ("prior_distribution_day_count_20", "ge", 0.80, 1.0),
+                ("prior_failed_breakout_count_20", "ge", 0.80, 1.0),
+                ("prior_close_vs_63d_high_pct", "ge", 0.70, None),
+            ),
+        ),
+    )
 
 
 def build_walk_forward_folds(cfg: Config) -> tuple[WalkForwardFold, ...]:
@@ -403,6 +533,8 @@ def fit_template(
     )
     if not np.isfinite(threshold):
         return None
+    if template.minimum_threshold is not None:
+        threshold = max(threshold, template.minimum_threshold)
     return Condition(
         template.rule_id,
         template.feature_group,
@@ -591,15 +723,27 @@ class _Evaluator:
         self,
         frame: pd.DataFrame,
         spec: ObjectiveSpec,
-        templates: tuple[ConditionTemplate, ...],
+        templates: tuple[CandidateTemplate, ...],
         cfg: Config,
     ):
         self.frame = _universe(frame, spec)
         self.spec = spec
         self.templates = templates
+        self.atomic_templates = tuple(
+            clause
+            for template in templates
+            for clause in (
+                template.clauses
+                if isinstance(template, PatternTemplate)
+                else (template,)
+            )
+        )
         self.cfg = cfg
         self.folds = build_walk_forward_folds(cfg)
         self._fit_cache: dict[tuple[int | str, str], Condition | None] = {}
+        self._compiled_cache: dict[
+            tuple[int | str, str], ExecutableCondition | None
+        ] = {}
         self._eval_cache: dict[tuple[str, ...], CandidateEvaluation] = {}
         self._dates = pd.to_datetime(
             self.frame[self.spec.date_column], errors="coerce"
@@ -649,7 +793,7 @@ class _Evaluator:
                 )
                 feature_templates = tuple(
                     item
-                    for item in self.templates
+                    for item in self.atomic_templates
                     if item.feature_name == template.feature_name
                 )
                 quantiles = tuple(sorted({item.quantile for item in feature_templates}))
@@ -666,6 +810,8 @@ class _Evaluator:
                     }
                 self._threshold_cache[threshold_key] = thresholds
             threshold = self._threshold_cache[threshold_key].get(template.quantile)
+            if threshold is not None and template.minimum_threshold is not None:
+                threshold = max(threshold, template.minimum_threshold)
             self._fit_cache[key] = (
                 None
                 if threshold is None
@@ -681,7 +827,36 @@ class _Evaluator:
             )
         return self._fit_cache[key]
 
-    def evaluate(self, templates: tuple[ConditionTemplate, ...]) -> CandidateEvaluation:
+    def _compile(
+        self, template: CandidateTemplate, fold: WalkForwardFold | None
+    ) -> ExecutableCondition | None:
+        key: tuple[int | str, str] = (
+            (fold.year if fold else "final"),
+            template.rule_id,
+        )
+        if key not in self._compiled_cache:
+            if isinstance(template, ConditionTemplate):
+                compiled: ExecutableCondition | None = self._fit(template, fold)
+            else:
+                clauses = tuple(self._fit(clause, fold) for clause in template.clauses)
+                compiled = (
+                    None
+                    if any(clause is None for clause in clauses)
+                    else CompositeCondition(
+                        template.rule_id,
+                        template.feature_group,
+                        template.pattern_name,
+                        tuple(
+                            clause for clause in clauses if clause is not None
+                        ),
+                    )
+                )
+            self._compiled_cache[key] = compiled
+        return self._compiled_cache[key]
+
+    def evaluate(
+        self, templates: tuple[CandidateTemplate, ...]
+    ) -> CandidateEvaluation:
         key = tuple(item.rule_id for item in templates)
         if key in self._eval_cache:
             return self._eval_cache[key]
@@ -693,7 +868,7 @@ class _Evaluator:
             conditions = tuple(
                 condition
                 for template in templates
-                if (condition := self._fit(template, fold)) is not None
+                if (condition := self._compile(template, fold)) is not None
             )
             matched = pd.Series(False, index=evaluation.index, dtype=bool)
             for condition in conditions:
@@ -709,7 +884,7 @@ class _Evaluator:
         final_conditions = tuple(
             condition
             for template in templates
-            if (condition := self._fit(template, None)) is not None
+            if (condition := self._compile(template, None)) is not None
         )
         stability_pass, stability = _stability(fold_results, self.cfg)
         # Selection is exclusively based on causal walk-forward folds.  The
@@ -752,7 +927,7 @@ def _rank(candidate: CandidateEvaluation) -> tuple[object, ...]:
 def select_objective(
     frame: pd.DataFrame,
     spec: ObjectiveSpec,
-    templates: tuple[ConditionTemplate, ...],
+    templates: tuple[CandidateTemplate, ...],
     cfg: Config,
 ) -> ObjectiveSelection:
     evaluator = _Evaluator(frame, spec, templates, cfg)
@@ -774,7 +949,9 @@ def select_objective(
         for added_evaluation in beam:
             added = added_evaluation.templates[0]
             if added.rule_id == first.rule_id or (
-                added.feature_name == first.feature_name
+                isinstance(added, ConditionTemplate)
+                and isinstance(first, ConditionTemplate)
+                and added.feature_name == first.feature_name
                 and added.operator == first.operator
             ):
                 continue
@@ -1032,7 +1209,7 @@ def _policy_period_mask(
 
 def _sequential_policy_state(
     frame: pd.DataFrame,
-    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+    conditions_by_day: Mapping[int, tuple[ExecutableCondition, ...]],
     *,
     start: date | None = None,
     end: date | None = None,
@@ -1160,7 +1337,7 @@ def _anchored_actual_metrics_from_sets(
 
 def _sequential_policy_metrics(
     frame: pd.DataFrame,
-    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+    conditions_by_day: Mapping[int, tuple[ExecutableCondition, ...]],
     *,
     start: date | None,
     end: date | None,
@@ -1209,10 +1386,10 @@ def _early_conditions_by_day(
     prefix_lengths: Mapping[int, Mapping[str, int]],
     *,
     fold_index: int | None = None,
-) -> dict[int, tuple[Condition, ...]]:
-    result: dict[int, tuple[Condition, ...]] = {}
+) -> dict[int, tuple[ExecutableCondition, ...]]:
+    result: dict[int, tuple[ExecutableCondition, ...]] = {}
     for day in EARLY_CUT_LANDMARK_DAYS:
-        conditions: list[Condition] = []
+        conditions: list[ExecutableCondition] = []
         for objective, selection in selections[day].items():
             prefix = selection.prefixes[prefix_lengths[day][objective]]
             selected_conditions = (
@@ -1444,7 +1621,7 @@ def _choose_sequential_early_prefixes(
 
 
 def _row_matches(
-    frame: pd.DataFrame, conditions: tuple[Condition, ...]
+    frame: pd.DataFrame, conditions: tuple[ExecutableCondition, ...]
 ) -> tuple[pd.Series, list[str | None], list[str | None]]:
     masks = [condition.matches(frame) for condition in conditions]
     combined = pd.Series(False, index=frame.index, dtype=bool)
@@ -1614,12 +1791,12 @@ def apply_early_decisions(
     return result.loc[:, EARLY_CUT_COLUMNS]
 
 
-def _rule_text(conditions: tuple[Condition, ...]) -> str:
+def _rule_text(conditions: tuple[ExecutableCondition, ...]) -> str:
     return " OR ".join(item.text for item in conditions) or "no exclusion condition"
 
 
 def _sequential_rule_text(
-    conditions_by_day: Mapping[int, tuple[Condition, ...]],
+    conditions_by_day: Mapping[int, tuple[ExecutableCondition, ...]],
 ) -> str:
     parts = [
         f"D+{day}: " + " OR ".join(condition.text for condition in conditions)
@@ -1630,7 +1807,7 @@ def _sequential_rule_text(
 
 
 def _sequential_template_text(
-    templates_by_day: Mapping[int, tuple[ConditionTemplate, ...]],
+    templates_by_day: Mapping[int, tuple[CandidateTemplate, ...]],
 ) -> str:
     parts = [
         f"D+{day}: {_template_text(templates)}"
@@ -1641,12 +1818,14 @@ def _sequential_template_text(
 
 
 def _feature_fields(
-    conditions: tuple[Condition, ...],
+    conditions: tuple[ExecutableCondition, ...],
 ) -> tuple[str, str | None, str | None, float | None, float | None]:
     if not conditions:
         return "none", None, None, None, None
     if len(conditions) == 1:
         item = conditions[0]
+        if isinstance(item, CompositeCondition):
+            return item.feature_group, None, None, None, None
         return (
             item.feature_group,
             item.feature_name,
@@ -1665,12 +1844,14 @@ def _feature_fields(
 
 
 def _template_fields(
-    templates: tuple[ConditionTemplate, ...],
+    templates: tuple[CandidateTemplate, ...],
 ) -> tuple[str, str | None, str | None, float | None, float | None]:
     if not templates:
         return "none", None, None, None, None
     if len(templates) == 1:
         item = templates[0]
+        if isinstance(item, PatternTemplate):
+            return item.feature_group, None, None, None, None
         return item.feature_group, item.feature_name, item.operator, item.quantile, None
     groups = {item.feature_group for item in templates}
     return (
@@ -1682,13 +1863,23 @@ def _template_fields(
     )
 
 
-def _template_text(templates: tuple[ConditionTemplate, ...]) -> str:
+def _template_text(templates: tuple[CandidateTemplate, ...]) -> str:
     parts = []
     for item in templates:
-        symbol = "<=" if item.operator == "le" else ">="
-        parts.append(
-            f"{item.feature_name} {symbol} causal Q{item.quantile:.4g} threshold"
-        )
+        clauses = item.clauses if isinstance(item, PatternTemplate) else (item,)
+        clause_text = []
+        for clause in clauses:
+            symbol = "<=" if clause.operator == "le" else ">="
+            threshold_text = f"causal Q{clause.quantile:.4g} threshold"
+            if clause.minimum_threshold is not None:
+                threshold_text = (
+                    f"max({threshold_text}, {clause.minimum_threshold:.10g})"
+                )
+            clause_text.append(f"{clause.feature_name} {symbol} {threshold_text}")
+        text = " AND ".join(clause_text)
+        if isinstance(item, PatternTemplate):
+            text = f"{item.pattern_name} ({text})"
+        parts.append(text)
     return " OR ".join(parts) or "no exclusion condition"
 
 
@@ -1697,7 +1888,7 @@ def _rule_row(
     rule_id: str,
     result_kind: str,
     spec: ObjectiveSpec,
-    conditions: tuple[Condition, ...],
+    conditions: tuple[ExecutableCondition, ...],
     evaluation_scope: str,
     scope_year: int | None,
     period_start: date | None,
@@ -1711,7 +1902,7 @@ def _rule_row(
     stability: Mapping[str, object] | None = None,
     selection_order: int | None = None,
     threshold_fit_end_date: date | None = None,
-    templates: tuple[ConditionTemplate, ...] = (),
+    templates: tuple[CandidateTemplate, ...] = (),
     rule_text_override: str | None = None,
 ) -> dict[str, object]:
     feature_group, feature_name, operator, quantile, threshold = (
@@ -1743,7 +1934,12 @@ def _rule_row(
         "passes_holdout": passes_holdout,
         "passes_development_gates": passes_development_gates,
         "passes_stability_gates": passes_stability_gates,
-        "component_count": len(conditions) if conditions else len(templates),
+        "component_count": sum(
+            len(item.clauses)
+            if isinstance(item, (CompositeCondition, PatternTemplate))
+            else 1
+            for item in (conditions if conditions else templates)
+        ),
         **metrics,
         "eligible_fold_count": int(stats.get("eligible_fold_count", 0) or 0),
         "positive_lift_fold_count": int(stats.get("positive_lift_fold_count", 0) or 0),
@@ -1762,7 +1958,7 @@ def _rule_row(
 def _scope_metrics(
     frame: pd.DataFrame,
     spec: ObjectiveSpec,
-    conditions: tuple[Condition, ...],
+    conditions: tuple[ExecutableCondition, ...],
     start: date | None,
     end: date | None,
     available_through: date,
@@ -1777,8 +1973,10 @@ def _scope_metrics(
     )
 
 
-def _unique_conditions(items: Iterable[Condition]) -> tuple[Condition, ...]:
-    result: list[Condition] = []
+def _unique_conditions(
+    items: Iterable[ExecutableCondition],
+) -> tuple[ExecutableCondition, ...]:
+    result: list[ExecutableCondition] = []
     seen: set[str] = set()
     for item in items:
         if item.rule_id not in seen:
@@ -1788,9 +1986,9 @@ def _unique_conditions(items: Iterable[Condition]) -> tuple[Condition, ...]:
 
 
 def _unique_templates(
-    items: Iterable[ConditionTemplate],
-) -> tuple[ConditionTemplate, ...]:
-    result: list[ConditionTemplate] = []
+    items: Iterable[CandidateTemplate],
+) -> tuple[CandidateTemplate, ...]:
+    result: list[CandidateTemplate] = []
     seen: set[str] = set()
     for item in items:
         if item.rule_id not in seen:
@@ -1833,7 +2031,7 @@ def _append_final_union_rows(
     holdout_dates = trading_dates[trading_dates.date > cfg.holdout_cutoff_date]
     holdout_start = holdout_dates[0].date() if len(holdout_dates) else None
     as_of = trading_dates[-1].date() if len(trading_dates) else cfg.holdout_cutoff_date
-    union_fold_conditions: list[tuple[Condition, ...]] = []
+    union_fold_conditions: list[tuple[ExecutableCondition, ...]] = []
     reference = chosen[objectives[0]].fold_results
     for fold_index in range(len(reference)):
         union_fold_conditions.append(
@@ -2329,7 +2527,8 @@ def build_rule_results(
         base_id = f"{spec.decision_family.upper()}_{spec.objective.upper()}" + (
             f"_D{spec.landmark_day}" if spec.landmark_day else ""
         )
-        # Candidate singleton pooled rows keep every A/B/C/E template visible without leaking diagnostics into selection.
+        # Singleton rows keep every A/B/C/D/E candidate visible without
+        # leaking diagnostic or holdout results into selection.
         for candidate in selection.candidates:
             if len(candidate.templates) != 1:
                 continue

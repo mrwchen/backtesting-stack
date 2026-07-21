@@ -173,7 +173,18 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(contracts, ("adjusted_volume",), "int8", nullable=True)
     _add_column_contracts(
-        contracts, ("rs_rating", "prior_7_of_8_count_10d"), "int2", nullable=True
+        contracts,
+        (
+            "rs_rating",
+            "prior_7_of_8_count_10d",
+            "prior_peak_age_40_sessions",
+            "prior_trough_age_40_sessions",
+            "prior_distribution_day_count_20",
+            "prior_churning_day_count_20",
+            "prior_failed_breakout_count_20",
+        ),
+        "int2",
+        nullable=True,
     )
     _add_column_contracts(
         contracts, ("sessions_since_previous_pass",), "int4", nullable=True
