@@ -978,6 +978,68 @@ def test_early_decisions_are_sequential_across_days_and_identities() -> None:
     assert inactive["cut_reason"].isna().all()
 
 
+def test_early_policy_normalizes_later_rows_without_d1_anchor_and_ignores_management() -> None:
+    empty = SimpleNamespace(final_conditions=())
+    selection = SimpleNamespace(selected=empty, prefixes=(empty,))
+    summary = SimpleNamespace(
+        early_cut={
+            day: {
+                "stagnant_to_day5": selection,
+                "loss_first_to_day5": selection,
+            }
+            for day in (1, 2, 3)
+        },
+        early_cut_prefix_lengths={
+            day: {
+                "stagnant_to_day5": 0,
+                "loss_first_to_day5": 0,
+            }
+            for day in (1, 2, 3)
+        },
+    )
+    rows = []
+    signal_date = pd.Timestamp("2024-01-02")
+    for day in (1, 2, 3, 5, 20, 30):
+        is_early = day <= 3
+        rows.append(
+            {
+                "signal_date": signal_date,
+                "landmark_day": day,
+                "landmark_date": signal_date + pd.offsets.BDay(day),
+                "symbol": "ORPHAN",
+                "exchange": "NYSE",
+                "cik": 3,
+                "eligible_at_landmark": day != 1,
+                "active_at_landmark": is_early and day != 1,
+                "prior_policy_cut_day": pd.NA,
+                "cut_decision": (
+                    "not_eligible"
+                    if day == 1
+                    else "hold" if is_early else "not_evaluable"
+                ),
+                "include_stagnation_filter": is_early and day != 1,
+                "include_loss_filter": is_early and day != 1,
+                "include_final": is_early and day != 1,
+                "management_include_final": not is_early,
+                "management_decision": "not_evaluable" if is_early else "hold",
+                E_FEATURE: 1.0,
+            }
+        )
+    landmarks = pd.DataFrame(rows, columns=EARLY_CUT_COLUMNS)
+
+    decided = apply_early_decisions(landmarks, summary)
+
+    early = decided.loc[decided["landmark_day"].le(3)]
+    assert not early["eligible_at_landmark"].astype(bool).any()
+    assert not early["active_at_landmark"].astype(bool).any()
+    assert early["cut_decision"].eq("not_eligible").all()
+    management = decided.loc[decided["landmark_day"].isin((5, 20, 30))]
+    assert management["eligible_at_landmark"].astype(bool).all()
+    assert management["management_include_final"].astype(bool).all()
+    assert management["management_decision"].eq("hold").all()
+    assert management["cut_decision"].eq("not_evaluable").all()
+
+
 def _actual_landmark_metric_frame() -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     signal_date = pd.Timestamp("2024-01-02")

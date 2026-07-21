@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+import logging
 from math import ceil
 from typing import Iterable, Mapping
 
@@ -20,6 +21,9 @@ from .contracts import (
     RULE_COLUMNS,
     SIGNAL_COLUMNS,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 POLICY_KEY_COLUMNS = ("signal_date", *IDENTITY_COLUMNS)
@@ -2653,9 +2657,44 @@ def apply_early_decisions(
         result.loc[cut_indices, "cut_decision"] = "cut"
         result.loc[rows, "cut_reason"] = reasons
         result.loc[local.index[~cut], "cut_reason"] = pd.NA
-    expected_active = eligible & result["prior_policy_cut_day"].isna()
-    if not _truthy(result["active_at_landmark"]).equals(expected_active):
+    policy_active = pd.Series(False, index=result.index, dtype=bool)
+    for day in EARLY_CUT_LANDMARK_DAYS:
+        policy_active |= active_masks[day]
+    if not _truthy(result["active_at_landmark"]).equals(policy_active):
         raise AssertionError("sequential early-cut active state is inconsistent")
+    # A later landmark can be intrinsically evaluable even when its D+1 row
+    # was not part of the anchor cohort (for example around sparse identity
+    # history). Such a row is not eligible for the sequential D+1 -> D+3
+    # policy. Persist that policy eligibility explicitly instead of treating
+    # the later row as active without an anchor.
+    non_anchored = (
+        eligible
+        & ~policy_active
+        & result["prior_policy_cut_day"].isna()
+    )
+    if non_anchored.any():
+        log.info(
+            "Excluded %d intrinsically eligible D2/D3 rows without an active D1 policy anchor",
+            int(non_anchored.sum()),
+        )
+        result.loc[non_anchored, "eligible_at_landmark"] = False
+        result.loc[non_anchored, "cut_decision"] = "not_eligible"
+        result.loc[non_anchored, "include_stagnation_filter"] = False
+        result.loc[non_anchored, "include_loss_filter"] = False
+        result.loc[non_anchored, "include_final"] = False
+        result.loc[non_anchored, "stagnation_matched_rule_ids"] = pd.NA
+        result.loc[non_anchored, "loss_matched_rule_ids"] = pd.NA
+        result.loc[non_anchored, "matched_rule_ids"] = pd.NA
+        result.loc[non_anchored, "cut_reason"] = pd.NA
+    expected_active = (
+        _truthy(result["eligible_at_landmark"])
+        & early_rows
+        & result["prior_policy_cut_day"].isna()
+    )
+    if not policy_active.equals(expected_active):
+        raise AssertionError(
+            "sequential early-cut policy eligibility is inconsistent"
+        )
     cuts = result.loc[
         result["cut_decision"].astype("string").eq("cut"),
         [*POLICY_KEY_COLUMNS, "landmark_day"],
