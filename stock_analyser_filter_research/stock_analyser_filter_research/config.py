@@ -69,6 +69,9 @@ class Config:
     weak_5d_max_gain_pct: float
     strong_5d_min_gain_pct: float
     deep_loss_5d_max_loss_pct: float
+    hard_stop_5d_max_loss_pct: float
+    stagnant_5d_max_return_pct: float
+    continuation_winner_min_return_pct: float
     terminal_stagnant_5d_max_return_pct: float
     terminal_winner_5d_min_return_pct: float
 
@@ -180,6 +183,15 @@ class Config:
             weak_5d_max_gain_pct=_env_float("WEAK_5D_MAX_GAIN_PCT", 2.0),
             strong_5d_min_gain_pct=_env_float("STRONG_5D_MIN_GAIN_PCT", 5.0),
             deep_loss_5d_max_loss_pct=_env_float("DEEP_LOSS_5D_MAX_LOSS_PCT", -5.0),
+            hard_stop_5d_max_loss_pct=_env_float(
+                "HARD_STOP_5D_MAX_LOSS_PCT", -10.0
+            ),
+            stagnant_5d_max_return_pct=_env_float(
+                "STAGNANT_5D_MAX_RETURN_PCT", 0.0
+            ),
+            continuation_winner_min_return_pct=_env_float(
+                "CONTINUATION_WINNER_MIN_RETURN_PCT", 5.0
+            ),
             terminal_stagnant_5d_max_return_pct=_env_float(
                 "TERMINAL_STAGNANT_5D_MAX_RETURN_PCT", 1.0
             ),
@@ -187,8 +199,8 @@ class Config:
                 "TERMINAL_WINNER_5D_MIN_RETURN_PCT", 3.0
             ),
             quantile_count=_env_int("QUANTILE_COUNT", 10),
-            max_conditions_per_objective=_env_int("MAX_CONDITIONS_PER_OBJECTIVE", 2),
-            rule_search_beam_width=_env_int("RULE_SEARCH_BEAM_WIDTH", 20),
+            max_conditions_per_objective=_env_int("MAX_CONDITIONS_PER_OBJECTIVE", 3),
+            rule_search_beam_width=_env_int("RULE_SEARCH_BEAM_WIDTH", 30),
             walk_forward_first_year=_env_int("WALK_FORWARD_FIRST_YEAR", 2020),
             min_walk_forward_folds=_env_int("MIN_WALK_FORWARD_FOLDS", 4),
             min_stable_fold_fraction=_env_float("MIN_STABLE_FOLD_FRACTION", 0.75),
@@ -252,6 +264,11 @@ class Config:
             "WEAK_5D_MAX_GAIN_PCT": self.weak_5d_max_gain_pct,
             "STRONG_5D_MIN_GAIN_PCT": self.strong_5d_min_gain_pct,
             "DEEP_LOSS_5D_MAX_LOSS_PCT": self.deep_loss_5d_max_loss_pct,
+            "HARD_STOP_5D_MAX_LOSS_PCT": self.hard_stop_5d_max_loss_pct,
+            "STAGNANT_5D_MAX_RETURN_PCT": self.stagnant_5d_max_return_pct,
+            "CONTINUATION_WINNER_MIN_RETURN_PCT": (
+                self.continuation_winner_min_return_pct
+            ),
             "TERMINAL_STAGNANT_5D_MAX_RETURN_PCT": (
                 self.terminal_stagnant_5d_max_return_pct
             ),
@@ -281,6 +298,13 @@ class Config:
             raise ValueError("STRONG_5D_MIN_GAIN_PCT must exceed WEAK_5D_MAX_GAIN_PCT")
         if self.deep_loss_5d_max_loss_pct >= 0:
             raise ValueError("DEEP_LOSS_5D_MAX_LOSS_PCT must be negative")
+        if self.hard_stop_5d_max_loss_pct >= self.deep_loss_5d_max_loss_pct:
+            raise ValueError(
+                "HARD_STOP_5D_MAX_LOSS_PCT must be more negative than "
+                "DEEP_LOSS_5D_MAX_LOSS_PCT"
+            )
+        if self.continuation_winner_min_return_pct <= 0:
+            raise ValueError("CONTINUATION_WINNER_MIN_RETURN_PCT must be > 0")
         if (
             self.terminal_winner_5d_min_return_pct
             <= self.terminal_stagnant_5d_max_return_pct
@@ -291,8 +315,8 @@ class Config:
             )
         if not 4 <= self.quantile_count <= 20:
             raise ValueError("QUANTILE_COUNT must be between 4 and 20")
-        if not 1 <= self.max_conditions_per_objective <= 2:
-            raise ValueError("MAX_CONDITIONS_PER_OBJECTIVE must be 1 or 2")
+        if not 1 <= self.max_conditions_per_objective <= 3:
+            raise ValueError("MAX_CONDITIONS_PER_OBJECTIVE must be between 1 and 3")
         if self.rule_search_beam_width < 1:
             raise ValueError("RULE_SEARCH_BEAM_WIDTH must be >= 1")
         if not (

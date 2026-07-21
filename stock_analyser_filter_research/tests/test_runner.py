@@ -130,7 +130,7 @@ def test_worker_imports_shared_snapshot_and_reads_bounded_batches(
     assert result.early_cuts.empty
 
 
-def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
+def test_worker_preserves_all_six_landmarks_per_signal_across_batches(
     cfg_factory, monkeypatch
 ) -> None:
     cfg = cfg_factory(worker_identity_batch_size=2)
@@ -184,8 +184,8 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
         signals["symbol"] = [identity[0] for identity in identities]
         signals["exchange"] = [identity[1] for identity in identities]
         signals["cik"] = [identity[2] for identity in identities]
-        early_cuts = empty_early_cut_frame().reindex(range(3 * signal_count))
-        early_cuts["landmark_day"] = [1, 2, 3] * signal_count
+        early_cuts = empty_early_cut_frame().reindex(range(6 * signal_count))
+        early_cuts["landmark_day"] = [1, 2, 3, 5, 20, 30] * signal_count
         return CalculationBatchResult(signals=signals, early_cut=early_cuts)
 
     monkeypatch.setattr(runner, "calculate_signal_batch", fake_calculate)
@@ -210,17 +210,26 @@ def test_worker_preserves_exactly_three_landmarks_per_signal_across_batches(
         (pd.Timestamp("2020-01-02").date(), "B", "NYSE", 2),
         (pd.Timestamp("2020-01-02").date(), "C", "NASDAQ", 3),
     ]
-    assert len(result.early_cuts) == 9
+    assert len(result.early_cuts) == 18
     assert result.early_cuts["landmark_day"].tolist() == [
         1,
         2,
         3,
+        5,
+        20,
+        30,
         1,
         2,
         3,
+        5,
+        20,
+        30,
         1,
         2,
         3,
+        5,
+        20,
+        30,
     ]
 
 
@@ -430,7 +439,7 @@ def test_run_with_no_source_work_returns_empty_without_research_or_write(
     ]
 
 
-def test_run_rejects_any_landmark_count_other_than_three_per_signal(
+def test_run_rejects_any_landmark_count_other_than_six_per_signal(
     cfg_factory, monkeypatch
 ) -> None:
     cfg = cfg_factory(max_workers=1)
@@ -496,6 +505,6 @@ def test_run_rejects_any_landmark_count_other_than_three_per_signal(
 
     with pytest.raises(
         RuntimeError,
-        match="expected 6 rows for 2 signals, received 5",
+        match="expected 12 rows for 2 signals, received 5",
     ):
         runner.run(cfg)

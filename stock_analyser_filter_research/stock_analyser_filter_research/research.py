@@ -13,6 +13,8 @@ from .contracts import (
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     EARLY_CUT_LANDMARK_DAYS,
+    MANAGEMENT_LANDMARK_DAYS,
+    POSITION_LANDMARK_DAYS,
     ENTRY_FEATURE_GROUPS,
     IDENTITY_COLUMNS,
     RULE_COLUMNS,
@@ -29,6 +31,7 @@ class ObjectiveSpec:
     objective: str
     protected_outcome: str
     landmark_day: int | None = None
+    label_end_column_name: str | None = None
 
     @property
     def date_column(self) -> str:
@@ -40,6 +43,8 @@ class ObjectiveSpec:
 
     @property
     def label_end_column(self) -> str:
+        if self.label_end_column_name is not None:
+            return self.label_end_column_name
         return (
             "forward_5d_label_end_date"
             if self.decision_family.startswith("entry_")
@@ -51,12 +56,60 @@ ENTRY_EXCLUSION_SPECS = (
     ObjectiveSpec("entry_filter", "weak_5d", "strong_first_5d"),
     ObjectiveSpec("entry_filter", "loss_first_5d", "strong_first_5d"),
     ObjectiveSpec("entry_filter", "terminal_stagnant_5d", "terminal_winner_5d"),
+    ObjectiveSpec(
+        "entry_filter",
+        "stagnant_5d",
+        "terminal_winner_20d",
+        label_end_column_name="forward_20d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_filter",
+        "hard_stop_10pct_5d",
+        "runner_60d",
+        label_end_column_name="forward_60d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_filter",
+        "terminal_nonpositive_20d",
+        "terminal_winner_20d",
+        label_end_column_name="forward_20d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_filter",
+        "terminal_nonpositive_30d",
+        "terminal_winner_30d",
+        label_end_column_name="forward_30d_label_end_date",
+    ),
 )
 
 ENTRY_CONFIRMATION_SPECS = (
     ObjectiveSpec("entry_confirmation", "strong_first_5d", "bad_5d"),
     ObjectiveSpec(
         "entry_confirmation", "terminal_winner_5d", "terminal_stagnant_5d"
+    ),
+    ObjectiveSpec(
+        "entry_confirmation",
+        "terminal_winner_20d",
+        "terminal_nonpositive_20d",
+        label_end_column_name="forward_20d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_confirmation",
+        "terminal_winner_30d",
+        "terminal_nonpositive_30d",
+        label_end_column_name="forward_30d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_confirmation",
+        "runner_60d",
+        "terminal_nonpositive_30d",
+        label_end_column_name="forward_60d_label_end_date",
+    ),
+    ObjectiveSpec(
+        "entry_confirmation",
+        "runner_90d",
+        "terminal_nonpositive_30d",
+        label_end_column_name="forward_90d_label_end_date",
     ),
 )
 
@@ -75,6 +128,25 @@ def early_specs(landmark_day: int) -> tuple[ObjectiveSpec, ...]:
 SEQUENTIAL_EARLY_SPEC = ObjectiveSpec(
     "early_cut", "bad_to_day5", "strong_first_to_day5", 1
 )
+
+
+def management_specs(landmark_day: int) -> tuple[ObjectiveSpec, ...]:
+    if landmark_day == 5:
+        horizons = (20,)
+    elif landmark_day in (20, 30):
+        horizons = (40, 60, 90)
+    else:
+        raise ValueError("position-management landmark must be D+5, D+20 or D+30")
+    return tuple(
+        ObjectiveSpec(
+            "position_management",
+            f"take_profit_better_to_day{horizon}",
+            f"continue_winner_to_day{horizon}",
+            landmark_day,
+            f"day{horizon}_end_date",
+        )
+        for horizon in horizons
+    )
 
 
 @dataclass(frozen=True)
@@ -209,9 +281,11 @@ class SelectedSummary:
     entry: dict[str, ObjectiveSelection]
     confirmation: dict[str, ObjectiveSelection]
     early_cut: dict[int, dict[str, ObjectiveSelection]]
+    management: dict[int, dict[str, ObjectiveSelection]]
     entry_prefix_lengths: dict[str, int]
     confirmation_prefix_lengths: dict[str, int]
     early_cut_prefix_lengths: dict[int, dict[str, int]]
+    management_prefix_lengths: dict[int, dict[str, int]]
 
     @property
     def condition_count(self) -> int:
@@ -220,6 +294,10 @@ class SelectedSummary:
             + sum(self.confirmation_prefix_lengths.values())
             + sum(
             sum(values.values()) for values in self.early_cut_prefix_lengths.values()
+            )
+            + sum(
+                sum(values.values())
+                for values in self.management_prefix_lengths.values()
             )
         )
 
@@ -257,6 +335,19 @@ class SelectedSummary:
                     or "no filter"
                 )
                 parts.append(f"early/day{day}/{objective}: {text}")
+        for day in sorted(self.management):
+            for objective, selection in self.management[day].items():
+                length = self.management_prefix_lengths.get(day, {}).get(
+                    objective, 0
+                )
+                text = (
+                    " OR ".join(
+                        condition.text
+                        for condition in selection.selected.final_conditions[:length]
+                    )
+                    or "no filter"
+                )
+                parts.append(f"management/day{day}/{objective}: {text}")
         return "; ".join(parts)
 
 
@@ -427,6 +518,13 @@ def build_candidate_templates(
             raise ValueError("early-cut templates require landmark day 1, 2, or 3")
         groups = EARLY_CUT_FEATURE_GROUPS
         prefix = f"EARLY_D{landmark_day}"
+    elif decision_family == "position_management":
+        if landmark_day not in MANAGEMENT_LANDMARK_DAYS:
+            raise ValueError(
+                "position-management templates require landmark day 5, 20, or 30"
+            )
+        groups = EARLY_CUT_FEATURE_GROUPS
+        prefix = f"MANAGE_D{landmark_day}"
     else:
         raise ValueError(f"unsupported decision family {decision_family!r}")
     grid = np.linspace(0.0, 1.0, quantile_count + 1)[1:-1]
@@ -448,6 +546,36 @@ def build_candidate_templates(
                         feature,
                         operator,
                         quantile,
+                    )
+                )
+    activity_features = {
+        feature
+        for features in groups.values()
+        for feature in features
+        if (
+            "volume_vs_sma" in feature
+            or "notional_vs_sma" in feature
+        )
+        and any(f"sma{window}" in feature for window in (7, 14, 21, 50, 100))
+    }
+    fixed_grid = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0, 10.0)
+    feature_group_by_name = {
+        feature: group for group, features in groups.items() for feature in features
+    }
+    for feature in sorted(activity_features):
+        group = feature_group_by_name[feature]
+        for threshold in fixed_grid:
+            threshold_tag = str(threshold).replace(".", "P")
+            for operator in ("le", "ge"):
+                side = "LE" if operator == "le" else "GE"
+                templates.append(
+                    ConditionTemplate(
+                        f"{prefix}_{group}_{feature}_{side}_FIXED_{threshold_tag}",
+                        group,
+                        feature,
+                        operator,
+                        None,
+                        fixed_threshold=threshold,
                     )
                 )
     if decision_family in {"entry_filter", "entry_confirmation"}:
@@ -1111,7 +1239,7 @@ def fit_template(
 
 def _universe(frame: pd.DataFrame, spec: ObjectiveSpec) -> pd.DataFrame:
     result = frame
-    if spec.decision_family == "early_cut":
+    if spec.decision_family in {"early_cut", "position_management"}:
         result = result.loc[
             pd.to_numeric(result["landmark_day"], errors="coerce").eq(spec.landmark_day)
         ]
@@ -1132,8 +1260,8 @@ def _period_frame(
 
 
 def _available(frame: pd.DataFrame, spec: ObjectiveSpec, through: date) -> pd.Series:
-    ends = pd.to_datetime(frame[spec.label_end_column], errors="coerce").dt.date
-    result = ends.notna() & ends.le(through)
+    ends = pd.to_datetime(frame[spec.label_end_column], errors="coerce")
+    result = ends.notna() & ends.le(pd.Timestamp(through))
     if spec.decision_family == "early_cut":
         result &= _truthy(frame["full_outcome_available"])
     return result
@@ -1631,71 +1759,59 @@ def select_objective(
         if item.passes_development_gates and item.passes_stability_gates
     ]
     eligible_singles.sort(key=_rank)
-    beam = eligible_singles[: cfg.rule_search_beam_width]
-    pairs: list[CandidateEvaluation] = []
-    tested_pairs: list[CandidateEvaluation] = []
-    seen: set[tuple[str, str]] = set()
-    single_by_id = {item.templates[0].rule_id: item for item in singles}
-    pair_bases = beam if cfg.max_conditions_per_objective >= 2 else []
-    for base in pair_bases:
-        first = base.templates[0]
-        for added_evaluation in beam:
-            added = added_evaluation.templates[0]
-            if added.rule_id == first.rule_id or (
-                isinstance(added, ConditionTemplate)
-                and isinstance(first, ConditionTemplate)
-                and added.feature_name == first.feature_name
-                and added.operator == first.operator
-            ):
-                continue
-            pair_key = tuple(sorted((first.rule_id, added.rule_id)))
-            if pair_key in seen:
-                continue
-            seen.add(pair_key)
-            other = single_by_id[added.rule_id]
-            first_eval, second_eval = (
-                (base, other) if _rank(base) <= _rank(other) else (other, base)
-            )
-            if not (
-                first_eval.passes_development_gates
-                and first_eval.passes_stability_gates
-            ):
-                continue
-            pair = evaluator.evaluate(
-                (first_eval.templates[0], second_eval.templates[0])
-            )
-            tested_pairs.append(pair)
-            base_score = first_eval.selection_score
-            pair_score = pair.selection_score
-            if (
-                pair.passes_development_gates
-                and pair.passes_stability_gates
-                and base_score is not None
-                and pair_score is not None
-                and pair_score
-                >= base_score + cfg.min_selection_score_improvement
-            ):
-                pairs.append(pair)
-    _apply_max_stat_permutation_gate(
-        frame, spec, [*singles, *tested_pairs], cfg
-    )
-    eligible_singles = [
-        item for item in eligible_singles if item.passes_multiple_testing is True
+    atomic_beam = eligible_singles[: cfg.rule_search_beam_width]
+    tested: list[CandidateEvaluation] = list(singles)
+    viable: list[CandidateEvaluation] = list(eligible_singles)
+    frontier = atomic_beam
+    seen = {tuple(item.rule_id for item in candidate.templates) for candidate in singles}
+    for size in range(2, cfg.max_conditions_per_objective + 1):
+        expanded: list[CandidateEvaluation] = []
+        for base in frontier:
+            existing_ids = {item.rule_id for item in base.templates}
+            existing_atomic = {
+                (item.feature_name, item.operator)
+                for item in base.templates
+                if isinstance(item, ConditionTemplate)
+            }
+            for added_evaluation in atomic_beam:
+                added = added_evaluation.templates[0]
+                if added.rule_id in existing_ids or (
+                    isinstance(added, ConditionTemplate)
+                    and (added.feature_name, added.operator) in existing_atomic
+                ):
+                    continue
+                combined = (*base.templates, added)
+                key = tuple(sorted(item.rule_id for item in combined))
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidate = evaluator.evaluate(combined)
+                tested.append(candidate)
+                base_score = base.selection_score
+                candidate_score = candidate.selection_score
+                if (
+                    candidate.passes_development_gates
+                    and candidate.passes_stability_gates
+                    and base_score is not None
+                    and candidate_score is not None
+                    and candidate_score
+                    >= base_score + cfg.min_selection_score_improvement
+                ):
+                    expanded.append(candidate)
+        expanded.sort(key=_rank)
+        viable.extend(expanded)
+        frontier = expanded[: cfg.rule_search_beam_width]
+        if not frontier:
+            break
+    _apply_max_stat_permutation_gate(frame, spec, tested, cfg)
+    eligible = [
+        item for item in viable if item.passes_multiple_testing is True
     ]
-    eligible_pairs = [
-        item
-        for item in pairs
-        if item.passes_multiple_testing is True
-        and single_by_id[item.templates[0].rule_id].passes_multiple_testing is True
-    ]
-    eligible = [*eligible_singles, *eligible_pairs]
     selected = min(eligible, key=_rank) if eligible else empty
     prefixes: list[CandidateEvaluation] = [empty]
-    if selected.templates:
-        prefixes.append(evaluator.evaluate((selected.templates[0],)))
-    if len(selected.templates) == 2:
-        prefixes.append(selected)
-    candidates = tuple(sorted([*singles, *tested_pairs], key=_rank))
+    for length in range(1, len(selected.templates) + 1):
+        prefixes.append(evaluator.evaluate(selected.templates[:length]))
+    candidates = tuple(sorted(tested, key=_rank))
     return ObjectiveSelection(spec, selected, candidates, tuple(prefixes))
 
 
@@ -1749,13 +1865,28 @@ def _choose_prefixes(
         metrics_by_objective = [
             _aggregate_metrics(fold_metrics[objective]) for objective in objectives
         ]
+        evaluable_positions = [
+            position
+            for position, metrics in enumerate(metrics_by_objective)
+            if int(metrics["sample_count"]) > 0
+        ]
+        if not evaluable_positions:
+            if total_conditions:
+                continue
+            rank = (0.0, 0.0, 0.0, 0, tuple(lengths))
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best = dict(zip(objectives, lengths))
+            continue
         safe = total_conditions == 0
         if total_conditions:
             pooled_safe = all(
-                _safety_gates(metrics, cfg) for metrics in metrics_by_objective
+                _safety_gates(metrics_by_objective[position], cfg)
+                for position in evaluable_positions
             )
             stable = True
-            for objective in objectives:
+            for position in evaluable_positions:
+                objective = objectives[position]
                 reference_folds = selections[objective].prefixes[0].fold_results
                 union_folds = tuple(
                     FoldResult(reference.fold, (), metrics)
@@ -1772,15 +1903,16 @@ def _choose_prefixes(
         if not safe:
             continue
         captures = [
-            float(item["objective_capture_rate"] or 0.0)
-            for item in metrics_by_objective
+            float(metrics_by_objective[position]["objective_capture_rate"] or 0.0)
+            for position in evaluable_positions
         ]
         retentions = [
-            float(item["protected_retention_rate"] or 0.0)
-            for item in metrics_by_objective
+            float(metrics_by_objective[position]["protected_retention_rate"] or 0.0)
+            for position in evaluable_positions
         ]
         match_rates = [
-            float(item["match_rate"] or 0.0) for item in metrics_by_objective
+            float(metrics_by_objective[position]["match_rate"] or 0.0)
+            for position in evaluable_positions
         ]
         rank = (
             -float(np.mean(captures)),
@@ -1883,7 +2015,9 @@ def _gate_refit_prefixes(
                         end,
                         cfg.validation_end_date,
                     )
-                    if not _safety_gates(metrics, cfg):
+                    if int(metrics["sample_count"]) > 0 and not _safety_gates(
+                        metrics, cfg
+                    ):
                         valid = False
                         break
                 if not valid:
@@ -2442,7 +2576,10 @@ def apply_early_decisions(
     prior_state = result["cut_decision"].astype("string")
     preserved = prior_state.isin(("not_eligible", "not_evaluable"))
     result["cut_decision"] = prior_state.where(preserved, "not_evaluable")
-    eligible = _truthy(result["eligible_at_landmark"])
+    early_rows = pd.to_numeric(
+        result["landmark_day"], errors="coerce"
+    ).isin(EARLY_CUT_LANDMARK_DAYS)
+    eligible = _truthy(result["eligible_at_landmark"]) & early_rows
     result.loc[eligible, "cut_decision"] = "hold"
     conditions_by_day = _early_conditions_by_day(
         selected.early_cut, selected.early_cut_prefix_lengths
@@ -2536,6 +2673,69 @@ def apply_early_decisions(
             raise AssertionError(
                 "prior_policy_cut_day does not reference an earlier policy cut"
             )
+    return result.loc[:, EARLY_CUT_COLUMNS]
+
+
+def apply_management_decisions(
+    landmarks: pd.DataFrame, selected: SelectedSummary
+) -> pd.DataFrame:
+    """Apply independent D5/D20/D30 continue-versus-exit research rules."""
+
+    result = landmarks.copy()
+    result["management_include_final"] = result[
+        "management_include_final"
+    ].astype("boolean")
+    result["management_decision"] = result["management_decision"].astype("string")
+    management_rows = pd.to_numeric(
+        result["landmark_day"], errors="coerce"
+    ).isin(MANAGEMENT_LANDMARK_DAYS)
+    result.loc[management_rows, "management_include_final"] = False
+    result.loc[management_rows, "management_matched_rule_ids"] = pd.NA
+    result.loc[management_rows, "management_reason"] = pd.NA
+    for day, selections in selected.management.items():
+        rows = (
+            pd.to_numeric(result["landmark_day"], errors="coerce").eq(day)
+            & _truthy(result["eligible_at_landmark"])
+        )
+        local = result.loc[rows]
+        if local.empty:
+            continue
+        evaluated: dict[
+            str, tuple[pd.Series, list[str | None], list[str | None]]
+        ] = {}
+        exit_mask = pd.Series(False, index=local.index, dtype=bool)
+        for objective, selection in selections.items():
+            length = selected.management_prefix_lengths[day][objective]
+            match = _row_matches(
+                local, selection.selected.final_conditions[:length]
+            )
+            evaluated[objective] = match
+            exit_mask |= match[0]
+        result.loc[rows, "management_include_final"] = (~exit_mask).to_numpy()
+        result.loc[rows, "management_matched_rule_ids"] = [
+            ",".join(
+                filter(
+                    None,
+                    (evaluated[objective][1][position] for objective in selections),
+                )
+            )
+            or None
+            for position in range(len(local))
+        ]
+        result.loc[rows, "management_reason"] = [
+            "; ".join(
+                f"{objective}: {evaluated[objective][2][position]}"
+                for objective in selections
+                if evaluated[objective][2][position]
+            )
+            or None
+            for position in range(len(local))
+        ]
+        result.loc[rows, "management_decision"] = np.where(
+            exit_mask,
+            "cut_stagnation" if day == 5 else "take_profit",
+            "hold",
+        )
     return result.loc[:, EARLY_CUT_COLUMNS]
 
 
@@ -3290,6 +3490,15 @@ def build_rule_results(
                     selected.early_cut_prefix_lengths[day][objective],
                 )
             )
+    for day, selections in selected.management.items():
+        for objective, selection in selections.items():
+            portfolios.append(
+                (
+                    early_cuts,
+                    selection,
+                    selected.management_prefix_lengths[day][objective],
+                )
+            )
     for source, selection, prefix_length in portfolios:
         spec = selection.spec
         chosen = selection.prefixes[prefix_length]
@@ -3537,6 +3746,15 @@ def build_rule_results(
             cfg,
             mark_final=False,
         )
+    for day, day_selections in selected.management.items():
+        _append_final_union_rows(
+            rows,
+            early_cuts,
+            day_selections,
+            selected.management_prefix_lengths[day],
+            trading_dates,
+            cfg,
+        )
     _append_sequential_policy_rows(
         rows,
         early_cuts,
@@ -3665,16 +3883,45 @@ def run_research(
     early_lengths = _choose_sequential_early_prefixes(
         early_cuts, early, early_lengths, cfg
     )
+    management: dict[int, dict[str, ObjectiveSelection]] = {}
+    management_lengths: dict[int, dict[str, int]] = {}
+    for day in MANAGEMENT_LANDMARK_DAYS:
+        templates = build_candidate_templates(
+            "position_management", day, quantile_count=cfg.quantile_count
+        )
+        selections = {
+            spec.objective: select_objective(early_cuts, spec, templates, cfg)
+            for spec in management_specs(day)
+        }
+        management[day] = selections
+        day_frame = _period_frame(
+            _universe(early_cuts, management_specs(day)[0]),
+            management_specs(day)[0],
+            None,
+            cfg.validation_end_date,
+        )
+        management_lengths[day] = _choose_prefixes(
+            day_frame,
+            selections,
+            cfg,
+            require_cross_objective_lift=False,
+        )
+        management_lengths[day] = _gate_refit_prefixes(
+            early_cuts, selections, management_lengths[day], cfg
+        )
     summary = SelectedSummary(
         entry,
         confirmation,
         early,
+        management,
         entry_lengths,
         confirmation_lengths,
         early_lengths,
+        management_lengths,
     )
     decided_signals = apply_entry_decisions(signals, summary)
     decided_early = apply_early_decisions(early_cuts, summary)
+    decided_early = apply_management_decisions(decided_early, summary)
     rules = build_rule_results(
         decided_signals, decided_early, trading_dates, summary, cfg
     )

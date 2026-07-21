@@ -14,6 +14,7 @@ from psycopg2 import extensions, sql
 
 from .config import Config
 from .contracts import (
+    CALCULATION_SOURCE_COLUMNS,
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
@@ -388,7 +389,13 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         contracts, ("signal_date", "previous_session_date"), "date", nullable=False
     )
     _add_column_contracts(
-        contracts, ("forward_5d_label_end_date",), "date", nullable=True
+        contracts,
+        tuple(
+            f"forward_{day}d_label_end_date"
+            for day in (5, 10, 20, 30, 40, 60, 90)
+        ),
+        "date",
+        nullable=True,
     )
     _add_column_contracts(
         contracts,
@@ -462,6 +469,14 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
             "strong_first_5d",
             "terminal_stagnant_5d",
             "terminal_winner_5d",
+            "stagnant_5d",
+            "hard_stop_10pct_5d",
+            "terminal_nonpositive_20d",
+            "terminal_winner_20d",
+            "terminal_nonpositive_30d",
+            "terminal_winner_30d",
+            "runner_60d",
+            "runner_90d",
             "late_strong_10d",
             "late_strong_20d",
         ),
@@ -487,6 +502,7 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
             "first_gain_3pct_day",
             "first_gain_5pct_day",
             "first_loss_5pct_day",
+            "first_loss_10pct_day",
         ),
         "int2",
         nullable=True,
@@ -502,12 +518,18 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         {
             "adjusted_volume_sma21_prior",
             "adjusted_volume_vs_sma21_prior_ratio",
+            "adjusted_volume_vs_sma7_prior_ratio",
+            "adjusted_volume_vs_sma14_prior_ratio",
             "adjusted_volume_sma50_prior",
             "adjusted_volume_vs_sma50_prior_ratio",
+            "adjusted_volume_vs_sma100_prior_ratio",
             "daily_traded_notional_sma21_prior_usd",
             "daily_traded_notional_vs_sma21_prior_ratio",
+            "daily_traded_notional_vs_sma7_prior_ratio",
+            "daily_traded_notional_vs_sma14_prior_ratio",
             "daily_traded_notional_sma50_prior_usd",
             "daily_traded_notional_vs_sma50_prior_ratio",
+            "daily_traded_notional_vs_sma100_prior_ratio",
             "dollar_volume_63d",
         },
         "numeric",
@@ -550,13 +572,29 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
     _add_column_contracts(contracts, ("signal_date",), "date", nullable=False)
     _add_column_contracts(
         contracts,
-        ("landmark_date", "effective_session_date", "horizon_end_date"),
+        (
+            "landmark_date",
+            "effective_session_date",
+            "horizon_end_date",
+            "day20_end_date",
+            "day40_end_date",
+            "day60_end_date",
+            "day90_end_date",
+        ),
         "date",
         nullable=True,
     )
     _add_column_contracts(
         contracts,
-        ("symbol", "exchange", "currency", "analysis_split", "cut_decision"),
+        (
+            "symbol",
+            "exchange",
+            "currency",
+            "decision_stage",
+            "analysis_split",
+            "cut_decision",
+            "management_decision",
+        ),
         "text",
         nullable=False,
     )
@@ -568,6 +606,8 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
             "loss_matched_rule_ids",
             "matched_rule_ids",
             "cut_reason",
+            "management_matched_rule_ids",
+            "management_reason",
         ),
         "text",
         nullable=True,
@@ -591,6 +631,7 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
             "first_gain_2pct_day_so_far",
             "first_gain_5pct_day_so_far",
             "first_loss_5pct_day_so_far",
+            "first_loss_10pct_day_so_far",
             "future_first_gain_2pct_day",
             "future_first_gain_5pct_day",
             "future_first_loss_5pct_day",
@@ -609,6 +650,7 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
             "include_stagnation_filter",
             "include_loss_filter",
             "include_final",
+            "management_include_final",
         ),
         "bool",
         nullable=False,
@@ -622,15 +664,22 @@ def _early_cut_column_contracts() -> dict[str, ColumnContract]:
         "include_stagnation_filter",
         "include_loss_filter",
         "include_final",
+        "management_include_final",
     }
     _add_column_contracts(contracts, nullable_boolean_columns, "bool", nullable=True)
     _add_column_contracts(
         contracts,
         {
             "landmark_volume_vs_sma21_prior_ratio",
+            "landmark_volume_vs_sma7_prior_ratio",
+            "landmark_volume_vs_sma14_prior_ratio",
             "landmark_volume_vs_sma50_prior_ratio",
+            "landmark_volume_vs_sma100_prior_ratio",
             "landmark_notional_vs_sma21_prior_ratio",
+            "landmark_notional_vs_sma7_prior_ratio",
+            "landmark_notional_vs_sma14_prior_ratio",
             "landmark_notional_vs_sma50_prior_ratio",
+            "landmark_notional_vs_sma100_prior_ratio",
             "mean_volume_since_signal_vs_prior21_ratio",
             "mean_notional_since_signal_vs_prior21_ratio",
         },
@@ -1297,7 +1346,7 @@ def load_identity_work(
     Identities without a passing day in the requested signal period cannot
     produce an event, so they are omitted. Every available row for a relevant
     identity is counted and later loaded, preserving causal lookbacks and the
-    post-signal D+5 observation window even when SIGNAL_END_DATE is configured.
+    post-signal D+90 observation window even when SIGNAL_END_DATE is configured.
     """
 
     statement = sql.SQL(
@@ -1324,7 +1373,7 @@ def load_identity_work(
 
 
 def _normalize_source_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    frame = frame.loc[:, SOURCE_COLUMNS].copy()
+    frame = frame.loc[:, CALCULATION_SOURCE_COLUMNS].copy()
     frame["period_end_date"] = pd.to_datetime(
         frame["period_end_date"], errors="raise"
     ).dt.normalize()
@@ -1367,7 +1416,7 @@ def _normalize_source_frame(frame: pd.DataFrame) -> pd.DataFrame:
         *SOURCE_BOOLEAN_COLUMNS,
         *SOURCE_INTEGER_COLUMNS,
     }
-    for column in set(SOURCE_COLUMNS) - non_numeric:
+    for column in set(CALCULATION_SOURCE_COLUMNS) - non_numeric:
         original = frame[column]
         numeric = pd.to_numeric(original, errors="coerce")
         invalid = original.notna() & numeric.isna()
@@ -1410,13 +1459,18 @@ def load_source_batch(
     """Stream all available history for one bounded batch of identities."""
 
     if not identities:
-        return pd.DataFrame(columns=SOURCE_COLUMNS)
+        return pd.DataFrame(columns=CALCULATION_SOURCE_COLUMNS)
     symbols, exchanges, ciks = _validate_identities(identities)
     selected_columns = sql.SQL(", ").join(
         sql.SQL("source.{}").format(sql.Identifier(column)) for column in SOURCE_COLUMNS
     )
+    selected_columns = selected_columns + sql.SQL(", market.adjusted_open")
     statement = sql.SQL(
         "SELECT {} FROM {} AS source "
+        "LEFT JOIN {} AS market ON market.period_end_date = source.period_end_date "
+        "AND market.symbol = source.symbol "
+        "AND market.exchange = source.exchange "
+        "AND market.cik = source.cik "
         "JOIN unnest(%s::text[], %s::text[], %s::bigint[]) "
         "AS selected(symbol, exchange, cik) "
         "ON source.symbol = selected.symbol "
@@ -1427,6 +1481,7 @@ def load_source_batch(
     ).format(
         selected_columns,
         _qualified_identifier(cfg.source_table),
+        _qualified_identifier(cfg.market_metrics_table),
     )
     parameters: list[Any] = [symbols, exchanges, ciks]
     frames: list[pd.DataFrame] = []
@@ -1438,11 +1493,13 @@ def load_source_batch(
             rows = cursor.fetchmany(cfg.db_fetch_batch_size)
             if not rows:
                 break
-            raw = pd.DataFrame.from_records(rows, columns=SOURCE_COLUMNS)
+            raw = pd.DataFrame.from_records(
+                rows, columns=CALCULATION_SOURCE_COLUMNS
+            )
             frames.append(_normalize_source_frame(raw))
     if not frames:
-        return pd.DataFrame(columns=SOURCE_COLUMNS)
-    return pd.concat(frames, ignore_index=True).loc[:, SOURCE_COLUMNS]
+        return pd.DataFrame(columns=CALCULATION_SOURCE_COLUMNS)
+    return pd.concat(frames, ignore_index=True).loc[:, CALCULATION_SOURCE_COLUMNS]
 
 
 def _normalize_required_text(

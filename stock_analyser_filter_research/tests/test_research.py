@@ -21,7 +21,9 @@ from stock_analyser_filter_research.research import (
     ENTRY_CONFIRMATION_SPECS,
     ENTRY_EXCLUSION_SPECS,
     FoldResult,
+    ObjectiveSelection,
     PatternTemplate,
+    SelectedSummary,
     _Evaluator,
     _apply_max_stat_permutation_gate,
     _choose_sequential_early_prefixes,
@@ -29,9 +31,11 @@ from stock_analyser_filter_research.research import (
     _sequential_policy_state,
     _template_text,
     apply_early_decisions,
+    apply_management_decisions,
     build_candidate_templates,
     build_walk_forward_folds,
     fit_template,
+    management_specs,
     objective_metrics,
     run_research,
     select_objective,
@@ -155,6 +159,56 @@ def _template(rule_id: str, group: str, feature: str, quantile: float = 0.20):
     return ConditionTemplate(rule_id, group, feature, "le", quantile)
 
 
+def test_management_decision_applies_exit_rule_and_preserves_hard_stop() -> None:
+    spec = management_specs(20)[0]
+    condition = Condition(
+        "MANAGE_LOW_RETURN",
+        "E",
+        E_FEATURE,
+        "le",
+        0.0,
+        None,
+    )
+    candidate = CandidateEvaluation(
+        templates=(_template("MANAGE_LOW_RETURN", "E", E_FEATURE),),
+        fold_results=(),
+        pooled_metrics={},
+        final_conditions=(condition,),
+        development_metrics={},
+        passes_development_gates=True,
+        passes_stability_gates=True,
+        stability={},
+        selection_score=1.0,
+    )
+    selection = ObjectiveSelection(spec, candidate, (candidate,), (candidate,))
+    summary = SelectedSummary(
+        entry={},
+        confirmation={},
+        early_cut={},
+        management={20: {spec.objective: selection}},
+        entry_prefix_lengths={},
+        confirmation_prefix_lengths={},
+        early_cut_prefix_lengths={},
+        management_prefix_lengths={20: {spec.objective: 1}},
+    )
+    landmarks = _blank(EARLY_CUT_COLUMNS, 3)
+    landmarks["landmark_day"] = [5, 20, 20]
+    landmarks["eligible_at_landmark"] = [False, True, True]
+    landmarks["management_include_final"] = [False, True, True]
+    landmarks["management_decision"] = ["hard_stop", "hold", "hold"]
+    landmarks[E_FEATURE] = [-5.0, -1.0, 2.0]
+
+    result = apply_management_decisions(landmarks, summary)
+
+    assert result.loc[0, "management_decision"] == "hard_stop"
+    assert not bool(result.loc[0, "management_include_final"])
+    assert result.loc[1, "management_decision"] == "take_profit"
+    assert not bool(result.loc[1, "management_include_final"])
+    assert result.loc[1, "management_matched_rule_ids"] == "MANAGE_LOW_RETURN"
+    assert result.loc[2, "management_decision"] == "hold"
+    assert bool(result.loc[2, "management_include_final"])
+
+
 def test_objective_metrics_have_exact_target_specific_denominators() -> None:
     frame = pd.DataFrame(
         {
@@ -241,7 +295,11 @@ def test_quantile_count_controls_template_grid() -> None:
     assert len(coarse) < len(fine)
     atomic = [item for item in coarse if isinstance(item, ConditionTemplate)]
     patterns = [item for item in coarse if isinstance(item, PatternTemplate)]
-    assert {item.quantile for item in atomic} == {0.25, 0.75}
+    assert {item.quantile for item in atomic if item.quantile is not None} == {
+        0.25,
+        0.75,
+    }
+    assert any(item.fixed_threshold == 1.0 for item in atomic)
     expected_original_patterns = {
         "flat_base",
         "ordered_uptrend",
@@ -587,6 +645,53 @@ def test_beam_search_can_select_two_conditions_with_one_point_gain(
         _cfg(cfg_factory, max_conditions_per_objective=1),
     )
     assert len(capped.selected.templates) == 1
+
+
+def test_beam_search_can_select_three_complementary_conditions(
+    cfg_factory,
+) -> None:
+    cfg = _cfg(
+        cfg_factory,
+        max_conditions_per_objective=3,
+        rule_search_beam_width=10,
+        min_selection_score_improvement=0.01,
+    )
+    signals = _signals(rows_per_year=200)
+    local = np.tile(np.arange(200), 11)
+    signals["weak_5d"] = local < 60
+    signals["strong_first_5d"] = (local >= 120) & (local < 160)
+    signals[A_FEATURE] = np.where(local < 20, 0.0, 1.0)
+    signals[B_FEATURE] = np.where(
+        (local >= 20) & (local < 40), 0.0, 1.0
+    )
+    signals[C_FEATURE] = np.where(
+        (local >= 40) & (local < 60), 0.0, 1.0
+    )
+    templates = (
+        ConditionTemplate(
+            "RULE_A", "A", A_FEATURE, "le", None, fixed_threshold=0.0
+        ),
+        ConditionTemplate(
+            "RULE_B", "B", B_FEATURE, "le", None, fixed_threshold=0.0
+        ),
+        ConditionTemplate(
+            "RULE_C", "C", C_FEATURE, "le", None, fixed_threshold=0.0
+        ),
+    )
+
+    selected = select_objective(
+        signals, ENTRY_EXCLUSION_SPECS[0], templates, cfg
+    )
+
+    assert len(selected.selected.templates) == 3
+    assert {item.rule_id for item in selected.selected.templates} == {
+        "RULE_A",
+        "RULE_B",
+        "RULE_C",
+    }
+    assert selected.selected.pooled_metrics["objective_capture_rate"] == (
+        pytest.approx(1.0)
+    )
 
 
 def test_entry_union_does_not_require_weak_rule_to_lift_loss_objective(
@@ -1311,6 +1416,7 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "entry_filter",
         "entry_confirmation",
         "early_cut",
+        "position_management",
     }
     assert result.rules["eligible_fold_count"].notna().all()
     assert result.rules["positive_lift_fold_count"].notna().all()
@@ -1382,18 +1488,39 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "weak_5d",
         "loss_first_5d",
         "terminal_stagnant_5d",
+        "stagnant_5d",
+        "hard_stop_10pct_5d",
+        "terminal_nonpositive_20d",
+        "terminal_nonpositive_30d",
         "strong_first_5d",
         "terminal_winner_5d",
+        "terminal_winner_20d",
+        "terminal_winner_30d",
+        "runner_60d",
+        "runner_90d",
         "stagnant_to_day5",
         "loss_first_to_day5",
         "bad_to_day5",
+        "take_profit_better_to_day20",
+        "take_profit_better_to_day40",
+        "take_profit_better_to_day60",
+        "take_profit_better_to_day90",
     }
     assert set(result.rules["protected_outcome"]) <= {
         "strong_first_5d",
         "terminal_winner_5d",
+        "terminal_winner_20d",
+        "terminal_winner_30d",
+        "runner_60d",
         "bad_5d",
         "terminal_stagnant_5d",
+        "terminal_nonpositive_20d",
+        "terminal_nonpositive_30d",
         "strong_first_to_day5",
+        "continue_winner_to_day20",
+        "continue_winner_to_day40",
+        "continue_winner_to_day60",
+        "continue_winner_to_day90",
     }
     permutation_rows = result.rules.loc[
         result.rules["result_kind"].eq("candidate_rule")
@@ -1469,6 +1596,7 @@ def test_run_research_emits_one_sequential_final_early_policy(
     ).any()
     day_components = result.rules.loc[
         result.rules["rule_id"].str.contains("POLICY_COMPONENT", na=False)
+        & result.rules["decision_family"].eq("early_cut")
     ]
     assert not day_components.empty
     assert not day_components["is_final_filter"].astype(bool).any()

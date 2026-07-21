@@ -36,6 +36,7 @@ def _source_frame(dates: pd.DatetimeIndex) -> pd.DataFrame:
             "currency": "USD",
             "raw_close": close,
             "adjusted_close": close,
+            "adjusted_open": close,
             "adjusted_high": close + 1.0,
             "adjusted_low": close - 1.0,
             "adjusted_volume": volume,
@@ -587,8 +588,9 @@ def test_analysis_splits_use_label_end_and_holdout_starts_after_cutoff(
         dates[28]: "purged",
         dates[31]: "holdout",
     }
+    early_only = result.early_cut.loc[result.early_cut["landmark_day"].le(3)]
     early_splits = (
-        result.early_cut.groupby("signal_date", sort=False)["analysis_split"]
+        early_only.groupby("signal_date", sort=False)["analysis_split"]
         .apply(list)
         .to_dict()
     )
@@ -635,11 +637,12 @@ def test_early_cut_emits_exactly_three_rows_with_causal_feature_formulas(
     result = calculate_identity_results(source, dates, cfg_factory())
 
     assert list(result.early_cut.columns) == list(EARLY_CUT_COLUMNS)
-    assert result.early_cut["landmark_day"].tolist() == [1, 2, 3]
-    assert result.early_cut["active_at_landmark"].astype(bool).equals(
-        result.early_cut["eligible_at_landmark"].astype(bool)
+    assert result.early_cut["landmark_day"].tolist() == [1, 2, 3, 5, 20, 30]
+    early_only = result.early_cut.loc[result.early_cut["landmark_day"].le(3)]
+    assert early_only["active_at_landmark"].astype(bool).equals(
+        early_only["eligible_at_landmark"].astype(bool)
     )
-    assert result.early_cut["prior_policy_cut_day"].isna().all()
+    assert early_only["prior_policy_cut_day"].isna().all()
     day1 = _landmark_row(result.early_cut, 1)
     assert day1["landmark_date"] == dates[position + 1]
     assert day1["effective_session_date"] == dates[position + 2]
@@ -726,6 +729,7 @@ def test_landmark_paths_are_inclusive_and_future_paths_start_next_session(
     )
 
     early = calculate_identity_results(source, dates, cfg_factory()).early_cut
+    early = early.loc[early["landmark_day"].le(3)]
     day1 = _landmark_row(early, 1)
     day2 = _landmark_row(early, 2)
 
@@ -738,6 +742,99 @@ def test_landmark_paths_are_inclusive_and_future_paths_start_next_session(
     assert pd.isna(day2["future_first_gain_5pct_day"])
     assert not bool(day2["eligible_at_landmark"])
     assert pd.isna(day2["continuation_outcome"])
+
+
+def test_entry_horizons_and_intraday_hard_stop_are_derived_from_ohlc(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-10-01", periods=130, freq="D")
+    signal_position = 25
+    source = _source_frame(dates)
+    _set_pass(source, signal_position)
+
+    positions = source.index[signal_position : signal_position + 91]
+    offsets = np.arange(91)
+    closes = np.interp(
+        offsets,
+        [0, 5, 20, 30, 60, 90],
+        [100.0, 100.0, 104.0, 106.0, 110.0, 120.0],
+    )
+    source.loc[positions, "adjusted_close"] = closes
+    source.loc[positions, "raw_close"] = closes
+    source.loc[positions, "adjusted_open"] = closes
+    source.loc[positions, "adjusted_high"] = closes + 0.5
+    source.loc[positions, "adjusted_low"] = closes - 0.5
+    source.loc[positions[2], "adjusted_low"] = 89.9
+
+    result = calculate_identity_results(source, dates, cfg_factory())
+    signal = _row_for_date(result.signals, dates[signal_position])
+
+    assert signal["first_loss_10pct_day"] == 2
+    assert bool(signal["hard_stop_10pct_5d"])
+    assert bool(signal["stagnant_5d"])
+    assert signal["terminal_close_return_20d_pct"] == pytest.approx(4.0)
+    assert signal["terminal_close_return_30d_pct"] == pytest.approx(6.0)
+    assert bool(signal["terminal_winner_30d"])
+    assert not bool(signal["runner_60d"])
+    assert not bool(signal["runner_90d"])
+    assert signal["forward_90d_label_end_date"] == dates[signal_position + 90]
+
+    day5 = _landmark_row(result.early_cut, 5)
+    assert bool(day5["hit_loss_10pct_so_far"])
+    assert day5["management_decision"] == "hard_stop"
+    assert not bool(day5["management_include_final"])
+
+
+def test_management_landmarks_compare_next_open_with_d40_d60_and_d90(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-11-01", periods=135, freq="D")
+    signal_position = 25
+    source = _source_frame(dates)
+    _set_pass(source, signal_position)
+
+    positions = source.index[signal_position : signal_position + 91]
+    offsets = np.arange(91)
+    closes = np.interp(
+        offsets,
+        [0, 5, 20, 30, 40, 60, 90],
+        [100.0, 103.0, 110.0, 115.0, 105.0, 120.0, 125.0],
+    )
+    opens = closes.copy()
+    opens[21] = 111.0
+    opens[31] = 114.0
+    highs = np.maximum(closes + 0.5, opens)
+    lows = np.minimum(closes - 0.5, opens)
+    source.loc[positions, "adjusted_close"] = closes
+    source.loc[positions, "raw_close"] = closes
+    source.loc[positions, "adjusted_open"] = opens
+    source.loc[positions, "adjusted_high"] = highs
+    source.loc[positions, "adjusted_low"] = lows
+
+    landmarks = calculate_identity_results(
+        source, dates, cfg_factory()
+    ).early_cut
+    day20 = _landmark_row(landmarks, 20)
+    day30 = _landmark_row(landmarks, 30)
+
+    assert bool(day20["eligible_at_landmark"])
+    assert day20["effective_session_date"] == dates[signal_position + 21]
+    assert day20["effective_adjusted_open"] == pytest.approx(111.0)
+    assert day20["terminal_return_from_effective_open_to_day40_pct"] == (
+        pytest.approx((105.0 / 111.0 - 1.0) * 100.0)
+    )
+    assert bool(day20["take_profit_better_to_day40"])
+    assert bool(day20["continue_winner_to_day60"])
+    assert bool(day20["continue_winner_to_day90"])
+    assert bool(day20["full_outcome_available"])
+
+    assert bool(day30["eligible_at_landmark"])
+    assert day30["effective_session_date"] == dates[signal_position + 31]
+    assert day30["effective_adjusted_open"] == pytest.approx(114.0)
+    assert bool(day30["take_profit_better_to_day40"])
+    assert bool(day30["continue_winner_to_day60"])
+    assert bool(day30["continue_winner_to_day90"])
+    assert bool(day30["full_outcome_available"])
 
 
 @pytest.mark.parametrize(
@@ -913,6 +1010,7 @@ def test_prior_barrier_hit_removes_later_landmarks_from_risk_set(
     )
 
     early = calculate_identity_results(source, dates, cfg_factory()).early_cut
+    early = early.loc[early["landmark_day"].le(3)]
 
     assert early["full_outcome_available"].astype(bool).all()
     assert not early["eligible_at_landmark"].astype(bool).any()
@@ -947,27 +1045,28 @@ def test_gap_or_segment_change_censors_landmarks_without_dropping_them(
 
     result = calculate_identity_results(source, dates, cfg_factory())
 
-    assert len(result.early_cut) == 3
-    assert result.early_cut["landmark_day"].tolist() == [1, 2, 3]
-    day1 = _landmark_row(result.early_cut, 1)
+    assert len(result.early_cut) == 6
+    early = result.early_cut.loc[result.early_cut["landmark_day"].le(3)]
+    assert early["landmark_day"].tolist() == [1, 2, 3]
+    day1 = _landmark_row(early, 1)
     assert bool(day1["same_continuity_segment"])
     assert bool(day1["eligible_at_landmark"])
     assert (
-        not result.early_cut.loc[
-            result.early_cut["landmark_day"].ge(2), "same_continuity_segment"
+        not early.loc[
+            early["landmark_day"].ge(2), "same_continuity_segment"
         ]
         .astype(bool)
         .any()
     )
-    assert not result.early_cut["full_outcome_available"].astype(bool).any()
+    assert not early["full_outcome_available"].astype(bool).any()
     assert day1["cut_decision"] == "hold"
     assert (
-        result.early_cut.loc[result.early_cut["landmark_day"].ge(2), "cut_decision"]
+        early.loc[early["landmark_day"].ge(2), "cut_decision"]
         .eq("not_evaluable")
         .all()
     )
     assert (
-        result.early_cut[
+        early[
             ["continuation_outcome", "stagnant_to_day5", "loss_first_to_day5"]
         ]
         .isna()
@@ -1012,7 +1111,7 @@ def test_nullable_string_gap_does_not_require_boolean_value_of_na(
 
     result = calculate_identity_results(source, dates, cfg_factory())
 
-    assert len(result.early_cut) == 3
+    assert len(result.early_cut) == 6
     day2 = _landmark_row(result.early_cut, 2)
     assert not bool(day2["landmark_observed"])
     assert day2["cut_decision"] == "not_evaluable"
@@ -1032,15 +1131,16 @@ def test_end_of_calendar_is_censored_but_still_emits_three_landmarks(
     assert pd.isna(signal["forward_5d_label_end_date"])
     assert pd.isna(signal["weak_5d"])
     assert signal["analysis_split"] == "purged"
-    assert len(result.early_cut) == 3
+    assert len(result.early_cut) == 6
     day1 = _landmark_row(result.early_cut, 1)
     day2 = _landmark_row(result.early_cut, 2)
     day3 = _landmark_row(result.early_cut, 3)
     assert day1["effective_session_date"] == dates[29]
     assert pd.isna(day2["effective_session_date"])
     assert pd.isna(day3["landmark_date"])
-    assert not result.early_cut["full_outcome_available"].astype(bool).any()
-    assert result.early_cut["continuation_outcome"].isna().all()
+    early = result.early_cut.loc[result.early_cut["landmark_day"].le(3)]
+    assert not early["full_outcome_available"].astype(bool).any()
+    assert early["continuation_outcome"].isna().all()
 
 
 def test_early_split_is_anchored_at_landmark_date_across_holdout_cutoff(
@@ -1055,8 +1155,9 @@ def test_early_split_is_anchored_at_landmark_date_across_holdout_cutoff(
     result = calculate_identity_results(source, dates, cfg_factory())
 
     assert result.signals.iloc[0]["analysis_split"] == "purged"
-    assert result.early_cut["landmark_date"].gt(signal_date).all()
-    assert result.early_cut["analysis_split"].eq("holdout").all()
+    early = result.early_cut.loc[result.early_cut["landmark_day"].le(3)]
+    assert early["landmark_date"].gt(signal_date).all()
+    assert early["analysis_split"].eq("holdout").all()
 
 
 def test_public_batch_result_is_partition_stable_and_handles_empty_source(
@@ -1080,7 +1181,7 @@ def test_public_batch_result_is_partition_stable_and_handles_empty_source(
     assert list(batch.signals.columns) == list(SIGNAL_COLUMNS)
     assert list(batch.early_cut.columns) == list(EARLY_CUT_COLUMNS)
     assert len(batch.signals) == 2
-    assert len(batch.early_cut) == 6
+    assert len(batch.early_cut) == 12
     expected_signals = pd.concat(
         [first_batch.signals, second_batch.signals], ignore_index=True
     ).sort_values(["symbol", "signal_date"], ignore_index=True)

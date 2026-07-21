@@ -20,6 +20,7 @@ from .computation import (
     enrich_global_features,
 )
 from .config import Config
+from .contracts import POSITION_LANDMARK_DAYS
 from .logging_utils import configure_logging
 from .research import run_research
 
@@ -173,7 +174,7 @@ def _calculate_worker(task: WorkerTask) -> WorkerResult:
     log.info(
         "Worker %d processed %d identities, %d market rows, %d SEC snapshot rows, "
         "%d SEC quarterly event rows, %d causal SEC earnings event rows and %d exact signal-day market metric rows "
-        "into %d signals and %d early-cut rows "
+        "into %d signals and %d position-landmark rows "
         "in %.1f seconds",
         task.worker_number,
         len(task.identities),
@@ -279,10 +280,11 @@ def run(cfg: Config) -> tuple[int, int, int]:
                 )
                 signals = globally_enriched.signals
                 early_cuts = globally_enriched.early_cut
-                if len(early_cuts) != 3 * len(signals):
+                expected_landmarks = len(POSITION_LANDMARK_DAYS) * len(signals)
+                if len(early_cuts) != expected_landmarks:
                     raise RuntimeError(
-                        "early-cut landmark invariant failed: expected "
-                        f"{3 * len(signals)} rows for {len(signals)} signals, "
+                        "position-landmark invariant failed: expected "
+                        f"{expected_landmarks} rows for {len(signals)} signals, "
                         f"received {len(early_cuts)}"
                     )
                 del (
@@ -300,7 +302,7 @@ def run(cfg: Config) -> tuple[int, int, int]:
                 result = run_research(signals, early_cuts, trading_dates, cfg)
                 research_seconds = time.monotonic() - research_started
                 log.info(
-                    "Research evaluated %d signals and %d early-cut landmarks and selected %d conditions in %.1f seconds: %s",
+                    "Research evaluated %d signals and %d position landmarks and selected %d conditions in %.1f seconds: %s",
                     len(result.signals),
                     len(result.early_cuts),
                     result.selected_condition_count,
@@ -315,7 +317,7 @@ def run(cfg: Config) -> tuple[int, int, int]:
                     result.rules,
                 )
                 log.info(
-                    "Atomically stored %d signal rows, %d early-cut rows and %d rule rows in %.1f seconds",
+                    "Atomically stored %d signal rows, %d position-landmark rows and %d rule rows in %.1f seconds",
                     signal_count,
                     early_cut_count,
                     rule_count,

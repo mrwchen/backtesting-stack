@@ -16,6 +16,8 @@ from .contracts import (
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
     EARLY_CUT_LANDMARK_DAYS,
+    MANAGEMENT_LANDMARK_DAYS,
+    POSITION_LANDMARK_DAYS,
     EARLY_GLOBAL_MARKET_FEATURE_COLUMNS,
     EARNINGS_EVENT_FEATURE_COLUMNS,
     EARNINGS_EVENT_SOURCE_COLUMNS,
@@ -90,6 +92,7 @@ _EARLY_CUT_TEXT_COLUMNS = (
     "symbol",
     "exchange",
     "currency",
+    "decision_stage",
     "continuation_outcome",
     "analysis_split",
     "stagnation_matched_rule_ids",
@@ -97,12 +100,15 @@ _EARLY_CUT_TEXT_COLUMNS = (
     "matched_rule_ids",
     "cut_decision",
     "cut_reason",
+    "management_matched_rule_ids",
+    "management_decision",
+    "management_reason",
 )
 
 _SIGNAL_DATE_COLUMNS = (
     "signal_date",
     "previous_session_date",
-    "forward_5d_label_end_date",
+    *(f"forward_{day}d_label_end_date" for day in (5, 10, 20, 30, 40, 60, 90)),
 )
 
 _EARLY_CUT_DATE_COLUMNS = (
@@ -110,6 +116,10 @@ _EARLY_CUT_DATE_COLUMNS = (
     "landmark_date",
     "effective_session_date",
     "horizon_end_date",
+    "day20_end_date",
+    "day40_end_date",
+    "day60_end_date",
+    "day90_end_date",
 )
 
 
@@ -1334,19 +1344,28 @@ def _entry_path_outcome(
     signal_position: int,
     cfg: Config,
 ) -> dict[str, Any]:
-    """Calculate D1..D5 outcomes from actual adjusted high/low paths."""
+    """Calculate complete D1..D90 paths without relying on future SQL labels."""
 
-    label_end_date = _date_at(trading_dates, signal_position + 5)
-    result: dict[str, Any] = {
-        "forward_5d_max_gain_pct": np.nan,
-        "forward_5d_max_loss_pct": np.nan,
-        "forward_5d_label_end_date": label_end_date,
-        "terminal_close_return_5d_pct": np.nan,
+    horizons = (5, 10, 20, 30, 40, 60, 90)
+    result: dict[str, Any] = {}
+    for horizon in horizons:
+        result.update(
+            {
+                f"forward_{horizon}d_max_gain_pct": np.nan,
+                f"forward_{horizon}d_max_loss_pct": np.nan,
+                f"forward_{horizon}d_label_end_date": _date_at(
+                    trading_dates, signal_position + horizon
+                ),
+                f"terminal_close_return_{horizon}d_pct": np.nan,
+            }
+        )
+    result.update({
         "first_gain_2pct_day": pd.NA,
         "first_gain_1pct_day": pd.NA,
         "first_gain_3pct_day": pd.NA,
         "first_gain_5pct_day": pd.NA,
         "first_loss_5pct_day": pd.NA,
+        "first_loss_10pct_day": pd.NA,
         "gain_loss_order_5d": pd.NA,
         "weak_5d": pd.NA,
         "strong_5d": pd.NA,
@@ -1356,20 +1375,48 @@ def _entry_path_outcome(
         "strong_first_5d": pd.NA,
         "terminal_stagnant_5d": pd.NA,
         "terminal_winner_5d": pd.NA,
+        "stagnant_5d": pd.NA,
+        "hard_stop_10pct_5d": pd.NA,
+        "terminal_nonpositive_20d": pd.NA,
+        "terminal_winner_20d": pd.NA,
+        "terminal_nonpositive_30d": pd.NA,
+        "terminal_winner_30d": pd.NA,
+        "runner_60d": pd.NA,
+        "runner_90d": pd.NA,
         "mfe_to_abs_mae_5d_ratio": np.nan,
         "terminal_return_to_mfe_5d_ratio": np.nan,
         "_full_path_available": False,
-    }
-    if pd.isna(label_end_date):
-        return result
-
+    })
     segment_id = segment.iloc[signal_position]
-    if not _complete_price_path(
-        indexed, segment, signal_position, signal_position + 5, segment_id
-    ):
+    signal_close = float(indexed["adjusted_close"].iloc[signal_position])
+    if not _finite_positive(signal_close):
+        return result
+    complete: dict[int, bool] = {}
+    for horizon in horizons:
+        complete[horizon] = _complete_price_path(
+            indexed, segment, signal_position, signal_position + horizon, segment_id
+        )
+        if not complete[horizon]:
+            continue
+        path = indexed.iloc[signal_position + 1 : signal_position + horizon + 1]
+        highs = _numeric(path["adjusted_high"]).to_numpy(dtype=float)
+        lows = _numeric(path["adjusted_low"]).to_numpy(dtype=float)
+        terminal_close = float(
+            indexed["adjusted_close"].iloc[signal_position + horizon]
+        )
+        result[f"forward_{horizon}d_max_gain_pct"] = max(
+            0.0, float(((highs / signal_close - 1.0) * 100.0).max())
+        )
+        result[f"forward_{horizon}d_max_loss_pct"] = min(
+            0.0, float(((lows / signal_close - 1.0) * 100.0).min())
+        )
+        result[f"terminal_close_return_{horizon}d_pct"] = (
+            terminal_close / signal_close - 1.0
+        ) * 100.0
+
+    if not complete[5]:
         return result
 
-    signal_close = float(indexed["adjusted_close"].iloc[signal_position])
     highs = _numeric(
         indexed["adjusted_high"].iloc[signal_position + 1 : signal_position + 6]
     ).to_numpy(dtype=float)
@@ -1386,6 +1433,9 @@ def _entry_path_outcome(
     first_gain_3 = _first_hit_day(high_returns >= 3.0, 1)
     first_gain_5 = _first_hit_day(high_returns >= cfg.strong_5d_min_gain_pct, 1)
     first_loss_5 = _first_hit_day(low_returns <= cfg.deep_loss_5d_max_loss_pct, 1)
+    first_loss_10 = _first_hit_day(
+        low_returns <= cfg.hard_stop_5d_max_loss_pct, 1
+    )
     order = _gain_loss_order(first_gain_5, first_loss_5)
     weak = max_gain < cfg.weak_5d_max_gain_pct
     strong = max_gain >= cfg.strong_5d_min_gain_pct
@@ -1402,6 +1452,9 @@ def _entry_path_outcome(
             "first_gain_3pct_day": (pd.NA if first_gain_3 is None else first_gain_3),
             "first_gain_5pct_day": (pd.NA if first_gain_5 is None else first_gain_5),
             "first_loss_5pct_day": (pd.NA if first_loss_5 is None else first_loss_5),
+            "first_loss_10pct_day": (
+                pd.NA if first_loss_10 is None else first_loss_10
+            ),
             "gain_loss_order_5d": order,
             "weak_5d": weak,
             "strong_5d": strong,
@@ -1423,6 +1476,11 @@ def _entry_path_outcome(
             "terminal_winner_5d": (
                 terminal_return >= cfg.terminal_winner_5d_min_return_pct
             ),
+            "stagnant_5d": (
+                max_gain < cfg.weak_5d_max_gain_pct
+                and terminal_return <= cfg.stagnant_5d_max_return_pct
+            ),
+            "hard_stop_10pct_5d": first_loss_10 is not None,
             "mfe_to_abs_mae_5d_ratio": (
                 max_gain / abs(max_loss) if max_loss < 0 else np.nan
             ),
@@ -1432,6 +1490,21 @@ def _entry_path_outcome(
             "_full_path_available": True,
         }
     )
+    for horizon in (20, 30):
+        if complete[horizon]:
+            terminal = float(result[f"terminal_close_return_{horizon}d_pct"])
+            result[f"terminal_nonpositive_{horizon}d"] = terminal <= 0.0
+            result[f"terminal_winner_{horizon}d"] = (
+                terminal >= cfg.continuation_winner_min_return_pct
+            )
+    for horizon in (60, 90):
+        if complete[horizon]:
+            result[f"runner_{horizon}d"] = bool(
+                float(result[f"terminal_close_return_{horizon}d_pct"])
+                >= cfg.continuation_winner_min_return_pct
+                and float(result[f"forward_{horizon}d_max_loss_pct"])
+                > cfg.hard_stop_5d_max_loss_pct
+            )
     return result
 
 
@@ -1859,13 +1932,19 @@ def calculate_identity_signals(
     )
 
     prior_volume5 = _rolling_in_segment(volume, segment, 5, "mean", offset=1)
+    prior_volume7 = _rolling_in_segment(volume, segment, 7, "mean", offset=1)
     prior_volume10 = _rolling_in_segment(volume, segment, 10, "mean", offset=1)
+    prior_volume14 = _rolling_in_segment(volume, segment, 14, "mean", offset=1)
     prior_volume21 = _rolling_in_segment(volume, segment, 21, "mean", offset=1)
     prior_volume50 = _rolling_in_segment(volume, segment, 50, "mean", offset=1)
+    prior_volume100 = _rolling_in_segment(volume, segment, 100, "mean", offset=1)
     prior_notional5 = _rolling_in_segment(notional, segment, 5, "mean", offset=1)
+    prior_notional7 = _rolling_in_segment(notional, segment, 7, "mean", offset=1)
     prior_notional10 = _rolling_in_segment(notional, segment, 10, "mean", offset=1)
+    prior_notional14 = _rolling_in_segment(notional, segment, 14, "mean", offset=1)
     prior_notional21 = _rolling_in_segment(notional, segment, 21, "mean", offset=1)
     prior_notional50 = _rolling_in_segment(notional, segment, 50, "mean", offset=1)
+    prior_notional100 = _rolling_in_segment(notional, segment, 100, "mean", offset=1)
 
     up_volume = volume.where(daily_return.gt(0), 0.0).where(
         volume.notna() & daily_return.notna()
@@ -2066,6 +2145,24 @@ def calculate_identity_signals(
     log_notional = np.log1p(notional.where(notional.ge(0)))
 
     features: dict[str, pd.Series] = {
+        "adjusted_volume_vs_sma7_prior_ratio": (volume / prior_volume7).where(
+            prior_volume7.gt(0)
+        ),
+        "adjusted_volume_vs_sma14_prior_ratio": (volume / prior_volume14).where(
+            prior_volume14.gt(0)
+        ),
+        "adjusted_volume_vs_sma100_prior_ratio": (volume / prior_volume100).where(
+            prior_volume100.gt(0)
+        ),
+        "daily_traded_notional_vs_sma7_prior_ratio": (
+            notional / prior_notional7
+        ).where(prior_notional7.gt(0)),
+        "daily_traded_notional_vs_sma14_prior_ratio": (
+            notional / prior_notional14
+        ).where(prior_notional14.gt(0)),
+        "daily_traded_notional_vs_sma100_prior_ratio": (
+            notional / prior_notional100
+        ).where(prior_notional100.gt(0)),
         "trigger_criteria": trigger_text,
         "trigger_count": trigger_count,
         "previous_criteria_pass_count": previous_criteria_count,
@@ -2256,15 +2353,16 @@ def calculate_identity_signals(
         for position in kept_signal_positions
     ]
     for column in (
-        "forward_5d_max_gain_pct",
-        "forward_5d_max_loss_pct",
-        "forward_5d_label_end_date",
-        "terminal_close_return_5d_pct",
+        *(f"forward_{day}d_max_gain_pct" for day in (5, 10, 20, 30, 40, 60, 90)),
+        *(f"forward_{day}d_max_loss_pct" for day in (5, 10, 20, 30, 40, 60, 90)),
+        *(f"forward_{day}d_label_end_date" for day in (5, 10, 20, 30, 40, 60, 90)),
+        *(f"terminal_close_return_{day}d_pct" for day in (5, 10, 20, 30, 40, 60, 90)),
         "first_gain_2pct_day",
         "first_gain_1pct_day",
         "first_gain_3pct_day",
         "first_gain_5pct_day",
         "first_loss_5pct_day",
+        "first_loss_10pct_day",
         "gain_loss_order_5d",
         "weak_5d",
         "strong_5d",
@@ -2274,6 +2372,14 @@ def calculate_identity_signals(
         "strong_first_5d",
         "terminal_stagnant_5d",
         "terminal_winner_5d",
+        "stagnant_5d",
+        "hard_stop_10pct_5d",
+        "terminal_nonpositive_20d",
+        "terminal_winner_20d",
+        "terminal_nonpositive_30d",
+        "terminal_winner_30d",
+        "runner_60d",
+        "runner_90d",
         "mfe_to_abs_mae_5d_ratio",
         "terminal_return_to_mfe_5d_ratio",
     ):
@@ -2355,6 +2461,13 @@ def _empty_early_cut_row(signal: pd.Series, landmark_day: int) -> dict[str, Any]
             "cik": signal["cik"],
             "price_continuity_segment": signal["price_continuity_segment"],
             "currency": signal["currency"],
+            "decision_stage": (
+                "early_cut"
+                if landmark_day in EARLY_CUT_LANDMARK_DAYS
+                else "stagnation_review"
+                if landmark_day == 5
+                else "profit_review"
+            ),
             "landmark_observed": False,
             "same_continuity_segment": False,
             "eligible_at_landmark": False,
@@ -2370,6 +2483,10 @@ def _empty_early_cut_row(signal: pd.Series, landmark_day: int) -> dict[str, Any]
             "matched_rule_ids": pd.NA,
             "cut_decision": "not_evaluable",
             "cut_reason": pd.NA,
+            "management_include_final": False,
+            "management_matched_rule_ids": pd.NA,
+            "management_decision": "not_evaluable",
+            "management_reason": pd.NA,
         }
     )
     return row
@@ -2390,6 +2507,305 @@ def _safe_scalar_ratio(
         return np.nan
     value = left / right - (1.0 if percentage else 0.0)
     return float(value * 100.0 if percentage else value)
+
+
+def _landmark_activity_ratio(
+    indexed: pd.DataFrame,
+    segment: pd.Series,
+    position: int,
+    segment_id: float,
+    column: str,
+    window: int,
+) -> float:
+    start = position - window
+    if start < 0 or not _observed_same_segment(
+        indexed, segment, start, position, segment_id
+    ):
+        return np.nan
+    current = pd.to_numeric(
+        pd.Series([indexed[column].iloc[position]]), errors="coerce"
+    ).iloc[0]
+    prior = pd.to_numeric(
+        indexed[column].iloc[start:position], errors="coerce"
+    ).astype(float)
+    if (
+        pd.isna(current)
+        or not np.isfinite(float(current))
+        or float(current) < 0
+        or len(prior) != window
+        or not np.isfinite(prior.to_numpy()).all()
+    ):
+        return np.nan
+    mean = float(prior.mean())
+    return float(current) / mean if mean > 0 else np.nan
+
+
+def _landmark_technical_snapshot(
+    indexed: pd.DataFrame,
+    segment: pd.Series,
+    position: int,
+    segment_id: float,
+) -> dict[str, float]:
+    result = {
+        "landmark_return_5d_pct": np.nan,
+        "landmark_return_10d_pct": np.nan,
+        "landmark_return_20d_pct": np.nan,
+        "landmark_max_drawdown_20d_pct": np.nan,
+        "landmark_trend_slope_20_pct_per_session": np.nan,
+        "landmark_trend_r2_20": np.nan,
+        "landmark_trend_efficiency_20": np.nan,
+        "landmark_range_compression_10_vs_10_ratio": np.nan,
+        "landmark_distribution_day_count_20": np.nan,
+        "landmark_churning_day_count_20": np.nan,
+    }
+    close = _numeric(indexed["adjusted_close"])
+    for window in (5, 10, 20):
+        prior_position = position - window
+        if prior_position >= 0 and _observed_same_segment(
+            indexed, segment, prior_position, position, segment_id
+        ):
+            current = close.iloc[position]
+            prior = close.iloc[prior_position]
+            if _finite_positive(current) and _finite_positive(prior):
+                result[f"landmark_return_{window}d_pct"] = (
+                    float(current) / float(prior) - 1.0
+                ) * 100.0
+    start = position - 19
+    if start < 0 or not _observed_same_segment(
+        indexed, segment, start, position, segment_id
+    ):
+        return result
+    closes = close.iloc[start : position + 1].to_numpy(dtype=float)
+    highs = _numeric(indexed["adjusted_high"].iloc[start : position + 1]).to_numpy(
+        dtype=float
+    )
+    lows = _numeric(indexed["adjusted_low"].iloc[start : position + 1]).to_numpy(
+        dtype=float
+    )
+    volumes = _numeric(indexed["adjusted_volume"].iloc[start : position + 1]).to_numpy(
+        dtype=float
+    )
+    volume_ratios = _numeric(
+        indexed["adjusted_volume_vs_sma21_prior_ratio"].iloc[start : position + 1]
+    ).to_numpy(dtype=float)
+    daily_returns = _numeric(
+        indexed["daily_price_change_pct"].iloc[start : position + 1]
+    ).to_numpy(dtype=float)
+    if not (
+        np.isfinite(closes).all()
+        and np.isfinite(highs).all()
+        and np.isfinite(lows).all()
+        and np.all(closes > 0)
+        and np.all(highs > 0)
+        and np.all(lows > 0)
+    ):
+        return result
+    running_high = np.maximum.accumulate(closes)
+    result["landmark_max_drawdown_20d_pct"] = float(
+        np.min(closes / running_high - 1.0) * 100.0
+    )
+    x = np.arange(20, dtype=float)
+    log_close = np.log(closes)
+    slope, intercept = np.polyfit(x, log_close, 1)
+    fitted = intercept + slope * x
+    residual = float(np.square(log_close - fitted).sum())
+    total = float(np.square(log_close - log_close.mean()).sum())
+    result["landmark_trend_slope_20_pct_per_session"] = float(
+        np.expm1(slope) * 100.0
+    )
+    result["landmark_trend_r2_20"] = 1.0 - residual / total if total > 0 else 0.0
+    path = float(np.abs(np.diff(closes)).sum())
+    result["landmark_trend_efficiency_20"] = (
+        abs(float(closes[-1] - closes[0])) / path if path > 0 else 0.0
+    )
+    ranges = (highs - lows) / closes
+    older = float(np.mean(ranges[:10]))
+    result["landmark_range_compression_10_vs_10_ratio"] = (
+        float(np.mean(ranges[10:])) / older if older > 0 else np.nan
+    )
+    close_location = np.divide(
+        closes - lows,
+        highs - lows,
+        out=np.full(20, np.nan),
+        where=highs > lows,
+    )
+    valid_activity = np.isfinite(volumes) & np.isfinite(volume_ratios)
+    result["landmark_distribution_day_count_20"] = float(
+        np.count_nonzero(valid_activity & (daily_returns <= -0.2) & (volume_ratios >= 1.2))
+    )
+    result["landmark_churning_day_count_20"] = float(
+        np.count_nonzero(
+            valid_activity
+            & (np.abs(daily_returns) <= 0.5)
+            & (volume_ratios >= 1.2)
+            & (close_location <= 0.5)
+        )
+    )
+    return result
+
+
+def _common_landmark_values(
+    indexed: pd.DataFrame,
+    segment: pd.Series,
+    true_range: pd.Series,
+    landmark_atr14: pd.Series,
+    signal: pd.Series,
+    signal_position: int,
+    landmark_position: int,
+    cfg: Config,
+) -> dict[str, Any]:
+    segment_id = segment.iloc[signal_position]
+    signal_close = float(indexed["adjusted_close"].iloc[signal_position])
+    landmark = indexed.iloc[landmark_position]
+    landmark_close = float(landmark["adjusted_close"])
+    landmark_high = float(landmark["adjusted_high"])
+    landmark_low = float(landmark["adjusted_low"])
+    path = indexed.iloc[signal_position + 1 : landmark_position + 1]
+    path_highs = _numeric(path["adjusted_high"]).to_numpy(dtype=float)
+    path_lows = _numeric(path["adjusted_low"]).to_numpy(dtype=float)
+    high_returns = (path_highs / signal_close - 1.0) * 100.0
+    low_returns = (path_lows / signal_close - 1.0) * 100.0
+    first_gain_2 = _first_hit_day(high_returns >= cfg.weak_5d_max_gain_pct, 1)
+    first_gain_5 = _first_hit_day(high_returns >= cfg.strong_5d_min_gain_pct, 1)
+    first_loss_5 = _first_hit_day(low_returns <= cfg.deep_loss_5d_max_loss_pct, 1)
+    first_loss_10 = _first_hit_day(
+        low_returns <= cfg.hard_stop_5d_max_loss_pct, 1
+    )
+    prior_close = float(indexed["adjusted_close"].iloc[landmark_position - 1])
+    criteria_values = pd.Series(
+        [landmark[column] for column in CRITERION_COLUMNS], dtype="boolean"
+    )
+    signal_volume = indexed["adjusted_volume"].iloc[signal_position]
+    signal_notional = indexed["daily_traded_notional_usd"].iloc[signal_position]
+    landmark_rs = landmark["rs_rating"]
+    signal_rs = indexed["rs_rating"].iloc[signal_position]
+    values: dict[str, Any] = {
+        "signal_adjusted_close": signal_close,
+        "landmark_adjusted_close": landmark_close,
+        "landmark_adjusted_high": landmark_high,
+        "landmark_adjusted_low": landmark_low,
+        "landmark_adjusted_volume": landmark["adjusted_volume"],
+        "landmark_daily_traded_notional_usd": landmark[
+            "daily_traded_notional_usd"
+        ],
+        "landmark_daily_price_change_pct": landmark["daily_price_change_pct"],
+        "landmark_volume_vs_sma21_prior_ratio": landmark[
+            "adjusted_volume_vs_sma21_prior_ratio"
+        ],
+        "landmark_volume_vs_sma50_prior_ratio": landmark[
+            "adjusted_volume_vs_sma50_prior_ratio"
+        ],
+        "landmark_notional_vs_sma21_prior_ratio": landmark[
+            "daily_traded_notional_vs_sma21_prior_ratio"
+        ],
+        "landmark_notional_vs_sma50_prior_ratio": landmark[
+            "daily_traded_notional_vs_sma50_prior_ratio"
+        ],
+        "landmark_rs_rating": landmark_rs,
+        "landmark_criteria_pass_count": (
+            int(criteria_values.sum()) if criteria_values.notna().all() else pd.NA
+        ),
+        "landmark_trend_template_pass": (
+            pd.NA
+            if pd.isna(landmark["trend_template_pass"])
+            else bool(landmark["trend_template_pass"])
+        ),
+        "close_return_from_signal_pct": (landmark_close / signal_close - 1.0)
+        * 100.0,
+        "max_gain_to_landmark_pct": max(0.0, float(high_returns.max())),
+        "max_loss_to_landmark_pct": min(0.0, float(low_returns.min())),
+        "drawdown_from_post_signal_high_pct": (
+            landmark_close / float(path_highs.max()) - 1.0
+        )
+        * 100.0,
+        "rebound_from_post_signal_low_pct": (
+            landmark_close / float(path_lows.min()) - 1.0
+        )
+        * 100.0,
+        "landmark_true_range_pct": (
+            float(true_range.iloc[landmark_position]) / prior_close * 100.0
+            if pd.notna(true_range.iloc[landmark_position]) and prior_close > 0
+            else np.nan
+        ),
+        "landmark_close_location_value": (
+            (landmark_close - landmark_low) / (landmark_high - landmark_low)
+            if landmark_high > landmark_low
+            else np.nan
+        ),
+        "volume_vs_signal_ratio": _safe_scalar_ratio(
+            landmark["adjusted_volume"], signal_volume
+        ),
+        "notional_vs_signal_ratio": _safe_scalar_ratio(
+            landmark["daily_traded_notional_usd"], signal_notional
+        ),
+        "rs_rating_change_from_signal": (
+            float(landmark_rs) - float(signal_rs)
+            if pd.notna(landmark_rs) and pd.notna(signal_rs)
+            else np.nan
+        ),
+        "landmark_distance_to_ma50_pct": _safe_scalar_ratio(
+            landmark_close, landmark["ma50"], percentage=True
+        ),
+        "landmark_distance_to_ma150_pct": _safe_scalar_ratio(
+            landmark_close, landmark["ma150"], percentage=True
+        ),
+        "landmark_distance_to_ma200_pct": _safe_scalar_ratio(
+            landmark_close, landmark["ma200"], percentage=True
+        ),
+        "landmark_price_vs_52w_high_pct": _safe_scalar_ratio(
+            landmark_close, landmark["high_52w"], percentage=True
+        ),
+        "landmark_atr_14d_pct": (
+            float(landmark_atr14.iloc[landmark_position]) / landmark_close * 100.0
+            if pd.notna(landmark_atr14.iloc[landmark_position])
+            else np.nan
+        ),
+        "mean_volume_since_signal_vs_prior21_ratio": _safe_scalar_ratio(
+            _numeric(path["adjusted_volume"]).mean(),
+            indexed["adjusted_volume_sma21_prior"].iloc[signal_position],
+        ),
+        "mean_notional_since_signal_vs_prior21_ratio": _safe_scalar_ratio(
+            _numeric(path["daily_traded_notional_usd"]).mean(),
+            indexed["daily_traded_notional_sma21_prior_usd"].iloc[signal_position],
+        ),
+        "hit_gain_2pct_so_far": first_gain_2 is not None,
+        "hit_gain_5pct_so_far": first_gain_5 is not None,
+        "hit_loss_5pct_so_far": first_loss_5 is not None,
+        "hit_loss_10pct_so_far": first_loss_10 is not None,
+        "first_gain_2pct_day_so_far": pd.NA if first_gain_2 is None else first_gain_2,
+        "first_gain_5pct_day_so_far": pd.NA if first_gain_5 is None else first_gain_5,
+        "first_loss_5pct_day_so_far": pd.NA if first_loss_5 is None else first_loss_5,
+        "first_loss_10pct_day_so_far": (
+            pd.NA if first_loss_10 is None else first_loss_10
+        ),
+    }
+    for window in (7, 14, 100):
+        values[f"landmark_volume_vs_sma{window}_prior_ratio"] = (
+            _landmark_activity_ratio(
+                indexed,
+                segment,
+                landmark_position,
+                segment_id,
+                "adjusted_volume",
+                window,
+            )
+        )
+        values[f"landmark_notional_vs_sma{window}_prior_ratio"] = (
+            _landmark_activity_ratio(
+                indexed,
+                segment,
+                landmark_position,
+                segment_id,
+                "daily_traded_notional_usd",
+                window,
+            )
+        )
+    values.update(
+        _landmark_technical_snapshot(
+            indexed, segment, landmark_position, segment_id
+        )
+    )
+    return values
 
 
 def _early_cut_landmark_row(
@@ -2616,6 +3032,18 @@ def _early_cut_landmark_row(
                 ),
             }
         )
+        row.update(
+            _common_landmark_values(
+                indexed,
+                segment,
+                true_range,
+                landmark_atr14,
+                signal,
+                signal_position,
+                landmark_position,
+                cfg,
+            )
+        )
         row["eligible_at_landmark"] = bool(
             same_through_landmark and not hit_gain_5 and not hit_loss_5
         )
@@ -2709,13 +3137,155 @@ def _early_cut_landmark_row(
     return row
 
 
+def _management_landmark_row(
+    indexed: pd.DataFrame,
+    trading_dates: pd.DatetimeIndex,
+    segment: pd.Series,
+    true_range: pd.Series,
+    landmark_atr14: pd.Series,
+    signal: pd.Series,
+    signal_position: int,
+    landmark_day: int,
+    cfg: Config,
+) -> dict[str, Any]:
+    """Build a causal D5/D20/D30 decision row with next-open outcomes."""
+
+    row = _empty_early_cut_row(signal, landmark_day)
+    landmark_position = signal_position + landmark_day
+    effective_position = landmark_position + 1
+    end_dates = {
+        horizon: _date_at(trading_dates, signal_position + horizon)
+        for horizon in (20, 40, 60, 90)
+    }
+    row.update(
+        {
+            "landmark_date": _date_at(trading_dates, landmark_position),
+            "effective_session_date": _date_at(trading_dates, effective_position),
+            "horizon_end_date": end_dates[90],
+            **{f"day{day}_end_date": value for day, value in end_dates.items()},
+        }
+    )
+    row["analysis_split"] = _analysis_split(
+        pd.Series([row["landmark_date"]]),
+        pd.Series([row["horizon_end_date"]]),
+        cfg,
+    ).iloc[0]
+    if signal_position < 0 or signal_position >= len(indexed):
+        return row
+    segment_id = segment.iloc[signal_position]
+    row["landmark_observed"] = bool(
+        0 <= landmark_position < len(indexed)
+        and pd.notna(indexed["symbol"].iloc[landmark_position])
+        and indexed["symbol"].iloc[landmark_position] == signal["symbol"]
+    )
+    same_through_landmark = _observed_same_segment(
+        indexed, segment, signal_position, landmark_position, segment_id
+    )
+    row["same_continuity_segment"] = same_through_landmark
+    complete_through_landmark = _complete_price_path(
+        indexed, segment, signal_position, landmark_position, segment_id
+    )
+    if not complete_through_landmark:
+        return row
+
+    row.update(
+        _common_landmark_values(
+            indexed,
+            segment,
+            true_range,
+            landmark_atr14,
+            signal,
+            signal_position,
+            landmark_position,
+            cfg,
+        )
+    )
+    hard_stop_hit = bool(row["hit_loss_10pct_so_far"])
+    if landmark_day == 5:
+        stagnant = bool(
+            float(row["max_gain_to_landmark_pct"])
+            < cfg.weak_5d_max_gain_pct
+            and float(row["close_return_from_signal_pct"])
+            <= cfg.stagnant_5d_max_return_pct
+        )
+        row["stagnant_at_day5"] = stagnant
+        eligible = stagnant and not hard_stop_hit
+    else:
+        eligible = (
+            float(row["close_return_from_signal_pct"]) > 0.0
+            and not hard_stop_hit
+        )
+    row["eligible_at_landmark"] = eligible
+    row["management_include_final"] = eligible
+    row["management_decision"] = (
+        "hard_stop"
+        if hard_stop_hit
+        else "hold" if eligible else "not_eligible"
+    )
+
+    effective_open = (
+        indexed["adjusted_open"].iloc[effective_position]
+        if 0 <= effective_position < len(indexed)
+        and "adjusted_open" in indexed
+        else np.nan
+    )
+    if _finite_positive(effective_open) and _observed_same_segment(
+        indexed, segment, effective_position, effective_position, segment_id
+    ):
+        effective_open = float(effective_open)
+        row["effective_adjusted_open"] = effective_open
+        row["effective_open_return_from_signal_pct"] = (
+            effective_open / float(row["signal_adjusted_close"]) - 1.0
+        ) * 100.0
+        applicable_horizons = (
+            (20,) if landmark_day == 5 else (40, 60, 90)
+        )
+        available_horizons: list[int] = []
+        for horizon in applicable_horizons:
+            horizon_position = signal_position + horizon
+            if not _complete_price_path(
+                indexed,
+                segment,
+                effective_position,
+                horizon_position,
+                segment_id,
+            ):
+                continue
+            future = indexed.iloc[effective_position : horizon_position + 1]
+            highs = _numeric(future["adjusted_high"]).to_numpy(dtype=float)
+            lows = _numeric(future["adjusted_low"]).to_numpy(dtype=float)
+            terminal = float(indexed["adjusted_close"].iloc[horizon_position])
+            max_gain = max(
+                0.0, float(((highs / effective_open - 1.0) * 100.0).max())
+            )
+            max_loss = min(
+                0.0, float(((lows / effective_open - 1.0) * 100.0).min())
+            )
+            terminal_return = (terminal / effective_open - 1.0) * 100.0
+            row[f"max_gain_from_effective_open_to_day{horizon}_pct"] = max_gain
+            row[f"max_loss_from_effective_open_to_day{horizon}_pct"] = max_loss
+            row[
+                f"terminal_return_from_effective_open_to_day{horizon}_pct"
+            ] = terminal_return
+            row[f"take_profit_better_to_day{horizon}"] = terminal_return <= 0.0
+            row[f"continue_winner_to_day{horizon}"] = bool(
+                terminal_return >= cfg.continuation_winner_min_return_pct
+                and max_loss > cfg.hard_stop_5d_max_loss_pct
+            )
+            available_horizons.append(horizon)
+        row["full_outcome_available"] = set(applicable_horizons).issubset(
+            available_horizons
+        )
+    return row
+
+
 def calculate_early_cut_landmarks(
     rows: pd.DataFrame,
     trading_dates: pd.DatetimeIndex,
     cfg: Config,
     signals: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Return exactly three censored D1-D3 observations per entry signal."""
+    """Return causal early-cut and position-management decision landmarks."""
 
     if signals is None:
         signals = calculate_identity_signals(rows, trading_dates, cfg)
@@ -2769,12 +3339,26 @@ def calculate_early_cut_landmarks(
                     cfg,
                 )
             )
+        for landmark_day in MANAGEMENT_LANDMARK_DAYS:
+            output_rows.append(
+                _management_landmark_row(
+                    indexed,
+                    trading_dates,
+                    segment,
+                    true_range,
+                    landmark_atr14,
+                    signal,
+                    signal_position,
+                    landmark_day,
+                    cfg,
+                )
+            )
 
     output = pd.DataFrame(output_rows, columns=EARLY_CUT_COLUMNS)
-    expected = len(signals) * len(EARLY_CUT_LANDMARK_DAYS)
+    expected = len(signals) * len(POSITION_LANDMARK_DAYS)
     if len(output) != expected:
         raise AssertionError(
-            f"expected {expected} early-cut rows, calculated {len(output)}"
+            f"expected {expected} landmark rows, calculated {len(output)}"
         )
     return output.loc[:, EARLY_CUT_COLUMNS]
 
@@ -2807,6 +3391,8 @@ def calculate_signal_batch(
         return empty_calculation_batch()
 
     data = source.copy()
+    if "adjusted_open" not in data:
+        data["adjusted_open"] = np.nan
     data["period_end_date"] = pd.to_datetime(
         data["period_end_date"], errors="raise"
     ).dt.normalize()
@@ -2863,9 +3449,9 @@ def calculate_signal_batch(
         text_columns=_EARLY_CUT_TEXT_COLUMNS,
         date_columns=_EARLY_CUT_DATE_COLUMNS,
     )
-    expected = len(signals) * len(EARLY_CUT_LANDMARK_DAYS)
+    expected = len(signals) * len(POSITION_LANDMARK_DAYS)
     if len(early_cut) != expected:
         raise AssertionError(
-            f"expected {expected} early-cut rows, calculated {len(early_cut)}"
+            f"expected {expected} landmark rows, calculated {len(early_cut)}"
         )
     return CalculationBatchResult(signals=signals, early_cut=early_cut)

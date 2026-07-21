@@ -34,7 +34,12 @@ def test_v2_split_dates_must_be_strictly_ordered(cfg_factory, changes, message) 
         ({"quantile_count": 3}, "QUANTILE_COUNT"),
         ({"quantile_count": 21}, "QUANTILE_COUNT"),
         ({"max_conditions_per_objective": 0}, "MAX_CONDITIONS_PER_OBJECTIVE"),
-        ({"max_conditions_per_objective": 3}, "MAX_CONDITIONS_PER_OBJECTIVE"),
+        ({"max_conditions_per_objective": 4}, "MAX_CONDITIONS_PER_OBJECTIVE"),
+        ({"hard_stop_5d_max_loss_pct": -4.0}, "HARD_STOP_5D_MAX_LOSS_PCT"),
+        (
+            {"continuation_winner_min_return_pct": 0.0},
+            "CONTINUATION_WINNER_MIN_RETURN_PCT",
+        ),
         ({"rule_search_beam_width": 0}, "RULE_SEARCH_BEAM_WIDTH"),
         ({"min_fold_sample_count": 0}, "fold sample/count"),
         ({"min_fold_objective_count": 0}, "fold sample/count"),

@@ -1,4 +1,4 @@
--- Service-owned schema for stock-analyser filter and early-cut research.
+-- Service-owned schema for stock-analyser filter and position-management research.
 -- Runtime Python validates and writes these objects but never creates or alters them.
 
 DO $$
@@ -40,13 +40,19 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     daily_price_change_pct                       NUMERIC(20,8),
     adjusted_volume_sma21_prior                  NUMERIC(30,8),
     adjusted_volume_vs_sma21_prior_ratio         NUMERIC(30,8),
+    adjusted_volume_vs_sma7_prior_ratio          NUMERIC(30,8),
+    adjusted_volume_vs_sma14_prior_ratio         NUMERIC(30,8),
     adjusted_volume_sma50_prior                  NUMERIC(30,8),
     adjusted_volume_vs_sma50_prior_ratio         NUMERIC(30,8),
+    adjusted_volume_vs_sma100_prior_ratio        NUMERIC(30,8),
     daily_traded_notional_usd                    NUMERIC(24,2),
     daily_traded_notional_sma21_prior_usd        NUMERIC(30,8),
     daily_traded_notional_vs_sma21_prior_ratio   NUMERIC(30,8),
+    daily_traded_notional_vs_sma7_prior_ratio    NUMERIC(30,8),
+    daily_traded_notional_vs_sma14_prior_ratio   NUMERIC(30,8),
     daily_traded_notional_sma50_prior_usd        NUMERIC(30,8),
     daily_traded_notional_vs_sma50_prior_ratio   NUMERIC(30,8),
+    daily_traded_notional_vs_sma100_prior_ratio  NUMERIC(30,8),
     dollar_volume_63d                            NUMERIC(30,8),
     ma50                                         NUMERIC(20,8),
     ma150                                        NUMERIC(20,8),
@@ -276,13 +282,34 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     forward_10d_max_loss_pct                     NUMERIC(20,8),
     forward_20d_max_gain_pct                     NUMERIC(20,8),
     forward_20d_max_loss_pct                     NUMERIC(20,8),
+    forward_30d_max_gain_pct                     NUMERIC(20,8),
+    forward_30d_max_loss_pct                     NUMERIC(20,8),
+    forward_40d_max_gain_pct                     NUMERIC(20,8),
+    forward_40d_max_loss_pct                     NUMERIC(20,8),
+    forward_60d_max_gain_pct                     NUMERIC(20,8),
+    forward_60d_max_loss_pct                     NUMERIC(20,8),
+    forward_90d_max_gain_pct                     NUMERIC(20,8),
+    forward_90d_max_loss_pct                     NUMERIC(20,8),
     forward_5d_label_end_date                    DATE,
+    forward_10d_label_end_date                   DATE,
+    forward_20d_label_end_date                   DATE,
+    forward_30d_label_end_date                   DATE,
+    forward_40d_label_end_date                   DATE,
+    forward_60d_label_end_date                   DATE,
+    forward_90d_label_end_date                   DATE,
     terminal_close_return_5d_pct                 NUMERIC(20,8),
+    terminal_close_return_10d_pct                NUMERIC(20,8),
+    terminal_close_return_20d_pct                NUMERIC(20,8),
+    terminal_close_return_30d_pct                NUMERIC(20,8),
+    terminal_close_return_40d_pct                NUMERIC(20,8),
+    terminal_close_return_60d_pct                NUMERIC(20,8),
+    terminal_close_return_90d_pct                NUMERIC(20,8),
     first_gain_2pct_day                          SMALLINT,
     first_gain_1pct_day                          SMALLINT,
     first_gain_3pct_day                          SMALLINT,
     first_gain_5pct_day                          SMALLINT,
     first_loss_5pct_day                          SMALLINT,
+    first_loss_10pct_day                         SMALLINT,
     gain_loss_order_5d                           TEXT,
     weak_5d                                      BOOLEAN,
     strong_5d                                    BOOLEAN,
@@ -292,6 +319,14 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     strong_first_5d                              BOOLEAN,
     terminal_stagnant_5d                         BOOLEAN,
     terminal_winner_5d                           BOOLEAN,
+    stagnant_5d                                  BOOLEAN,
+    hard_stop_10pct_5d                           BOOLEAN,
+    terminal_nonpositive_20d                     BOOLEAN,
+    terminal_winner_20d                          BOOLEAN,
+    terminal_nonpositive_30d                     BOOLEAN,
+    terminal_winner_30d                          BOOLEAN,
+    runner_60d                                   BOOLEAN,
+    runner_90d                                   BOOLEAN,
     mfe_to_abs_mae_5d_ratio                      NUMERIC(20,8),
     terminal_return_to_mfe_5d_ratio              NUMERIC(20,8),
     late_strong_10d                              BOOLEAN,
@@ -352,12 +387,27 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (forward_10d_max_loss_pct IS NULL OR forward_10d_max_loss_pct <= 0),
     CHECK (forward_20d_max_gain_pct IS NULL OR forward_20d_max_gain_pct >= 0),
     CHECK (forward_20d_max_loss_pct IS NULL OR forward_20d_max_loss_pct <= 0),
+    CHECK (forward_30d_max_gain_pct IS NULL OR forward_30d_max_gain_pct >= 0),
+    CHECK (forward_30d_max_loss_pct IS NULL OR forward_30d_max_loss_pct <= 0),
+    CHECK (forward_40d_max_gain_pct IS NULL OR forward_40d_max_gain_pct >= 0),
+    CHECK (forward_40d_max_loss_pct IS NULL OR forward_40d_max_loss_pct <= 0),
+    CHECK (forward_60d_max_gain_pct IS NULL OR forward_60d_max_gain_pct >= 0),
+    CHECK (forward_60d_max_loss_pct IS NULL OR forward_60d_max_loss_pct <= 0),
+    CHECK (forward_90d_max_gain_pct IS NULL OR forward_90d_max_gain_pct >= 0),
+    CHECK (forward_90d_max_loss_pct IS NULL OR forward_90d_max_loss_pct <= 0),
     CHECK (forward_5d_label_end_date IS NULL OR forward_5d_label_end_date > signal_date),
+    CHECK (forward_10d_label_end_date IS NULL OR forward_10d_label_end_date > signal_date),
+    CHECK (forward_20d_label_end_date IS NULL OR forward_20d_label_end_date > signal_date),
+    CHECK (forward_30d_label_end_date IS NULL OR forward_30d_label_end_date > signal_date),
+    CHECK (forward_40d_label_end_date IS NULL OR forward_40d_label_end_date > signal_date),
+    CHECK (forward_60d_label_end_date IS NULL OR forward_60d_label_end_date > signal_date),
+    CHECK (forward_90d_label_end_date IS NULL OR forward_90d_label_end_date > signal_date),
     CHECK (first_gain_2pct_day IS NULL OR first_gain_2pct_day BETWEEN 1 AND 5),
     CHECK (first_gain_1pct_day IS NULL OR first_gain_1pct_day BETWEEN 1 AND 5),
     CHECK (first_gain_3pct_day IS NULL OR first_gain_3pct_day BETWEEN 1 AND 5),
     CHECK (first_gain_5pct_day IS NULL OR first_gain_5pct_day BETWEEN 1 AND 5),
     CHECK (first_loss_5pct_day IS NULL OR first_loss_5pct_day BETWEEN 1 AND 5),
+    CHECK (first_loss_10pct_day IS NULL OR first_loss_10pct_day BETWEEN 1 AND 5),
     CHECK (
         gain_loss_order_5d IS NULL OR gain_loss_order_5d IN (
             'gain_first', 'loss_first', 'same_day_ambiguous',
@@ -385,6 +435,9 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
         = (terminal_stagnant_5d IS NULL)
     ),
     CHECK ((terminal_stagnant_5d IS NULL) = (terminal_winner_5d IS NULL)),
+    CHECK ((stagnant_5d IS NULL) = (hard_stop_10pct_5d IS NULL)),
+    CHECK ((terminal_nonpositive_20d IS NULL) = (terminal_winner_20d IS NULL)),
+    CHECK ((terminal_nonpositive_30d IS NULL) = (terminal_winner_30d IS NULL)),
     CHECK (
         terminal_stagnant_5d IS NULL
         OR NOT (terminal_stagnant_5d AND terminal_winner_5d)
@@ -430,11 +483,16 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     landmark_date                                    DATE,
     effective_session_date                           DATE,
     horizon_end_date                                 DATE,
+    day20_end_date                                   DATE,
+    day40_end_date                                   DATE,
+    day60_end_date                                   DATE,
+    day90_end_date                                   DATE,
     symbol                                           TEXT NOT NULL,
     exchange                                         TEXT NOT NULL,
     cik                                              BIGINT NOT NULL,
     price_continuity_segment                         INTEGER NOT NULL,
     currency                                         TEXT NOT NULL,
+    decision_stage                                   TEXT NOT NULL,
 
     landmark_observed                                BOOLEAN NOT NULL,
     same_continuity_segment                          BOOLEAN NOT NULL,
@@ -453,6 +511,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     landmark_volume_vs_sma50_prior_ratio             NUMERIC(30,8),
     landmark_notional_vs_sma21_prior_ratio           NUMERIC(30,8),
     landmark_notional_vs_sma50_prior_ratio           NUMERIC(30,8),
+    landmark_volume_vs_sma7_prior_ratio              NUMERIC(30,8),
+    landmark_volume_vs_sma14_prior_ratio             NUMERIC(30,8),
+    landmark_volume_vs_sma100_prior_ratio            NUMERIC(30,8),
+    landmark_notional_vs_sma7_prior_ratio            NUMERIC(30,8),
+    landmark_notional_vs_sma14_prior_ratio           NUMERIC(30,8),
+    landmark_notional_vs_sma100_prior_ratio          NUMERIC(30,8),
     landmark_rs_rating                               SMALLINT,
     landmark_criteria_pass_count                     SMALLINT,
     landmark_trend_template_pass                     BOOLEAN,
@@ -472,15 +536,27 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     landmark_distance_to_ma200_pct                   NUMERIC(20,8),
     landmark_price_vs_52w_high_pct                   NUMERIC(20,8),
     landmark_atr_14d_pct                             NUMERIC(20,8),
+    landmark_return_5d_pct                           NUMERIC(20,8),
+    landmark_return_10d_pct                          NUMERIC(20,8),
+    landmark_return_20d_pct                          NUMERIC(20,8),
+    landmark_max_drawdown_20d_pct                    NUMERIC(20,8),
+    landmark_trend_slope_20_pct_per_session          NUMERIC(20,8),
+    landmark_trend_r2_20                             NUMERIC(20,8),
+    landmark_trend_efficiency_20                     NUMERIC(20,8),
+    landmark_range_compression_10_vs_10_ratio        NUMERIC(20,8),
+    landmark_distribution_day_count_20               NUMERIC(20,8),
+    landmark_churning_day_count_20                   NUMERIC(20,8),
     mean_volume_since_signal_vs_prior21_ratio        NUMERIC(30,8),
     mean_notional_since_signal_vs_prior21_ratio      NUMERIC(30,8),
 
     hit_gain_2pct_so_far                             BOOLEAN,
     hit_gain_5pct_so_far                             BOOLEAN,
     hit_loss_5pct_so_far                             BOOLEAN,
+    hit_loss_10pct_so_far                            BOOLEAN,
     first_gain_2pct_day_so_far                       SMALLINT,
     first_gain_5pct_day_so_far                       SMALLINT,
     first_loss_5pct_day_so_far                       SMALLINT,
+    first_loss_10pct_day_so_far                      SMALLINT,
     remaining_max_gain_from_signal_pct               NUMERIC(20,8),
     remaining_max_loss_from_signal_pct               NUMERIC(20,8),
     remaining_max_gain_from_landmark_pct             NUMERIC(20,8),
@@ -495,6 +571,29 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     loss_first_to_day5                                BOOLEAN,
     strong_first_to_day5                              BOOLEAN,
     bad_to_day5                                       BOOLEAN,
+    stagnant_at_day5                                  BOOLEAN,
+    effective_adjusted_open                           NUMERIC(20,8),
+    effective_open_return_from_signal_pct             NUMERIC(20,8),
+    max_gain_from_effective_open_to_day20_pct         NUMERIC(20,8),
+    max_loss_from_effective_open_to_day20_pct         NUMERIC(20,8),
+    terminal_return_from_effective_open_to_day20_pct  NUMERIC(20,8),
+    take_profit_better_to_day20                       BOOLEAN,
+    continue_winner_to_day20                          BOOLEAN,
+    max_gain_from_effective_open_to_day40_pct         NUMERIC(20,8),
+    max_loss_from_effective_open_to_day40_pct         NUMERIC(20,8),
+    terminal_return_from_effective_open_to_day40_pct  NUMERIC(20,8),
+    take_profit_better_to_day40                       BOOLEAN,
+    continue_winner_to_day40                          BOOLEAN,
+    max_gain_from_effective_open_to_day60_pct         NUMERIC(20,8),
+    max_loss_from_effective_open_to_day60_pct         NUMERIC(20,8),
+    terminal_return_from_effective_open_to_day60_pct  NUMERIC(20,8),
+    take_profit_better_to_day60                       BOOLEAN,
+    continue_winner_to_day60                          BOOLEAN,
+    max_gain_from_effective_open_to_day90_pct         NUMERIC(20,8),
+    max_loss_from_effective_open_to_day90_pct         NUMERIC(20,8),
+    terminal_return_from_effective_open_to_day90_pct  NUMERIC(20,8),
+    take_profit_better_to_day90                       BOOLEAN,
+    continue_winner_to_day90                          BOOLEAN,
 
     market_breadth_above_ma50_ratio                   NUMERIC(20,8),
     market_breadth_above_ma200_ratio                  NUMERIC(20,8),
@@ -524,14 +623,27 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     matched_rule_ids                                  TEXT,
     cut_decision                                      TEXT NOT NULL,
     cut_reason                                        TEXT,
+    management_include_final                          BOOLEAN NOT NULL,
+    management_matched_rule_ids                       TEXT,
+    management_decision                               TEXT NOT NULL,
+    management_reason                                 TEXT,
 
     PRIMARY KEY (signal_date, symbol, exchange, cik, landmark_day),
-    CHECK (landmark_day BETWEEN 1 AND 3),
+    CHECK (landmark_day IN (1, 2, 3, 5, 20, 30)),
     CHECK (price_continuity_segment > 0),
     CHECK (currency = 'USD'),
+    CHECK (
+        (landmark_day IN (1, 2, 3) AND decision_stage = 'early_cut')
+        OR (landmark_day = 5 AND decision_stage = 'stagnation_review')
+        OR (landmark_day IN (20, 30) AND decision_stage = 'profit_review')
+    ),
     CHECK (landmark_date IS NULL OR landmark_date > signal_date),
     CHECK (effective_session_date IS NULL OR effective_session_date >= signal_date),
     CHECK (horizon_end_date IS NULL OR horizon_end_date > signal_date),
+    CHECK (day20_end_date IS NULL OR day20_end_date > signal_date),
+    CHECK (day40_end_date IS NULL OR day40_end_date > signal_date),
+    CHECK (day60_end_date IS NULL OR day60_end_date > signal_date),
+    CHECK (day90_end_date IS NULL OR day90_end_date > signal_date),
     CHECK (landmark_rs_rating IS NULL OR landmark_rs_rating BETWEEN 1 AND 99),
     CHECK (landmark_criteria_pass_count IS NULL OR landmark_criteria_pass_count BETWEEN 0 AND 8),
     CHECK (max_gain_to_landmark_pct IS NULL OR max_gain_to_landmark_pct >= 0),
@@ -543,6 +655,17 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
     CHECK (first_gain_2pct_day_so_far IS NULL OR first_gain_2pct_day_so_far BETWEEN 1 AND landmark_day),
     CHECK (first_gain_5pct_day_so_far IS NULL OR first_gain_5pct_day_so_far BETWEEN 1 AND landmark_day),
     CHECK (first_loss_5pct_day_so_far IS NULL OR first_loss_5pct_day_so_far BETWEEN 1 AND landmark_day),
+    CHECK (first_loss_10pct_day_so_far IS NULL OR first_loss_10pct_day_so_far BETWEEN 1 AND landmark_day),
+    CHECK (landmark_trend_r2_20 IS NULL OR landmark_trend_r2_20 BETWEEN 0 AND 1),
+    CHECK (landmark_trend_efficiency_20 IS NULL OR landmark_trend_efficiency_20 BETWEEN 0 AND 1),
+    CHECK (max_gain_from_effective_open_to_day20_pct IS NULL OR max_gain_from_effective_open_to_day20_pct >= 0),
+    CHECK (max_loss_from_effective_open_to_day20_pct IS NULL OR max_loss_from_effective_open_to_day20_pct <= 0),
+    CHECK (max_gain_from_effective_open_to_day40_pct IS NULL OR max_gain_from_effective_open_to_day40_pct >= 0),
+    CHECK (max_loss_from_effective_open_to_day40_pct IS NULL OR max_loss_from_effective_open_to_day40_pct <= 0),
+    CHECK (max_gain_from_effective_open_to_day60_pct IS NULL OR max_gain_from_effective_open_to_day60_pct >= 0),
+    CHECK (max_loss_from_effective_open_to_day60_pct IS NULL OR max_loss_from_effective_open_to_day60_pct <= 0),
+    CHECK (max_gain_from_effective_open_to_day90_pct IS NULL OR max_gain_from_effective_open_to_day90_pct >= 0),
+    CHECK (max_loss_from_effective_open_to_day90_pct IS NULL OR max_loss_from_effective_open_to_day90_pct <= 0),
     CHECK (future_first_gain_2pct_day IS NULL OR future_first_gain_2pct_day BETWEEN landmark_day + 1 AND 5),
     CHECK (future_first_gain_5pct_day IS NULL OR future_first_gain_5pct_day BETWEEN landmark_day + 1 AND 5),
     CHECK (future_first_loss_5pct_day IS NULL OR future_first_loss_5pct_day BETWEEN landmark_day + 1 AND 5),
@@ -595,17 +718,23 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
         OR prior_policy_cut_day BETWEEN 1 AND landmark_day - 1
     ),
     CHECK (
-        active_at_landmark = (
+        decision_stage <> 'early_cut'
+        OR active_at_landmark = (
             eligible_at_landmark AND prior_policy_cut_day IS NULL
         )
     ),
-    CHECK (include_final = (include_stagnation_filter AND include_loss_filter)),
+    CHECK (
+        decision_stage <> 'early_cut'
+        OR include_final = (include_stagnation_filter AND include_loss_filter)
+    ),
     CHECK (
         cut_decision IN (
             'cut', 'hold', 'not_active', 'not_eligible', 'not_evaluable'
         )
     ),
     CHECK (
+        decision_stage <> 'early_cut'
+        OR (
         (active_at_landmark AND include_final AND cut_decision = 'hold')
         OR
         (active_at_landmark AND NOT include_final AND cut_decision = 'cut')
@@ -621,11 +750,50 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_early_cut_results (
               AND NOT eligible_at_landmark
               AND cut_decision IN ('not_eligible', 'not_evaluable'))
          ))
+        )
     ),
     CHECK (
         (cut_decision = 'cut' AND NULLIF(TRIM(cut_reason), '') IS NOT NULL)
         OR
         (cut_decision <> 'cut' AND cut_reason IS NULL)
+    ),
+    CHECK (
+        management_decision IN (
+            'hold', 'hard_stop', 'cut_stagnation', 'take_profit',
+            'not_eligible', 'not_evaluable'
+        )
+    ),
+    CHECK (
+        decision_stage = 'early_cut'
+        OR (
+            NOT active_at_landmark
+            AND NOT include_stagnation_filter
+            AND NOT include_loss_filter
+            AND NOT include_final
+            AND cut_decision = 'not_evaluable'
+        )
+    ),
+    CHECK (
+        decision_stage <> 'early_cut'
+        OR (
+            NOT management_include_final
+            AND management_decision = 'not_evaluable'
+            AND management_reason IS NULL
+        )
+    ),
+    CHECK (
+        decision_stage = 'early_cut'
+        OR (
+            (management_decision = 'hold' AND management_include_final)
+            OR
+            (management_decision IN ('cut_stagnation', 'take_profit')
+             AND NOT management_include_final
+             AND NULLIF(TRIM(management_reason), '') IS NOT NULL)
+            OR
+            (management_decision IN ('hard_stop', 'not_eligible', 'not_evaluable')
+             AND NOT management_include_final
+             AND management_reason IS NULL)
+        )
     )
 );
 
@@ -705,18 +873,30 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     selection_score                    NUMERIC(18,8),
 
     CHECK (result_kind IN ('baseline', 'candidate_rule', 'selected_filter')),
-    CHECK (decision_family IN ('entry_filter', 'entry_confirmation', 'early_cut')),
+    CHECK (decision_family IN ('entry_filter', 'entry_confirmation', 'early_cut', 'position_management')),
     CHECK (
         objective IN (
             'weak_5d', 'loss_first_5d', 'terminal_stagnant_5d',
+            'stagnant_5d', 'hard_stop_10pct_5d',
+            'terminal_nonpositive_20d', 'terminal_nonpositive_30d',
             'strong_first_5d', 'terminal_winner_5d',
-            'stagnant_to_day5', 'loss_first_to_day5', 'bad_to_day5'
+            'terminal_winner_20d', 'terminal_winner_30d',
+            'runner_60d', 'runner_90d',
+            'stagnant_to_day5', 'loss_first_to_day5', 'bad_to_day5',
+            'take_profit_better_to_day20',
+            'take_profit_better_to_day40',
+            'take_profit_better_to_day60',
+            'take_profit_better_to_day90'
         )
     ),
     CHECK (
         protected_outcome IN (
             'strong_first_5d', 'terminal_winner_5d', 'bad_5d',
-            'terminal_stagnant_5d', 'strong_first_to_day5'
+            'terminal_winner_20d', 'terminal_winner_30d', 'runner_60d',
+            'terminal_stagnant_5d', 'terminal_nonpositive_20d',
+            'terminal_nonpositive_30d', 'strong_first_to_day5',
+            'continue_winner_to_day20', 'continue_winner_to_day40',
+            'continue_winner_to_day60', 'continue_winner_to_day90'
         )
     ),
     CHECK (
@@ -728,6 +908,14 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
              OR
              (objective = 'terminal_stagnant_5d'
               AND protected_outcome = 'terminal_winner_5d')
+             OR (objective = 'stagnant_5d'
+                 AND protected_outcome = 'terminal_winner_20d')
+             OR (objective = 'hard_stop_10pct_5d'
+                 AND protected_outcome = 'runner_60d')
+             OR (objective = 'terminal_nonpositive_20d'
+                 AND protected_outcome = 'terminal_winner_20d')
+             OR (objective = 'terminal_nonpositive_30d'
+                 AND protected_outcome = 'terminal_winner_30d')
          ))
         OR
         (decision_family = 'entry_confirmation'
@@ -737,6 +925,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
              OR
              (objective = 'terminal_winner_5d'
               AND protected_outcome = 'terminal_stagnant_5d')
+             OR (objective = 'terminal_winner_20d'
+                 AND protected_outcome = 'terminal_nonpositive_20d')
+             OR (objective = 'terminal_winner_30d'
+                 AND protected_outcome = 'terminal_nonpositive_30d')
+             OR (objective IN ('runner_60d', 'runner_90d')
+                 AND protected_outcome = 'terminal_nonpositive_30d')
          ))
         OR
         (decision_family = 'early_cut'
@@ -746,6 +940,23 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
              OR (objective = 'bad_to_day5' AND landmark_day = 1)
          )
          AND protected_outcome = 'strong_first_to_day5')
+        OR
+        (decision_family = 'position_management'
+         AND landmark_day IN (5, 20, 30)
+         AND objective = 'take_profit_better_to_day'
+             || SUBSTRING(objective FROM '[0-9]+$')
+         AND protected_outcome = 'continue_winner_to_day'
+             || SUBSTRING(objective FROM '[0-9]+$')
+         AND (
+             (landmark_day = 5 AND objective = 'take_profit_better_to_day20')
+             OR
+             (landmark_day IN (20, 30)
+              AND objective IN (
+                  'take_profit_better_to_day40',
+                  'take_profit_better_to_day60',
+                  'take_profit_better_to_day90'
+              ))
+         ))
     ),
     CHECK (
         feature_group IN (
@@ -770,7 +981,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     CHECK (period_end IS NULL OR period_start IS NOT NULL),
     CHECK (period_end IS NULL OR period_end >= period_start),
     CHECK (threshold_fit_end_date IS NULL OR period_end IS NULL OR threshold_fit_end_date <= period_end),
-    CHECK (selection_order IS NULL OR selection_order BETWEEN 1 AND 2),
+    CHECK (selection_order IS NULL OR selection_order BETWEEN 1 AND 3),
     CHECK (NOT is_final_filter OR is_selected),
     CHECK (component_count >= 0),
     CHECK (
@@ -842,6 +1053,6 @@ GRANT USAGE, SELECT
 COMMENT ON TABLE stock_analyser_filter_research_signal_results IS
     'One continuity-safe false-to-true trend-template event per stock, with causal entry features, forward outcomes and entry-filter decisions.';
 COMMENT ON TABLE stock_analyser_filter_research_early_cut_results IS
-    'D+1, D+2 and D+3 landmark observations for each signal, with point-in-time features, landmark-relative continuation outcomes and sequential early-cut decisions.';
+    'D+1, D+2, D+3, D+5, D+20 and D+30 point-in-time landmark observations for each signal, including sequential early-cut and independent next-open position-management outcomes.';
 COMMENT ON TABLE stock_analyser_filter_research_rule_results IS
-    'Entry-filter, entry-confirmation and early-cut rule candidates, stability gates and out-of-sample evaluations.';
+    'Entry-filter, entry-confirmation, early-cut and position-management rule candidates, stability gates and out-of-sample evaluations.';
