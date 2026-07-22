@@ -217,6 +217,27 @@ def test_rule_objective_check_anchors_only_sequential_bad_metric_at_day_one() ->
     ) in rule_block
 
 
+def test_rule_pattern_check_accepts_single_clause_all_patterns() -> None:
+    sql_text = (PROJECT_ROOT / "init" / "schema.sql").read_text(encoding="utf-8")
+    rule_block = _normalized_sql(
+        _create_table_block(
+            sql_text, "stock_analyser_filter_research_rule_results"
+        )
+    )
+
+    assert (
+        "pattern_match_mode = 'all' AND pattern_name IS NOT NULL "
+        "AND pattern_total_clause_count >= 1 "
+        "AND pattern_required_clause_count = pattern_total_clause_count"
+    ) in rule_block
+    assert (
+        "pattern_match_mode = 'k_of_n' AND pattern_name IS NOT NULL "
+        "AND pattern_total_clause_count >= 2 "
+        "AND pattern_required_clause_count BETWEEN 2 "
+        "AND pattern_total_clause_count"
+    ) in rule_block
+
+
 def test_config_rejects_non_owned_target_names(cfg_factory) -> None:
     cfg = cfg_factory()
     with pytest.raises(ValueError, match="must start"):

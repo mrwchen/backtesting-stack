@@ -1185,7 +1185,14 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
          AND pattern_score_window_sessions IS NULL
          AND pattern_score_threshold_pct IS NULL)
         OR
-        (pattern_match_mode IN ('all', 'k_of_n')
+        (pattern_match_mode = 'all'
+         AND pattern_name IS NOT NULL
+         AND pattern_total_clause_count >= 1
+         AND pattern_required_clause_count = pattern_total_clause_count
+         AND pattern_score_window_sessions IS NULL
+         AND pattern_score_threshold_pct IS NULL)
+        OR
+        (pattern_match_mode = 'k_of_n'
          AND pattern_name IS NOT NULL
          AND pattern_total_clause_count >= 2
          AND pattern_required_clause_count BETWEEN 2 AND pattern_total_clause_count
