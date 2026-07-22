@@ -55,6 +55,7 @@ class Config:
     earnings_event_table: str
     market_metrics_table: str
     world_market_observation_table: str
+    security_master_current_table: str
     signal_result_table: str
     early_cut_result_table: str
     rule_result_table: str
@@ -96,6 +97,9 @@ class Config:
     max_stat_permutation_p_value: float
     permutation_random_seed: int
     min_holdout_sample_count: int
+    taxonomy_backcast_industry_min_members: int
+    taxonomy_backcast_category_min_members: int
+    taxonomy_backcast_subcategory_min_members: int
 
     max_workers: int
     worker_identity_batch_size: int
@@ -151,6 +155,13 @@ class Config:
                 os.getenv(
                     "WORLD_MARKET_OBSERVATION_TABLE",
                     "world_regime_observations",
+                ),
+            ),
+            security_master_current_table=_table_name(
+                "SECURITY_MASTER_CURRENT_TABLE",
+                os.getenv(
+                    "SECURITY_MASTER_CURRENT_TABLE",
+                    "stock_core_security_master_current",
                 ),
             ),
             signal_result_table=_table_name(
@@ -227,6 +238,15 @@ class Config:
             ),
             permutation_random_seed=_env_int("PERMUTATION_RANDOM_SEED", 1729),
             min_holdout_sample_count=_env_int("MIN_HOLDOUT_SAMPLE_COUNT", 500),
+            taxonomy_backcast_industry_min_members=_env_int(
+                "TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS", 20
+            ),
+            taxonomy_backcast_category_min_members=_env_int(
+                "TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS", 10
+            ),
+            taxonomy_backcast_subcategory_min_members=_env_int(
+                "TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS", 5
+            ),
             max_workers=_env_int("MAX_WORKERS", cpu_default),
             worker_identity_batch_size=_env_int("WORKER_IDENTITY_BATCH_SIZE", 16),
             db_fetch_batch_size=_env_int("DB_FETCH_BATCH_SIZE", 10_000),
@@ -341,6 +361,22 @@ class Config:
         if self.min_holdout_sample_count < 1:
             raise ValueError("MIN_HOLDOUT_SAMPLE_COUNT must be positive")
         for name, value in (
+            (
+                "TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS",
+                self.taxonomy_backcast_industry_min_members,
+            ),
+            (
+                "TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS",
+                self.taxonomy_backcast_category_min_members,
+            ),
+            (
+                "TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS",
+                self.taxonomy_backcast_subcategory_min_members,
+            ),
+        ):
+            if value < 2:
+                raise ValueError(f"{name} must be >= 2")
+        for name, value in (
             ("MIN_STABLE_FOLD_FRACTION", self.min_stable_fold_fraction),
             (
                 "MIN_FOLD_PROTECTED_RETENTION_PCT",
@@ -400,6 +436,10 @@ class Config:
             (
                 "WORLD_MARKET_OBSERVATION_TABLE",
                 self.world_market_observation_table,
+            ),
+            (
+                "SECURITY_MASTER_CURRENT_TABLE",
+                self.security_master_current_table,
             ),
         )
         for name, table in source_tables:

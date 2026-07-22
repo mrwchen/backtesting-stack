@@ -307,11 +307,42 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         or pd.DataFrame(),
     )
     monkeypatch.setattr(
+        runner.db,
+        "load_current_taxonomy_backcast",
+        lambda connection, cfg: events.append("taxonomy") or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_current_taxonomy_backcast_group_context",
+        lambda connection, cfg: events.append("taxonomy_groups")
+        or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_current_taxonomy_backcast_context",
+        lambda raw, dates, cfg: events.append("taxonomy_context")
+        or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_current_taxonomy_backcast_member_ranks",
+        lambda connection, cfg: events.append("taxonomy_ranks")
+        or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
         runner,
         "enrich_global_features",
         lambda signals, early_cuts, context: SimpleNamespace(
             signals=signals, early_cut=early_cuts
         ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "enrich_current_taxonomy_backcast_features",
+        lambda signals, taxonomy, context, ranks: events.append(
+            "taxonomy_enrich"
+        )
+        or signals,
     )
     worker_result = runner.WorkerResult(
         signals=empty_signal_frame(),
@@ -365,7 +396,12 @@ def test_run_uses_one_snapshot_then_one_atomic_main_process_write(
         "world",
         "market_context",
         "workers",
+        "taxonomy",
+        "taxonomy_groups",
+        "taxonomy_context",
+        "taxonomy_ranks",
         "commit",
+        "taxonomy_enrich",
         "research",
         "write",
         "unlock",
@@ -482,11 +518,32 @@ def test_run_rejects_any_landmark_count_other_than_six_per_signal(
         runner, "build_global_market_context", lambda *args: pd.DataFrame()
     )
     monkeypatch.setattr(
+        runner.db, "load_current_taxonomy_backcast", lambda *args: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_current_taxonomy_backcast_group_context",
+        lambda *args: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        runner, "build_current_taxonomy_backcast_context", lambda *args: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        runner.db,
+        "load_current_taxonomy_backcast_member_ranks",
+        lambda *args: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
         runner,
         "enrich_global_features",
         lambda signals, early_cuts, context: SimpleNamespace(
             signals=signals, early_cut=early_cuts
         ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "enrich_current_taxonomy_backcast_features",
+        lambda signals, *args: signals,
     )
     worker_result = runner.WorkerResult(
         signals=empty_signal_frame().reindex(range(2)),

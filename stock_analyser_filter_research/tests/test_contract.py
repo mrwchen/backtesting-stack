@@ -13,6 +13,7 @@ from stock_analyser_filter_research.contracts import (
     EARLY_CUT_COLUMNS,
     RULE_COLUMNS,
     SIGNAL_COLUMNS,
+    SOFT_PATTERN_FEATURE_COLUMNS,
 )
 from stock_analyser_filter_research.logging_utils import configure_logging
 
@@ -142,7 +143,7 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
         in sql_text
     )
     assert "objective_count + protected_count <= sample_count" not in sql_text
-    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N'" in sql_text
+    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'M', 'N'" in sql_text
     assert "'R', 'S', 'T', 'multiple'" in sql_text
     assert "'entry_filter', 'entry_confirmation', 'early_cut'" in sql_text
     assert (
@@ -154,6 +155,7 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
     )
     assert "threshold_fit_end_date < period_start" in sql_text
     assert "json" not in sql_text.lower()
+    assert all(sql_text.count(column) == 3 for column in SOFT_PATTERN_FEATURE_COLUMNS)
     lowered = sql_text.lower()
     assert "timescaledb.compress" not in lowered
     assert "add_compression_policy" not in lowered

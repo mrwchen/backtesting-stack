@@ -15,6 +15,11 @@ from psycopg2 import extensions, sql
 from .config import Config
 from .contracts import (
     CALCULATION_SOURCE_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+    CURRENT_TAXONOMY_SOURCE_COLUMNS,
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
@@ -383,6 +388,23 @@ def _world_market_source_column_contracts() -> dict[str, ColumnContract]:
     return contracts
 
 
+def _current_taxonomy_source_column_contracts() -> dict[str, ColumnContract]:
+    contracts: dict[str, ColumnContract] = {}
+    _add_column_contracts(
+        contracts, ("symbol", "exchange"), "text", nullable=False
+    )
+    _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
+    _add_column_contracts(
+        contracts,
+        ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
+        "text",
+        nullable=True,
+    )
+    if set(contracts) != set(CURRENT_TAXONOMY_SOURCE_COLUMNS):
+        raise AssertionError("current taxonomy source contract is incomplete")
+    return contracts
+
+
 def _signal_column_contracts() -> dict[str, ColumnContract]:
     contracts: dict[str, ColumnContract] = {}
     _add_column_contracts(
@@ -424,6 +446,12 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
         "text",
         nullable=True,
     )
+    _add_column_contracts(
+        contracts,
+        CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+        "text",
+        nullable=True,
+    )
     _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
     _add_column_contracts(
         contracts, ("price_continuity_segment",), "int4", nullable=False
@@ -457,6 +485,12 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(
         contracts, ("market_cap_usd",), "int8", nullable=True
+    )
+    _add_column_contracts(
+        contracts,
+        CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS,
+        "int4",
+        nullable=True,
     )
     _add_column_contracts(
         contracts,
@@ -826,6 +860,9 @@ QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMN_CONTRACTS = (
 EARNINGS_EVENT_SOURCE_COLUMN_CONTRACTS = _earnings_event_source_column_contracts()
 MARKET_METRIC_SOURCE_COLUMN_CONTRACTS = _market_metric_source_column_contracts()
 WORLD_MARKET_SOURCE_COLUMN_CONTRACTS = _world_market_source_column_contracts()
+CURRENT_TAXONOMY_SOURCE_COLUMN_CONTRACTS = (
+    _current_taxonomy_source_column_contracts()
+)
 SIGNAL_COLUMN_CONTRACTS = _signal_column_contracts()
 EARLY_CUT_COLUMN_CONTRACTS = _early_cut_column_contracts()
 RULE_COLUMN_CONTRACTS = _rule_column_contracts()
@@ -1223,6 +1260,12 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
     )
     _validate_required_columns(
         connection,
+        cfg.security_master_current_table,
+        CURRENT_TAXONOMY_SOURCE_COLUMNS,
+        reject_extra=False,
+    )
+    _validate_required_columns(
+        connection,
         cfg.signal_result_table,
         SIGNAL_COLUMNS,
         reject_extra=True,
@@ -1266,6 +1309,11 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         WORLD_MARKET_SOURCE_COLUMN_CONTRACTS,
     )
     _validate_column_definitions(
+        connection,
+        cfg.security_master_current_table,
+        CURRENT_TAXONOMY_SOURCE_COLUMN_CONTRACTS,
+    )
+    _validate_column_definitions(
         connection, cfg.signal_result_table, SIGNAL_COLUMN_CONTRACTS
     )
     _validate_column_definitions(
@@ -1298,6 +1346,11 @@ def validate_schema(connection: extensions.connection, cfg: Config) -> None:
         connection,
         cfg.market_metrics_table,
         EXPECTED_MARKET_METRIC_PRIMARY_KEY,
+    )
+    _validate_primary_key(
+        connection,
+        cfg.security_master_current_table,
+        IDENTITY_COLUMNS,
     )
     _validate_primary_key(
         connection,
@@ -1954,6 +2007,393 @@ def load_market_breadth_daily(
         frame, MARKET_BREADTH_COLUMNS[1:], "market breadth source"
     )
     return frame.loc[:, MARKET_BREADTH_COLUMNS]
+
+
+def load_current_taxonomy_backcast(
+    connection: extensions.connection, cfg: Config
+) -> pd.DataFrame:
+    """Load the current IBKR hierarchy used only for backcast diagnostics."""
+
+    selected = sql.SQL(", ").join(
+        sql.Identifier(column) for column in CURRENT_TAXONOMY_SOURCE_COLUMNS
+    )
+    statement = sql.SQL("SELECT {} FROM {} ORDER BY symbol, exchange, cik").format(
+        selected,
+        _qualified_identifier(cfg.security_master_current_table),
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(statement)
+        rows = cursor.fetchall()
+    frame = pd.DataFrame.from_records(rows, columns=CURRENT_TAXONOMY_SOURCE_COLUMNS)
+    if frame.empty:
+        return frame
+    _normalize_required_text(frame, ("symbol", "exchange"), "current taxonomy")
+    _normalize_cik(frame, "current taxonomy")
+    for column in ("ibkr_industry", "ibkr_category", "ibkr_subcategory"):
+        values = frame[column].astype("string").str.strip()
+        frame[column] = values.mask(values.eq(""), pd.NA)
+    if frame.duplicated(list(IDENTITY_COLUMNS)).any():
+        raise RuntimeError("current taxonomy contains duplicate stock identities")
+    return frame.loc[:, CURRENT_TAXONOMY_SOURCE_COLUMNS]
+
+
+def _taxonomy_group_aggregate_sql() -> sql.SQL:
+    return sql.SQL(
+        """
+        SELECT
+            period_end_date,
+            CASE
+                WHEN GROUPING(ibkr_category) = 1 THEN 'industry'
+                WHEN GROUPING(ibkr_subcategory) = 1 THEN 'category_path'
+                ELSE 'subcategory_path'
+            END::text,
+            ibkr_industry,
+            ibkr_category,
+            ibkr_subcategory,
+            count(adjusted_close)::bigint,
+            count(return_21d_pct)::bigint,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY return_21d_pct)
+                FILTER (WHERE return_21d_pct IS NOT NULL),
+            count(return_63d_pct)::bigint,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY return_63d_pct)
+                FILTER (WHERE return_63d_pct IS NOT NULL),
+            count(return_126d_pct)::bigint,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY return_126d_pct)
+                FILTER (WHERE return_126d_pct IS NOT NULL),
+            count(return_252d_pct)::bigint,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY return_252d_pct)
+                FILTER (WHERE return_252d_pct IS NOT NULL),
+            count(rs_raw)::bigint,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY rs_raw)
+                FILTER (WHERE rs_raw IS NOT NULL),
+            count(*) FILTER (
+                WHERE adjusted_close IS NOT NULL AND ma50 IS NOT NULL
+            )::bigint,
+            avg((adjusted_close > ma50)::int) FILTER (
+                WHERE adjusted_close IS NOT NULL AND ma50 IS NOT NULL
+            )::double precision,
+            count(*) FILTER (
+                WHERE adjusted_close IS NOT NULL AND ma200 IS NOT NULL
+            )::bigint,
+            avg((adjusted_close > ma200)::int) FILTER (
+                WHERE adjusted_close IS NOT NULL AND ma200 IS NOT NULL
+            )::double precision,
+            count(*) FILTER (
+                WHERE adjusted_high IS NOT NULL AND high_52w IS NOT NULL
+            )::bigint,
+            count(*) FILTER (
+                WHERE adjusted_high IS NOT NULL AND high_52w IS NOT NULL
+                  AND adjusted_high >= high_52w
+            )::bigint,
+            avg((adjusted_high >= high_52w)::int) FILTER (
+                WHERE adjusted_high IS NOT NULL AND high_52w IS NOT NULL
+            )::double precision,
+            count(rs_rating)::bigint,
+            avg((rs_rating >= 70)::int) FILTER (
+                WHERE rs_rating IS NOT NULL
+            )::double precision,
+            avg((rs_rating >= 90)::int) FILTER (
+                WHERE rs_rating IS NOT NULL
+            )::double precision,
+            count(trend_template_pass)::bigint,
+            avg(trend_template_pass::int)::double precision,
+            count(*) FILTER (WHERE is_new_8of8_signal)::bigint,
+            avg(is_new_8of8_signal::int)::double precision
+        FROM member_features
+        WHERE ibkr_industry IS NOT NULL
+        GROUP BY GROUPING SETS (
+            (period_end_date, ibkr_industry),
+            (period_end_date, ibkr_industry, ibkr_category),
+            (
+                period_end_date, ibkr_industry, ibkr_category,
+                ibkr_subcategory
+            )
+        )
+        HAVING
+            GROUPING(ibkr_category) = 1
+            OR (
+                GROUPING(ibkr_subcategory) = 1
+                AND ibkr_category IS NOT NULL
+            )
+            OR (
+                GROUPING(ibkr_subcategory) = 0
+                AND ibkr_category IS NOT NULL
+                AND ibkr_subcategory IS NOT NULL
+            )
+        """
+    )
+
+
+def load_current_taxonomy_backcast_group_context(
+    connection: extensions.connection, cfg: Config
+) -> pd.DataFrame:
+    """Aggregate daily current-taxonomy group data for diagnostic backcasting."""
+
+    aggregates = _taxonomy_group_aggregate_sql()
+    statement = sql.SQL(
+        """
+        WITH classified AS (
+            SELECT
+                source.period_end_date,
+                source.symbol,
+                source.exchange,
+                source.cik,
+                source.price_continuity_segment,
+                source.adjusted_close,
+                source.adjusted_high,
+                source.ma50,
+                source.ma200,
+                source.high_52w,
+                source.rs_raw,
+                source.rs_rating,
+                source.trend_template_pass,
+                NULLIF(TRIM(taxonomy.ibkr_industry), '') AS ibkr_industry,
+                NULLIF(TRIM(taxonomy.ibkr_category), '') AS ibkr_category,
+                NULLIF(TRIM(taxonomy.ibkr_subcategory), '') AS ibkr_subcategory,
+                lag(source.adjusted_close, 21) OVER identity_segment AS close_21d_ago,
+                lag(source.adjusted_close, 63) OVER identity_segment AS close_63d_ago,
+                lag(source.adjusted_close, 126) OVER identity_segment AS close_126d_ago,
+                lag(source.adjusted_close, 252) OVER identity_segment AS close_252d_ago,
+                lag(source.trend_template_pass, 1)
+                    OVER identity_segment AS prior_trend_template_pass
+            FROM {source_table} AS source
+            JOIN {taxonomy_table} AS taxonomy
+              ON taxonomy.symbol = source.symbol
+             AND taxonomy.exchange = source.exchange
+             AND taxonomy.cik = source.cik
+            WINDOW identity_segment AS (
+                PARTITION BY source.symbol, source.exchange, source.cik,
+                             source.price_continuity_segment
+                ORDER BY source.period_end_date
+            )
+        ),
+        member_features AS (
+            SELECT
+                *,
+                CASE WHEN adjusted_close > 0 AND close_21d_ago > 0
+                     THEN (adjusted_close / close_21d_ago - 1.0) * 100.0 END
+                    AS return_21d_pct,
+                CASE WHEN adjusted_close > 0 AND close_63d_ago > 0
+                     THEN (adjusted_close / close_63d_ago - 1.0) * 100.0 END
+                    AS return_63d_pct,
+                CASE WHEN adjusted_close > 0 AND close_126d_ago > 0
+                     THEN (adjusted_close / close_126d_ago - 1.0) * 100.0 END
+                    AS return_126d_pct,
+                CASE WHEN adjusted_close > 0 AND close_252d_ago > 0
+                     THEN (adjusted_close / close_252d_ago - 1.0) * 100.0 END
+                    AS return_252d_pct,
+                COALESCE(
+                    trend_template_pass IS TRUE
+                    AND prior_trend_template_pass IS FALSE,
+                    FALSE
+                ) AS is_new_8of8_signal
+            FROM classified
+        ),
+        grouped AS (
+            {aggregates}
+        )
+        SELECT * FROM grouped
+        WHERE period_end_date >= %s
+          AND (%s::date IS NULL OR period_end_date <= %s)
+        ORDER BY period_end_date, 2, 3, 4, 5
+        """
+    ).format(
+        source_table=_qualified_identifier(cfg.source_table),
+        taxonomy_table=_qualified_identifier(cfg.security_master_current_table),
+        aggregates=aggregates,
+    )
+    parameters = (cfg.signal_start_date, cfg.signal_end_date, cfg.signal_end_date)
+    frames: list[pd.DataFrame] = []
+    cursor_name = f"safr_taxonomy_group_{uuid4().hex[:16]}"
+    with connection.cursor(name=cursor_name) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(statement, parameters)
+        while True:
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            if not rows:
+                break
+            frames.append(
+                pd.DataFrame.from_records(
+                    rows,
+                    columns=CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
+                )
+            )
+    if not frames:
+        return pd.DataFrame(
+            columns=CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS
+        )
+    frame = pd.concat(frames, ignore_index=True)
+    frame["market_date"] = pd.to_datetime(
+        frame["market_date"], errors="raise"
+    ).dt.normalize()
+    for column in (
+        "taxonomy_level",
+        "ibkr_industry",
+        "ibkr_category",
+        "ibkr_subcategory",
+    ):
+        frame[column] = frame[column].astype("string")
+    numeric = tuple(
+        column
+        for column in CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS
+        if column
+        not in {
+            "market_date",
+            "taxonomy_level",
+            "ibkr_industry",
+            "ibkr_category",
+            "ibkr_subcategory",
+        }
+    )
+    _normalize_numeric_columns(frame, numeric, "current taxonomy group context")
+    return frame.loc[:, CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS]
+
+
+def _stock_group_rank_sql(
+    level: str,
+    group_columns: tuple[str, ...],
+) -> sql.SQL:
+    partition = sql.SQL(", ").join(
+        (sql.Identifier("period_end_date"),)
+        + tuple(sql.Identifier(column) for column in group_columns)
+    )
+    tie_partition = sql.SQL(", ").join(
+        (sql.Identifier("period_end_date"),)
+        + tuple(sql.Identifier(column) for column in group_columns)
+        + (sql.Identifier("rs_raw"),)
+    )
+    nonnull = sql.SQL(" AND ").join(
+        sql.SQL("{} IS NOT NULL").format(sql.Identifier(column))
+        for column in group_columns
+    )
+    return sql.SQL(
+        """
+        CASE
+            WHEN rs_raw IS NOT NULL AND {nonnull}
+             AND count(rs_raw) OVER (PARTITION BY {partition}) >= %s
+            THEN (
+                rank() OVER (
+                    PARTITION BY {partition} ORDER BY rs_raw NULLS LAST
+                )
+                + (
+                    count(*) OVER (PARTITION BY {tie_partition}) - 1
+                ) / 2.0
+            ) / count(rs_raw) OVER (PARTITION BY {partition})
+        END AS {alias}
+        """
+    ).format(
+        nonnull=nonnull,
+        partition=partition,
+        tie_partition=tie_partition,
+        alias=sql.Identifier(
+            f"current_taxonomy_backcast_{level}_stock_rs_raw_pct_rank"
+        ),
+    )
+
+
+def load_current_taxonomy_backcast_member_ranks(
+    connection: extensions.connection, cfg: Config
+) -> pd.DataFrame:
+    """Return current-taxonomy stock-in-group RS ranks for signal rows only."""
+
+    ranks = sql.SQL(", ").join(
+        (
+            _stock_group_rank_sql("industry", ("ibkr_industry",)),
+            _stock_group_rank_sql(
+                "category_path", ("ibkr_industry", "ibkr_category")
+            ),
+            _stock_group_rank_sql(
+                "subcategory_path",
+                ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
+            ),
+        )
+    )
+    statement = sql.SQL(
+        """
+        WITH classified AS (
+            SELECT
+                source.period_end_date,
+                source.symbol,
+                source.exchange,
+                source.cik,
+                source.price_continuity_segment,
+                source.rs_raw,
+                source.trend_template_pass,
+                lag(source.trend_template_pass, 1)
+                    OVER identity_segment AS prior_trend_template_pass,
+                NULLIF(TRIM(taxonomy.ibkr_industry), '') AS ibkr_industry,
+                NULLIF(TRIM(taxonomy.ibkr_category), '') AS ibkr_category,
+                NULLIF(TRIM(taxonomy.ibkr_subcategory), '') AS ibkr_subcategory
+            FROM {source_table} AS source
+            JOIN {taxonomy_table} AS taxonomy
+              ON taxonomy.symbol = source.symbol
+             AND taxonomy.exchange = source.exchange
+             AND taxonomy.cik = source.cik
+            WINDOW identity_segment AS (
+                PARTITION BY source.symbol, source.exchange, source.cik,
+                             source.price_continuity_segment
+                ORDER BY source.period_end_date
+            )
+        ),
+        ranked AS (
+            SELECT classified.*, {ranks}
+            FROM classified
+        )
+        SELECT period_end_date, symbol, exchange, cik,
+               current_taxonomy_backcast_industry_stock_rs_raw_pct_rank,
+               current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank,
+               current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank
+        FROM ranked
+        WHERE trend_template_pass IS TRUE
+          AND prior_trend_template_pass IS FALSE
+          AND period_end_date >= %s
+          AND (%s::date IS NULL OR period_end_date <= %s)
+        ORDER BY period_end_date, symbol, exchange, cik
+        """
+    ).format(
+        source_table=_qualified_identifier(cfg.source_table),
+        taxonomy_table=_qualified_identifier(cfg.security_master_current_table),
+        ranks=ranks,
+    )
+    parameters = (
+        cfg.taxonomy_backcast_industry_min_members,
+        cfg.taxonomy_backcast_category_min_members,
+        cfg.taxonomy_backcast_subcategory_min_members,
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    )
+    frames: list[pd.DataFrame] = []
+    cursor_name = f"safr_taxonomy_rank_{uuid4().hex[:16]}"
+    with connection.cursor(name=cursor_name) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(statement, parameters)
+        while True:
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            if not rows:
+                break
+            frames.append(
+                pd.DataFrame.from_records(
+                    rows,
+                    columns=CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+                )
+            )
+    if not frames:
+        return pd.DataFrame(columns=CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS)
+    frame = pd.concat(frames, ignore_index=True)
+    frame["signal_date"] = pd.to_datetime(
+        frame["signal_date"], errors="raise"
+    ).dt.normalize()
+    _normalize_required_text(frame, ("symbol", "exchange"), "taxonomy ranks")
+    _normalize_cik(frame, "taxonomy ranks")
+    _normalize_numeric_columns(
+        frame,
+        CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS[4:],
+        "taxonomy ranks",
+    )
+    if frame.duplicated(["signal_date", *IDENTITY_COLUMNS]).any():
+        raise RuntimeError("current taxonomy member ranks contain duplicate signals")
+    return frame.loc[:, CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS]
 
 
 def load_world_market_observations(

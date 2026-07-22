@@ -161,6 +161,135 @@ WORLD_MARKET_SOURCE_COLUMNS = (
     "source_local_date",
 )
 
+CURRENT_TAXONOMY_SOURCE_COLUMNS = (
+    *IDENTITY_COLUMNS,
+    "ibkr_industry",
+    "ibkr_category",
+    "ibkr_subcategory",
+)
+
+CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS = (
+    "current_taxonomy_backcast_industry",
+    "current_taxonomy_backcast_category",
+    "current_taxonomy_backcast_subcategory",
+)
+
+CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS = (
+    ("industry", ("ibkr_industry",)),
+    ("category_path", ("ibkr_industry", "ibkr_category")),
+    (
+        "subcategory_path",
+        ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
+    ),
+)
+
+CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES = (
+    "group_member_count",
+    "group_median_return_21d_pct",
+    "group_median_return_63d_pct",
+    "group_median_return_126d_pct",
+    "group_median_return_252d_pct",
+    "group_return_21d_pct_rank",
+    "group_return_63d_pct_rank",
+    "group_return_126d_pct_rank",
+    "group_return_252d_pct_rank",
+    "group_rs_raw_median",
+    "group_rs_raw_pct_rank",
+    "stock_rs_raw_pct_rank",
+    "above_ma50_ratio",
+    "above_ma200_ratio",
+    "above_ma50_ratio_change_5d",
+    "above_ma50_ratio_change_21d",
+    "above_ma200_ratio_change_5d",
+    "above_ma200_ratio_change_21d",
+    "new_52w_high_count",
+    "new_52w_high_ratio",
+    "new_52w_high_ratio_change_5d",
+    "new_52w_high_ratio_change_21d",
+    "rs70_ratio",
+    "rs90_ratio",
+    "trend_template_ratio",
+    "leadership_breadth_score",
+    "leadership_breadth_score_change_5d",
+    "leadership_breadth_score_change_21d",
+    "new_8of8_signal_count",
+    "new_8of8_signal_ratio",
+)
+
+CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS = tuple(
+    f"current_taxonomy_backcast_{level}_{suffix}"
+    for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
+)
+
+CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS = tuple(
+    f"current_taxonomy_backcast_{level}_{suffix}"
+    for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    for suffix in (
+        "group_member_count",
+        "new_52w_high_count",
+        "new_8of8_signal_count",
+    )
+)
+
+CURRENT_TAXONOMY_BACKCAST_UNIT_INTERVAL_COLUMNS = tuple(
+    f"current_taxonomy_backcast_{level}_{suffix}"
+    for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
+    if suffix.endswith("_ratio")
+    or suffix.endswith("_pct_rank")
+    or suffix == "leadership_breadth_score"
+)
+
+CURRENT_TAXONOMY_BACKCAST_CHANGE_COLUMNS = tuple(
+    f"current_taxonomy_backcast_{level}_{suffix}"
+    for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
+    if "_change_" in suffix
+)
+
+CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS = (
+    "market_date",
+    "taxonomy_level",
+    "ibkr_industry",
+    "ibkr_category",
+    "ibkr_subcategory",
+    "group_member_count",
+    "return_21d_eligible_count",
+    "group_median_return_21d_pct",
+    "return_63d_eligible_count",
+    "group_median_return_63d_pct",
+    "return_126d_eligible_count",
+    "group_median_return_126d_pct",
+    "return_252d_eligible_count",
+    "group_median_return_252d_pct",
+    "rs_raw_eligible_count",
+    "group_rs_raw_median",
+    "ma50_eligible_count",
+    "above_ma50_ratio",
+    "ma200_eligible_count",
+    "above_ma200_ratio",
+    "new_52w_high_eligible_count",
+    "new_52w_high_count",
+    "new_52w_high_ratio",
+    "rs_rating_eligible_count",
+    "rs70_ratio",
+    "rs90_ratio",
+    "trend_template_eligible_count",
+    "trend_template_ratio",
+    "new_8of8_signal_count",
+    "new_8of8_signal_ratio",
+)
+
+CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS = (
+    "signal_date",
+    *IDENTITY_COLUMNS,
+    *(
+        f"current_taxonomy_backcast_{level}_stock_rs_raw_pct_rank"
+        for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    ),
+)
+
 TECHNICAL_V3_FEATURE_COLUMNS = (
     "prior_adjusted_close",
     "prior_return_42d_pct",
@@ -231,9 +360,31 @@ SOFT_PATTERN_SPECS = (
     ("high_tight_flag", (20, 30, 40, 63), 40),
 )
 
+# These patterns contain explicit activity contraction, breakout, distribution
+# or handle-volume components.  The classic score keeps split-adjusted share
+# volume; the parallel diagnostic score substitutes USD notional activity so
+# research can measure the incremental capital-flow signal independently.
+NOTIONAL_SOFT_PATTERN_BASE_NAMES = (
+    "pullback",
+    "volume_dryup_breakout",
+    "distribution_top",
+    "vcp",
+    "cup_with_handle",
+    "high_tight_flag",
+)
+
+NOTIONAL_SOFT_PATTERN_SPECS = tuple(
+    (f"{pattern_name}_notional", windows, canonical_window)
+    for pattern_name, windows, canonical_window in SOFT_PATTERN_SPECS
+    if pattern_name in NOTIONAL_SOFT_PATTERN_BASE_NAMES
+)
+
 SOFT_PATTERN_FEATURE_COLUMNS = tuple(
     column
-    for pattern_name, windows, _canonical_window in SOFT_PATTERN_SPECS
+    for pattern_name, windows, _canonical_window in (
+        *SOFT_PATTERN_SPECS,
+        *NOTIONAL_SOFT_PATTERN_SPECS,
+    )
     for column in (
         f"pattern_{pattern_name}_setup_score",
         f"pattern_{pattern_name}_trigger_score",
@@ -472,6 +623,8 @@ SIGNAL_COLUMNS = (
     *MARKET_CAP_FEATURE_COLUMNS,
     *SUPPLY_DEMAND_FEATURE_COLUMNS,
     *GLOBAL_MARKET_FEATURE_COLUMNS,
+    *CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+    *CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
     "forward_5d_max_gain_pct",
     "forward_5d_max_loss_pct",
     "forward_10d_max_gain_pct",
@@ -923,6 +1076,7 @@ SIGNAL_INTEGER_COLUMNS = (
     "first_gain_5pct_day",
     "first_loss_5pct_day",
     "first_loss_10pct_day",
+    *CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS,
 )
 
 EARLY_CUT_BOOLEAN_COLUMNS = (

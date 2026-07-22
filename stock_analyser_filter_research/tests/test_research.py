@@ -9,7 +9,9 @@ import pytest
 
 from stock_analyser_filter_research import db
 from stock_analyser_filter_research.contracts import (
+    CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
     EARLY_CUT_COLUMNS,
+    NOTIONAL_SOFT_PATTERN_SPECS,
     RULE_COLUMNS,
     SIGNAL_COLUMNS,
 )
@@ -34,6 +36,7 @@ from stock_analyser_filter_research.research import (
     apply_early_decisions,
     apply_management_decisions,
     build_candidate_templates,
+    build_current_taxonomy_backcast_templates,
     build_walk_forward_folds,
     fit_template,
     management_specs,
@@ -361,6 +364,59 @@ def test_quantile_count_controls_template_grid() -> None:
         isinstance(item, ConditionTemplate)
         for item in build_candidate_templates("early_cut", 1, quantile_count=4)
     )
+
+
+def test_volume_and_notional_soft_patterns_have_atomic_and_pair_candidates() -> None:
+    templates = build_candidate_templates("entry_filter", quantile_count=10)
+    atomics = [item for item in templates if isinstance(item, ConditionTemplate)]
+    interactions = [
+        item
+        for item in templates
+        if isinstance(item, PatternTemplate) and item.feature_group == "I"
+    ]
+    interaction_names = {item.pattern_name for item in interactions}
+
+    for notional_name, _windows, canonical in NOTIONAL_SOFT_PATTERN_SPECS:
+        base_name = notional_name.removesuffix("_notional")
+        notional_feature = f"pattern_{notional_name}_score_{canonical}d"
+        volume_feature = f"pattern_{base_name}_score_{canonical}d"
+        assert any(
+            item.feature_name == notional_feature
+            and item.operator == "ge"
+            and item.fixed_threshold == 70.0
+            for item in atomics
+        )
+        for left_operator in ("le", "ge"):
+            for right_operator in ("le", "ge"):
+                assert (
+                    f"{volume_feature}_{left_operator}_"
+                    f"{notional_feature}_{right_operator}"
+                ) in interaction_names
+
+
+def test_current_taxonomy_templates_cover_all_levels_and_interactions() -> None:
+    templates = build_current_taxonomy_backcast_templates(
+        "entry_filter", quantile_count=10
+    )
+    atomic = [item for item in templates if isinstance(item, ConditionTemplate)]
+    patterns = [item for item in templates if isinstance(item, PatternTemplate)]
+
+    assert set(CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS) <= {
+        item.feature_name for item in atomic
+    }
+    assert all(item.rule_id.startswith("DIAG_ENTRY_G_") for item in templates)
+    assert all(item.feature_group == "G" for item in templates)
+    assert any(
+        item.feature_name.endswith("new_52w_high_count")
+        and item.fixed_threshold == 1.0
+        and item.operator == "ge"
+        for item in atomic
+    )
+    pattern_names = {item.pattern_name for item in patterns}
+    assert "hierarchy_all_levels_high" in pattern_names
+    assert "hierarchy_category_subcategory_low" in pattern_names
+    assert any("rsraw_volume21" in name for name in pattern_names)
+    assert any("leadership_chart" in name for name in pattern_names)
 
 
 def test_max_stat_permutation_gate_is_deterministic_and_family_wise(
@@ -695,6 +751,31 @@ def test_a_b_c_templates_compete_globally_and_future_diagnostic_is_frozen(
     assert tuple(
         item.threshold for item in selected.selected.final_conditions
     ) == tuple(item.threshold for item in changed.selected.final_conditions)
+
+
+def test_diagnostic_template_family_is_evaluated_but_cannot_be_selected(
+    cfg_factory,
+) -> None:
+    cfg = _cfg(cfg_factory)
+    signals = _signals()
+    templates = (_template("DIAG_ENTRY_G_TEST", "G", A_FEATURE),)
+
+    ordinary = select_objective(
+        signals, ENTRY_EXCLUSION_SPECS[0], templates, cfg
+    )
+    diagnostic = select_objective(
+        signals,
+        ENTRY_EXCLUSION_SPECS[0],
+        templates,
+        cfg,
+        allow_selection=False,
+    )
+
+    assert ordinary.selected.templates
+    assert not diagnostic.selected.templates
+    assert [item.rule_id for item in diagnostic.candidates] == [
+        item.rule_id for item in ordinary.candidates
+    ]
 
 
 def test_beam_search_can_select_two_conditions_with_one_point_gain(

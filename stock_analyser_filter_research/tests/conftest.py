@@ -29,6 +29,7 @@ def cfg_factory():
             "earnings_event_table": "stock_core_earnings_calendar_events",
             "market_metrics_table": "stock_core_market_metrics_daily",
             "world_market_observation_table": "world_regime_observations",
+            "security_master_current_table": "stock_core_security_master_current",
             "signal_result_table": ("stock_analyser_filter_research_signal_results"),
             "early_cut_result_table": (
                 "stock_analyser_filter_research_early_cut_results"
@@ -69,6 +70,9 @@ def cfg_factory():
             "max_stat_permutation_p_value": 0.05,
             "permutation_random_seed": 1729,
             "min_holdout_sample_count": 50,
+            "taxonomy_backcast_industry_min_members": 20,
+            "taxonomy_backcast_category_min_members": 10,
+            "taxonomy_backcast_subcategory_min_members": 5,
             "max_workers": 1,
             "worker_identity_batch_size": 2,
             "db_fetch_batch_size": 100,

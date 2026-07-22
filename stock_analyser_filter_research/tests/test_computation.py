@@ -10,11 +10,17 @@ from stock_analyser_filter_research.computation import (
     calculate_identity_results,
     calculate_identity_signals,
     calculate_signal_batch,
+    build_current_taxonomy_backcast_context,
     build_global_market_context,
+    enrich_current_taxonomy_backcast_features,
     enrich_global_features,
+    _soft_pattern_window_scores,
 )
 from stock_analyser_filter_research.contracts import (
     CRITERION_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+    CURRENT_TAXONOMY_SOURCE_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     SIGNAL_COLUMNS,
@@ -332,6 +338,82 @@ def test_prior_chart_geometry_distinguishes_ordered_trend_and_v_recovery(
         for row in (ordered_row, v_row):
             value = row[column]
             assert pd.isna(value) or 0.0 <= float(value) <= 100.0
+
+
+@pytest.mark.parametrize(
+    "activities",
+    (
+        np.r_[np.zeros(57), np.ones(6)],
+        np.r_[1.0, np.zeros(62)],
+    ),
+)
+def test_soft_pattern_activity_zero_denominators_do_not_warn_or_divide(
+    activities,
+) -> None:
+    closes = np.linspace(100.0, 110.0, 63)
+    highs = closes + 1.0
+    lows = closes - 1.0
+
+    with np.errstate(divide="raise", invalid="raise"):
+        scores = _soft_pattern_window_scores(
+            closes,
+            highs,
+            lows,
+            activities,
+            111.0,
+            112.0,
+            110.0,
+            1.0,
+        )
+
+    assert "cup_with_handle" in scores
+    assert all(
+        np.isnan(value) or 0.0 <= value <= 1.0
+        for values in scores.values()
+        for value in values
+    )
+
+
+def test_notional_soft_patterns_are_separate_from_share_volume_scores(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-01-01", periods=150, freq="D")
+    signal_position = 130
+    baseline = _source_frame(dates)
+    _set_pass(baseline, signal_position)
+    history = baseline.index[signal_position - 20 : signal_position]
+    baseline.loc[history, "adjusted_volume"] = 1_000.0
+    baseline.loc[history, "daily_traded_notional_usd"] = 100_000.0
+    baseline.loc[baseline.index[signal_position], "adjusted_volume"] = 2_500.0
+    baseline.loc[
+        baseline.index[signal_position], "daily_traded_notional_usd"
+    ] = 250_000.0
+
+    changed = baseline.copy()
+    recent = changed.index[signal_position - 5 : signal_position]
+    changed.loc[recent, "daily_traded_notional_usd"] = 300_000.0
+    changed.loc[
+        changed.index[signal_position], "daily_traded_notional_usd"
+    ] = 50_000.0
+
+    baseline_row = _row_for_date(
+        calculate_identity_signals(baseline, dates, cfg_factory()),
+        dates[signal_position],
+    )
+    changed_row = _row_for_date(
+        calculate_identity_signals(changed, dates, cfg_factory()),
+        dates[signal_position],
+    )
+
+    volume_feature = "pattern_volume_dryup_breakout_score_20d"
+    notional_feature = "pattern_volume_dryup_breakout_notional_score_20d"
+    assert baseline_row[volume_feature] == pytest.approx(changed_row[volume_feature])
+    assert np.isfinite(baseline_row[notional_feature])
+    assert np.isfinite(changed_row[notional_feature])
+    assert baseline_row[notional_feature] != pytest.approx(
+        changed_row[notional_feature]
+    )
+    assert "pattern_flat_base_notional_score_20d" not in SIGNAL_COLUMNS
 
 
 def test_global_market_context_is_same_close_causal_and_prior_returns_exclude_signal_day() -> None:
@@ -1238,3 +1320,127 @@ def test_calculate_early_cut_landmarks_accepts_precomputed_signals(
     wrapped = calculate_identity_results(source, dates, cfg).early_cut
 
     pd.testing.assert_frame_equal(direct, wrapped)
+
+
+def test_current_taxonomy_context_ranks_masks_and_enriches_signals(
+    cfg_factory,
+) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=25)
+    rows: list[dict[str, object]] = []
+    for position, market_date in enumerate(dates):
+        for industry, member_count, return_offset, breadth_offset in (
+            ("Technology", 25, 10.0, 0.50),
+            ("Financial", 25, 5.0, 0.30),
+            ("Too Small", 10, 20.0, 0.80),
+        ):
+            values: dict[str, object] = {
+                column: 1.0
+                for column in CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS
+            }
+            values.update(
+                {
+                    "market_date": market_date,
+                    "taxonomy_level": "industry",
+                    "ibkr_industry": industry,
+                    "ibkr_category": None,
+                    "ibkr_subcategory": None,
+                    "group_member_count": member_count,
+                    "return_21d_eligible_count": member_count,
+                    "return_63d_eligible_count": member_count,
+                    "return_126d_eligible_count": member_count,
+                    "return_252d_eligible_count": member_count,
+                    "rs_raw_eligible_count": member_count,
+                    "ma50_eligible_count": member_count,
+                    "ma200_eligible_count": member_count,
+                    "new_52w_high_eligible_count": member_count,
+                    "rs_rating_eligible_count": member_count,
+                    "trend_template_eligible_count": member_count,
+                    "group_median_return_21d_pct": return_offset + position,
+                    "group_median_return_63d_pct": return_offset + position,
+                    "group_median_return_126d_pct": return_offset + position,
+                    "group_median_return_252d_pct": return_offset + position,
+                    "group_rs_raw_median": return_offset + position,
+                    "above_ma50_ratio": breadth_offset + position * 0.01,
+                    "above_ma200_ratio": breadth_offset,
+                    "new_52w_high_count": 2,
+                    "new_52w_high_ratio": 0.10,
+                    "rs70_ratio": 0.60,
+                    "rs90_ratio": 0.20,
+                    "trend_template_ratio": 0.50,
+                    "new_8of8_signal_count": 1,
+                    "new_8of8_signal_ratio": 1.0 / member_count,
+                }
+            )
+            rows.append(values)
+    raw = pd.DataFrame(rows, columns=CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS)
+    cfg = cfg_factory()
+
+    context = build_current_taxonomy_backcast_context(raw, dates, cfg)
+
+    latest = context.loc[
+        context["market_date"].eq(dates[-1])
+        & context["ibkr_industry"].eq("Technology")
+    ].iloc[0]
+    assert latest["group_return_63d_pct_rank"] == pytest.approx(1.0)
+    assert latest["above_ma50_ratio_change_5d"] == pytest.approx(0.05)
+    assert latest["above_ma50_ratio_change_21d"] == pytest.approx(0.21)
+    assert latest["leadership_breadth_score"] == pytest.approx(
+        (0.60 + 0.20 + 0.50) / 3.0
+    )
+    too_small = context.loc[
+        context["market_date"].eq(dates[-1])
+        & context["ibkr_industry"].eq("Too Small")
+    ].iloc[0]
+    assert too_small["group_member_count"] == 10
+    assert pd.isna(too_small["group_median_return_63d_pct"])
+    assert pd.isna(too_small["above_ma50_ratio"])
+
+    signals = pd.DataFrame(columns=SIGNAL_COLUMNS).reindex(range(1))
+    signals.loc[0, "signal_date"] = dates[-1]
+    signals.loc[0, "symbol"] = "ABC"
+    signals.loc[0, "exchange"] = "NYSE"
+    signals.loc[0, "cik"] = 123
+    taxonomy_values = {
+        "symbol": "ABC",
+        "exchange": "NYSE",
+        "cik": 123,
+        "ibkr_industry": "Technology",
+        "ibkr_category": "Computers",
+        "ibkr_subcategory": "Hardware",
+    }
+    taxonomy = pd.DataFrame(
+        [[taxonomy_values[column] for column in CURRENT_TAXONOMY_SOURCE_COLUMNS]],
+        columns=CURRENT_TAXONOMY_SOURCE_COLUMNS,
+    )
+    rank_values = {
+        "signal_date": dates[-1],
+        "symbol": "ABC",
+        "exchange": "NYSE",
+        "cik": 123,
+        "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank": 0.90,
+        "current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank": 0.80,
+        "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank": 0.70,
+    }
+    ranks = pd.DataFrame(
+        [[rank_values[column] for column in CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS]],
+        columns=CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+    )
+
+    enriched = enrich_current_taxonomy_backcast_features(
+        signals, taxonomy, context, ranks
+    )
+
+    assert tuple(enriched.columns) == SIGNAL_COLUMNS
+    assert enriched.loc[0, "current_taxonomy_backcast_industry"] == "Technology"
+    assert enriched.loc[
+        0, "current_taxonomy_backcast_industry_group_return_63d_pct_rank"
+    ] == pytest.approx(1.0)
+    assert enriched.loc[
+        0, "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank"
+    ] == pytest.approx(0.90)
+    assert pd.isna(
+        enriched.loc[
+            0,
+            "current_taxonomy_backcast_category_path_group_return_63d_pct_rank",
+        ]
+    )

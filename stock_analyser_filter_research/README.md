@@ -93,7 +93,10 @@ Abfolge A -> B -> C -> D.
   0 bis 100 fuer Flat Base, Ordered Uptrend, Pullback, V-Recovery,
   Volume-Dry-up-Breakout, Distribution Top, VCP, Cup-with-Handle und
   High-Tight-Flag. Je nach Muster werden 10, 15, 20, 30, 40, 63 und 126
-  Handelstage parallel untersucht.
+  Handelstage parallel untersucht. Fuer die sechs aktivitaetsabhaengigen
+  Muster Pullback, Volume-Dry-up-Breakout, Distribution Top, VCP,
+  Cup-with-Handle und High-Tight-Flag existiert zusaetzlich eine getrennte
+  USD-Notional-Variante; die klassischen Scores behalten Stueckvolumen.
 - **S – Supply/Demand:** Gap und Intraday-Staerke des Signaltags, SEC-basierte
   Aktienzahl und Turnover aus as-traded Raw Volume.
 - **F – Fundamentals:** Profitabilitaet, Margen, Cash Conversion, ROE/ROA,
@@ -109,17 +112,62 @@ Abfolge A -> B -> C -> D.
   Die gespeicherten `cross_sectional_rs_*`-Ränge vergleichen die an demselben
   Tag neu ausgeloesten 8-von-8-Signale; der vorhandene `rs_rating` bleibt der
   breitere Universe-Rang des Stock Analysers.
+- **G – aktuelle IBKR-Gruppen (nur diagnostisch):** relative Gruppenstaerke,
+  Anteil ueber MA50/MA200, neue 52-Wochen-Hochs, Leadership-Breite und neue
+  8-von-8-Signale. Die Analyse erfolgt getrennt auf `Industry`, dem
+  vollstaendigen Pfad `Industry -> Category` und dem vollstaendigen Pfad
+  `Industry -> Category -> Subcategory`.
 
 Die atomare Quantilsuche prueft fuer jedes numerische Merkmal die unteren und
-oberen Tails. Zusaetzlich werden 25 fachlich vorab definierte Faktorenpaare in
+oberen Tails. Zusaetzlich werden 31 fachlich vorab definierte Faktorenpaare in
 allen vier Tail-Kombinationen mit `AND` untersucht, unter anderem Market Cap ×
 ATR, Market Cap × Volume/Notional, Kompression × Dry-up, Wachstum × RS,
-Earnings-Naehe × Gap/Volume und Marktbreite × Leadership.
+Earnings-Naehe × Gap/Volume, Marktbreite × Leadership sowie fuer jedes der
+sechs aktivitaetsabhaengigen Muster der klassische Volume-Score × sein
+Notional-Gegenstueck.
 
 Fuer alle direkten Volume-/Notional-Ratios der Fenster 7, 14, 21, 50 und 100
 werden neben Quantilen feste Grenzen geprueft: 0,5x, 0,75x, 1x, 1,25x, 1,5x,
 2x, 3x, 5x und 10x, jeweils als Unter- und Obergrenze. Damit wird zum Beispiel
 `Vol/21D <= 1` explizit getestet und nicht nur indirekt ueber ein Quantil.
+
+## IBKR-Industry-Hierarchie: diagnostischer Backcast
+
+Die Klassifikation stammt aus dem aktuellen Snapshot
+`stock_core_security_master_current`. Fuer die historische Research-Periode
+liegt noch keine damalige, point-in-time gueltige Industry-Historie vor.
+Deshalb wird die heutige Zuordnung rueckwirkend nur als Hypothesengenerator
+verwendet. Sie darf unabhaengig von Lift, Stabilitaet oder korrigiertem
+p-Wert weder `include_final` noch `strong_confirmation` beeinflussen und wird
+in der Regeltabelle immer als nicht ausgewaehlter `candidate_rule` gespeichert.
+
+Pro Handelstag und Hierarchieebene werden folgende Gruppenmerkmale berechnet:
+
+- Median-Rendite ueber 21, 63, 126 und 252 Sessions sowie der taegliche Rang
+  dieses Gruppenmedians gegen die anderen Gruppen derselben Ebene,
+- Median von `rs_raw`, Gruppenrang dieses Medians und der RS-Rang der einzelnen
+  Aktie innerhalb ihrer Gruppe,
+- Anteil der Gruppenmitglieder ueber MA50 und MA200 samt Veraenderung ueber
+  exakt 5 und 21 globale Handelssessions,
+- Anzahl und Anteil neuer 52-Wochen-Hochs samt 5-/21-Session-Aenderung,
+- Anteil der Aktien mit RS >= 70, RS >= 90 und bestandenem 8-von-8-
+  Trend-Template,
+- Leadership-Breite als Mittelwert dieser drei Anteile samt 5-/21-Session-
+  Aenderung sowie Anzahl und Anteil neuer `false -> true`-8-von-8-Signale.
+
+Kleine Gruppen werden merkmalsspezifisch auf `NULL` gesetzt: mindestens 20
+auswertbare Mitglieder fuer Industry, 10 fuer den Category-Pfad und 5 fuer
+den Subcategory-Pfad. Dadurch kann beispielsweise eine Gruppe mit 20 Aktien,
+aber nur 14 vorhandenen MA200-Werten fuer das MA200-Merkmal trotzdem nicht als
+ausreichend gross erscheinen.
+
+Neben allen atomaren Quantil-Tails werden Kombinationen wie Gruppen-RS x
+MA-Breite, Rendite x Breite, RS x neue Hochs, Aktie-in-Gruppe-RS x
+Gruppenstaerke, Breitenrichtung x Leadership, Gruppenstaerke x Volume/21D und
+gruppenuebergreifende Industry-/Category-/Subcategory-Uebereinstimmung
+untersucht. Diese Kandidaten durchlaufen dieselben Walk-forward-, Stabilitaets-
+und Max-Statistic-Pruefungen wie die kausalen Merkmale; die erzwungene
+Nichtauswahl verhindert lediglich ihre operative Verwendung.
 
 ## Vordefinierte Setups
 
@@ -165,6 +213,14 @@ Scoregrenzen von 40, 50, 60, 70, 80 und 90 jeweils in beide Richtungen. Die
 Regeltabelle kennzeichnet `all`, `k_of_n` und `score_threshold` getrennt und
 speichert Mustername, Klauselanzahl, Mindestanzahl, Fenster und den finalen
 Score-Schwellenwert in eigenen Spalten.
+
+Stueckvolumen und Notional werden absichtlich nicht vorab vermischt. Das erste
+misst die Zahl gehandelter Aktien; das zweite misst den umgesetzten USD-Wert
+und enthaelt damit auch die Preisentwicklung. Getrennte Scores erlauben der
+Regelsuche zu bestimmen, ob klassische Aktivitaet, Kapitalumsatz oder erst die
+Kombination einen stabilen Edge besitzt. Ein Aktivitaetsverhaeltnis mit
+fehlendem oder nichtpositivem Nenner wird als `NULL` behandelt und erzeugt
+weder `Infinity` noch eine RuntimeWarning.
 
 ## Point-in-time-Fundamentals und Earnings
 
@@ -267,8 +323,10 @@ einzumischen.
 Das Init-SQL besitzt ausschliesslich drei serviceeigene Ergebnistabellen:
 
 - `stock_analyser_filter_research_signal_results`: Signale, alle Entry-
-  Merkmale einschliesslich der 64 expliziten Pattern-Score-Spalten, Outcomes
-  sowie Ausschluss und Bestaetigung.
+  Merkmale einschliesslich der 105 expliziten Pattern-Score-Spalten (64 mit
+  klassischem Volume und 41 getrennte Notional-Varianten), drei
+  aktuellen Taxonomiebezeichnungen und 90 diagnostischen Gruppenmerkmalen,
+  Outcomes sowie Ausschluss und Bestaetigung.
 - `stock_analyser_filter_research_early_cut_results`: sechs kausale
   Landmark-Zeilen je Signal mit D+1-bis-D+3-Cut-Status und unabhaengigen
   D+5-/D+20-/D+30-Management-Ergebnissen. Der bestehende Tabellenpraefix und
@@ -301,8 +359,10 @@ Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung mit
 AppName und importiert denselben exportierten PostgreSQL-Snapshot. Nur der
 Hauptprozess schreibt die drei Ergebnistabellen. Wegen der zusaetzlichen
 Horizonte, festen Ratio-Grenzen, Management-Objectives, Dreier-OR-Suche und 999
-Permutationen, k-von-n-Muster und 64 Multi-Window-Scores ist V5 bewusst
-deutlich rechenintensiver als V4.
+Permutationen, k-von-n-Muster, 105 Multi-Window-Scores, zwei zusaetzlichen
+gruppenweiten SQL-Auswertungen und der diagnostischen Taxonomie-Kandidaten ist
+V5 bewusst deutlich rechenintensiver als V4. Die taeglichen Gruppenaggregate
+werden mit PostgreSQL `GROUPING SETS` in einem gemeinsamen Quellscan berechnet.
 
 ## Tests
 

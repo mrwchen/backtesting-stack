@@ -44,6 +44,18 @@ def test_v2_split_dates_must_be_strictly_ordered(cfg_factory, changes, message) 
         ({"min_fold_sample_count": 0}, "fold sample/count"),
         ({"min_fold_objective_count": 0}, "fold sample/count"),
         ({"min_holdout_sample_count": 0}, "MIN_HOLDOUT_SAMPLE_COUNT"),
+        (
+            {"taxonomy_backcast_industry_min_members": 1},
+            "TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS",
+        ),
+        (
+            {"taxonomy_backcast_category_min_members": 1},
+            "TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS",
+        ),
+        (
+            {"taxonomy_backcast_subcategory_min_members": 1},
+            "TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS",
+        ),
         ({"min_stable_fold_fraction": 0.0}, "MIN_STABLE_FOLD_FRACTION"),
         ({"min_fold_protected_retention_pct": 1.01}, "MIN_FOLD_PROTECTED"),
         ({"max_fold_match_pct": 0.0}, "MAX_FOLD_MATCH_PCT"),
@@ -146,6 +158,12 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
         "WORKER_IDENTITY_BATCH_SIZE": "11",
         "DB_COPY_BATCH_SIZE": "1234",
         "MARKET_METRICS_TABLE": "research.stock_core_market_metrics_daily",
+        "SECURITY_MASTER_CURRENT_TABLE": (
+            "research.stock_core_security_master_current"
+        ),
+        "TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS": "30",
+        "TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS": "12",
+        "TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS": "6",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -172,6 +190,12 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
     assert cfg.worker_identity_batch_size == 11
     assert cfg.db_copy_batch_size == 1234
     assert cfg.market_metrics_table == values["MARKET_METRICS_TABLE"]
+    assert cfg.security_master_current_table == values[
+        "SECURITY_MASTER_CURRENT_TABLE"
+    ]
+    assert cfg.taxonomy_backcast_industry_min_members == 30
+    assert cfg.taxonomy_backcast_category_min_members == 12
+    assert cfg.taxonomy_backcast_subcategory_min_members == 6
 
 
 def test_v2_from_env_rejects_invalid_holdout_date(monkeypatch) -> None:

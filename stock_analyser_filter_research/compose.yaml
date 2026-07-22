@@ -45,6 +45,7 @@ services:
       EARNINGS_EVENT_TABLE: "stock_core_earnings_calendar_events"
       MARKET_METRICS_TABLE: "stock_core_market_metrics_daily"
       WORLD_MARKET_OBSERVATION_TABLE: "world_regime_observations"
+      SECURITY_MASTER_CURRENT_TABLE: "stock_core_security_master_current"
       SIGNAL_RESULT_TABLE: "stock_analyser_filter_research_signal_results"
       EARLY_CUT_RESULT_TABLE: "stock_analyser_filter_research_early_cut_results"
       RULE_RESULT_TABLE: "stock_analyser_filter_research_rule_results"
@@ -88,6 +89,10 @@ services:
       MAX_STAT_PERMUTATION_P_VALUE: "0.05"
       PERMUTATION_RANDOM_SEED: "1729"
       MIN_HOLDOUT_SAMPLE_COUNT: "500"
+      # Current IBKR taxonomy is intentionally backcast as diagnostic-only data.
+      TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS: "20"
+      TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS: "10"
+      TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS: "5"
 
       MAX_WORKERS: "6"
       WORKER_IDENTITY_BATCH_SIZE: "16"

@@ -9,6 +9,9 @@ from psycopg2 import extensions
 
 from stock_analyser_filter_research import db
 from stock_analyser_filter_research.contracts import (
+    CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+    CURRENT_TAXONOMY_SOURCE_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARNINGS_EVENT_SOURCE_COLUMNS,
     FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS,
@@ -649,3 +652,105 @@ def test_atomic_copy_rejects_duplicate_early_cut_primary_keys(
 
     with pytest.raises(ValueError, match="early-cut.*duplicate"):
         db.write_results_atomic(_IdleConnection(), cfg, signals, early_cuts, rules)
+
+
+def test_current_taxonomy_and_group_diagnostic_loaders_are_normalized(
+    cfg_factory,
+) -> None:
+    cfg = cfg_factory()
+    taxonomy_values = {
+        "symbol": "ABC",
+        "exchange": "NYSE",
+        "cik": 123,
+        "ibkr_industry": " Technology ",
+        "ibkr_category": "Computers",
+        "ibkr_subcategory": "Hardware",
+    }
+    taxonomy_connection = _RowsConnection(
+        [tuple(taxonomy_values[column] for column in CURRENT_TAXONOMY_SOURCE_COLUMNS)]
+    )
+
+    taxonomy = db.load_current_taxonomy_backcast(taxonomy_connection, cfg)
+
+    assert taxonomy.loc[0, "ibkr_industry"] == "Technology"
+    assert taxonomy.loc[0, "cik"] == 123
+    statement, parameters = taxonomy_connection.executed[0]
+    assert cfg.security_master_current_table in statement
+    assert parameters is None
+
+    group_values: dict[str, object] = {
+        column: 1.0 for column in CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS
+    }
+    group_values.update(
+        {
+            "market_date": date(2026, 7, 15),
+            "taxonomy_level": "industry",
+            "ibkr_industry": "Technology",
+            "ibkr_category": None,
+            "ibkr_subcategory": None,
+            "group_member_count": 25,
+        }
+    )
+    group_connection = _StreamingConnection(
+        [
+            tuple(
+                group_values[column]
+                for column in CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS
+            )
+        ]
+    )
+
+    groups = db.load_current_taxonomy_backcast_group_context(
+        group_connection, cfg
+    )
+
+    assert groups.loc[0, "group_member_count"] == pytest.approx(25.0)
+    group_statement, group_parameters = group_connection.executed[0]
+    assert cfg.source_table in group_statement
+    assert cfg.security_master_current_table in group_statement
+    assert "percentile_cont" in group_statement
+    assert "GROUP BY GROUPING SETS" in group_statement
+    assert "GROUPING(ibkr_category) = 1" in group_statement
+    assert "AND ibkr_subcategory IS NOT NULL" in group_statement
+    assert group_parameters == (
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    )
+    assert group_connection.cursor_names[0].startswith("safr_taxonomy_group_")
+
+    rank_values = {
+        "signal_date": date(2026, 7, 15),
+        "symbol": "ABC",
+        "exchange": "NYSE",
+        "cik": 123,
+        "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank": 0.9,
+        "current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank": 0.8,
+        "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank": 0.7,
+    }
+    rank_connection = _StreamingConnection(
+        [
+            tuple(
+                rank_values[column]
+                for column in CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS
+            )
+        ]
+    )
+
+    ranks = db.load_current_taxonomy_backcast_member_ranks(rank_connection, cfg)
+
+    assert ranks.loc[
+        0, "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank"
+    ] == pytest.approx(0.7)
+    rank_statement, rank_parameters = rank_connection.executed[0]
+    assert cfg.security_master_current_table in rank_statement
+    assert "prior_trend_template_pass IS FALSE" in rank_statement
+    assert rank_parameters == (
+        20,
+        10,
+        5,
+        cfg.signal_start_date,
+        cfg.signal_end_date,
+        cfg.signal_end_date,
+    )
+    assert rank_connection.cursor_names[0].startswith("safr_taxonomy_rank_")

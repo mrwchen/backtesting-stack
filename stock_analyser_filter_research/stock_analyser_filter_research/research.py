@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 import logging
 from math import ceil
@@ -12,10 +12,13 @@ import pandas as pd
 
 from .config import Config
 from .contracts import (
+    CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     EARLY_CUT_LANDMARK_DAYS,
     MANAGEMENT_LANDMARK_DAYS,
+    NOTIONAL_SOFT_PATTERN_SPECS,
     POSITION_LANDMARK_DAYS,
     ENTRY_FEATURE_GROUPS,
     IDENTITY_COLUMNS,
@@ -319,6 +322,12 @@ class SelectedSummary:
     confirmation_prefix_lengths: dict[str, int]
     early_cut_prefix_lengths: dict[int, dict[str, int]]
     management_prefix_lengths: dict[int, dict[str, int]]
+    diagnostic_taxonomy_entry: dict[str, ObjectiveSelection] = field(
+        default_factory=dict
+    )
+    diagnostic_taxonomy_confirmation: dict[str, ObjectiveSelection] = field(
+        default_factory=dict
+    )
 
     @property
     def condition_count(self) -> int:
@@ -638,6 +647,222 @@ def build_candidate_templates(
     return tuple(sorted(templates, key=lambda item: item.rule_id))
 
 
+def build_current_taxonomy_backcast_templates(
+    decision_family: str,
+    quantile_count: int = 20,
+) -> tuple[CandidateTemplate, ...]:
+    """Build diagnostic-only candidates for the current IBKR taxonomy backcast."""
+
+    if decision_family == "entry_filter":
+        prefix = "DIAG_ENTRY_G"
+    elif decision_family == "entry_confirmation":
+        prefix = "DIAG_CONFIRM_G"
+    else:
+        raise ValueError("taxonomy diagnostics support entry decisions only")
+    grid = np.linspace(0.0, 1.0, quantile_count + 1)[1:-1]
+    lower = tuple(float(value) for value in grid if value <= 0.30 + 1e-12)
+    upper = tuple(float(value) for value in grid if value >= 0.70 - 1e-12)
+    templates: list[CandidateTemplate] = []
+    for feature in CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS:
+        for quantile, operator in (
+            *((value, "le") for value in lower),
+            *((value, "ge") for value in upper),
+        ):
+            side = "LE" if operator == "le" else "GE"
+            tag = int(round(quantile * 100))
+            templates.append(
+                ConditionTemplate(
+                    f"{prefix}_{feature}_{side}_Q{tag:02d}",
+                    "G",
+                    feature,
+                    operator,
+                    quantile,
+                )
+            )
+        if feature.endswith("new_52w_high_count") or feature.endswith(
+            "new_8of8_signal_count"
+        ):
+            for threshold in (0.0, 1.0, 2.0, 3.0, 5.0, 10.0):
+                for operator in ("le", "ge"):
+                    side = "LE" if operator == "le" else "GE"
+                    templates.append(
+                        ConditionTemplate(
+                            f"{prefix}_{feature}_{side}_FIXED_{int(threshold)}",
+                            "G",
+                            feature,
+                            operator,
+                            None,
+                            fixed_threshold=threshold,
+                        )
+                    )
+
+    def feature_group(feature: str) -> str:
+        if feature.startswith("current_taxonomy_backcast_"):
+            return "G"
+        if feature == "adjusted_volume_vs_sma21_prior_ratio":
+            return "A"
+        if feature == "cross_sectional_rs_63d_pct_rank":
+            return "R"
+        if feature.startswith("pattern_"):
+            return "P"
+        raise AssertionError(f"unmapped taxonomy interaction feature {feature}")
+
+    pair_features: list[tuple[str, str, str]] = []
+    for level, _labels in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS:
+        base = f"current_taxonomy_backcast_{level}_"
+        pair_features.extend(
+            (
+                (
+                    f"{level}_RSRAW_MA50",
+                    base + "group_rs_raw_pct_rank",
+                    base + "above_ma50_ratio",
+                ),
+                (
+                    f"{level}_RS63_MA50",
+                    base + "group_return_63d_pct_rank",
+                    base + "above_ma50_ratio",
+                ),
+                (
+                    f"{level}_RS126_MA200",
+                    base + "group_return_126d_pct_rank",
+                    base + "above_ma200_ratio",
+                ),
+                (
+                    f"{level}_RSRAW_RS70",
+                    base + "group_rs_raw_pct_rank",
+                    base + "rs70_ratio",
+                ),
+                (
+                    f"{level}_RSRAW_NEWHIGH",
+                    base + "group_rs_raw_pct_rank",
+                    base + "new_52w_high_ratio",
+                ),
+                (
+                    f"{level}_STOCK_GROUP_RS",
+                    base + "stock_rs_raw_pct_rank",
+                    base + "group_rs_raw_pct_rank",
+                ),
+                (
+                    f"{level}_MA50_DIRECTION",
+                    base + "above_ma50_ratio",
+                    base + "above_ma50_ratio_change_5d",
+                ),
+                (
+                    f"{level}_NEWHIGH_LEADERSHIP",
+                    base + "new_52w_high_ratio",
+                    base + "leadership_breadth_score",
+                ),
+                (
+                    f"{level}_RSRAW_LEADERSHIP",
+                    base + "group_rs_raw_pct_rank",
+                    base + "leadership_breadth_score",
+                ),
+                (
+                    f"{level}_RSRAW_VOLUME21",
+                    base + "group_rs_raw_pct_rank",
+                    "adjusted_volume_vs_sma21_prior_ratio",
+                ),
+                (
+                    f"{level}_RS63_STOCK_RS63",
+                    base + "group_return_63d_pct_rank",
+                    "cross_sectional_rs_63d_pct_rank",
+                ),
+                (
+                    f"{level}_LEADERSHIP_CHART",
+                    base + "leadership_breadth_score",
+                    "pattern_ordered_uptrend_score_20d",
+                ),
+            )
+        )
+
+    for pair_name, left, right in pair_features:
+        for left_operator, left_quantile, left_tag in (
+            ("le", 0.20, "LL"),
+            ("ge", 0.80, "LH"),
+        ):
+            for right_operator, right_quantile, right_tag in (
+                ("le", 0.20, "RL"),
+                ("ge", 0.80, "RH"),
+            ):
+                rule_id = f"{prefix}_PATTERN_{pair_name}_{left_tag}_{right_tag}"
+                templates.append(
+                    PatternTemplate(
+                        rule_id,
+                        "G",
+                        pair_name.lower() + f"_{left_tag.lower()}_{right_tag.lower()}",
+                        (
+                            ConditionTemplate(
+                                rule_id + "_C1",
+                                feature_group(left),
+                                left,
+                                left_operator,
+                                left_quantile,
+                            ),
+                            ConditionTemplate(
+                                rule_id + "_C2",
+                                feature_group(right),
+                                right,
+                                right_operator,
+                                right_quantile,
+                            ),
+                        ),
+                    )
+                )
+
+    hierarchy_features = tuple(
+        f"current_taxonomy_backcast_{level}_group_rs_raw_pct_rank"
+        for level, _labels in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
+    )
+    for direction, operator, quantile in (
+        ("LOW", "le", 0.20),
+        ("HIGH", "ge", 0.80),
+    ):
+        for count, name in ((2, "INDUSTRY_CATEGORY"), (3, "ALL_LEVELS")):
+            selected_features = hierarchy_features[:count]
+            rule_id = f"{prefix}_PATTERN_HIERARCHY_{name}_{direction}"
+            templates.append(
+                PatternTemplate(
+                    rule_id,
+                    "G",
+                    f"hierarchy_{name.lower()}_{direction.lower()}",
+                    tuple(
+                        ConditionTemplate(
+                            f"{rule_id}_C{position}",
+                            "G",
+                            feature,
+                            operator,
+                            quantile,
+                        )
+                        for position, feature in enumerate(
+                            selected_features, start=1
+                        )
+                    ),
+                )
+            )
+        category_subcategory = hierarchy_features[1:]
+        rule_id = f"{prefix}_PATTERN_HIERARCHY_CATEGORY_SUBCATEGORY_{direction}"
+        templates.append(
+            PatternTemplate(
+                rule_id,
+                "G",
+                f"hierarchy_category_subcategory_{direction.lower()}",
+                tuple(
+                    ConditionTemplate(
+                        f"{rule_id}_C{position}",
+                        "G",
+                        feature,
+                        operator,
+                        quantile,
+                    )
+                    for position, feature in enumerate(
+                        category_subcategory, start=1
+                    )
+                ),
+            )
+        )
+    return tuple(sorted(templates, key=lambda item: item.rule_id))
+
+
 def _relaxed_pattern_variants(
     patterns: tuple[PatternTemplate, ...],
 ) -> tuple[PatternTemplate, ...]:
@@ -938,6 +1163,13 @@ def _trader_pattern_templates() -> tuple[PatternTemplate, ...]:
 def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
     """Generate all tail combinations for predeclared causal feature pairs."""
 
+    activity_score_pairs = tuple(
+        (
+            f"pattern_{notional_name.removesuffix('_notional')}_score_{canonical}d",
+            f"pattern_{notional_name}_score_{canonical}d",
+        )
+        for notional_name, _windows, canonical in NOTIONAL_SOFT_PATTERN_SPECS
+    )
     pairs = (
         ("log_market_cap_usd", "prior_atr_14d_pct"),
         ("log_market_cap_usd", "adjusted_volume_vs_sma21_prior_ratio"),
@@ -964,6 +1196,7 @@ def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
         ("market_vix_to_vix3m_ratio", "prior_base_width_20_pct"),
         ("relative_return_vs_spy_63d_pct_points", "adjusted_volume_vs_sma21_prior_ratio"),
         ("signal_turnover_ratio", "signal_close_location_value"),
+        *activity_score_pairs,
     )
     templates: list[PatternTemplate] = []
     for pair_number, (left, right) in enumerate(pairs, start=1):
@@ -1826,6 +2059,8 @@ def select_objective(
     spec: ObjectiveSpec,
     templates: tuple[CandidateTemplate, ...],
     cfg: Config,
+    *,
+    allow_selection: bool = True,
 ) -> ObjectiveSelection:
     evaluator = _Evaluator(frame, spec, templates, cfg)
     empty = evaluator.evaluate(())
@@ -1884,7 +2119,7 @@ def select_objective(
     eligible = [
         item for item in viable if item.passes_multiple_testing is True
     ]
-    selected = min(eligible, key=_rank) if eligible else empty
+    selected = min(eligible, key=_rank) if eligible and allow_selection else empty
     prefixes: list[CandidateEvaluation] = [empty]
     for length in range(1, len(selected.templates) + 1):
         prefixes.append(evaluator.evaluate(selected.templates[:length]))
@@ -3754,6 +3989,7 @@ def build_rule_results(
                     templates=candidate.templates,
                 )
             )
+
         for order, condition in enumerate(conditions, start=1):
             population, component_metrics = _scope_metrics(
                 source,
@@ -3928,6 +4164,45 @@ def build_rule_results(
                     ),
                 )
             )
+    # Current-taxonomy backcast candidates are deliberately persisted only as
+    # diagnostics.  Even a statistically strong result cannot become selected
+    # or final because the historical IBKR labels were not known point in time.
+    for diagnostic_selections in (
+        selected.diagnostic_taxonomy_entry,
+        selected.diagnostic_taxonomy_confirmation,
+    ):
+        for diagnostic_selection in diagnostic_selections.values():
+            diagnostic_spec = diagnostic_selection.spec
+            for candidate in diagnostic_selection.candidates:
+                rows.append(
+                    _rule_row(
+                        rule_id=candidate.rule_id,
+                        result_kind="candidate_rule",
+                        spec=diagnostic_spec,
+                        conditions=(),
+                        evaluation_scope="walk_forward_pooled",
+                        scope_year=None,
+                        period_start=date(cfg.walk_forward_first_year, 1, 1),
+                        period_end=cfg.validation_end_date,
+                        metrics=candidate.pooled_metrics,
+                        is_selected=False,
+                        is_final_filter=False,
+                        passes_development_gates=(
+                            candidate.passes_development_gates
+                        ),
+                        passes_stability_gates=candidate.passes_stability_gates,
+                        passes_multiple_testing=candidate.passes_multiple_testing,
+                        multiple_testing_candidate_count=(
+                            candidate.multiple_testing_candidate_count
+                        ),
+                        permutation_trial_count=candidate.permutation_trial_count,
+                        max_stat_permutation_p_value=(
+                            candidate.max_stat_permutation_p_value
+                        ),
+                        stability=candidate.stability,
+                        templates=candidate.templates,
+                    )
+                )
     _append_final_union_rows(
         rows,
         signals,
@@ -4117,6 +4392,45 @@ def run_research(
         management_lengths[day] = _gate_refit_prefixes(
             early_cuts, selections, management_lengths[day], cfg
         )
+    taxonomy_has_data = signals.loc[
+        :, CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS
+    ].notna().any(axis=None)
+    diagnostic_taxonomy_entry: dict[str, ObjectiveSelection] = {}
+    diagnostic_taxonomy_confirmation: dict[str, ObjectiveSelection] = {}
+    if taxonomy_has_data:
+        diagnostic_entry_templates = build_current_taxonomy_backcast_templates(
+            "entry_filter", quantile_count=cfg.quantile_count
+        )
+        diagnostic_confirmation_templates = (
+            build_current_taxonomy_backcast_templates(
+                "entry_confirmation", quantile_count=cfg.quantile_count
+            )
+        )
+        log.info(
+            "Evaluating %d entry and %d confirmation current-taxonomy backcast templates as diagnostic-only candidates",
+            len(diagnostic_entry_templates),
+            len(diagnostic_confirmation_templates),
+        )
+        diagnostic_taxonomy_entry = {
+            spec.objective: select_objective(
+                signals,
+                spec,
+                diagnostic_entry_templates,
+                cfg,
+                allow_selection=False,
+            )
+            for spec in ENTRY_EXCLUSION_SPECS
+        }
+        diagnostic_taxonomy_confirmation = {
+            spec.objective: select_objective(
+                signals,
+                spec,
+                diagnostic_confirmation_templates,
+                cfg,
+                allow_selection=False,
+            )
+            for spec in ENTRY_CONFIRMATION_SPECS
+        }
     summary = SelectedSummary(
         entry,
         confirmation,
@@ -4126,6 +4440,8 @@ def run_research(
         confirmation_lengths,
         early_lengths,
         management_lengths,
+        diagnostic_taxonomy_entry,
+        diagnostic_taxonomy_confirmation,
     )
     decided_signals = apply_entry_decisions(signals, summary)
     decided_early = apply_early_decisions(early_cuts, summary)

@@ -12,6 +12,16 @@ import pandas as pd
 from .config import Config
 from .contracts import (
     CRITERION_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_CHANGE_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS,
+    CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
+    CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES,
+    CURRENT_TAXONOMY_BACKCAST_UNIT_INTERVAL_COLUMNS,
+    CURRENT_TAXONOMY_SOURCE_COLUMNS,
     EARLY_CUT_COLUMNS,
     EARLY_CUT_BOOLEAN_COLUMNS,
     EARLY_CUT_INTEGER_COLUMNS,
@@ -26,6 +36,8 @@ from .contracts import (
     IDENTITY_COLUMNS,
     MARKET_CAP_FEATURE_COLUMNS,
     MARKET_METRIC_SOURCE_COLUMNS,
+    NOTIONAL_SOFT_PATTERN_BASE_NAMES,
+    NOTIONAL_SOFT_PATTERN_SPECS,
     QUARTERLY_FUNDAMENTAL_EVENT_SOURCE_COLUMNS,
     SIGNAL_COLUMNS,
     SIGNAL_BOOLEAN_COLUMNS,
@@ -88,6 +100,7 @@ _SIGNAL_TEXT_COLUMNS = (
     "confirmation_reason",
     "filter_decision",
     "exclusion_reason",
+    *CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
 )
 
 _EARLY_CUT_TEXT_COLUMNS = (
@@ -1135,6 +1148,318 @@ def enrich_global_features(
     )
 
 
+def build_current_taxonomy_backcast_context(
+    raw: pd.DataFrame,
+    trading_dates: pd.DatetimeIndex,
+    cfg: Config,
+) -> pd.DataFrame:
+    """Build ranked and changing daily group metrics from current taxonomy.
+
+    Price, RS and breadth inputs are causal as of each market close.  Only the
+    taxonomy labels are a current-snapshot backcast, so all resulting features
+    remain diagnostic-only in research.
+    """
+
+    context_metric_columns = tuple(
+        suffix
+        for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
+        if suffix != "stock_rs_raw_pct_rank"
+    )
+    required = set(CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS)
+    missing = sorted(required - set(raw.columns))
+    if missing:
+        raise ValueError(
+            "taxonomy group context is missing columns: " + ", ".join(missing)
+        )
+    if raw.empty:
+        result = raw.loc[:, CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS].copy()
+        for suffix in context_metric_columns:
+            if suffix not in result:
+                result[suffix] = np.nan
+        return result.loc[
+            :,
+            [
+                "market_date",
+                "taxonomy_level",
+                "ibkr_industry",
+                "ibkr_category",
+                "ibkr_subcategory",
+                *context_metric_columns,
+            ],
+        ]
+    if not trading_dates.is_monotonic_increasing or not trading_dates.is_unique:
+        raise ValueError("trading_dates must be sorted and unique")
+
+    result = raw.loc[:, CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS].copy()
+    result["market_date"] = pd.to_datetime(
+        result["market_date"], errors="raise"
+    ).dt.normalize()
+    allowed_levels = {level for level, _labels in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS}
+    levels = result["taxonomy_level"].astype("string")
+    unexpected = sorted(set(levels.dropna().astype(str)) - allowed_levels)
+    if levels.isna().any() or unexpected:
+        raise ValueError(
+            "taxonomy group context contains invalid levels"
+            + (": " + ", ".join(unexpected) if unexpected else "")
+        )
+    result["taxonomy_level"] = levels
+    for column in ("ibkr_industry", "ibkr_category", "ibkr_subcategory"):
+        values = result[column].astype("string").str.strip()
+        result[column] = values.mask(values.eq(""), pd.NA)
+
+    hierarchy_valid = (
+        result["ibkr_category"].isna() | result["ibkr_industry"].notna()
+    ) & (
+        result["ibkr_subcategory"].isna() | result["ibkr_category"].notna()
+    )
+    if not hierarchy_valid.all():
+        raise ValueError("taxonomy group context violates hierarchy ordering")
+    key_columns = (
+        "market_date",
+        "taxonomy_level",
+        "ibkr_industry",
+        "ibkr_category",
+        "ibkr_subcategory",
+    )
+    if result.duplicated(list(key_columns)).any():
+        raise ValueError("taxonomy group context contains duplicate group dates")
+
+    numeric_columns = tuple(required - set(key_columns))
+    for column in numeric_columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce").astype(float)
+    level_minimums = {
+        "industry": cfg.taxonomy_backcast_industry_min_members,
+        "category_path": cfg.taxonomy_backcast_category_min_members,
+        "subcategory_path": cfg.taxonomy_backcast_subcategory_min_members,
+    }
+    eligible_count_by_metric = {
+        **{
+            f"group_median_return_{window}d_pct": (
+                f"return_{window}d_eligible_count"
+            )
+            for window in (21, 63, 126, 252)
+        },
+        "group_rs_raw_median": "rs_raw_eligible_count",
+        "above_ma50_ratio": "ma50_eligible_count",
+        "above_ma200_ratio": "ma200_eligible_count",
+        "new_52w_high_count": "new_52w_high_eligible_count",
+        "new_52w_high_ratio": "new_52w_high_eligible_count",
+        "rs70_ratio": "rs_rating_eligible_count",
+        "rs90_ratio": "rs_rating_eligible_count",
+        "trend_template_ratio": "trend_template_eligible_count",
+        "new_8of8_signal_count": "group_member_count",
+        "new_8of8_signal_ratio": "group_member_count",
+    }
+    for level, minimum in level_minimums.items():
+        in_level = result["taxonomy_level"].eq(level)
+        for metric, count_column in eligible_count_by_metric.items():
+            result.loc[
+                in_level & result[count_column].lt(minimum), metric
+            ] = np.nan
+
+    result["leadership_breadth_score"] = result[
+        ["rs70_ratio", "rs90_ratio", "trend_template_ratio"]
+    ].mean(axis=1, skipna=False)
+    for source, target in (
+        *(
+            (
+                f"group_median_return_{window}d_pct",
+                f"group_return_{window}d_pct_rank",
+            )
+            for window in (21, 63, 126, 252)
+        ),
+        ("group_rs_raw_median", "group_rs_raw_pct_rank"),
+    ):
+        result[target] = result.groupby(
+            ["market_date", "taxonomy_level"],
+            sort=False,
+            observed=True,
+            dropna=False,
+        )[source].rank(method="average", pct=True)
+
+    ordinal_lookup = pd.Series(
+        np.arange(len(trading_dates), dtype=np.int64),
+        index=pd.DatetimeIndex(trading_dates).normalize(),
+    )
+    result["_session_ordinal"] = result["market_date"].map(ordinal_lookup)
+    if result["_session_ordinal"].isna().any():
+        raise ValueError("taxonomy group context contains non-trading dates")
+    group_keys = [
+        "taxonomy_level",
+        "ibkr_industry",
+        "ibkr_category",
+        "ibkr_subcategory",
+    ]
+    result = result.sort_values(
+        [*group_keys, "market_date"], kind="stable", na_position="first"
+    )
+    grouped = result.groupby(
+        group_keys, sort=False, observed=True, dropna=False
+    )
+    for source in (
+        "above_ma50_ratio",
+        "above_ma200_ratio",
+        "new_52w_high_ratio",
+        "leadership_breadth_score",
+    ):
+        for sessions in (5, 21):
+            lagged = grouped[source].shift(sessions)
+            lagged_ordinal = grouped["_session_ordinal"].shift(sessions)
+            exact_lag = result["_session_ordinal"].sub(lagged_ordinal).eq(sessions)
+            result[f"{source}_change_{sessions}d"] = (
+                result[source] - lagged
+            ).where(exact_lag)
+    result = result.drop(columns="_session_ordinal").reset_index(drop=True)
+    return result.loc[
+        :,
+        [
+            "market_date",
+            "taxonomy_level",
+            "ibkr_industry",
+            "ibkr_category",
+            "ibkr_subcategory",
+            *context_metric_columns,
+        ],
+    ]
+
+
+def enrich_current_taxonomy_backcast_features(
+    signals: pd.DataFrame,
+    taxonomy: pd.DataFrame,
+    group_context: pd.DataFrame,
+    member_ranks: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach diagnostic current-taxonomy hierarchy metrics to signal rows."""
+
+    output = signals.drop(
+        columns=[
+            *CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+            *CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
+        ],
+        errors="ignore",
+    ).copy()
+    output["signal_date"] = pd.to_datetime(
+        output["signal_date"], errors="raise"
+    ).dt.normalize()
+    missing_taxonomy = sorted(set(CURRENT_TAXONOMY_SOURCE_COLUMNS) - set(taxonomy))
+    if missing_taxonomy:
+        raise ValueError(
+            "current taxonomy is missing columns: " + ", ".join(missing_taxonomy)
+        )
+    taxonomy_values = taxonomy.loc[:, CURRENT_TAXONOMY_SOURCE_COLUMNS].copy()
+    if taxonomy_values.duplicated(list(IDENTITY_COLUMNS)).any():
+        raise ValueError("current taxonomy contains duplicate identities")
+    for source, target in zip(
+        ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
+        CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+    ):
+        values = taxonomy_values[source].astype("string").str.strip()
+        taxonomy_values[target] = values.mask(values.eq(""), pd.NA)
+    taxonomy_values = taxonomy_values.drop(
+        columns=["ibkr_industry", "ibkr_category", "ibkr_subcategory"]
+    )
+    output = output.merge(
+        taxonomy_values,
+        on=list(IDENTITY_COLUMNS),
+        how="left",
+        validate="many_to_one",
+        sort=False,
+    )
+    labels = CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS
+    hierarchy_valid = (output[labels[1]].isna() | output[labels[0]].notna()) & (
+        output[labels[2]].isna() | output[labels[1]].notna()
+    )
+    if not hierarchy_valid.all():
+        raise ValueError("current taxonomy violates Industry/Category/Subcategory")
+
+    context_metric_columns = tuple(
+        suffix
+        for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
+        if suffix != "stock_rs_raw_pct_rank"
+    )
+    label_mapping = {
+        "ibkr_industry": labels[0],
+        "ibkr_category": labels[1],
+        "ibkr_subcategory": labels[2],
+    }
+    for level, source_label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS:
+        context = group_context.loc[
+            group_context["taxonomy_level"].eq(level),
+            [
+                "market_date",
+                *source_label_columns,
+                *context_metric_columns,
+            ],
+        ].copy()
+        rename = {
+            "market_date": "signal_date",
+            **{column: label_mapping[column] for column in source_label_columns},
+            **{
+                suffix: f"current_taxonomy_backcast_{level}_{suffix}"
+                for suffix in context_metric_columns
+            },
+        }
+        context = context.rename(columns=rename)
+        join_columns = [
+            "signal_date",
+            *(label_mapping[column] for column in source_label_columns),
+        ]
+        output = output.merge(
+            context,
+            on=join_columns,
+            how="left",
+            validate="many_to_one",
+            sort=False,
+        )
+
+    required_ranks = set(CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS)
+    missing_ranks = sorted(required_ranks - set(member_ranks.columns))
+    if missing_ranks:
+        raise ValueError(
+            "current taxonomy member ranks are missing columns: "
+            + ", ".join(missing_ranks)
+        )
+    ranks = member_ranks.loc[:, CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS]
+    ranks = ranks.copy()
+    ranks["signal_date"] = pd.to_datetime(
+        ranks["signal_date"], errors="raise"
+    ).dt.normalize()
+    if ranks.duplicated(["signal_date", *IDENTITY_COLUMNS]).any():
+        raise ValueError("current taxonomy member ranks contain duplicate signals")
+    output = output.merge(
+        ranks,
+        on=["signal_date", *IDENTITY_COLUMNS],
+        how="left",
+        validate="one_to_one",
+        sort=False,
+    )
+
+    for column in CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS:
+        output[column] = output[column].astype("string")
+    for column in CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS:
+        output[column] = pd.to_numeric(output[column], errors="coerce").astype("Int64")
+    numeric_columns = (
+        set(CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS)
+        - set(CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS)
+    )
+    for column in numeric_columns:
+        output[column] = pd.to_numeric(output[column], errors="coerce").astype(float)
+    for column in CURRENT_TAXONOMY_BACKCAST_UNIT_INTERVAL_COLUMNS:
+        values = output[column].dropna()
+        if ((values < -1e-12) | (values > 1.0 + 1e-12)).any():
+            raise ValueError(f"taxonomy ratio/rank {column} is outside [0, 1]")
+    for column in CURRENT_TAXONOMY_BACKCAST_CHANGE_COLUMNS:
+        values = output[column].dropna()
+        if ((values < -1.0 - 1e-12) | (values > 1.0 + 1e-12)).any():
+            raise ValueError(f"taxonomy change {column} is outside [-1, 1]")
+    missing_output = sorted(set(SIGNAL_COLUMNS) - set(output.columns))
+    if missing_output:
+        raise AssertionError(
+            "taxonomy enrichment lost signal columns: " + ", ".join(missing_output)
+        )
+    return output.loc[:, SIGNAL_COLUMNS]
+
+
 def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").astype(float)
 
@@ -1863,13 +2188,13 @@ def _soft_pattern_window_scores(
     closes: np.ndarray,
     highs: np.ndarray,
     lows: np.ndarray,
-    volumes: np.ndarray,
+    activities: np.ndarray,
     signal_close: float,
     signal_high: float,
     signal_low: float,
-    signal_volume: float,
+    signal_activity: float,
 ) -> dict[str, tuple[float, float, float]]:
-    """Return setup, trigger and combined scores using no post-signal bars."""
+    """Return scores using either share volume or USD notional activity."""
 
     window = len(closes)
     if window < 10:
@@ -1902,11 +2227,11 @@ def _soft_pattern_window_scores(
         if len(older_ranges) and np.mean(older_ranges) > 0
         else np.nan
     )
-    older_volumes = volumes[:-recent_count]
-    recent_volumes = volumes[-recent_count:]
-    volume_contraction = (
-        float(np.mean(recent_volumes) / np.mean(older_volumes))
-        if len(older_volumes) and np.mean(older_volumes) > 0
+    older_activity = activities[:-recent_count]
+    recent_activity = activities[-recent_count:]
+    activity_contraction = (
+        float(np.mean(recent_activity) / np.mean(older_activity))
+        if len(older_activity) and np.mean(older_activity) > 0
         else np.nan
     )
     running_peak = np.maximum.accumulate(highs)
@@ -1919,8 +2244,10 @@ def _soft_pattern_window_scores(
         if signal_high > signal_low
         else np.nan
     )
-    signal_volume_ratio = (
-        float(signal_volume / np.mean(volumes)) if np.mean(volumes) > 0 else np.nan
+    signal_activity_ratio = (
+        float(signal_activity / np.mean(activities))
+        if np.mean(activities) > 0
+        else np.nan
     )
     signal_breakout = float(signal_close / prior_high - 1.0)
     generic_trigger = _mean01(
@@ -1928,10 +2255,10 @@ def _soft_pattern_window_scores(
         _linear01(signal_close_location, 0.45, 0.95),
         _linear01(signal_breakout, -0.04, 0.02),
     )
-    volume_breakout_trigger = _mean01(
+    activity_breakout_trigger = _mean01(
         _linear01(signal_return, 0.0, 0.05),
         _linear01(signal_close_location, 0.50, 0.95),
-        _linear01(signal_volume_ratio, 1.0, 2.5),
+        _linear01(signal_activity_ratio, 1.0, 2.5),
         _linear01(signal_breakout, -0.03, 0.02),
     )
 
@@ -1983,7 +2310,7 @@ def _soft_pattern_window_scores(
             max(4.0, window * 0.65),
         ),
         _linear01(runup, 0.03, 0.30),
-        _inverse_linear01(volume_contraction, 0.55, 1.25),
+        _inverse_linear01(activity_contraction, 0.55, 1.25),
     )
     pullback_trigger = _mean01(
         generic_trigger,
@@ -2031,19 +2358,21 @@ def _soft_pattern_window_scores(
     )
 
     dryup_setup = _mean01(
-        _inverse_linear01(volume_contraction, 0.45, 1.20),
+        _inverse_linear01(activity_contraction, 0.45, 1.20),
         _inverse_linear01(range_compression, 0.50, 1.25),
         _inverse_linear01(close_width, 0.02, 0.18),
         _linear01(prior_close / prior_high, 0.88, 1.0),
     )
     results["volume_dryup_breakout"] = (
         dryup_setup,
-        volume_breakout_trigger,
-        _weighted01(((dryup_setup, 0.60), (volume_breakout_trigger, 0.40))),
+        activity_breakout_trigger,
+        _weighted01(((dryup_setup, 0.60), (activity_breakout_trigger, 0.40))),
     )
 
-    volume_reference = float(np.mean(volumes))
-    activity = volumes[1:] / volume_reference if volume_reference > 0 else np.nan
+    activity_reference = float(np.mean(activities))
+    relative_activity = (
+        activities[1:] / activity_reference if activity_reference > 0 else np.nan
+    )
     locations = np.divide(
         closes - lows,
         highs - lows,
@@ -2051,12 +2380,12 @@ def _soft_pattern_window_scores(
         where=highs > lows,
     )
     distribution_count = int(
-        np.count_nonzero((daily_returns <= -0.002) & (activity >= 1.20))
+        np.count_nonzero((daily_returns <= -0.002) & (relative_activity >= 1.20))
     )
     churning_count = int(
         np.count_nonzero(
             (np.abs(daily_returns) <= 0.005)
-            & (activity >= 1.20)
+            & (relative_activity >= 1.20)
             & (locations[1:] <= 0.50)
         )
     )
@@ -2069,8 +2398,9 @@ def _soft_pattern_window_scores(
             and daily_returns[local_position - 1] < 0
         ):
             failed_breakouts += 1
-    signed_volume_balance = float(
-        np.sum(np.sign(daily_returns) * volumes[1:]) / np.sum(volumes[1:])
+    signed_activity_balance = _safe_scalar_ratio(
+        np.sum(np.sign(daily_returns) * activities[1:]),
+        np.sum(activities[1:]),
     )
     scale = 20.0 / window
     distribution_setup = _mean01(
@@ -2078,10 +2408,10 @@ def _soft_pattern_window_scores(
         _linear01(churning_count * scale, 0.5, 3.5),
         _linear01(failed_breakouts * scale, 0.0, 1.5),
         _linear01(prior_close / prior_high, 0.85, 1.0),
-        _linear01(-signed_volume_balance, -0.10, 0.35),
+        _linear01(-signed_activity_balance, -0.10, 0.35),
     )
     distribution_trigger = _mean01(
-        _linear01(signal_volume_ratio, 1.0, 2.5),
+        _linear01(signal_activity_ratio, 1.0, 2.5),
         _inverse_linear01(signal_close_location, 0.20, 0.80),
         _inverse_linear01(signal_return, -0.03, 0.02),
     )
@@ -2105,22 +2435,21 @@ def _soft_pattern_window_scores(
         if len(block_widths) >= 2
         else np.nan
     )
-    width_contraction = (
-        float(block_widths[-1] / block_widths[0])
-        if len(block_widths) and block_widths[0] > 0
-        else np.nan
+    width_contraction = _safe_scalar_ratio(
+        block_widths[-1] if len(block_widths) else np.nan,
+        block_widths[0] if len(block_widths) else np.nan,
     )
     vcp_setup = _mean01(
         contraction_fraction,
         _inverse_linear01(width_contraction, 0.25, 1.10),
         _inverse_linear01(range_compression, 0.45, 1.25),
-        _inverse_linear01(volume_contraction, 0.45, 1.20),
+        _inverse_linear01(activity_contraction, 0.45, 1.20),
         _linear01(prior_close / prior_high, 0.88, 1.0),
     )
     results["vcp"] = (
         vcp_setup,
-        volume_breakout_trigger,
-        _weighted01(((vcp_setup, 0.70), (volume_breakout_trigger, 0.30))),
+        activity_breakout_trigger,
+        _weighted01(((vcp_setup, 0.70), (activity_breakout_trigger, 0.30))),
     )
 
     split = max(5, int(round(window * 0.67)))
@@ -2130,22 +2459,21 @@ def _soft_pattern_window_scores(
     flag_width = flag_high / flag_low - 1.0 if flag_low > 0 else np.nan
     pole_return = pole_high / closes[0] - 1.0
     flag_pullback = max(0.0, 1.0 - prior_close / pole_high)
-    flag_volume_ratio = (
-        float(np.mean(volumes[split:]) / np.mean(volumes[:split]))
-        if split < window and np.mean(volumes[:split]) > 0
-        else np.nan
+    flag_activity_ratio = _safe_scalar_ratio(
+        np.mean(activities[split:]) if split < window else np.nan,
+        np.mean(activities[:split]) if split < window else np.nan,
     )
     high_tight_setup = _mean01(
         _linear01(pole_return, 0.15, 0.80),
         _inverse_linear01(flag_width, 0.02, 0.18),
         _inverse_linear01(flag_pullback, 0.0, 0.18),
-        _inverse_linear01(flag_volume_ratio, 0.45, 1.10),
+        _inverse_linear01(flag_activity_ratio, 0.45, 1.10),
         _linear01(prior_close / prior_high, 0.88, 1.0),
     )
     results["high_tight_flag"] = (
         high_tight_setup,
-        volume_breakout_trigger,
-        _weighted01(((high_tight_setup, 0.70), (volume_breakout_trigger, 0.30))),
+        activity_breakout_trigger,
+        _weighted01(((high_tight_setup, 0.70), (activity_breakout_trigger, 0.30))),
     )
 
     if window >= 63:
@@ -2166,18 +2494,19 @@ def _soft_pattern_window_scores(
         handle_high = float(np.max(highs[handle_start:]))
         handle_low = float(np.min(lows[handle_start:]))
         handle_depth = max(0.0, 1.0 - handle_low / handle_high)
-        handle_volume_ratio = float(
-            np.mean(volumes[handle_start:]) / np.mean(volumes[:handle_start])
+        handle_activity_ratio = _safe_scalar_ratio(
+            np.mean(activities[handle_start:]),
+            np.mean(activities[:handle_start]),
         )
         cup_setup = _mean01(
             _triangle01(cup_depth, 0.08, 0.25, 0.55),
             _triangle01(trough_location, 0.20, 0.50, 0.78),
             _triangle01(rim_recovery, 0.75, 0.98, 1.12),
             _triangle01(handle_depth, 0.005, 0.06, 0.18),
-            _inverse_linear01(handle_volume_ratio, 0.45, 1.15),
+            _inverse_linear01(handle_activity_ratio, 0.45, 1.15),
         )
         cup_trigger = _mean01(
-            volume_breakout_trigger,
+            activity_breakout_trigger,
             _linear01(signal_close / max(left_rim, right_rim), 0.95, 1.03),
         )
         results["cup_with_handle"] = (
@@ -2194,10 +2523,11 @@ def _event_soft_pattern_features(
     high: pd.Series,
     low: pd.Series,
     volume: pd.Series,
+    notional: pd.Series,
     segment: pd.Series,
     signal_positions: np.ndarray,
 ) -> dict[str, pd.Series]:
-    """Build multi-window 0-100 chart scores without look-ahead bias."""
+    """Build share-volume and USD-notional chart scores without look-ahead."""
 
     result = {
         name: pd.Series(np.nan, index=close.index, dtype=float)
@@ -2207,6 +2537,13 @@ def _event_soft_pattern_features(
         name: (tuple(windows), canonical)
         for name, windows, canonical in SOFT_PATTERN_SPECS
     }
+    notional_specs = {
+        base_name: (notional_name, tuple(windows), canonical)
+        for notional_name, windows, canonical in NOTIONAL_SOFT_PATTERN_SPECS
+        for base_name in (notional_name.removesuffix("_notional"),)
+    }
+    if set(notional_specs) != set(NOTIONAL_SOFT_PATTERN_BASE_NAMES):
+        raise AssertionError("notional soft-pattern specification is incomplete")
     windows = sorted(
         {
             window
@@ -2218,22 +2555,22 @@ def _event_soft_pattern_features(
         current_segment = segment.iloc[position]
         if pd.isna(current_segment):
             continue
-        signal_values = np.asarray(
+        signal_price_values = np.asarray(
             [
                 _finite_scalar(close.iloc[position]),
                 _finite_scalar(high.iloc[position]),
                 _finite_scalar(low.iloc[position]),
-                _finite_scalar(volume.iloc[position]),
             ],
             dtype=float,
         )
         if (
-            not np.isfinite(signal_values).all()
-            or np.any(signal_values[:3] <= 0)
-            or signal_values[1] < signal_values[2]
-            or signal_values[3] < 0
+            not np.isfinite(signal_price_values).all()
+            or np.any(signal_price_values <= 0)
+            or signal_price_values[1] < signal_price_values[2]
         ):
             continue
+        signal_volume = _finite_scalar(volume.iloc[position])
+        signal_notional = _finite_scalar(notional.iloc[position])
         for window in windows:
             if position < window:
                 continue
@@ -2242,40 +2579,97 @@ def _event_soft_pattern_features(
             highs = high.iloc[position - window : position].to_numpy(dtype=float)
             lows = low.iloc[position - window : position].to_numpy(dtype=float)
             volumes = volume.iloc[position - window : position].to_numpy(dtype=float)
+            notionals = notional.iloc[position - window : position].to_numpy(
+                dtype=float
+            )
             if (
                 not history_segment.eq(current_segment).all()
                 or not np.isfinite(closes).all()
                 or not np.isfinite(highs).all()
                 or not np.isfinite(lows).all()
-                or not np.isfinite(volumes).all()
                 or np.any(closes <= 0)
                 or np.any(lows <= 0)
                 or np.any(highs < lows)
-                or np.any(volumes < 0)
-                or np.mean(volumes) <= 0
             ):
                 continue
-            scores = _soft_pattern_window_scores(
-                closes,
-                highs,
-                lows,
-                volumes,
-                *signal_values,
+
+            volume_valid = (
+                np.isfinite(signal_volume)
+                and signal_volume >= 0
+                and np.isfinite(volumes).all()
+                and np.all(volumes >= 0)
+                and np.mean(volumes) > 0
             )
-            for pattern_name, (pattern_windows, canonical) in specs.items():
-                if window not in pattern_windows or pattern_name not in scores:
-                    continue
-                setup, trigger, combined = scores[pattern_name]
-                result[f"pattern_{pattern_name}_score_{window}d"].iloc[position] = (
-                    combined * 100.0 if np.isfinite(combined) else np.nan
+            if volume_valid:
+                scores = _soft_pattern_window_scores(
+                    closes,
+                    highs,
+                    lows,
+                    volumes,
+                    *signal_price_values,
+                    signal_volume,
                 )
-                if window == canonical:
-                    result[f"pattern_{pattern_name}_setup_score"].iloc[position] = (
-                        setup * 100.0 if np.isfinite(setup) else np.nan
+                for pattern_name, (pattern_windows, canonical) in specs.items():
+                    if window not in pattern_windows or pattern_name not in scores:
+                        continue
+                    setup, trigger, combined = scores[pattern_name]
+                    result[
+                        f"pattern_{pattern_name}_score_{window}d"
+                    ].iloc[position] = (
+                        combined * 100.0 if np.isfinite(combined) else np.nan
                     )
-                    result[f"pattern_{pattern_name}_trigger_score"].iloc[position] = (
-                        trigger * 100.0 if np.isfinite(trigger) else np.nan
+                    if window == canonical:
+                        result[
+                            f"pattern_{pattern_name}_setup_score"
+                        ].iloc[position] = (
+                            setup * 100.0 if np.isfinite(setup) else np.nan
+                        )
+                        result[
+                            f"pattern_{pattern_name}_trigger_score"
+                        ].iloc[position] = (
+                            trigger * 100.0 if np.isfinite(trigger) else np.nan
+                        )
+
+            notional_valid = (
+                np.isfinite(signal_notional)
+                and signal_notional >= 0
+                and np.isfinite(notionals).all()
+                and np.all(notionals >= 0)
+                and np.mean(notionals) > 0
+            )
+            if notional_valid:
+                scores = _soft_pattern_window_scores(
+                    closes,
+                    highs,
+                    lows,
+                    notionals,
+                    *signal_price_values,
+                    signal_notional,
+                )
+                for pattern_name, (
+                    output_name,
+                    pattern_windows,
+                    canonical,
+                ) in notional_specs.items():
+                    if window not in pattern_windows or pattern_name not in scores:
+                        continue
+                    setup, trigger, combined = scores[pattern_name]
+                    result[
+                        f"pattern_{output_name}_score_{window}d"
+                    ].iloc[position] = (
+                        combined * 100.0 if np.isfinite(combined) else np.nan
                     )
+                    if window == canonical:
+                        result[
+                            f"pattern_{output_name}_setup_score"
+                        ].iloc[position] = (
+                            setup * 100.0 if np.isfinite(setup) else np.nan
+                        )
+                        result[
+                            f"pattern_{output_name}_trigger_score"
+                        ].iloc[position] = (
+                            trigger * 100.0 if np.isfinite(trigger) else np.nan
+                        )
     return result
 
 
@@ -2551,7 +2945,7 @@ def calculate_identity_signals(
         close, high, low, segment, signal_positions
     )
     soft_pattern_features = _event_soft_pattern_features(
-        close, high, low, volume, segment, signal_positions
+        close, high, low, volume, notional, segment, signal_positions
     )
     prior_rs_change5 = (
         _lag_in_segment(rs_rating, segment, 1) - _lag_in_segment(rs_rating, segment, 6)
@@ -2910,6 +3304,8 @@ def calculate_identity_signals(
                 *MARKET_CAP_FEATURE_COLUMNS,
                 *SUPPLY_DEMAND_FEATURE_COLUMNS,
                 *GLOBAL_MARKET_FEATURE_COLUMNS,
+                *CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS,
+                *CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
             )
         )
     )

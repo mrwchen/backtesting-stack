@@ -12,12 +12,14 @@ import pandas as pd
 from . import db
 from .computation import (
     CalculationBatchResult,
+    build_current_taxonomy_backcast_context,
     build_global_market_context,
     calculate_signal_batch,
     empty_early_cut_frame,
     empty_signal_frame,
     enrich_signal_market_metrics,
     enrich_global_features,
+    enrich_current_taxonomy_backcast_features,
 )
 from .config import Config
 from .contracts import POSITION_LANDMARK_DAYS
@@ -231,7 +233,6 @@ def run(cfg: Config) -> tuple[int, int, int]:
                 market_context = build_global_market_context(
                     trading_dates, market_breadth, world_market
                 )
-
                 partitions = balance_identity_work(identity_work, cfg.max_workers)
                 tasks = [
                     WorkerTask(
@@ -258,6 +259,28 @@ def run(cfg: Config) -> tuple[int, int, int]:
                         "source row count changed inside the shared snapshot: "
                         f"expected {expected_rows}, loaded {loaded_rows}"
                     )
+                taxonomy = db.load_current_taxonomy_backcast(connection, cfg)
+                taxonomy_group_raw = (
+                    db.load_current_taxonomy_backcast_group_context(
+                        connection, cfg
+                    )
+                )
+                taxonomy_group_context = build_current_taxonomy_backcast_context(
+                    taxonomy_group_raw, trading_dates, cfg
+                )
+                del taxonomy_group_raw
+                gc.collect()
+                taxonomy_member_ranks = (
+                    db.load_current_taxonomy_backcast_member_ranks(
+                        connection, cfg
+                    )
+                )
+                log.info(
+                    "Loaded %d current IBKR taxonomy identities, %d daily hierarchy groups and %d signal member-rank rows for diagnostic backcasting",
+                    len(taxonomy),
+                    len(taxonomy_group_context),
+                    len(taxonomy_member_ranks),
+                )
                 # Workers have finished importing/reading the snapshot, so the
                 # exporter may end its read-only transaction before research and
                 # the atomic write transaction start.
@@ -280,6 +303,12 @@ def run(cfg: Config) -> tuple[int, int, int]:
                 )
                 signals = globally_enriched.signals
                 early_cuts = globally_enriched.early_cut
+                signals = enrich_current_taxonomy_backcast_features(
+                    signals,
+                    taxonomy,
+                    taxonomy_group_context,
+                    taxonomy_member_ranks,
+                )
                 expected_landmarks = len(POSITION_LANDMARK_DAYS) * len(signals)
                 if len(early_cuts) != expected_landmarks:
                     raise RuntimeError(
@@ -295,6 +324,9 @@ def run(cfg: Config) -> tuple[int, int, int]:
                     world_market,
                     market_context,
                     globally_enriched,
+                    taxonomy,
+                    taxonomy_group_context,
+                    taxonomy_member_ranks,
                 )
                 gc.collect()
 
