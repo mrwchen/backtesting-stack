@@ -280,7 +280,7 @@ erneut durch Safety-Gates geprueft. Der Zeitraum 2025 bis 20.07.2026 ist nur
 Ein positives Research-Ergebnis ist damit robuster, aber noch kein Beweis fuer
 zukuenftige Profitabilitaet.
 
-## Early Cut und Positionsmanagement
+## Early Cut, Early Confirmation und Positionsmanagement
 
 Zu jedem Signal werden genau sechs Landmark-Zeilen gespeichert:
 
@@ -295,13 +295,57 @@ Jede Zeile verwendet nur Informationen bis zu ihrem Close. Neben Preis-,
 Volumen-, Notional-, RS- und Trenddaten stehen in V5 auch das bis dahin bekannte
 Marktregime und die relative Entwicklung gegen SPY, QQQ und IWM zur Auswahl.
 Bei D+1 bis D+3 wird die verbleibende Entwicklung erst ab der jeweils naechsten
-Session bis D+5 bewertet.
+Session bewertet. Die Cut-Labels enden weiterhin an D+5. Der getrennte positive
+Early-Confirmation-Zweig bewertet dagegen den ausfuehrbaren naechsten Open bis
+zum D+20-Close.
 
 Die Policy wird gemeinsam als D+1 -> D+2 -> D+3-Sequenz ausgewaehlt. Ein Cut
 deaktiviert spaetere Landmark-Entscheidungen. Luecken, Segmentwechsel,
 Delistings und unvollstaendige Horizonte werden zensiert und nicht als Verlust
 oder Erfolg unterstellt. Die Schutzklasse ist weiterhin
 `strong_first_to_day5`.
+
+Parallel dazu sucht jede D+1-/D+2-/D+3-Stufe positive Bestaetigungen fuer den
+ungefaehr einmonatigen Swing-Horizont. Zwei bewusst getrennte Zielklassen
+werden untersucht:
+
+- `early_winner_to_day20`: mindestens +5 % vom naechsten ausfuehrbaren Open
+  bis zum D+20-Close und auf dem weiteren Pfad kein -10-%-Hard-Stop,
+- `early_strong_first_to_day20`: +5 % werden ab dem naechsten Open vor -5 %
+  erreicht; ein gleichzeitiger Erstkontakt in derselben Tageskerze bleibt
+  wegen unbekannter Intraday-Reihenfolge ungelabelt.
+
+Die jeweiligen Schutzklassen sind `early_bad_to_day20` und
+`early_loss_first_to_day20`. Ein positives Merkmal muss dadurch nicht nur
+Gewinner anreichern, sondern zugleich die negativen Pfade ausreichend
+schuetzen. Die Regeln werden pro Landmark walk-forward gefittet, durch dieselben
+Stabilitaets- und Multiple-Testing-Gates geschickt und niemals mit Diagnostic-
+oder Holdout-Daten ausgewaehlt.
+
+Die neuen kausalen Merkmale messen insbesondere Ausbruchsakzeptanz, gehaltenen
+Signaltagsgewinn, Schlusskurse ueber Signal-Close und Signal-Hoch, Higher-High-
+und Higher-Low-Anteile, Pfadeffizienz, MFE-Retention, ATR-normalisierten
+Fortschritt und Drawdown, Up-/Down-Volumen und -Notional sowie relative Staerke
+gegen SPY, QQQ und IWM. Dazu kommen tagesgleiche Querschnittsranks. Vier
+vordefinierte Trader-Hypothesen (`early_breakout_acceptance`,
+`early_orderly_follow_through`, `early_volume_supported` und
+`early_relative_leadership`) werden neben allen atomaren Kandidaten explizit
+geprueft. Der Signaltagskontext wird dabei nicht abgeschnitten: Signaltags-
+Return, Volume und Notional, vorherige ATR/Range-Kompression und Basisbreite
+sowie die bestehenden Volume-/Notional-Dry-up-Breakout-Scores werden in die
+D+1-bis-D+3-Zeilen uebernommen. Drei weitere Muster testen explizit, ob ein
+starker High-Activity-Ausbruch aus einer ruhigen Basis in den Folgetagen vom
+Markt akzeptiert wird.
+
+Das persistierte Ergebnis je D+1-/D+2-/D+3-Zeile lautet `confirmed`,
+`not_confirmed`, `warning`, `conflicted`, `not_active`, `not_eligible` oder
+`not_evaluable`. `conflicted` bedeutet, dass am selben Landmark sowohl eine
+positive Bestaetigung als auch eine ausgewaehlte Cut-Regel anschlaegt; dieser
+Fall wird nicht automatisch als positive Bestaetigung freigegeben.
+Die D+20-Returns sind wie die uebrigen Research-Outcomes Bruttowerte. Kosten
+und Slippage werden nicht frei angenommen, sondern muessen bei einer spaeteren
+Portfolio-/Order-Simulation mit den tatsaechlich gewuenschten Parametern
+modelliert werden.
 
 Die D+5-Regelsuche betrachtet nur Positionen, die nach der vereinbarten
 Definition stagnieren und zuvor nicht den -10-%-Hard-Stop beruehrt haben. Sie
@@ -331,9 +375,10 @@ Das Init-SQL besitzt ausschliesslich drei serviceeigene Ergebnistabellen:
   aktuellen Taxonomiebezeichnungen und 90 diagnostischen Gruppenmerkmalen,
   Outcomes sowie Ausschluss und Bestaetigung.
 - `stock_analyser_filter_research_early_cut_results`: sechs kausale
-  Landmark-Zeilen je Signal mit D+1-bis-D+3-Cut-Status und unabhaengigen
-  D+5-/D+20-/D+30-Management-Ergebnissen. Der bestehende Tabellenpraefix und
-  Tabellenname bleiben trotz des breiteren Inhalts erhalten.
+  Landmark-Zeilen je Signal mit D+1-bis-D+3-Cut- und Early-Confirmation-Status
+  sowie unabhaengigen D+5-/D+20-/D+30-Management-Ergebnissen. Der bestehende
+  Tabellenpraefix und Tabellenname bleiben trotz des breiteren Inhalts
+  erhalten.
 - `stock_analyser_filter_research_rule_results`: alle atomaren, Pattern-,
   Interaktions- und OR-Kandidaten, Walk-forward-/Stabilitaetsmetriken,
   Multiple-Testing-Ergebnisse, explizite Pattern-Metadaten sowie Diagnostic

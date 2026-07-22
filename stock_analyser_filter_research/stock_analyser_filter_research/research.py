@@ -17,6 +17,7 @@ from .contracts import (
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     EARLY_CUT_LANDMARK_DAYS,
+    EARLY_CONFIRMATION_FEATURE_GROUPS,
     MANAGEMENT_LANDMARK_DAYS,
     NOTIONAL_SOFT_PATTERN_SPECS,
     POSITION_LANDMARK_DAYS,
@@ -129,6 +130,25 @@ def early_specs(landmark_day: int) -> tuple[ObjectiveSpec, ...]:
         ),
         ObjectiveSpec(
             "early_cut", "loss_first_to_day5", "strong_first_to_day5", landmark_day
+        ),
+    )
+
+
+def early_confirmation_specs(landmark_day: int) -> tuple[ObjectiveSpec, ...]:
+    return (
+        ObjectiveSpec(
+            "early_confirmation",
+            "early_winner_to_day20",
+            "early_bad_to_day20",
+            landmark_day,
+            "day20_end_date",
+        ),
+        ObjectiveSpec(
+            "early_confirmation",
+            "early_strong_first_to_day20",
+            "early_loss_first_to_day20",
+            landmark_day,
+            "day20_end_date",
         ),
     )
 
@@ -317,10 +337,12 @@ class SelectedSummary:
     entry: dict[str, ObjectiveSelection]
     confirmation: dict[str, ObjectiveSelection]
     early_cut: dict[int, dict[str, ObjectiveSelection]]
+    early_confirmation: dict[int, dict[str, ObjectiveSelection]]
     management: dict[int, dict[str, ObjectiveSelection]]
     entry_prefix_lengths: dict[str, int]
     confirmation_prefix_lengths: dict[str, int]
     early_cut_prefix_lengths: dict[int, dict[str, int]]
+    early_confirmation_prefix_lengths: dict[int, dict[str, int]]
     management_prefix_lengths: dict[int, dict[str, int]]
     diagnostic_taxonomy_entry: dict[str, ObjectiveSelection] = field(
         default_factory=dict
@@ -336,6 +358,10 @@ class SelectedSummary:
             + sum(self.confirmation_prefix_lengths.values())
             + sum(
             sum(values.values()) for values in self.early_cut_prefix_lengths.values()
+            )
+            + sum(
+                sum(values.values())
+                for values in self.early_confirmation_prefix_lengths.values()
             )
             + sum(
                 sum(values.values())
@@ -377,6 +403,21 @@ class SelectedSummary:
                     or "no filter"
                 )
                 parts.append(f"early/day{day}/{objective}: {text}")
+        for day in sorted(self.early_confirmation):
+            for objective, selection in self.early_confirmation[day].items():
+                length = self.early_confirmation_prefix_lengths.get(day, {}).get(
+                    objective, 0
+                )
+                text = (
+                    " OR ".join(
+                        condition.text
+                        for condition in selection.selected.final_conditions[:length]
+                    )
+                    or "no confirmation"
+                )
+                parts.append(
+                    f"early-confirmation/day{day}/{objective}: {text}"
+                )
         for day in sorted(self.management):
             for objective, selection in self.management[day].items():
                 length = self.management_prefix_lengths.get(day, {}).get(
@@ -547,6 +588,249 @@ def _combined_mask(
     return result
 
 
+def _early_confirmation_pattern_templates(
+    landmark_day: int,
+) -> tuple[PatternTemplate, ...]:
+    prefix = f"EARLY_CONFIRM_D{landmark_day}"
+
+    def clause(
+        tag: str,
+        feature: str,
+        operator: str,
+        threshold: float,
+        group: str = "E",
+    ) -> ConditionTemplate:
+        return ConditionTemplate(
+            f"{prefix}_{tag}",
+            group,
+            feature,
+            operator,
+            None,
+            fixed_threshold=threshold,
+        )
+
+    return (
+        PatternTemplate(
+            f"{prefix}_PATTERN_BREAKOUT_ACCEPTANCE",
+            "E",
+            "early_breakout_acceptance",
+            (
+                clause("ABOVE_SIGNAL_HIGH", "close_vs_signal_high_pct", "ge", 0.0),
+                clause(
+                    "MOVE_RETENTION",
+                    "signal_day_move_retention_ratio",
+                    "ge",
+                    0.8,
+                ),
+                clause(
+                    "CLOSE_LOCATION",
+                    "mean_close_location_since_signal",
+                    "ge",
+                    0.55,
+                ),
+                clause("MFE_RETENTION", "mfe_retention_ratio", "ge", 0.5),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_ORDERLY_FOLLOW_THROUGH",
+            "E",
+            "early_orderly_follow_through",
+            (
+                clause(
+                    "ATR_PROGRESS",
+                    "close_return_from_signal_atr_units",
+                    "ge",
+                    0.5,
+                ),
+                clause(
+                    "ATR_DOWNSIDE",
+                    "max_loss_to_landmark_atr_units",
+                    "ge",
+                    -1.5,
+                ),
+                clause(
+                    "PATH_EFFICIENCY",
+                    "path_efficiency_since_signal",
+                    "ge",
+                    0.25,
+                ),
+                clause(
+                    "CLOSE_ACCEPTANCE",
+                    "closes_above_signal_close_share_since_signal",
+                    "ge",
+                    0.5,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_VOLUME_SUPPORTED",
+            "E",
+            "early_volume_supported",
+            (
+                clause("UP_VOLUME", "up_volume_share_since_signal", "ge", 0.55),
+                clause(
+                    "UP_NOTIONAL",
+                    "up_notional_share_since_signal",
+                    "ge",
+                    0.55,
+                ),
+                clause(
+                    "ACTIVITY",
+                    "mean_volume_since_signal_vs_prior21_ratio",
+                    "ge",
+                    0.75,
+                ),
+                clause(
+                    "PULLBACK_DRYUP",
+                    "pullback_volume_vs_advance_volume_ratio_since_signal",
+                    "le",
+                    0.8,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_VOLUME_DRYUP_BREAKOUT_FOLLOW_THROUGH",
+            "multiple",
+            "early_volume_dryup_breakout_follow_through",
+            (
+                clause(
+                    "SIGNAL_RETURN",
+                    "signal_daily_price_change_pct",
+                    "ge",
+                    3.0,
+                ),
+                clause(
+                    "SIGNAL_VOLUME",
+                    "signal_volume_vs_sma21_prior_ratio",
+                    "ge",
+                    1.5,
+                ),
+                clause(
+                    "DRYUP_BREAKOUT_SCORE",
+                    "signal_volume_dryup_breakout_score_20d",
+                    "ge",
+                    60.0,
+                ),
+                clause(
+                    "POST_SIGNAL_ACCEPTANCE",
+                    "breakout_acceptance_score",
+                    "ge",
+                    60.0,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_NOTIONAL_DRYUP_BREAKOUT_FOLLOW_THROUGH",
+            "multiple",
+            "early_notional_dryup_breakout_follow_through",
+            (
+                clause(
+                    "NOTIONAL_SIGNAL_RETURN",
+                    "signal_daily_price_change_pct",
+                    "ge",
+                    3.0,
+                ),
+                clause(
+                    "SIGNAL_NOTIONAL",
+                    "signal_notional_vs_sma21_prior_ratio",
+                    "ge",
+                    1.5,
+                ),
+                clause(
+                    "NOTIONAL_DRYUP_BREAKOUT_SCORE",
+                    "signal_volume_dryup_breakout_notional_score_20d",
+                    "ge",
+                    60.0,
+                ),
+                clause(
+                    "NOTIONAL_POST_SIGNAL_ACCEPTANCE",
+                    "breakout_acceptance_score",
+                    "ge",
+                    60.0,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_QUIET_BASE_BREAKOUT_ACCEPTANCE",
+            "multiple",
+            "early_quiet_base_breakout_acceptance",
+            (
+                clause(
+                    "SIGNAL_COMPRESSION",
+                    "signal_prior_range_compression_10_vs_10_ratio",
+                    "le",
+                    0.8,
+                ),
+                clause(
+                    "SIGNAL_BASE_WIDTH",
+                    "signal_prior_base_width_20_pct",
+                    "le",
+                    15.0,
+                ),
+                clause(
+                    "QUIET_BASE_SIGNAL_RETURN",
+                    "signal_daily_price_change_pct",
+                    "ge",
+                    3.0,
+                ),
+                clause(
+                    "QUIET_BASE_SIGNAL_VOLUME",
+                    "signal_volume_vs_sma21_prior_ratio",
+                    "ge",
+                    1.5,
+                ),
+                clause(
+                    "BREAKOUT_OVER_PRIOR_HIGH",
+                    "signal_close_vs_prior_20d_high_pct",
+                    "ge",
+                    0.0,
+                ),
+                clause(
+                    "QUIET_BASE_POST_SIGNAL_ACCEPTANCE",
+                    "breakout_acceptance_score",
+                    "ge",
+                    60.0,
+                ),
+            ),
+        ),
+        PatternTemplate(
+            f"{prefix}_PATTERN_RELATIVE_LEADERSHIP",
+            "R",
+            "early_relative_leadership",
+            (
+                clause(
+                    "VS_SPY",
+                    "relative_return_vs_spy_since_signal_pct_points",
+                    "ge",
+                    0.0,
+                    "R",
+                ),
+                clause(
+                    "VS_QQQ",
+                    "relative_return_vs_qqq_since_signal_pct_points",
+                    "ge",
+                    0.0,
+                    "R",
+                ),
+                clause(
+                    "VS_IWM",
+                    "relative_return_vs_iwm_since_signal_pct_points",
+                    "ge",
+                    0.0,
+                    "R",
+                ),
+                clause(
+                    "CROSS_SECTION",
+                    "cross_sectional_close_return_since_signal_pct_rank",
+                    "ge",
+                    0.7,
+                    "R",
+                ),
+            ),
+        ),
+    )
+
+
 def build_candidate_templates(
     decision_family: str,
     landmark_day: int | None = None,
@@ -560,6 +844,13 @@ def build_candidate_templates(
             raise ValueError("early-cut templates require landmark day 1, 2, or 3")
         groups = EARLY_CUT_FEATURE_GROUPS
         prefix = f"EARLY_D{landmark_day}"
+    elif decision_family == "early_confirmation":
+        if landmark_day not in EARLY_CUT_LANDMARK_DAYS:
+            raise ValueError(
+                "early-confirmation templates require landmark day 1, 2, or 3"
+            )
+        groups = EARLY_CONFIRMATION_FEATURE_GROUPS
+        prefix = f"EARLY_CONFIRM_D{landmark_day}"
     elif decision_family == "position_management":
         if landmark_day not in MANAGEMENT_LANDMARK_DAYS:
             raise ValueError(
@@ -644,6 +935,8 @@ def build_candidate_templates(
     if decision_family in {"entry_filter", "entry_confirmation"}:
         templates.extend(_entry_pattern_templates())
         templates.extend(_interaction_pattern_templates(prefix))
+    elif decision_family == "early_confirmation":
+        templates.extend(_early_confirmation_pattern_templates(landmark_day))
     return tuple(sorted(templates, key=lambda item: item.rule_id))
 
 
@@ -1548,11 +1841,20 @@ def fit_template(
 
 def _universe(frame: pd.DataFrame, spec: ObjectiveSpec) -> pd.DataFrame:
     result = frame
-    if spec.decision_family in {"early_cut", "position_management"}:
+    if spec.decision_family in {
+        "early_cut",
+        "early_confirmation",
+        "position_management",
+    }:
         result = result.loc[
             pd.to_numeric(result["landmark_day"], errors="coerce").eq(spec.landmark_day)
         ]
-        result = result.loc[_truthy(result["eligible_at_landmark"])]
+        eligibility_column = (
+            "early_confirmation_eligible_at_landmark"
+            if spec.decision_family == "early_confirmation"
+            else "eligible_at_landmark"
+        )
+        result = result.loc[_truthy(result[eligibility_column])]
     return result.copy()
 
 
@@ -1573,6 +1875,8 @@ def _available(frame: pd.DataFrame, spec: ObjectiveSpec, through: date) -> pd.Se
     result = ends.notna() & ends.le(pd.Timestamp(through))
     if spec.decision_family == "early_cut":
         result &= _truthy(frame["full_outcome_available"])
+    elif spec.decision_family == "early_confirmation":
+        result &= _truthy(frame["early_confirmation_outcome_available"])
     return result
 
 
@@ -3055,6 +3359,100 @@ def apply_early_decisions(
     return result.loc[:, EARLY_CUT_COLUMNS]
 
 
+def apply_early_confirmation_decisions(
+    landmarks: pd.DataFrame, selected: SelectedSummary
+) -> pd.DataFrame:
+    """Apply independent positive D1-D3 confirmations after the cut policy."""
+
+    result = landmarks.copy()
+    result["early_confirmation_include_final"] = False
+    result["early_confirmation_matched_rule_ids"] = pd.NA
+    result["early_confirmation_reason"] = pd.NA
+    result["early_confirmation_decision"] = "not_evaluable"
+    day_values = pd.to_numeric(result["landmark_day"], errors="coerce")
+    early_rows = day_values.isin(EARLY_CUT_LANDMARK_DAYS)
+    confirmation_eligible = (
+        early_rows
+        & _truthy(result["early_confirmation_eligible_at_landmark"])
+    )
+    result.loc[
+        early_rows
+        & _truthy(result["landmark_observed"])
+        & ~confirmation_eligible,
+        "early_confirmation_decision",
+    ] = "not_eligible"
+
+    for day, selections in selected.early_confirmation.items():
+        rows = day_values.eq(day) & confirmation_eligible
+        local = result.loc[rows]
+        if local.empty:
+            continue
+        evaluated: dict[
+            str, tuple[pd.Series, list[str | None], list[str | None]]
+        ] = {}
+        confirmation_mask = pd.Series(False, index=local.index, dtype=bool)
+        for objective, selection in selections.items():
+            length = selected.early_confirmation_prefix_lengths[day][objective]
+            match = _row_matches(
+                local, selection.selected.final_conditions[:length]
+            )
+            evaluated[objective] = match
+            confirmation_mask |= match[0]
+
+        matched_ids = [
+            ",".join(
+                filter(
+                    None,
+                    (
+                        evaluated[objective][1][position]
+                        for objective in selections
+                    ),
+                )
+            )
+            or None
+            for position in range(len(local))
+        ]
+        reasons = [
+            "; ".join(
+                f"{objective}: {evaluated[objective][2][position]}"
+                for objective in selections
+                if evaluated[objective][2][position]
+            )
+            or None
+            for position in range(len(local))
+        ]
+        prior_cut = local["prior_policy_cut_day"].notna()
+        current_cut = local["cut_decision"].astype("string").eq("cut")
+        confirmed = confirmation_mask & ~prior_cut & ~current_cut
+        conflicted = confirmation_mask & ~prior_cut & current_cut
+        warning = ~confirmation_mask & ~prior_cut & current_cut
+        result.loc[local.index, "early_confirmation_decision"] = "not_confirmed"
+        result.loc[local.index[prior_cut], "early_confirmation_decision"] = (
+            "not_active"
+        )
+        result.loc[local.index[warning], "early_confirmation_decision"] = "warning"
+        result.loc[local.index[conflicted], "early_confirmation_decision"] = (
+            "conflicted"
+        )
+        result.loc[local.index[confirmed], "early_confirmation_decision"] = (
+            "confirmed"
+        )
+        result.loc[
+            local.index[confirmed], "early_confirmation_include_final"
+        ] = True
+        effective_match = confirmed | conflicted
+        result.loc[local.index, "early_confirmation_matched_rule_ids"] = [
+            matched_ids[position] if bool(effective_match.iloc[position]) else None
+            for position in range(len(local))
+        ]
+        result.loc[local.index, "early_confirmation_reason"] = [
+            reasons[position] if bool(effective_match.iloc[position]) else None
+            for position in range(len(local))
+        ]
+
+    return result.loc[:, EARLY_CUT_COLUMNS]
+
+
 def apply_management_decisions(
     landmarks: pd.DataFrame, selected: SelectedSummary
 ) -> pd.DataFrame:
@@ -3431,6 +3829,10 @@ def _append_final_union_rows(
         base_id = "ENTRY_FILTER_FINAL"
     elif first.decision_family == "entry_confirmation":
         base_id = "ENTRY_CONFIRMATION_FINAL"
+    elif first.decision_family == "early_confirmation":
+        base_id = f"EARLY_CONFIRMATION_D{first.landmark_day}_FINAL"
+    elif first.decision_family == "position_management":
+        base_id = f"POSITION_MANAGEMENT_D{first.landmark_day}_FINAL"
     else:
         base_id = f"EARLY_CUT_D{first.landmark_day}_POLICY_COMPONENT"
     holdout_dates = trading_dates[trading_dates.date > cfg.holdout_cutoff_date]
@@ -3933,6 +4335,15 @@ def build_rule_results(
                     selected.early_cut_prefix_lengths[day][objective],
                 )
             )
+    for day, selections in selected.early_confirmation.items():
+        for objective, selection in selections.items():
+            portfolios.append(
+                (
+                    early_cuts,
+                    selection,
+                    selected.early_confirmation_prefix_lengths[day][objective],
+                )
+            )
     for day, selections in selected.management.items():
         for objective, selection in selections.items():
             portfolios.append(
@@ -4229,6 +4640,15 @@ def build_rule_results(
             cfg,
             mark_final=False,
         )
+    for day, day_selections in selected.early_confirmation.items():
+        _append_final_union_rows(
+            rows,
+            early_cuts,
+            day_selections,
+            selected.early_confirmation_prefix_lengths[day],
+            trading_dates,
+            cfg,
+        )
     for day, day_selections in selected.management.items():
         _append_final_union_rows(
             rows,
@@ -4366,6 +4786,35 @@ def run_research(
     early_lengths = _choose_sequential_early_prefixes(
         early_cuts, early, early_lengths, cfg
     )
+    early_confirmation: dict[int, dict[str, ObjectiveSelection]] = {}
+    early_confirmation_lengths: dict[int, dict[str, int]] = {}
+    for day in EARLY_CUT_LANDMARK_DAYS:
+        templates = build_candidate_templates(
+            "early_confirmation", day, quantile_count=cfg.quantile_count
+        )
+        selections = {
+            spec.objective: select_objective(early_cuts, spec, templates, cfg)
+            for spec in early_confirmation_specs(day)
+        }
+        early_confirmation[day] = selections
+        day_frame = _period_frame(
+            _universe(early_cuts, early_confirmation_specs(day)[0]),
+            early_confirmation_specs(day)[0],
+            None,
+            cfg.validation_end_date,
+        )
+        early_confirmation_lengths[day] = _choose_prefixes(
+            day_frame,
+            selections,
+            cfg,
+            require_cross_objective_lift=False,
+        )
+        early_confirmation_lengths[day] = _gate_refit_prefixes(
+            early_cuts,
+            selections,
+            early_confirmation_lengths[day],
+            cfg,
+        )
     management: dict[int, dict[str, ObjectiveSelection]] = {}
     management_lengths: dict[int, dict[str, int]] = {}
     for day in MANAGEMENT_LANDMARK_DAYS:
@@ -4435,16 +4884,19 @@ def run_research(
         entry,
         confirmation,
         early,
+        early_confirmation,
         management,
         entry_lengths,
         confirmation_lengths,
         early_lengths,
+        early_confirmation_lengths,
         management_lengths,
         diagnostic_taxonomy_entry,
         diagnostic_taxonomy_confirmation,
     )
     decided_signals = apply_entry_decisions(signals, summary)
     decided_early = apply_early_decisions(early_cuts, summary)
+    decided_early = apply_early_confirmation_decisions(decided_early, summary)
     decided_early = apply_management_decisions(decided_early, summary)
     rules = build_rule_results(
         decided_signals, decided_early, trading_dates, summary, cfg

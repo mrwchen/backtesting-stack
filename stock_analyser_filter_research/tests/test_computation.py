@@ -473,16 +473,36 @@ def test_global_market_context_is_same_close_causal_and_prior_returns_exclude_si
             }
         )
         signal_rows.append(row)
-    enriched = enrich_global_features(
+    early_rows = []
+    for symbol, close_return in (("LOW", 1.0), ("HIGH", 3.0)):
+        row = {column: pd.NA for column in EARLY_CUT_COLUMNS}
+        row.update(
+            {
+                "signal_date": dates[-2],
+                "landmark_date": dates[-1],
+                "landmark_day": 1,
+                "symbol": symbol,
+                "close_return_from_signal_pct": close_return,
+            }
+        )
+        early_rows.append(row)
+    enriched_result = enrich_global_features(
         pd.DataFrame(signal_rows, columns=SIGNAL_COLUMNS),
-        pd.DataFrame(columns=EARLY_CUT_COLUMNS),
+        pd.DataFrame(early_rows, columns=EARLY_CUT_COLUMNS),
         context,
-    ).signals
+    )
+    enriched = enriched_result.signals
     assert enriched["cross_sectional_rs_21d_pct_rank"].tolist() == [0.5, 1.0]
     expected_market_21d = (128.0 / 107.0 - 1.0) * 100.0
     assert enriched.loc[1, "relative_return_vs_spy_21d_pct_points"] == (
         pytest.approx(15.0 - expected_market_21d)
     )
+    early = enriched_result.early_cut.sort_values("symbol").reset_index(drop=True)
+    assert early["cross_sectional_close_return_since_signal_pct_rank"].tolist() == [
+        1.0,
+        0.5,
+    ]
+    assert early["early_relative_strength_score"].between(0.0, 100.0).all()
 
 
 def test_prior_distribution_churning_and_failed_breakout_counts_are_causal(
@@ -936,6 +956,71 @@ def test_management_landmarks_compare_next_open_with_d40_d60_and_d90(
     assert bool(day30["continue_winner_to_day60"])
     assert bool(day30["continue_winner_to_day90"])
     assert bool(day30["full_outcome_available"])
+
+
+def test_early_confirmation_uses_next_open_and_day20_path(cfg_factory) -> None:
+    dates = pd.date_range("2022-11-01", periods=130, freq="D")
+    signal_position = 30
+    source = _source_frame(dates)
+    _set_pass(source, signal_position)
+    prior = source.index[signal_position - 1]
+    source.loc[prior, ["raw_close", "adjusted_close"]] = 95.0
+    source.loc[prior, "adjusted_open"] = 94.5
+    source.loc[prior, "adjusted_high"] = 95.5
+    source.loc[prior, "adjusted_low"] = 94.0
+
+    positions = source.index[signal_position : signal_position + 21]
+    offsets = np.arange(21)
+    closes = np.interp(
+        offsets,
+        [0, 1, 2, 3, 10, 20],
+        [100.0, 102.0, 103.0, 104.0, 108.0, 112.0],
+    )
+    opens = closes.copy()
+    highs = closes + 0.6
+    lows = closes - 0.6
+    source.loc[positions, "raw_close"] = closes
+    source.loc[positions, "adjusted_close"] = closes
+    source.loc[positions, "adjusted_open"] = opens
+    source.loc[positions, "adjusted_high"] = highs
+    source.loc[positions, "adjusted_low"] = lows
+    source.loc[positions, "daily_price_change_pct"] = np.r_[
+        (100.0 / 95.0 - 1.0) * 100.0,
+        (closes[1:] / closes[:-1] - 1.0) * 100.0,
+    ]
+
+    landmarks = calculate_identity_results(
+        source, dates, cfg_factory()
+    ).early_cut
+    day1 = _landmark_row(landmarks, 1)
+
+    assert bool(day1["early_confirmation_eligible_at_landmark"])
+    assert bool(day1["early_confirmation_outcome_available"])
+    assert day1["day20_end_date"] == dates[signal_position + 20]
+    assert day1["effective_session_date"] == dates[signal_position + 2]
+    assert day1["effective_adjusted_open"] == pytest.approx(103.0)
+    assert day1["terminal_return_from_effective_open_to_day20_pct"] == (
+        pytest.approx((112.0 / 103.0 - 1.0) * 100.0)
+    )
+    assert bool(day1["early_winner_to_day20"])
+    assert not bool(day1["early_bad_to_day20"])
+    assert bool(day1["early_strong_first_to_day20"])
+    assert day1["close_vs_signal_high_pct"] == pytest.approx(
+        (102.0 / 100.6 - 1.0) * 100.0
+    )
+    assert day1["signal_gap_pct"] == pytest.approx(
+        (100.0 / 95.0 - 1.0) * 100.0
+    )
+    assert day1["signal_daily_price_change_pct"] == pytest.approx(
+        (100.0 / 95.0 - 1.0) * 100.0
+    )
+    assert day1["signal_volume_vs_sma21_prior_ratio"] == pytest.approx(
+        source.loc[positions[0], "adjusted_volume_vs_sma21_prior_ratio"]
+    )
+    assert np.isfinite(
+        float(day1["signal_volume_dryup_breakout_score_20d"])
+    )
+    assert np.isfinite(float(day1["breakout_acceptance_score"]))
 
 
 @pytest.mark.parametrize(

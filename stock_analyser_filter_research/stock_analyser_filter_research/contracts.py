@@ -526,6 +526,54 @@ EARLY_GLOBAL_MARKET_FEATURE_COLUMNS = (
     "relative_return_vs_iwm_since_signal_pct_points",
 )
 
+EARLY_CONFIRMATION_RELATIVE_FEATURE_COLUMNS = (
+    "cross_sectional_close_return_since_signal_pct_rank",
+    "cross_sectional_relative_return_vs_spy_since_signal_pct_rank",
+    "early_relative_strength_score",
+)
+
+EARLY_CONFIRMATION_PATH_FEATURE_COLUMNS = (
+    "signal_adjusted_open",
+    "signal_adjusted_high",
+    "signal_adjusted_low",
+    "signal_prior_adjusted_close",
+    "signal_gap_pct",
+    "close_vs_signal_high_pct",
+    "signal_day_move_retention_ratio",
+    "closes_above_signal_high_share_since_signal",
+    "closes_above_signal_close_share_since_signal",
+    "higher_high_share_since_signal",
+    "higher_low_share_since_signal",
+    "mean_close_location_since_signal",
+    "path_efficiency_since_signal",
+    "mfe_retention_ratio",
+    "close_return_from_signal_atr_units",
+    "max_gain_to_landmark_atr_units",
+    "max_loss_to_landmark_atr_units",
+    "drawdown_from_post_signal_high_atr_units",
+    "up_volume_share_since_signal",
+    "up_notional_share_since_signal",
+    "pullback_volume_vs_advance_volume_ratio_since_signal",
+    "pullback_notional_vs_advance_notional_ratio_since_signal",
+    "breakout_acceptance_score",
+    "early_path_quality_score",
+)
+
+EARLY_CONFIRMATION_SIGNAL_FEATURE_COLUMNS = (
+    "signal_daily_price_change_pct",
+    "signal_volume_vs_sma21_prior_ratio",
+    "signal_notional_vs_sma21_prior_ratio",
+    "signal_close_location_value",
+    "signal_close_vs_prior_20d_high_pct",
+    "signal_prior_range_compression_10_vs_10_ratio",
+    "signal_prior_atr_14d_pct",
+    "signal_prior_base_width_20_pct",
+    "signal_prior_volume_sma5_vs21_ratio",
+    "signal_prior_notional_sma5_vs21_ratio",
+    "signal_volume_dryup_breakout_score_20d",
+    "signal_volume_dryup_breakout_notional_score_20d",
+)
+
 MARKET_CAP_FEATURE_COLUMNS = (
     "market_cap_usd",
     "log_market_cap_usd",
@@ -711,9 +759,11 @@ EARLY_CUT_COLUMNS = (
     "landmark_observed",
     "same_continuity_segment",
     "eligible_at_landmark",
+    "early_confirmation_eligible_at_landmark",
     "active_at_landmark",
     "prior_policy_cut_day",
     "full_outcome_available",
+    "early_confirmation_outcome_available",
     "signal_adjusted_close",
     "landmark_adjusted_close",
     "landmark_adjusted_high",
@@ -761,6 +811,8 @@ EARLY_CUT_COLUMNS = (
     "landmark_churning_day_count_20",
     "mean_volume_since_signal_vs_prior21_ratio",
     "mean_notional_since_signal_vs_prior21_ratio",
+    *EARLY_CONFIRMATION_PATH_FEATURE_COLUMNS,
+    *EARLY_CONFIRMATION_SIGNAL_FEATURE_COLUMNS,
     "hit_gain_2pct_so_far",
     "hit_gain_5pct_so_far",
     "hit_loss_5pct_so_far",
@@ -783,6 +835,13 @@ EARLY_CUT_COLUMNS = (
     "loss_first_to_day5",
     "strong_first_to_day5",
     "bad_to_day5",
+    "early_first_gain_5pct_day_to_day20",
+    "early_first_loss_5pct_day_to_day20",
+    "early_gain_loss_order_to_day20",
+    "early_strong_first_to_day20",
+    "early_loss_first_to_day20",
+    "early_winner_to_day20",
+    "early_bad_to_day20",
     "stagnant_at_day5",
     "effective_adjusted_open",
     "effective_open_return_from_signal_pct",
@@ -807,6 +866,7 @@ EARLY_CUT_COLUMNS = (
     "take_profit_better_to_day90",
     "continue_winner_to_day90",
     *EARLY_GLOBAL_MARKET_FEATURE_COLUMNS,
+    *EARLY_CONFIRMATION_RELATIVE_FEATURE_COLUMNS,
     "analysis_split",
     "include_stagnation_filter",
     "include_loss_filter",
@@ -816,6 +876,10 @@ EARLY_CUT_COLUMNS = (
     "matched_rule_ids",
     "cut_decision",
     "cut_reason",
+    "early_confirmation_include_final",
+    "early_confirmation_matched_rule_ids",
+    "early_confirmation_decision",
+    "early_confirmation_reason",
     "management_include_final",
     "management_matched_rule_ids",
     "management_decision",
@@ -1017,6 +1081,18 @@ EARLY_CUT_FEATURE_GROUPS = {
     "R": EARLY_GLOBAL_MARKET_FEATURE_COLUMNS,
 }
 
+EARLY_CONFIRMATION_FEATURE_GROUPS = {
+    "E": (
+        *EARLY_CUT_FEATURE_GROUPS["E"],
+        *EARLY_CONFIRMATION_PATH_FEATURE_COLUMNS,
+        *EARLY_CONFIRMATION_SIGNAL_FEATURE_COLUMNS,
+    ),
+    "R": (
+        *EARLY_GLOBAL_MARKET_FEATURE_COLUMNS,
+        *EARLY_CONFIRMATION_RELATIVE_FEATURE_COLUMNS,
+    ),
+}
+
 # Kept as the public entry-feature name used by the research module.
 FEATURE_GROUPS = ENTRY_FEATURE_GROUPS
 
@@ -1083,8 +1159,10 @@ EARLY_CUT_BOOLEAN_COLUMNS = (
     "landmark_observed",
     "same_continuity_segment",
     "eligible_at_landmark",
+    "early_confirmation_eligible_at_landmark",
     "active_at_landmark",
     "full_outcome_available",
+    "early_confirmation_outcome_available",
     "landmark_trend_template_pass",
     "hit_gain_2pct_so_far",
     "hit_gain_5pct_so_far",
@@ -1093,6 +1171,10 @@ EARLY_CUT_BOOLEAN_COLUMNS = (
     "loss_first_to_day5",
     "strong_first_to_day5",
     "bad_to_day5",
+    "early_strong_first_to_day20",
+    "early_loss_first_to_day20",
+    "early_winner_to_day20",
+    "early_bad_to_day20",
     "stagnant_at_day5",
     "hit_loss_10pct_so_far",
     "take_profit_better_to_day20",
@@ -1106,6 +1188,7 @@ EARLY_CUT_BOOLEAN_COLUMNS = (
     "include_stagnation_filter",
     "include_loss_filter",
     "include_final",
+    "early_confirmation_include_final",
     "management_include_final",
 )
 EARLY_CUT_INTEGER_COLUMNS = (
@@ -1123,6 +1206,8 @@ EARLY_CUT_INTEGER_COLUMNS = (
     "future_first_gain_2pct_day",
     "future_first_gain_5pct_day",
     "future_first_loss_5pct_day",
+    "early_first_gain_5pct_day_to_day20",
+    "early_first_loss_5pct_day_to_day20",
 )
 
 RULE_BOOLEAN_COLUMNS = (

@@ -33,6 +33,7 @@ from stock_analyser_filter_research.research import (
     _sequential_policy_metrics,
     _sequential_policy_state,
     _template_text,
+    apply_early_confirmation_decisions,
     apply_early_decisions,
     apply_management_decisions,
     build_candidate_templates,
@@ -189,10 +190,12 @@ def test_management_decision_applies_exit_rule_and_preserves_hard_stop() -> None
         entry={},
         confirmation={},
         early_cut={},
+        early_confirmation={},
         management={20: {spec.objective: selection}},
         entry_prefix_lengths={},
         confirmation_prefix_lengths={},
         early_cut_prefix_lengths={},
+        early_confirmation_prefix_lengths={},
         management_prefix_lengths={20: {spec.objective: 1}},
     )
     landmarks = _blank(EARLY_CUT_COLUMNS, 3)
@@ -211,6 +214,60 @@ def test_management_decision_applies_exit_rule_and_preserves_hard_stop() -> None
     assert result.loc[1, "management_matched_rule_ids"] == "MANAGE_LOW_RETURN"
     assert result.loc[2, "management_decision"] == "hold"
     assert bool(result.loc[2, "management_include_final"])
+
+
+def test_early_confirmation_distinguishes_confirmed_conflicted_and_warning() -> None:
+    empty = SimpleNamespace(final_conditions=())
+    chosen = SimpleNamespace(
+        final_conditions=(
+            Condition("CONFIRM_PROGRESS", "E", E_FEATURE, "ge", 1.0, None),
+        )
+    )
+    selection = SimpleNamespace(selected=chosen, prefixes=(empty, chosen))
+    summary = SimpleNamespace(
+        early_confirmation={
+            1: {
+                "early_winner_to_day20": selection,
+                "early_strong_first_to_day20": SimpleNamespace(
+                    selected=empty, prefixes=(empty,)
+                ),
+            }
+        },
+        early_confirmation_prefix_lengths={
+            1: {
+                "early_winner_to_day20": 1,
+                "early_strong_first_to_day20": 0,
+            }
+        },
+    )
+    rows = _blank(EARLY_CUT_COLUMNS, 4)
+    rows["landmark_day"] = 1
+    rows["landmark_observed"] = True
+    rows["early_confirmation_eligible_at_landmark"] = True
+    rows["prior_policy_cut_day"] = pd.NA
+    rows["cut_decision"] = ["hold", "cut", "cut", "not_active"]
+    rows.loc[3, "prior_policy_cut_day"] = 1
+    rows[E_FEATURE] = [2.0, 2.0, 0.0, 2.0]
+
+    result = apply_early_confirmation_decisions(rows, summary)
+
+    assert result["early_confirmation_decision"].tolist() == [
+        "confirmed",
+        "conflicted",
+        "warning",
+        "not_active",
+    ]
+    assert result["early_confirmation_include_final"].tolist() == [
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert result.loc[0, "early_confirmation_matched_rule_ids"] == (
+        "CONFIRM_PROGRESS"
+    )
+    assert pd.isna(result.loc[2, "early_confirmation_reason"])
+    assert pd.isna(result.loc[3, "early_confirmation_reason"])
 
 
 def test_objective_metrics_have_exact_target_specific_denominators() -> None:
@@ -364,6 +421,32 @@ def test_quantile_count_controls_template_grid() -> None:
         isinstance(item, ConditionTemplate)
         for item in build_candidate_templates("early_cut", 1, quantile_count=4)
     )
+
+
+def test_early_confirmation_templates_include_path_and_relative_patterns() -> None:
+    templates = build_candidate_templates(
+        "early_confirmation", 2, quantile_count=4
+    )
+    atomics = [item for item in templates if isinstance(item, ConditionTemplate)]
+    patterns = [item for item in templates if isinstance(item, PatternTemplate)]
+
+    assert any(
+        item.feature_name == "breakout_acceptance_score" for item in atomics
+    )
+    assert any(
+        item.feature_name
+        == "cross_sectional_relative_return_vs_spy_since_signal_pct_rank"
+        for item in atomics
+    )
+    assert {
+        "early_breakout_acceptance",
+        "early_orderly_follow_through",
+        "early_volume_supported",
+        "early_volume_dryup_breakout_follow_through",
+        "early_notional_dryup_breakout_follow_through",
+        "early_quiet_base_breakout_acceptance",
+        "early_relative_leadership",
+    } <= {item.pattern_name for item in patterns}
 
 
 def test_volume_and_notional_soft_patterns_have_atomic_and_pair_candidates() -> None:
@@ -1674,6 +1757,7 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "entry_filter",
         "entry_confirmation",
         "early_cut",
+        "early_confirmation",
         "position_management",
     }
     assert result.rules["eligible_fold_count"].notna().all()
@@ -1759,6 +1843,8 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "stagnant_to_day5",
         "loss_first_to_day5",
         "bad_to_day5",
+        "early_winner_to_day20",
+        "early_strong_first_to_day20",
         "take_profit_better_to_day20",
         "take_profit_better_to_day40",
         "take_profit_better_to_day60",
@@ -1775,6 +1861,8 @@ def test_run_research_emits_exact_contracts_and_holdout_stays_null_until_minimum
         "terminal_nonpositive_20d",
         "terminal_nonpositive_30d",
         "strong_first_to_day5",
+        "early_bad_to_day20",
+        "early_loss_first_to_day20",
         "continue_winner_to_day20",
         "continue_winner_to_day40",
         "continue_winner_to_day60",
