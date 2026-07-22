@@ -729,7 +729,10 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         nullable=False,
     )
     _add_column_contracts(
-        contracts, ("feature_name", "operator"), "text", nullable=True
+        contracts,
+        ("feature_name", "operator", "pattern_name", "pattern_match_mode"),
+        "text",
+        nullable=True,
     )
     _add_column_contracts(
         contracts,
@@ -753,7 +756,14 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
     )
     _add_column_contracts(
         contracts,
-        ("landmark_day", "selection_order", "scope_year"),
+        (
+            "landmark_day",
+            "selection_order",
+            "scope_year",
+            "pattern_total_clause_count",
+            "pattern_required_clause_count",
+            "pattern_score_window_sessions",
+        ),
         "int2",
         nullable=True,
     )
@@ -769,6 +779,9 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         "selection_order",
         "scope_year",
         "component_count",
+        "pattern_total_clause_count",
+        "pattern_required_clause_count",
+        "pattern_score_window_sessions",
         "multiple_testing_candidate_count",
         "permutation_trial_count",
     }
@@ -780,6 +793,14 @@ def _rule_column_contracts() -> dict[str, ColumnContract]:
         nullable=True,
         precision=30,
         scale=10,
+    )
+    _add_column_contracts(
+        contracts,
+        ("pattern_score_threshold_pct",),
+        "numeric",
+        nullable=True,
+        precision=20,
+        scale=8,
     )
     remaining = {"result_id", *RULE_COLUMNS} - set(contracts)
     _add_column_contracts(

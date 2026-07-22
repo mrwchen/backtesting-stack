@@ -27,6 +27,7 @@ from stock_analyser_filter_research.research import (
     _Evaluator,
     _apply_max_stat_permutation_gate,
     _choose_sequential_early_prefixes,
+    _rule_row,
     _sequential_policy_metrics,
     _sequential_policy_state,
     _template_text,
@@ -300,6 +301,13 @@ def test_quantile_count_controls_template_grid() -> None:
         0.75,
     }
     assert any(item.fixed_threshold == 1.0 for item in atomic)
+    assert any(
+        item.feature_group == "P"
+        and item.feature_name == "pattern_pullback_score_40d"
+        and item.fixed_threshold == 70.0
+        and item.operator == "ge"
+        for item in atomic
+    )
     expected_original_patterns = {
         "flat_base",
         "ordered_uptrend",
@@ -317,6 +325,12 @@ def test_quantile_count_controls_template_grid() -> None:
     }
     pattern_names = {item.pattern_name for item in patterns}
     assert expected_original_patterns <= pattern_names
+    assert {
+        "flat_base_k2_of_3",
+        "ordered_uptrend_k2_of_4",
+        "ordered_uptrend_k3_of_4",
+        "v_recovery_k2_of_3",
+    } <= pattern_names
     assert {
         "vcp",
         "high_tight_flag",
@@ -445,6 +459,71 @@ def test_pattern_candidate_uses_and_inside_pattern_and_causal_thresholds(
         condition.threshold_fit_end_date == date(2024, 12, 31)
         for condition in compiled.clauses
     )
+
+
+def test_relaxed_pattern_requires_k_of_n_and_complete_inputs() -> None:
+    frame = pd.DataFrame(
+        {
+            "left": [0.0, 0.0, 0.0],
+            "middle": [0.0, 1.0, 0.0],
+            "right": [1.0, 1.0, np.nan],
+        }
+    )
+    clauses = tuple(
+        Condition(name.upper(), "D", name, "le", 0.5, None)
+        for name in ("left", "middle", "right")
+    )
+    condition = CompositeCondition(
+        "RELAXED",
+        "D",
+        "relaxed_test",
+        clauses,
+        minimum_clause_count=2,
+    )
+
+    assert condition.matches(frame).tolist() == [True, False, False]
+    assert "at least 2 of 3" in condition.text
+
+
+def test_rule_rows_expose_pattern_mode_window_and_score_threshold() -> None:
+    metrics = objective_metrics(
+        pd.DataFrame(
+            {
+                "strong_first_5d": [True, False],
+                "bad_5d": [False, True],
+            }
+        ),
+        pd.Series([True, False]),
+        "strong_first_5d",
+        "bad_5d",
+    )
+    score = Condition(
+        "SCORE",
+        "P",
+        "pattern_pullback_score_40d",
+        "ge",
+        70.0,
+        None,
+    )
+    row = _rule_row(
+        rule_id="SCORE",
+        result_kind="selected_filter",
+        spec=ENTRY_CONFIRMATION_SPECS[0],
+        conditions=(score,),
+        evaluation_scope="validation",
+        scope_year=None,
+        period_start=date(2023, 1, 1),
+        period_end=date(2024, 12, 31),
+        metrics=metrics,
+        is_selected=True,
+        is_final_filter=True,
+    )
+
+    assert tuple(row) == RULE_COLUMNS
+    assert row["pattern_name"] == "pullback"
+    assert row["pattern_match_mode"] == "score_threshold"
+    assert row["pattern_score_window_sessions"] == 40
+    assert row["pattern_score_threshold_pct"] == 70.0
 
 
 def test_structural_minimum_prevents_zero_count_distribution_clause(

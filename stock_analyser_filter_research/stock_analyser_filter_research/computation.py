@@ -30,6 +30,8 @@ from .contracts import (
     SIGNAL_COLUMNS,
     SIGNAL_BOOLEAN_COLUMNS,
     SIGNAL_INTEGER_COLUMNS,
+    SOFT_PATTERN_FEATURE_COLUMNS,
+    SOFT_PATTERN_SPECS,
     SUPPLY_DEMAND_FEATURE_COLUMNS,
     TECHNICAL_V3_FEATURE_COLUMNS,
     GLOBAL_MARKET_FEATURE_COLUMNS,
@@ -1805,6 +1807,478 @@ def _event_v3_chart_features(
     return result
 
 
+def _clip01(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0)) if np.isfinite(value) else np.nan
+
+
+def _linear01(value: float, low: float, high: float) -> float:
+    if not np.isfinite(value) or not np.isfinite(low) or not np.isfinite(high):
+        return np.nan
+    if high <= low:
+        return np.nan
+    return _clip01((value - low) / (high - low))
+
+
+def _inverse_linear01(value: float, good: float, bad: float) -> float:
+    score = _linear01(value, good, bad)
+    return np.nan if not np.isfinite(score) else 1.0 - score
+
+
+def _triangle01(value: float, left: float, peak: float, right: float) -> float:
+    if (
+        not np.isfinite(value)
+        or not np.isfinite(left)
+        or not np.isfinite(peak)
+        or not np.isfinite(right)
+        or not left < peak < right
+    ):
+        return np.nan
+    if value <= left or value >= right:
+        return 0.0
+    if value <= peak:
+        return _linear01(value, left, peak)
+    return _inverse_linear01(value, peak, right)
+
+
+def _mean01(*values: float) -> float:
+    array = np.asarray(values, dtype=float)
+    return float(array.mean()) if len(array) and np.isfinite(array).all() else np.nan
+
+
+def _weighted01(items: tuple[tuple[float, float], ...]) -> float:
+    values = np.asarray([value for value, _weight in items], dtype=float)
+    weights = np.asarray([weight for _value, weight in items], dtype=float)
+    if (
+        not len(values)
+        or not np.isfinite(values).all()
+        or not np.isfinite(weights).all()
+        or np.any(weights < 0)
+        or weights.sum() <= 0
+    ):
+        return np.nan
+    return float(np.average(values, weights=weights))
+
+
+def _soft_pattern_window_scores(
+    closes: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    volumes: np.ndarray,
+    signal_close: float,
+    signal_high: float,
+    signal_low: float,
+    signal_volume: float,
+) -> dict[str, tuple[float, float, float]]:
+    """Return setup, trigger and combined scores using no post-signal bars."""
+
+    window = len(closes)
+    if window < 10:
+        return {}
+    prior_close = float(closes[-1])
+    prior_high = float(np.max(highs))
+    width = float(np.max(highs) / np.min(lows) - 1.0)
+    close_width = float(np.max(closes) / np.min(closes) - 1.0)
+    net_return = float(closes[-1] / closes[0] - 1.0)
+    close_changes = np.diff(closes)
+    daily_returns = closes[1:] / closes[:-1] - 1.0
+    path = float(np.abs(close_changes).sum())
+    efficiency = (
+        abs(float(closes[-1] - closes[0])) / path if path > 0 else 0.0
+    )
+    positive_share = float(np.mean(close_changes > 0))
+    x = np.arange(window, dtype=float)
+    log_close = np.log(closes)
+    slope, intercept = np.polyfit(x, log_close, 1)
+    fitted = intercept + slope * x
+    total = float(np.square(log_close - log_close.mean()).sum())
+    residual = float(np.square(log_close - fitted).sum())
+    r_squared = max(0.0, min(1.0, 1.0 - residual / total)) if total > 0 else 0.0
+    normalized_ranges = (highs - lows) / closes
+    recent_count = min(5, max(2, window // 4))
+    older_ranges = normalized_ranges[:-recent_count]
+    recent_ranges = normalized_ranges[-recent_count:]
+    range_compression = (
+        float(np.mean(recent_ranges) / np.mean(older_ranges))
+        if len(older_ranges) and np.mean(older_ranges) > 0
+        else np.nan
+    )
+    older_volumes = volumes[:-recent_count]
+    recent_volumes = volumes[-recent_count:]
+    volume_contraction = (
+        float(np.mean(recent_volumes) / np.mean(older_volumes))
+        if len(older_volumes) and np.mean(older_volumes) > 0
+        else np.nan
+    )
+    running_peak = np.maximum.accumulate(highs)
+    drawdowns = lows / running_peak - 1.0
+    max_drawdown = abs(float(np.min(drawdowns)))
+
+    signal_return = float(signal_close / prior_close - 1.0)
+    signal_close_location = (
+        float((signal_close - signal_low) / (signal_high - signal_low))
+        if signal_high > signal_low
+        else np.nan
+    )
+    signal_volume_ratio = (
+        float(signal_volume / np.mean(volumes)) if np.mean(volumes) > 0 else np.nan
+    )
+    signal_breakout = float(signal_close / prior_high - 1.0)
+    generic_trigger = _mean01(
+        _linear01(signal_return, -0.005, 0.05),
+        _linear01(signal_close_location, 0.45, 0.95),
+        _linear01(signal_breakout, -0.04, 0.02),
+    )
+    volume_breakout_trigger = _mean01(
+        _linear01(signal_return, 0.0, 0.05),
+        _linear01(signal_close_location, 0.50, 0.95),
+        _linear01(signal_volume_ratio, 1.0, 2.5),
+        _linear01(signal_breakout, -0.03, 0.02),
+    )
+
+    results: dict[str, tuple[float, float, float]] = {}
+
+    flat_setup = _mean01(
+        _inverse_linear01(width, 0.03, 0.25),
+        _inverse_linear01(close_width, 0.02, 0.18),
+        _inverse_linear01(
+            abs(net_return) / max(width, 1e-12), 0.10, 0.85
+        ),
+        _inverse_linear01(range_compression, 0.55, 1.35),
+    )
+    results["flat_base"] = (
+        flat_setup,
+        generic_trigger,
+        _weighted01(((flat_setup, 0.75), (generic_trigger, 0.25))),
+    )
+
+    ordered_setup = _mean01(
+        _linear01(net_return, 0.0, 0.25 * np.sqrt(window / 20.0)),
+        r_squared,
+        _linear01(positive_share, 0.45, 0.72),
+        _linear01(efficiency, 0.15, 0.70),
+        _inverse_linear01(max_drawdown, 0.04, 0.30),
+    )
+    results["ordered_uptrend"] = (
+        ordered_setup,
+        generic_trigger,
+        _weighted01(((ordered_setup, 0.80), (generic_trigger, 0.20))),
+    )
+
+    peak_position = int(np.argmax(highs))
+    peak_value = float(highs[peak_position])
+    peak_age = window - 1 - peak_position
+    pullback_depth = max(0.0, float(1.0 - prior_close / peak_value))
+    runup = max(0.0, float(peak_value / closes[0] - 1.0))
+    reclaim_fraction = (
+        float((signal_close - prior_close) / (peak_value - prior_close))
+        if peak_value > prior_close
+        else 1.0
+    )
+    pullback_setup = _mean01(
+        _triangle01(pullback_depth, 0.01, 0.08, 0.25),
+        _triangle01(
+            float(peak_age),
+            0.5,
+            max(2.0, window * 0.15),
+            max(4.0, window * 0.65),
+        ),
+        _linear01(runup, 0.03, 0.30),
+        _inverse_linear01(volume_contraction, 0.55, 1.25),
+    )
+    pullback_trigger = _mean01(
+        generic_trigger,
+        _linear01(reclaim_fraction, 0.0, 0.80),
+    )
+    results["pullback"] = (
+        pullback_setup,
+        pullback_trigger,
+        _weighted01(((pullback_setup, 0.65), (pullback_trigger, 0.35))),
+    )
+
+    trough_position = int(np.argmin(drawdowns))
+    trough_value = float(lows[trough_position])
+    peak_at_trough = float(running_peak[trough_position])
+    recovery_denominator = peak_at_trough - trough_value
+    recovery_fraction = (
+        float((prior_close - trough_value) / recovery_denominator)
+        if recovery_denominator > 0
+        else np.nan
+    )
+    trough_age = window - 1 - trough_position
+    down_duration = max(1, trough_position)
+    recovery_duration = max(1, trough_age)
+    symmetry_error = abs(down_duration - recovery_duration) / float(window)
+    v_setup = _mean01(
+        _triangle01(max_drawdown, 0.04, 0.20, 0.50),
+        _triangle01(recovery_fraction, 0.35, 0.90, 1.30),
+        _triangle01(
+            float(trough_age),
+            0.5,
+            max(2.0, window * 0.25),
+            max(4.0, window * 0.75),
+        ),
+        _inverse_linear01(symmetry_error, 0.0, 0.55),
+    )
+    v_trigger = _mean01(
+        _linear01(signal_return, -0.01, 0.05),
+        _linear01(signal_close_location, 0.40, 0.95),
+        _linear01(signal_close / peak_at_trough, 0.80, 1.02),
+    )
+    results["v_recovery"] = (
+        v_setup,
+        v_trigger,
+        _weighted01(((v_setup, 0.75), (v_trigger, 0.25))),
+    )
+
+    dryup_setup = _mean01(
+        _inverse_linear01(volume_contraction, 0.45, 1.20),
+        _inverse_linear01(range_compression, 0.50, 1.25),
+        _inverse_linear01(close_width, 0.02, 0.18),
+        _linear01(prior_close / prior_high, 0.88, 1.0),
+    )
+    results["volume_dryup_breakout"] = (
+        dryup_setup,
+        volume_breakout_trigger,
+        _weighted01(((dryup_setup, 0.60), (volume_breakout_trigger, 0.40))),
+    )
+
+    volume_reference = float(np.mean(volumes))
+    activity = volumes[1:] / volume_reference if volume_reference > 0 else np.nan
+    locations = np.divide(
+        closes - lows,
+        highs - lows,
+        out=np.full(window, np.nan),
+        where=highs > lows,
+    )
+    distribution_count = int(
+        np.count_nonzero((daily_returns <= -0.002) & (activity >= 1.20))
+    )
+    churning_count = int(
+        np.count_nonzero(
+            (np.abs(daily_returns) <= 0.005)
+            & (activity >= 1.20)
+            & (locations[1:] <= 0.50)
+        )
+    )
+    failed_breakouts = 0
+    for local_position in range(5, window):
+        previous_high = float(np.max(highs[:local_position]))
+        if (
+            highs[local_position] >= previous_high * 1.001
+            and closes[local_position] < previous_high
+            and daily_returns[local_position - 1] < 0
+        ):
+            failed_breakouts += 1
+    signed_volume_balance = float(
+        np.sum(np.sign(daily_returns) * volumes[1:]) / np.sum(volumes[1:])
+    )
+    scale = 20.0 / window
+    distribution_setup = _mean01(
+        _linear01(distribution_count * scale, 0.5, 3.5),
+        _linear01(churning_count * scale, 0.5, 3.5),
+        _linear01(failed_breakouts * scale, 0.0, 1.5),
+        _linear01(prior_close / prior_high, 0.85, 1.0),
+        _linear01(-signed_volume_balance, -0.10, 0.35),
+    )
+    distribution_trigger = _mean01(
+        _linear01(signal_volume_ratio, 1.0, 2.5),
+        _inverse_linear01(signal_close_location, 0.20, 0.80),
+        _inverse_linear01(signal_return, -0.03, 0.02),
+    )
+    results["distribution_top"] = (
+        distribution_setup,
+        distribution_trigger,
+        _weighted01(((distribution_setup, 0.85), (distribution_trigger, 0.15))),
+    )
+
+    block_edges = np.linspace(0, window, 5, dtype=int)
+    block_widths = np.asarray(
+        [
+            np.max(highs[left:right]) / np.min(lows[left:right]) - 1.0
+            for left, right in zip(block_edges[:-1], block_edges[1:])
+            if right > left
+        ],
+        dtype=float,
+    )
+    contraction_fraction = (
+        float(np.mean(np.diff(block_widths) < 0))
+        if len(block_widths) >= 2
+        else np.nan
+    )
+    width_contraction = (
+        float(block_widths[-1] / block_widths[0])
+        if len(block_widths) and block_widths[0] > 0
+        else np.nan
+    )
+    vcp_setup = _mean01(
+        contraction_fraction,
+        _inverse_linear01(width_contraction, 0.25, 1.10),
+        _inverse_linear01(range_compression, 0.45, 1.25),
+        _inverse_linear01(volume_contraction, 0.45, 1.20),
+        _linear01(prior_close / prior_high, 0.88, 1.0),
+    )
+    results["vcp"] = (
+        vcp_setup,
+        volume_breakout_trigger,
+        _weighted01(((vcp_setup, 0.70), (volume_breakout_trigger, 0.30))),
+    )
+
+    split = max(5, int(round(window * 0.67)))
+    pole_high = float(np.max(highs[:split]))
+    flag_high = float(np.max(highs[split:])) if split < window else pole_high
+    flag_low = float(np.min(lows[split:])) if split < window else float(np.min(lows))
+    flag_width = flag_high / flag_low - 1.0 if flag_low > 0 else np.nan
+    pole_return = pole_high / closes[0] - 1.0
+    flag_pullback = max(0.0, 1.0 - prior_close / pole_high)
+    flag_volume_ratio = (
+        float(np.mean(volumes[split:]) / np.mean(volumes[:split]))
+        if split < window and np.mean(volumes[:split]) > 0
+        else np.nan
+    )
+    high_tight_setup = _mean01(
+        _linear01(pole_return, 0.15, 0.80),
+        _inverse_linear01(flag_width, 0.02, 0.18),
+        _inverse_linear01(flag_pullback, 0.0, 0.18),
+        _inverse_linear01(flag_volume_ratio, 0.45, 1.10),
+        _linear01(prior_close / prior_high, 0.88, 1.0),
+    )
+    results["high_tight_flag"] = (
+        high_tight_setup,
+        volume_breakout_trigger,
+        _weighted01(((high_tight_setup, 0.70), (volume_breakout_trigger, 0.30))),
+    )
+
+    if window >= 63:
+        left_end = max(10, window // 4)
+        handle_length = max(5, window // 10)
+        handle_start = window - handle_length
+        middle_end = max(left_end + 1, handle_start)
+        left_rim = float(np.max(highs[:left_end]))
+        middle_lows = lows[left_end:middle_end]
+        trough_local = int(np.argmin(middle_lows))
+        trough_global = left_end + trough_local
+        trough = float(middle_lows[trough_local])
+        right_start = max(left_end, window // 2)
+        right_rim = float(np.max(highs[right_start:handle_start]))
+        cup_depth = max(0.0, 1.0 - trough / left_rim)
+        rim_recovery = right_rim / left_rim
+        trough_location = trough_global / float(window - 1)
+        handle_high = float(np.max(highs[handle_start:]))
+        handle_low = float(np.min(lows[handle_start:]))
+        handle_depth = max(0.0, 1.0 - handle_low / handle_high)
+        handle_volume_ratio = float(
+            np.mean(volumes[handle_start:]) / np.mean(volumes[:handle_start])
+        )
+        cup_setup = _mean01(
+            _triangle01(cup_depth, 0.08, 0.25, 0.55),
+            _triangle01(trough_location, 0.20, 0.50, 0.78),
+            _triangle01(rim_recovery, 0.75, 0.98, 1.12),
+            _triangle01(handle_depth, 0.005, 0.06, 0.18),
+            _inverse_linear01(handle_volume_ratio, 0.45, 1.15),
+        )
+        cup_trigger = _mean01(
+            volume_breakout_trigger,
+            _linear01(signal_close / max(left_rim, right_rim), 0.95, 1.03),
+        )
+        results["cup_with_handle"] = (
+            cup_setup,
+            cup_trigger,
+            _weighted01(((cup_setup, 0.75), (cup_trigger, 0.25))),
+        )
+
+    return results
+
+
+def _event_soft_pattern_features(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    volume: pd.Series,
+    segment: pd.Series,
+    signal_positions: np.ndarray,
+) -> dict[str, pd.Series]:
+    """Build multi-window 0-100 chart scores without look-ahead bias."""
+
+    result = {
+        name: pd.Series(np.nan, index=close.index, dtype=float)
+        for name in SOFT_PATTERN_FEATURE_COLUMNS
+    }
+    specs = {
+        name: (tuple(windows), canonical)
+        for name, windows, canonical in SOFT_PATTERN_SPECS
+    }
+    windows = sorted(
+        {
+            window
+            for _name, values, _canonical in SOFT_PATTERN_SPECS
+            for window in values
+        }
+    )
+    for position in signal_positions:
+        current_segment = segment.iloc[position]
+        if pd.isna(current_segment):
+            continue
+        signal_values = np.asarray(
+            [
+                _finite_scalar(close.iloc[position]),
+                _finite_scalar(high.iloc[position]),
+                _finite_scalar(low.iloc[position]),
+                _finite_scalar(volume.iloc[position]),
+            ],
+            dtype=float,
+        )
+        if (
+            not np.isfinite(signal_values).all()
+            or np.any(signal_values[:3] <= 0)
+            or signal_values[1] < signal_values[2]
+            or signal_values[3] < 0
+        ):
+            continue
+        for window in windows:
+            if position < window:
+                continue
+            history_segment = segment.iloc[position - window : position]
+            closes = close.iloc[position - window : position].to_numpy(dtype=float)
+            highs = high.iloc[position - window : position].to_numpy(dtype=float)
+            lows = low.iloc[position - window : position].to_numpy(dtype=float)
+            volumes = volume.iloc[position - window : position].to_numpy(dtype=float)
+            if (
+                not history_segment.eq(current_segment).all()
+                or not np.isfinite(closes).all()
+                or not np.isfinite(highs).all()
+                or not np.isfinite(lows).all()
+                or not np.isfinite(volumes).all()
+                or np.any(closes <= 0)
+                or np.any(lows <= 0)
+                or np.any(highs < lows)
+                or np.any(volumes < 0)
+                or np.mean(volumes) <= 0
+            ):
+                continue
+            scores = _soft_pattern_window_scores(
+                closes,
+                highs,
+                lows,
+                volumes,
+                *signal_values,
+            )
+            for pattern_name, (pattern_windows, canonical) in specs.items():
+                if window not in pattern_windows or pattern_name not in scores:
+                    continue
+                setup, trigger, combined = scores[pattern_name]
+                result[f"pattern_{pattern_name}_score_{window}d"].iloc[position] = (
+                    combined * 100.0 if np.isfinite(combined) else np.nan
+                )
+                if window == canonical:
+                    result[f"pattern_{pattern_name}_setup_score"].iloc[position] = (
+                        setup * 100.0 if np.isfinite(setup) else np.nan
+                    )
+                    result[f"pattern_{pattern_name}_trigger_score"].iloc[position] = (
+                        trigger * 100.0 if np.isfinite(trigger) else np.nan
+                    )
+    return result
+
+
 def _event_text_and_history(
     criteria: dict[str, pd.Series],
     trend_pass: pd.Series,
@@ -2076,6 +2550,9 @@ def calculate_identity_signals(
     v3_chart_features = _event_v3_chart_features(
         close, high, low, segment, signal_positions
     )
+    soft_pattern_features = _event_soft_pattern_features(
+        close, high, low, volume, segment, signal_positions
+    )
     prior_rs_change5 = (
         _lag_in_segment(rs_rating, segment, 1) - _lag_in_segment(rs_rating, segment, 6)
     ).where(_complete_prior_window(rs_rating, segment, 6))
@@ -2267,6 +2744,7 @@ def calculate_identity_signals(
         ),
         **prior_chart_features,
         **v3_chart_features,
+        **soft_pattern_features,
         "prior_range_compression_5_vs20_ratio": (
             recent_normalized_range5 / prior_normalized_range20
         ).where(prior_normalized_range20.gt(0)),

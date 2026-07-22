@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import logging
 from math import ceil
+import re
 from typing import Iterable, Mapping
 
 import numpy as np
@@ -196,6 +197,15 @@ class PatternTemplate:
     feature_group: str
     pattern_name: str
     clauses: tuple[ConditionTemplate, ...]
+    minimum_clause_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.clauses:
+            raise ValueError("pattern template requires at least one clause")
+        if self.minimum_clause_count is not None and not (
+            2 <= self.minimum_clause_count <= len(self.clauses)
+        ):
+            raise ValueError("pattern minimum clause count is invalid")
 
 
 @dataclass(frozen=True)
@@ -204,12 +214,26 @@ class CompositeCondition:
     feature_group: str
     pattern_name: str
     clauses: tuple[Condition, ...]
+    minimum_clause_count: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.clauses:
+            raise ValueError("composite condition requires at least one clause")
+        if self.minimum_clause_count is not None and not (
+            2 <= self.minimum_clause_count <= len(self.clauses)
+        ):
+            raise ValueError("composite minimum clause count is invalid")
 
     @property
     def text(self) -> str:
-        return f"{self.pattern_name} (" + " AND ".join(
-            clause.text for clause in self.clauses
-        ) + ")"
+        if self.minimum_clause_count is None:
+            expression = " AND ".join(clause.text for clause in self.clauses)
+        else:
+            expression = (
+                f"at least {self.minimum_clause_count} of {len(self.clauses)}: "
+                + "; ".join(clause.text for clause in self.clauses)
+            )
+        return f"{self.pattern_name} ({expression})"
 
     @property
     def threshold_fit_end_date(self) -> date | None:
@@ -221,12 +245,17 @@ class CompositeCondition:
         return max(dates) if dates else None
 
     def matches(self, frame: pd.DataFrame) -> pd.Series:
-        result = pd.Series(True, index=frame.index, dtype=bool)
-        if not self.clauses:
-            return pd.Series(False, index=frame.index, dtype=bool)
+        masks = [clause.matches(frame) for clause in self.clauses]
+        available = pd.Series(True, index=frame.index, dtype=bool)
         for clause in self.clauses:
-            result &= clause.matches(frame)
-        return result
+            available &= _finite_numeric(frame, clause.feature_name).notna()
+        if self.minimum_clause_count is None:
+            result = pd.Series(True, index=frame.index, dtype=bool)
+            for mask in masks:
+                result &= mask
+            return available & result
+        matched_count = sum(mask.astype(np.int16) for mask in masks)
+        return available & matched_count.ge(self.minimum_clause_count)
 
 
 CandidateTemplate = ConditionTemplate | PatternTemplate
@@ -582,10 +611,53 @@ def build_candidate_templates(
                         fixed_threshold=threshold,
                     )
                 )
+    score_features = {
+        feature
+        for features in groups.values()
+        for feature in features
+        if feature.startswith("pattern_") and "_score" in feature
+    }
+    for feature in sorted(score_features):
+        group = feature_group_by_name[feature]
+        for threshold in (40.0, 50.0, 60.0, 70.0, 80.0, 90.0):
+            for operator in ("le", "ge"):
+                side = "LE" if operator == "le" else "GE"
+                templates.append(
+                    ConditionTemplate(
+                        f"{prefix}_{group}_{feature}_{side}_FIXED_{int(threshold)}",
+                        group,
+                        feature,
+                        operator,
+                        None,
+                        fixed_threshold=threshold,
+                    )
+                )
     if decision_family in {"entry_filter", "entry_confirmation"}:
         templates.extend(_entry_pattern_templates())
         templates.extend(_interaction_pattern_templates(prefix))
     return tuple(sorted(templates, key=lambda item: item.rule_id))
+
+
+def _relaxed_pattern_variants(
+    patterns: tuple[PatternTemplate, ...],
+) -> tuple[PatternTemplate, ...]:
+    """Keep exact patterns and add causal k-of-n sensitivity variants."""
+
+    variants: list[PatternTemplate] = []
+    for strict in patterns:
+        variants.append(strict)
+        clause_count = len(strict.clauses)
+        for required in range(max(2, clause_count - 2), clause_count):
+            variants.append(
+                PatternTemplate(
+                    f"{strict.rule_id}__K{required}_OF_{clause_count}",
+                    strict.feature_group,
+                    f"{strict.pattern_name}_k{required}_of_{clause_count}",
+                    strict.clauses,
+                    minimum_clause_count=required,
+                )
+            )
+    return tuple(variants)
 
 
 def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
@@ -669,10 +741,10 @@ def _entry_pattern_templates() -> tuple[PatternTemplate, ...]:
         ),
     )
     return (
-        chart_patterns
+        _relaxed_pattern_variants(chart_patterns)
         + _fundamental_pattern_templates()
         + _market_cap_pattern_templates()
-        + _trader_pattern_templates()
+        + _relaxed_pattern_variants(_trader_pattern_templates())
     )
 
 
@@ -1557,6 +1629,7 @@ class _Evaluator:
                         tuple(
                             clause for clause in clauses if clause is not None
                         ),
+                        template.minimum_clause_count,
                     )
                 )
             self._compiled_cache[key] = compiled
@@ -2871,7 +2944,13 @@ def _template_fields(
         item = templates[0]
         if isinstance(item, PatternTemplate):
             return item.feature_group, None, None, None, None
-        return item.feature_group, item.feature_name, item.operator, item.quantile, None
+        return (
+            item.feature_group,
+            item.feature_name,
+            item.operator,
+            item.quantile,
+            item.fixed_threshold,
+        )
     groups = {item.feature_group for item in templates}
     return (
         next(iter(groups)) if len(groups) == 1 else "multiple",
@@ -2900,11 +2979,52 @@ def _template_text(templates: tuple[CandidateTemplate, ...]) -> str:
                     f"max({threshold_text}, {clause.minimum_threshold:.10g})"
                 )
             clause_text.append(f"{clause.feature_name} {symbol} {threshold_text}")
-        text = " AND ".join(clause_text)
+        if (
+            isinstance(item, PatternTemplate)
+            and item.minimum_clause_count is not None
+        ):
+            text = (
+                f"at least {item.minimum_clause_count} of {len(item.clauses)}: "
+                + "; ".join(clause_text)
+            )
+        else:
+            text = " AND ".join(clause_text)
         if isinstance(item, PatternTemplate):
             text = f"{item.pattern_name} ({text})"
         parts.append(text)
     return " OR ".join(parts) or "no exclusion condition"
+
+
+def _pattern_fields(
+    items: tuple[CandidateTemplate | ExecutableCondition, ...],
+) -> tuple[
+    str | None,
+    str | None,
+    int | None,
+    int | None,
+    int | None,
+    float | None,
+]:
+    if len(items) != 1:
+        return None, None, None, None, None, None
+    item = items[0]
+    if isinstance(item, (PatternTemplate, CompositeCondition)):
+        total = len(item.clauses)
+        required = item.minimum_clause_count or total
+        mode = "k_of_n" if item.minimum_clause_count is not None else "all"
+        return item.pattern_name, mode, total, required, None, None
+    feature_name = item.feature_name
+    if not feature_name.startswith("pattern_") or "_score" not in feature_name:
+        return None, None, None, None, None, None
+    name = feature_name.removeprefix("pattern_")
+    name = re.sub(r"_(?:setup|trigger)_score$", "", name)
+    window_match = re.search(r"_score_(\d+)d$", name)
+    window = int(window_match.group(1)) if window_match else None
+    name = re.sub(r"_score_\d+d$", "", name)
+    threshold = (
+        item.threshold if isinstance(item, Condition) else item.fixed_threshold
+    )
+    return name, "score_threshold", None, None, window, threshold
 
 
 def _rule_row(
@@ -2937,6 +3057,17 @@ def _rule_row(
         _feature_fields(conditions) if conditions else _template_fields(templates)
     )
     stats = stability or {}
+    pattern_items: tuple[CandidateTemplate | ExecutableCondition, ...] = (
+        conditions if conditions else templates
+    )
+    (
+        pattern_name,
+        pattern_match_mode,
+        pattern_total_clause_count,
+        pattern_required_clause_count,
+        pattern_score_window_sessions,
+        pattern_score_threshold_pct,
+    ) = _pattern_fields(pattern_items)
     row: dict[str, object] = {
         "rule_id": rule_id,
         "result_kind": result_kind,
@@ -2951,6 +3082,12 @@ def _rule_row(
         "threshold_value": threshold,
         "rule_text": rule_text_override
         or (_rule_text(conditions) if conditions else _template_text(templates)),
+        "pattern_name": pattern_name,
+        "pattern_match_mode": pattern_match_mode,
+        "pattern_total_clause_count": pattern_total_clause_count,
+        "pattern_required_clause_count": pattern_required_clause_count,
+        "pattern_score_window_sessions": pattern_score_window_sessions,
+        "pattern_score_threshold_pct": pattern_score_threshold_pct,
         "selection_order": selection_order,
         "evaluation_scope": evaluation_scope,
         "scope_year": scope_year,

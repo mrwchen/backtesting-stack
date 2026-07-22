@@ -214,6 +214,33 @@ TECHNICAL_V3_FEATURE_COLUMNS = (
     "signal_volume_vs_prior_10d_max_down_volume_ratio",
 )
 
+# Continuous, causal chart-pattern proxies.  Every score is bounded to
+# [0, 100].  The windowed score uses only sessions t-window through t-1 plus
+# the already-known signal-day bar for the trigger component.  The separate
+# setup/trigger columns use the canonical window declared below so research
+# can distinguish a good base from a good entry bar.
+SOFT_PATTERN_SPECS = (
+    ("flat_base", (10, 15, 20, 30, 40, 63), 20),
+    ("ordered_uptrend", (10, 15, 20, 30, 40, 63), 20),
+    ("pullback", (10, 15, 20, 30, 40, 63), 40),
+    ("v_recovery", (20, 30, 40, 63, 126), 40),
+    ("volume_dryup_breakout", (10, 15, 20, 30, 40, 63), 20),
+    ("distribution_top", (10, 15, 20, 30, 40, 63), 20),
+    ("vcp", (20, 30, 40, 63, 126), 40),
+    ("cup_with_handle", (63, 126), 126),
+    ("high_tight_flag", (20, 30, 40, 63), 40),
+)
+
+SOFT_PATTERN_FEATURE_COLUMNS = tuple(
+    column
+    for pattern_name, windows, _canonical_window in SOFT_PATTERN_SPECS
+    for column in (
+        f"pattern_{pattern_name}_setup_score",
+        f"pattern_{pattern_name}_trigger_score",
+        *(f"pattern_{pattern_name}_score_{window}d" for window in windows),
+    )
+)
+
 SUPPLY_DEMAND_FEATURE_COLUMNS = (
     "signal_adjusted_open",
     "signal_gap_pct",
@@ -439,6 +466,7 @@ SIGNAL_COLUMNS = (
     "prior_churning_day_count_20",
     "prior_failed_breakout_count_20",
     *TECHNICAL_V3_FEATURE_COLUMNS,
+    *SOFT_PATTERN_FEATURE_COLUMNS,
     *FUNDAMENTAL_FEATURE_COLUMNS,
     *EARNINGS_EVENT_FEATURE_COLUMNS,
     *MARKET_CAP_FEATURE_COLUMNS,
@@ -654,6 +682,12 @@ RULE_COLUMNS = (
     "quantile_value",
     "threshold_value",
     "rule_text",
+    "pattern_name",
+    "pattern_match_mode",
+    "pattern_total_clause_count",
+    "pattern_required_clause_count",
+    "pattern_score_window_sessions",
+    "pattern_score_threshold_pct",
     "selection_order",
     "evaluation_scope",
     "scope_year",
@@ -772,6 +806,7 @@ ENTRY_FEATURE_GROUPS = {
         "prior_failed_breakout_count_20",
     ),
     "T": TECHNICAL_V3_FEATURE_COLUMNS,
+    "P": SOFT_PATTERN_FEATURE_COLUMNS,
     "S": SUPPLY_DEMAND_FEATURE_COLUMNS,
     "F": FUNDAMENTAL_FEATURE_COLUMNS,
     "N": EARNINGS_EVENT_FEATURE_COLUMNS,
@@ -949,6 +984,9 @@ RULE_INTEGER_COLUMNS = (
     "selection_order",
     "scope_year",
     "component_count",
+    "pattern_total_clause_count",
+    "pattern_required_clause_count",
+    "pattern_score_window_sessions",
     "population_count",
     "sample_count",
     "unlabeled_count",

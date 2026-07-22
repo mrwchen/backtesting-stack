@@ -18,6 +18,7 @@ from stock_analyser_filter_research.contracts import (
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     SIGNAL_COLUMNS,
+    SOFT_PATTERN_FEATURE_COLUMNS,
 )
 
 
@@ -262,6 +263,11 @@ def test_prior_windows_exclude_signal_session_values(cfg_factory) -> None:
         "prior_contraction_count_40",
         "prior_return_efficiency_63",
         "prior_rs_rating_change_21d",
+        *[
+            column
+            for column in SOFT_PATTERN_FEATURE_COLUMNS
+            if column.endswith("_setup_score")
+        ],
     ]
     pd.testing.assert_series_equal(
         baseline_row[prior_features],
@@ -293,6 +299,8 @@ def test_prior_chart_geometry_distinguishes_ordered_trend_and_v_recovery(
     assert ordered_row["prior_trend_efficiency_20"] == pytest.approx(1.0)
     assert ordered_row["prior_positive_return_share_20"] == pytest.approx(1.0)
     assert ordered_row["prior_peak_age_40_sessions"] == 0
+    assert ordered_row["pattern_ordered_uptrend_setup_score"] > 80.0
+    assert ordered_row["pattern_ordered_uptrend_score_20d"] > 70.0
 
     v_shape = _source_frame(dates)
     v_close = np.concatenate(
@@ -315,6 +323,15 @@ def test_prior_chart_geometry_distinguishes_ordered_trend_and_v_recovery(
     assert v_row["prior_recovery_from_trough_40_pct"] > 50.0
     assert v_row["prior_v_recovery_fraction_40"] > 0.80
     assert v_row["prior_trough_age_40_sessions"] > 0
+    assert v_row["pattern_v_recovery_setup_score"] > 60.0
+    assert (
+        v_row["pattern_v_recovery_setup_score"]
+        > ordered_row["pattern_v_recovery_setup_score"]
+    )
+    for column in SOFT_PATTERN_FEATURE_COLUMNS:
+        for row in (ordered_row, v_row):
+            value = row[column]
+            assert pd.isna(value) or 0.0 <= float(value) <= 100.0
 
 
 def test_global_market_context_is_same_close_causal_and_prior_returns_exclude_signal_day() -> None:
@@ -435,6 +452,8 @@ def test_gap_inside_pattern_history_invalidates_ordered_features(cfg_factory) ->
     assert pd.isna(row["prior_trend_r2_20"])
     assert pd.isna(row["prior_v_recovery_fraction_40"])
     assert pd.isna(row["prior_distribution_day_count_20"])
+    assert pd.isna(row["pattern_ordered_uptrend_score_20d"])
+    assert pd.isna(row["pattern_v_recovery_score_40d"])
 
 
 @pytest.mark.parametrize(

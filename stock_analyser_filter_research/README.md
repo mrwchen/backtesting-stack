@@ -1,4 +1,4 @@
-# Stock Analyser Filter Research V4
+# Stock Analyser Filter Research V5
 
 Dieses eigenstaendige Research-Programm untersucht alle kausalen
 `false -> true`-Ereignisse des 8-von-8-Trend-Templates aus
@@ -53,7 +53,7 @@ Fuer das konkrete Halteziel kommen weitere Outcomes hinzu:
 - `runner_60d` und `runner_90d`: Der Schlussreturn erreicht mindestens +5 %
   und der Pfad hat zuvor nicht den -10-%-Hard-Stop beruehrt.
 
-Zusaetzlich sucht V4 unabhaengige Entry-Bestaetigungen fuer die positiven
+Zusaetzlich sucht V5 unabhaengige Entry-Bestaetigungen fuer die positiven
 D+5-, D+20-, D+30-, D+60- und D+90-Outcomes. Sie ueberschreiben keinen
 Ausschluss. `include_final` bleibt die gemeinsame Ausschlussentscheidung;
 `strong_confirmation` kann zum Priorisieren oder fuer eine spaetere zweite
@@ -69,7 +69,7 @@ unter -10 % gilt als Stop-Treffer. Ein exakter Fill bei -10 % wird damit nicht
 behauptet; insbesondere kann ein Gap unter das Stop-Niveau mit Tagesdaten nicht
 realistisch ausgefuehrt werden.
 
-## Entry-Merkmale A bis V4
+## Entry-Merkmale A bis V5
 
 Alle Merkmalsgruppen konkurrieren gleichzeitig; es gibt keine irreversible
 Abfolge A -> B -> C -> D.
@@ -89,6 +89,11 @@ Abfolge A -> B -> C -> D.
   Kontraktion, mehrere Basisbreiten, Tight Closes, MA-Steigungen,
   Overhead-Supply, High Tests, steigende Tiefs, Kontraktionsfolgen und
   Undercut/Reclaim.
+- **P – weiche Chartmuster:** kausale Setup-, Trigger- und Gesamtscores von
+  0 bis 100 fuer Flat Base, Ordered Uptrend, Pullback, V-Recovery,
+  Volume-Dry-up-Breakout, Distribution Top, VCP, Cup-with-Handle und
+  High-Tight-Flag. Je nach Muster werden 10, 15, 20, 30, 40, 63 und 126
+  Handelstage parallel untersucht.
 - **S – Supply/Demand:** Gap und Intraday-Staerke des Signaltags, SEC-basierte
   Aktienzahl und Turnover aus as-traded Raw Volume.
 - **F – Fundamentals:** Profitabilitaet, Margen, Cash Conversion, ROE/ROA,
@@ -145,11 +150,21 @@ Schaetzungen und Revisionen werden bewusst nicht geraten oder rueckwirkend
 verwendet.
 
 Maximal drei vollstaendige Kandidaten koennen je Outcome mit `OR` verbunden
-werden. Jede vordefinierte Mehrfaktor-Regel bleibt intern ein `AND` und kann
-zwei bis vier Faktoren enthalten. Auch verworfene, tatsaechlich getestete
-Kombinationen werden als
+werden. Die bisherigen vollstaendigen `AND`-Muster bleiben als Kontrollgruppe
+erhalten. Fuer Drei-Faktor-Muster wird zusaetzlich 2-von-3 und fuer
+Vier-Faktor-Muster 2-von-4 sowie 3-von-4 getestet. Fehlende Komponenten gelten
+nicht als erfuellt; eine k-von-n-Regel benoetigt weiterhin alle Eingangsdaten.
+Auch verworfene, tatsaechlich getestete Kombinationen werden als
 Kandidatenzeilen gespeichert und in der Korrektur fuer multiples Testen
 mitgezaehlt.
+
+Die weichen Scores trennen das bis D-1 bekannte Setup vom Signaltag-Trigger.
+Die Gesamtscores kombinieren beide Teile gewichtet, ohne eine spaetere Kerze
+zu verwenden. Neben kausal gefitteten Quantilen prueft die Forschung feste
+Scoregrenzen von 40, 50, 60, 70, 80 und 90 jeweils in beide Richtungen. Die
+Regeltabelle kennzeichnet `all`, `k_of_n` und `score_threshold` getrennt und
+speichert Mustername, Klauselanzahl, Mindestanzahl, Fenster und den finalen
+Score-Schwellenwert in eigenen Spalten.
 
 ## Point-in-time-Fundamentals und Earnings
 
@@ -191,7 +206,7 @@ Retention der geschuetzten Klasse sowohl gepoolt als auch ueber ausreichend
 viele Jahresfolds bestehen. Jede weitere OR-Komponente muss den Netto-Score
 `Objective-Capture - Protected-Rejection` zusaetzlich verbessern.
 
-Weil V4 sehr viele Merkmale und Kombinationen untersucht, reicht ein einfacher
+Weil V5 sehr viele Merkmale und Kombinationen untersucht, reicht ein einfacher
 Lift nicht. Fuer jede Entscheidungsfamilie wird deshalb auf dem konfigurierten
 Validation-Zeitraum ein jahresstratifizierter Max-Statistic-Permutationstest
 ueber die komplette evaluierbare Kandidatenfamilie gerechnet. Standard sind
@@ -218,7 +233,7 @@ Zu jedem Signal werden genau sechs Landmark-Zeilen gespeichert:
 - Gewinnmitnahmeentscheidung nach Close D+30, wirksam zum Open D+31.
 
 Jede Zeile verwendet nur Informationen bis zu ihrem Close. Neben Preis-,
-Volumen-, Notional-, RS- und Trenddaten stehen in V4 auch das bis dahin bekannte
+Volumen-, Notional-, RS- und Trenddaten stehen in V5 auch das bis dahin bekannte
 Marktregime und die relative Entwicklung gegen SPY, QQQ und IWM zur Auswahl.
 Bei D+1 bis D+3 wird die verbleibende Entwicklung erst ab der jeweils naechsten
 Session bis D+5 bewertet.
@@ -252,14 +267,16 @@ einzumischen.
 Das Init-SQL besitzt ausschliesslich drei serviceeigene Ergebnistabellen:
 
 - `stock_analyser_filter_research_signal_results`: Signale, alle Entry-
-  Merkmale und Outcomes sowie Ausschluss und Bestaetigung.
+  Merkmale einschliesslich der 64 expliziten Pattern-Score-Spalten, Outcomes
+  sowie Ausschluss und Bestaetigung.
 - `stock_analyser_filter_research_early_cut_results`: sechs kausale
   Landmark-Zeilen je Signal mit D+1-bis-D+3-Cut-Status und unabhaengigen
   D+5-/D+20-/D+30-Management-Ergebnissen. Der bestehende Tabellenpraefix und
   Tabellenname bleiben trotz des breiteren Inhalts erhalten.
 - `stock_analyser_filter_research_rule_results`: alle atomaren, Pattern-,
   Interaktions- und OR-Kandidaten, Walk-forward-/Stabilitaetsmetriken,
-  Multiple-Testing-Ergebnisse sowie Diagnostic und Holdout.
+  Multiple-Testing-Ergebnisse, explizite Pattern-Metadaten sowie Diagnostic
+  und Holdout.
 
 Signal- und Landmark-Tabelle sind unkomprimierte Timescale-Hypertables mit
 365-Tage-Chunks. Es gibt keine JSON-, Audit- oder Run-Tabelle. Der Runtime-Code
@@ -268,7 +285,7 @@ und schreibt alle drei zuvor leeren Tabellen atomar.
 
 ## Ausfuehrung
 
-V4 ist ein inkompatibler Neuaufbau. Die vorhandenen Research-Tabellen werden
+V5 ist ein inkompatibler Neuaufbau. Die vorhandenen Research-Tabellen werden
 einmalig explizit gedroppt und aus `init/schema.sql` neu erzeugt:
 
 ```bash
@@ -284,7 +301,8 @@ Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung mit
 AppName und importiert denselben exportierten PostgreSQL-Snapshot. Nur der
 Hauptprozess schreibt die drei Ergebnistabellen. Wegen der zusaetzlichen
 Horizonte, festen Ratio-Grenzen, Management-Objectives, Dreier-OR-Suche und 999
-Permutationen ist V4 bewusst deutlich rechenintensiver als V3.
+Permutationen, k-von-n-Muster und 64 Multi-Window-Scores ist V5 bewusst
+deutlich rechenintensiver als V4.
 
 ## Tests
 

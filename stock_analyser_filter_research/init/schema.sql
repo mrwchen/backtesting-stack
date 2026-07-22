@@ -167,6 +167,71 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     signal_undercut_reclaim_10                   NUMERIC(20,8),
     signal_volume_vs_prior_10d_max_down_volume_ratio NUMERIC(20,8),
 
+    pattern_flat_base_setup_score                       NUMERIC(20,8),
+    pattern_flat_base_trigger_score                     NUMERIC(20,8),
+    pattern_flat_base_score_10d                         NUMERIC(20,8),
+    pattern_flat_base_score_15d                         NUMERIC(20,8),
+    pattern_flat_base_score_20d                         NUMERIC(20,8),
+    pattern_flat_base_score_30d                         NUMERIC(20,8),
+    pattern_flat_base_score_40d                         NUMERIC(20,8),
+    pattern_flat_base_score_63d                         NUMERIC(20,8),
+    pattern_ordered_uptrend_setup_score                 NUMERIC(20,8),
+    pattern_ordered_uptrend_trigger_score               NUMERIC(20,8),
+    pattern_ordered_uptrend_score_10d                   NUMERIC(20,8),
+    pattern_ordered_uptrend_score_15d                   NUMERIC(20,8),
+    pattern_ordered_uptrend_score_20d                   NUMERIC(20,8),
+    pattern_ordered_uptrend_score_30d                   NUMERIC(20,8),
+    pattern_ordered_uptrend_score_40d                   NUMERIC(20,8),
+    pattern_ordered_uptrend_score_63d                   NUMERIC(20,8),
+    pattern_pullback_setup_score                        NUMERIC(20,8),
+    pattern_pullback_trigger_score                      NUMERIC(20,8),
+    pattern_pullback_score_10d                          NUMERIC(20,8),
+    pattern_pullback_score_15d                          NUMERIC(20,8),
+    pattern_pullback_score_20d                          NUMERIC(20,8),
+    pattern_pullback_score_30d                          NUMERIC(20,8),
+    pattern_pullback_score_40d                          NUMERIC(20,8),
+    pattern_pullback_score_63d                          NUMERIC(20,8),
+    pattern_v_recovery_setup_score                      NUMERIC(20,8),
+    pattern_v_recovery_trigger_score                    NUMERIC(20,8),
+    pattern_v_recovery_score_20d                        NUMERIC(20,8),
+    pattern_v_recovery_score_30d                        NUMERIC(20,8),
+    pattern_v_recovery_score_40d                        NUMERIC(20,8),
+    pattern_v_recovery_score_63d                        NUMERIC(20,8),
+    pattern_v_recovery_score_126d                       NUMERIC(20,8),
+    pattern_volume_dryup_breakout_setup_score           NUMERIC(20,8),
+    pattern_volume_dryup_breakout_trigger_score         NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_10d             NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_15d             NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_20d             NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_30d             NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_40d             NUMERIC(20,8),
+    pattern_volume_dryup_breakout_score_63d             NUMERIC(20,8),
+    pattern_distribution_top_setup_score                NUMERIC(20,8),
+    pattern_distribution_top_trigger_score              NUMERIC(20,8),
+    pattern_distribution_top_score_10d                  NUMERIC(20,8),
+    pattern_distribution_top_score_15d                  NUMERIC(20,8),
+    pattern_distribution_top_score_20d                  NUMERIC(20,8),
+    pattern_distribution_top_score_30d                  NUMERIC(20,8),
+    pattern_distribution_top_score_40d                  NUMERIC(20,8),
+    pattern_distribution_top_score_63d                  NUMERIC(20,8),
+    pattern_vcp_setup_score                             NUMERIC(20,8),
+    pattern_vcp_trigger_score                           NUMERIC(20,8),
+    pattern_vcp_score_20d                               NUMERIC(20,8),
+    pattern_vcp_score_30d                               NUMERIC(20,8),
+    pattern_vcp_score_40d                               NUMERIC(20,8),
+    pattern_vcp_score_63d                               NUMERIC(20,8),
+    pattern_vcp_score_126d                              NUMERIC(20,8),
+    pattern_cup_with_handle_setup_score                 NUMERIC(20,8),
+    pattern_cup_with_handle_trigger_score               NUMERIC(20,8),
+    pattern_cup_with_handle_score_63d                   NUMERIC(20,8),
+    pattern_cup_with_handle_score_126d                  NUMERIC(20,8),
+    pattern_high_tight_flag_setup_score                 NUMERIC(20,8),
+    pattern_high_tight_flag_trigger_score               NUMERIC(20,8),
+    pattern_high_tight_flag_score_20d                   NUMERIC(20,8),
+    pattern_high_tight_flag_score_30d                   NUMERIC(20,8),
+    pattern_high_tight_flag_score_40d                   NUMERIC(20,8),
+    pattern_high_tight_flag_score_63d                   NUMERIC(20,8),
+
     fundamental_snapshot_age_days                NUMERIC(20,8),
     fundamental_report_age_days                  NUMERIC(20,8),
     fundamental_gross_margin_ttm_ratio           NUMERIC(20,8),
@@ -366,6 +431,142 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (prior_distribution_day_count_20 IS NULL OR prior_distribution_day_count_20 BETWEEN 0 AND 20),
     CHECK (prior_churning_day_count_20 IS NULL OR prior_churning_day_count_20 BETWEEN 0 AND 20),
     CHECK (prior_failed_breakout_count_20 IS NULL OR prior_failed_breakout_count_20 BETWEEN 0 AND 20),
+    CHECK (
+        LEAST(
+            pattern_flat_base_setup_score,
+            pattern_flat_base_trigger_score,
+            pattern_flat_base_score_10d,
+            pattern_flat_base_score_15d,
+            pattern_flat_base_score_20d,
+            pattern_flat_base_score_30d,
+            pattern_flat_base_score_40d,
+            pattern_flat_base_score_63d,
+            pattern_ordered_uptrend_setup_score,
+            pattern_ordered_uptrend_trigger_score,
+            pattern_ordered_uptrend_score_10d,
+            pattern_ordered_uptrend_score_15d,
+            pattern_ordered_uptrend_score_20d,
+            pattern_ordered_uptrend_score_30d,
+            pattern_ordered_uptrend_score_40d,
+            pattern_ordered_uptrend_score_63d,
+            pattern_pullback_setup_score,
+            pattern_pullback_trigger_score,
+            pattern_pullback_score_10d,
+            pattern_pullback_score_15d,
+            pattern_pullback_score_20d,
+            pattern_pullback_score_30d,
+            pattern_pullback_score_40d,
+            pattern_pullback_score_63d,
+            pattern_v_recovery_setup_score,
+            pattern_v_recovery_trigger_score,
+            pattern_v_recovery_score_20d,
+            pattern_v_recovery_score_30d,
+            pattern_v_recovery_score_40d,
+            pattern_v_recovery_score_63d,
+            pattern_v_recovery_score_126d,
+            pattern_volume_dryup_breakout_setup_score,
+            pattern_volume_dryup_breakout_trigger_score,
+            pattern_volume_dryup_breakout_score_10d,
+            pattern_volume_dryup_breakout_score_15d,
+            pattern_volume_dryup_breakout_score_20d,
+            pattern_volume_dryup_breakout_score_30d,
+            pattern_volume_dryup_breakout_score_40d,
+            pattern_volume_dryup_breakout_score_63d,
+            pattern_distribution_top_setup_score,
+            pattern_distribution_top_trigger_score,
+            pattern_distribution_top_score_10d,
+            pattern_distribution_top_score_15d,
+            pattern_distribution_top_score_20d,
+            pattern_distribution_top_score_30d,
+            pattern_distribution_top_score_40d,
+            pattern_distribution_top_score_63d,
+            pattern_vcp_setup_score,
+            pattern_vcp_trigger_score,
+            pattern_vcp_score_20d,
+            pattern_vcp_score_30d,
+            pattern_vcp_score_40d,
+            pattern_vcp_score_63d,
+            pattern_vcp_score_126d,
+            pattern_cup_with_handle_setup_score,
+            pattern_cup_with_handle_trigger_score,
+            pattern_cup_with_handle_score_63d,
+            pattern_cup_with_handle_score_126d,
+            pattern_high_tight_flag_setup_score,
+            pattern_high_tight_flag_trigger_score,
+            pattern_high_tight_flag_score_20d,
+            pattern_high_tight_flag_score_30d,
+            pattern_high_tight_flag_score_40d,
+            pattern_high_tight_flag_score_63d
+        ) >= 0
+    ),
+    CHECK (
+        GREATEST(
+            pattern_flat_base_setup_score,
+            pattern_flat_base_trigger_score,
+            pattern_flat_base_score_10d,
+            pattern_flat_base_score_15d,
+            pattern_flat_base_score_20d,
+            pattern_flat_base_score_30d,
+            pattern_flat_base_score_40d,
+            pattern_flat_base_score_63d,
+            pattern_ordered_uptrend_setup_score,
+            pattern_ordered_uptrend_trigger_score,
+            pattern_ordered_uptrend_score_10d,
+            pattern_ordered_uptrend_score_15d,
+            pattern_ordered_uptrend_score_20d,
+            pattern_ordered_uptrend_score_30d,
+            pattern_ordered_uptrend_score_40d,
+            pattern_ordered_uptrend_score_63d,
+            pattern_pullback_setup_score,
+            pattern_pullback_trigger_score,
+            pattern_pullback_score_10d,
+            pattern_pullback_score_15d,
+            pattern_pullback_score_20d,
+            pattern_pullback_score_30d,
+            pattern_pullback_score_40d,
+            pattern_pullback_score_63d,
+            pattern_v_recovery_setup_score,
+            pattern_v_recovery_trigger_score,
+            pattern_v_recovery_score_20d,
+            pattern_v_recovery_score_30d,
+            pattern_v_recovery_score_40d,
+            pattern_v_recovery_score_63d,
+            pattern_v_recovery_score_126d,
+            pattern_volume_dryup_breakout_setup_score,
+            pattern_volume_dryup_breakout_trigger_score,
+            pattern_volume_dryup_breakout_score_10d,
+            pattern_volume_dryup_breakout_score_15d,
+            pattern_volume_dryup_breakout_score_20d,
+            pattern_volume_dryup_breakout_score_30d,
+            pattern_volume_dryup_breakout_score_40d,
+            pattern_volume_dryup_breakout_score_63d,
+            pattern_distribution_top_setup_score,
+            pattern_distribution_top_trigger_score,
+            pattern_distribution_top_score_10d,
+            pattern_distribution_top_score_15d,
+            pattern_distribution_top_score_20d,
+            pattern_distribution_top_score_30d,
+            pattern_distribution_top_score_40d,
+            pattern_distribution_top_score_63d,
+            pattern_vcp_setup_score,
+            pattern_vcp_trigger_score,
+            pattern_vcp_score_20d,
+            pattern_vcp_score_30d,
+            pattern_vcp_score_40d,
+            pattern_vcp_score_63d,
+            pattern_vcp_score_126d,
+            pattern_cup_with_handle_setup_score,
+            pattern_cup_with_handle_trigger_score,
+            pattern_cup_with_handle_score_63d,
+            pattern_cup_with_handle_score_126d,
+            pattern_high_tight_flag_setup_score,
+            pattern_high_tight_flag_trigger_score,
+            pattern_high_tight_flag_score_20d,
+            pattern_high_tight_flag_score_30d,
+            pattern_high_tight_flag_score_40d,
+            pattern_high_tight_flag_score_63d
+        ) <= 100
+    ),
     CHECK (fundamental_snapshot_age_days IS NULL OR fundamental_snapshot_age_days >= 0),
     CHECK (fundamental_report_age_days IS NULL OR fundamental_report_age_days >= 0),
     CHECK (fundamental_quarter_filing_age_days IS NULL OR fundamental_quarter_filing_age_days >= 0),
@@ -826,6 +1027,12 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     quantile_value                     NUMERIC(30,10),
     threshold_value                    NUMERIC(30,10),
     rule_text                          TEXT NOT NULL,
+    pattern_name                       TEXT,
+    pattern_match_mode                 TEXT,
+    pattern_total_clause_count         SMALLINT,
+    pattern_required_clause_count      SMALLINT,
+    pattern_score_window_sessions      SMALLINT,
+    pattern_score_threshold_pct        NUMERIC(20,8),
     selection_order                    SMALLINT,
     evaluation_scope                   TEXT NOT NULL,
     scope_year                         SMALLINT,
@@ -960,12 +1167,40 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     ),
     CHECK (
         feature_group IN (
-            'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N',
+            'none', 'A', 'B', 'C', 'D', 'E', 'F', 'I', 'M', 'N', 'P',
             'R', 'S', 'T', 'multiple'
         )
     ),
     CHECK (operator IS NULL OR operator IN ('le', 'ge')),
     CHECK (quantile_value IS NULL OR quantile_value BETWEEN 0 AND 1),
+    CHECK (
+        pattern_match_mode IS NULL
+        OR pattern_match_mode IN ('all', 'k_of_n', 'score_threshold')
+    ),
+    CHECK (
+        (pattern_match_mode IS NULL
+         AND pattern_name IS NULL
+         AND pattern_total_clause_count IS NULL
+         AND pattern_required_clause_count IS NULL
+         AND pattern_score_window_sessions IS NULL
+         AND pattern_score_threshold_pct IS NULL)
+        OR
+        (pattern_match_mode IN ('all', 'k_of_n')
+         AND pattern_name IS NOT NULL
+         AND pattern_total_clause_count >= 2
+         AND pattern_required_clause_count BETWEEN 2 AND pattern_total_clause_count
+         AND pattern_score_window_sessions IS NULL
+         AND pattern_score_threshold_pct IS NULL)
+        OR
+        (pattern_match_mode = 'score_threshold'
+         AND pattern_name IS NOT NULL
+         AND pattern_total_clause_count IS NULL
+         AND pattern_required_clause_count IS NULL
+         AND (pattern_score_window_sessions IS NULL
+              OR pattern_score_window_sessions IN (10, 15, 20, 30, 40, 63, 126))
+         AND (pattern_score_threshold_pct IS NULL
+              OR pattern_score_threshold_pct BETWEEN 0 AND 100))
+    ),
     CHECK (
         evaluation_scope IN (
             'development', 'discovery', 'validation', 'diagnostic', 'holdout',
@@ -1039,6 +1274,11 @@ CREATE INDEX IF NOT EXISTS idx_safr_rule_recommended
 CREATE INDEX IF NOT EXISTS idx_safr_rule_feature
     ON stock_analyser_filter_research_rule_results
     (decision_family, landmark_day, feature_group, feature_name, evaluation_scope);
+
+CREATE INDEX IF NOT EXISTS idx_safr_rule_pattern
+    ON stock_analyser_filter_research_rule_results
+    (pattern_name, pattern_match_mode, pattern_score_window_sessions,
+     decision_family, evaluation_scope);
 
 GRANT SELECT, INSERT
     ON stock_analyser_filter_research_signal_results TO "market-data-account";
