@@ -3580,6 +3580,7 @@ def _early_confirmation_path_features(
     signal_position: int,
     landmark_position: int,
     segment_id: float,
+    signal_prior_atr_pct: float,
 ) -> dict[str, float]:
     """Return path features known at the landmark close, without future bars."""
 
@@ -3648,8 +3649,6 @@ def _early_confirmation_path_features(
     max_loss = min(0.0, float(low_returns.min()))
     close_return = (landmark_close / signal_close - 1.0) * 100.0
     drawdown = (landmark_close / float(path_highs.max()) - 1.0) * 100.0
-    signal_atr_pct = _finite_scalar(signal.get("prior_atr_14d_pct"))
-
     result.update(
         {
             "signal_adjusted_open": signal_open,
@@ -3695,12 +3694,18 @@ def _early_confirmation_path_features(
         ) / path_distance
     if max_gain > 0:
         result["mfe_retention_ratio"] = close_return / max_gain
-    if np.isfinite(signal_atr_pct) and signal_atr_pct > 0:
-        result["close_return_from_signal_atr_units"] = close_return / signal_atr_pct
-        result["max_gain_to_landmark_atr_units"] = max_gain / signal_atr_pct
-        result["max_loss_to_landmark_atr_units"] = max_loss / signal_atr_pct
+    if np.isfinite(signal_prior_atr_pct) and signal_prior_atr_pct > 0:
+        result["close_return_from_signal_atr_units"] = (
+            close_return / signal_prior_atr_pct
+        )
+        result["max_gain_to_landmark_atr_units"] = (
+            max_gain / signal_prior_atr_pct
+        )
+        result["max_loss_to_landmark_atr_units"] = (
+            max_loss / signal_prior_atr_pct
+        )
         result["drawdown_from_post_signal_high_atr_units"] = (
-            drawdown / signal_atr_pct
+            drawdown / signal_prior_atr_pct
         )
 
     up = path_returns > 0
@@ -3912,6 +3917,7 @@ def _common_landmark_values(
             signal_position,
             landmark_position,
             segment_id,
+            _finite_scalar(signal.get("prior_atr_14d_pct")),
         )
     )
     signal_feature_mapping = {

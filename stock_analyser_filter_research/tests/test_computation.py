@@ -1021,6 +1021,21 @@ def test_early_confirmation_uses_next_open_and_day20_path(cfg_factory) -> None:
         float(day1["signal_volume_dryup_breakout_score_20d"])
     )
     assert np.isfinite(float(day1["breakout_acceptance_score"]))
+    signal_atr_pct = float(day1["signal_prior_atr_14d_pct"])
+    assert np.isfinite(signal_atr_pct)
+    assert day1["close_return_from_signal_atr_units"] == pytest.approx(
+        day1["close_return_from_signal_pct"] / signal_atr_pct
+    )
+    assert day1["max_gain_to_landmark_atr_units"] == pytest.approx(
+        day1["max_gain_to_landmark_pct"] / signal_atr_pct
+    )
+    assert day1["max_loss_to_landmark_atr_units"] == pytest.approx(
+        day1["max_loss_to_landmark_pct"] / signal_atr_pct
+    )
+    assert day1["drawdown_from_post_signal_high_atr_units"] == pytest.approx(
+        day1["drawdown_from_post_signal_high_pct"] / signal_atr_pct
+    )
+    assert np.isfinite(float(day1["early_path_quality_score"]))
 
 
 @pytest.mark.parametrize(
