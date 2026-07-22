@@ -1,111 +1,208 @@
+# Definiert die beiden einmalig laufenden Services dieses Research-Projekts.
 services:
+  # Legt die drei projektspezifischen Ergebnistabellen an und beendet sich danach.
   init-stock-analyser-filter-research-schema:
+    # Enthält den PostgreSQL-Client, mit dem das Init-SQL ausgeführt wird.
     image: postgres:17-alpine
+    # Startet den einmaligen Init-Service nach seinem Ende nicht automatisch neu.
     restart: "no"
+    # Stellt dem Container die lokale SQL-Datei zur Verfügung.
     volumes:
+      # Bindet schema.sql schreibgeschützt als /init.sql in den Container ein.
       - ./init/schema.sql:/init.sql:ro
+    # Übergibt Verbindungs- und Steuerungsparameter an psql und das Init-SQL.
     environment:
+      # Passwort des PostgreSQL-Benutzers postgres-ts für die Schema-Initialisierung.
       PGPASSWORD: "postgres-ts-root-pw"
+      # application_name der Init-Verbindung zur Identifikation in PostgreSQL.
       PGAPPNAME: "stock_analyser_filter_research_init"
-      # true deletes all three service-owned result tables before recreating them.
+      # true löscht vor dem Neuaufbau nur die drei diesem Service gehörenden Ergebnistabellen.
       DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START: "${DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START:-false}"
+    # Führt /init.sql gegen die TimescaleDB aus und bricht beim ersten SQL-Fehler ab.
     command:
+      # Verwendet die im Image vorhandene POSIX-Shell.
       - sh
+      # Weist der Shell an, den folgenden mehrzeiligen String als Befehl auszuführen.
       - -c
+      # Verbindet sich mit timescaledb:5432 als postgres-ts zur DB postgres,
+      # aktiviert ON_ERROR_STOP, übergibt den Drop-Schalter und führt /init.sql aus.
       - >
         psql -h timescaledb -p 5432 -U postgres-ts -d postgres
         -v ON_ERROR_STOP=1
         -v drop_all_stock_analyser_filter_research_tables_on_start="$${DROP_ALL_STOCK_ANALYSER_FILTER_RESEARCH_TABLES_ON_START:-false}"
         -f /init.sql
+    # Legt fest, mit welchen Docker-Netzwerken der Init-Service verbunden wird.
     networks:
+      # Ermöglicht den Zugriff auf den TimescaleDB-Service im gemeinsamen Netzwerk.
       - shared_net
 
+  # Führt die eigentliche Filterforschung aus und schreibt die Ergebnisse in PostgreSQL.
   stock-analyser-filter-research:
+    # Baut das Container-Image aus den lokalen Projektdateien.
     build:
+      # Verwendet das aktuelle Projektverzeichnis als Docker-Build-Kontext.
       context: .
+      # Verwendet die Datei Dockerfile im Build-Kontext für den Image-Bau.
       dockerfile: Dockerfile
+    # Startet das Python-Paket über dessen Modul-Einstiegspunkt.
     command: python -m stock_analyser_filter_research
+    # Definiert, von welchem Service der Research-Lauf abhängt.
     depends_on:
+      # Wartet auf den Abschluss des Schema-Init-Services.
       init-stock-analyser-filter-research-schema:
+        # Startet Research nur, wenn die Schema-Initialisierung erfolgreich beendet wurde.
         condition: service_completed_successfully
+    # Startet den einmaligen Research-Lauf nach seinem Ende nicht automatisch neu.
     restart: "no"
+    # Begrenzt den Arbeitsspeicher des Research-Containers auf 6 GiB.
     mem_limit: 6g
+    # Konfiguriert Datenbank, Zeitraum, Labels, Regelsuche und Parallelisierung.
     environment:
+      # Docker-DNS-Name des PostgreSQL-/TimescaleDB-Servers.
       PGHOST: "timescaledb"
+      # TCP-Port des PostgreSQL-Servers.
       PGPORT: "5432"
+      # Name der verwendeten PostgreSQL-Datenbank.
       PGDATABASE: "postgres"
+      # PostgreSQL-Benutzer für das Lesen der Quellen und Schreiben der Ergebnisse.
       PGUSER: "market-data-account"
+      # Passwort des PostgreSQL-Benutzers für den Research-Lauf.
       PGPASSWORD: "market-data-account-pw"
+      # application_name der Research-Verbindungen zur Identifikation in PostgreSQL.
       PGAPPNAME: "stock_analyser_filter_research"
+      # Maximale Wartezeit in Sekunden beim Aufbau einer Datenbankverbindung.
       DB_CONNECT_TIMEOUT_SECONDS: "15"
+      # PostgreSQL-Statement-Timeout in Millisekunden; 0 deaktiviert das Zeitlimit.
       DB_STATEMENT_TIMEOUT_MS: "0"
+
+      # Quelltabelle mit den historischen Trend-Template-Signalen und Kursmerkmalen.
       SOURCE_TABLE: "stock_analyser_trend_template_daily"
+      # Quelltabelle mit täglich verfügbaren Point-in-time-Fundamentalsnapshots.
       FUNDAMENTAL_SNAPSHOT_TABLE: "stock_core_sec_fundamentals_asof_daily"
+      # Quelltabelle mit datierten quartalsweisen Fundamentalereignissen.
       QUARTERLY_FUNDAMENTAL_EVENT_TABLE: "stock_core_sec_quarterly_fundamental_events"
+      # Quelltabelle mit bestätigten Earnings-Ereignissen.
       EARNINGS_EVENT_TABLE: "stock_core_earnings_calendar_events"
+      # Quelltabelle mit täglichen Point-in-time-Marktkennzahlen wie Market Cap.
       MARKET_METRICS_TABLE: "stock_core_market_metrics_daily"
+      # Quelltabelle mit Markt-, Volatilitäts- und Regimebeobachtungen.
       WORLD_MARKET_OBSERVATION_TABLE: "world_regime_observations"
+      # Aktuelle Security-Master-Tabelle für diagnostische IBKR-Taxonomiemerkmale.
       SECURITY_MASTER_CURRENT_TABLE: "stock_core_security_master_current"
+
+      # Zieltabelle mit einer Zeile je Signal, Merkmalen, Outcomes und Entscheidungen.
       SIGNAL_RESULT_TABLE: "stock_analyser_filter_research_signal_results"
+      # Zieltabelle mit Early-Cut-Ergebnissen je Signal und Auswertungshorizont.
       EARLY_CUT_RESULT_TABLE: "stock_analyser_filter_research_early_cut_results"
+      # Zieltabelle mit Regel-Kandidaten, Kennzahlen, Folds und Signifikanztests.
       RULE_RESULT_TABLE: "stock_analyser_filter_research_rule_results"
+      # Kleinste ausgegebene Log-Stufe, hier INFO und schwerwiegender.
       LOG_LEVEL: "INFO"
 
+      # Frühestes berücksichtigtes Signaldatum.
       SIGNAL_START_DATE: "2016-01-01"
+      # Optionales letztes Signaldatum; leer bedeutet keine zusätzliche Obergrenze.
       SIGNAL_END_DATE: ""
+      # Letztes Datum der initialen Discovery-/Trainingsphase.
       DISCOVERY_END_DATE: "2022-12-31"
+      # Letztes Datum, das noch für Validierung und Regelauswahl verwendet werden darf.
       VALIDATION_END_DATE: "2024-12-31"
-      # The first global trading session after this date is the new untouched holdout.
+      # Nach diesem Datum beginnt mit der ersten globalen Handelssitzung der unberührte Holdout.
       HOLDOUT_CUTOFF_DATE: "2026-07-20"
 
-      WEAK_5D_MAX_GAIN_PCT: "2.0"
-      STRONG_5D_MIN_GAIN_PCT: "5.0"
+      # Maximaler Best-Case-Anstieg bis D+5, unter dem ein Signal als weak_5d gilt.
+      WEAK_5D_MAX_GAIN_PCT: "3.0"
+      # Mindestanstieg bis D+5 für das starke positive 5-Tage-Ziel.
+      STRONG_5D_MIN_GAIN_PCT: "6.0"
+      # Verlustschwelle bis D+5 für die Klasse deep_loss_5d.
       DEEP_LOSS_5D_MAX_LOSS_PCT: "-5.0"
+      # Intraday-Low-Verlustschwelle bis D+5 für das harte Stop-Ereignis.
       HARD_STOP_5D_MAX_LOSS_PCT: "-10.0"
-      STAGNANT_5D_MAX_RETURN_PCT: "0.0"
+      # Maximaler D+5-Schlusskurs-Return für stagnant_5d, zusätzlich zur schwachen Bewegung.
+      STAGNANT_5D_MAX_RETURN_PCT: "2.0"
+      # Mindest-Schlusskurs-Return für Gewinner in den späteren Fortsetzungshorizonten.
       CONTINUATION_WINNER_MIN_RETURN_PCT: "5.0"
-      TERMINAL_STAGNANT_5D_MAX_RETURN_PCT: "1.0"
-      TERMINAL_WINNER_5D_MIN_RETURN_PCT: "3.0"
+      # Obergrenze des D+5-Schlusskurs-Returns für terminal_stagnant_5d.
+      TERMINAL_STAGNANT_5D_MAX_RETURN_PCT: "2.0"
+      # Untergrenze des D+5-Schlusskurs-Returns für terminal_winner_5d.
+      TERMINAL_WINNER_5D_MIN_RETURN_PCT: "5.5"
 
+      # Anzahl der Quantilgruppen pro numerischem Merkmal; 10 erzeugt Dezile.
       QUANTILE_COUNT: "10"
+      # Maximale Anzahl von Teilregeln, die pro Ziel per OR kombiniert werden darf.
       MAX_CONDITIONS_PER_OBJECTIVE: "3"
+      # Höchstzahl der besten partiellen Kombinationen, die je Suchstufe weiterverfolgt wird.
       RULE_SEARCH_BEAM_WIDTH: "30"
+      # Erstes Kalenderjahr, das als jährlicher Walk-forward-Validierungsfold dient.
       WALK_FORWARD_FIRST_YEAR: "2020"
+      # Mindestzahl auswertbarer Walk-forward-Folds für eine stabile Regel.
       MIN_WALK_FORWARD_FOLDS: "4"
-      MIN_STABLE_FOLD_FRACTION: "0.75"
+      # Mindestanteil auswertbarer Folds, der den geforderten Fold-Lift erreichen muss.
+      MIN_STABLE_FOLD_FRACTION: "0.70"
+      # Mindest-Lift eines Folds, damit dieser als erfolgreicher stabiler Fold zählt.
       MIN_FOLD_OBJECTIVE_LIFT: "1.00"
+      # Mindestzahl gelabelter Signale, damit ein Walk-forward-Fold auswertbar ist.
       MIN_FOLD_SAMPLE_COUNT: "200"
+      # Mindestzahl positiver Fälle des Forschungsziels in einem auswertbaren Fold.
       MIN_FOLD_OBJECTIVE_COUNT: "20"
-      MIN_FOLD_PROTECTED_RETENTION_PCT: "0.90"
-      MAX_FOLD_MATCH_PCT: "0.40"
+      # Mindestanteil der Schutzklasse, der in jedem auswertbaren Fold erhalten bleiben muss.
+      MIN_FOLD_PROTECTED_RETENTION_PCT: "0.70"
+      # Maximaler Anteil aller gelabelten Signale, den eine Regel in einem Fold treffen darf.
+      MAX_FOLD_MATCH_PCT: "0.50"
+      # Kleinster zulässiger Trefferanteil eines Regel-Kandidaten in der Entwicklungsstichprobe.
       MIN_CANDIDATE_MATCH_PCT: "0.01"
+      # Größter zulässiger Trefferanteil eines Regel-Kandidaten in der Entwicklungsstichprobe.
       MAX_CANDIDATE_MATCH_PCT: "0.35"
-      MIN_PROTECTED_RETENTION_PCT: "0.92"
-      MIN_MATCHED_LABEL_COVERAGE_PCT: "0.90"
+      # Mindestanteil der Schutzklasse, den eine Regel insgesamt nicht herausfiltern darf.
+      MIN_PROTECTED_RETENTION_PCT: "0.70"
+      # Mindestanteil der Regeltreffer mit vollständig bekanntem Ziellabel.
+      MIN_MATCHED_LABEL_COVERAGE_PCT: "0.80"
+      # Mindestverhältnis der Zielrate unter Regeltreffern zur Zielrate der Grundgesamtheit.
       MIN_OBJECTIVE_LIFT: "1.05"
+      # Mindestverbesserung des Auswahl-Scores durch jede zusätzliche OR-Teilregel.
       MIN_SELECTION_SCORE_IMPROVEMENT: "0.01"
-      # Stratified max-statistic permutation gate across the full candidate family.
+      # Anzahl der stratifizierten Permutationen für den familienweiten Max-Statistik-Test.
       PERMUTATION_TRIAL_COUNT: "999"
+      # Größter zulässiger familienweise korrigierter p-Wert des Max-Statistik-Tests.
       MAX_STAT_PERMUTATION_P_VALUE: "0.05"
+      # Fester Zufalls-Seed für reproduzierbare Permutationstests.
       PERMUTATION_RANDOM_SEED: "1729"
+      # Mindestzahl gelabelter Holdout-Signale, bevor ein Holdout-Ergebnis als bestanden gelten kann.
       MIN_HOLDOUT_SAMPLE_COUNT: "500"
-      # Current IBKR taxonomy is intentionally backcast as diagnostic-only data.
+
+      # Mindestzahl von Signalen einer IBKR-Industry für ein diagnostisches Gruppenmerkmal.
       TAXONOMY_BACKCAST_INDUSTRY_MIN_MEMBERS: "20"
+      # Mindestzahl von Signalen eines vollständigen IBKR-Category-Pfads für die Diagnose.
       TAXONOMY_BACKCAST_CATEGORY_MIN_MEMBERS: "10"
+      # Mindestzahl von Signalen eines vollständigen IBKR-Subcategory-Pfads für die Diagnose.
       TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS: "5"
 
+      # Maximale Anzahl paralleler Worker-Prozesse für die CPU- und Datenverarbeitung.
       MAX_WORKERS: "6"
+      # Anzahl von Wertpapier-Identitäten, die ein Worker innerhalb einer Aufgabe blockweise verarbeitet.
       WORKER_IDENTITY_BATCH_SIZE: "16"
+      # Anzahl von Datenbankzeilen, die beim Lesen pro Cursor-Abruf geholt wird.
       DB_FETCH_BATCH_SIZE: "10000"
+      # Anzahl von Ergebniszeilen, die je Datenbank-Schreibbatch übertragen wird.
       DB_COPY_BATCH_SIZE: "5000"
+      # Begrenzt OpenMP innerhalb jedes Worker-Prozesses auf einen Thread.
       OMP_NUM_THREADS: "1"
+      # Begrenzt OpenBLAS innerhalb jedes Worker-Prozesses auf einen Thread.
       OPENBLAS_NUM_THREADS: "1"
+      # Begrenzt Intel MKL innerhalb jedes Worker-Prozesses auf einen Thread.
       MKL_NUM_THREADS: "1"
+      # Begrenzt NumExpr innerhalb jedes Worker-Prozesses auf einen Thread.
       NUMEXPR_NUM_THREADS: "1"
+    # Legt fest, mit welchen Docker-Netzwerken der Research-Service verbunden wird.
     networks:
+      # Ermöglicht dem Research-Service den Zugriff auf die TimescaleDB.
       - shared_net
 
+# Definiert die von den Services verwendeten Docker-Netzwerke.
 networks:
+  # Gemeinsames, bereits außerhalb dieses Compose-Projekts verwaltetes Netzwerk.
   shared_net:
+    # Verhindert, dass Docker Compose das vorhandene Netzwerk selbst anlegt oder löscht.
     external: true
+    # Exakter Docker-Name des zu verwendenden externen Netzwerks.
     name: shared_net

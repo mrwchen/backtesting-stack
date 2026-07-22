@@ -16,6 +16,8 @@ from stock_analyser_filter_research.contracts import (
     SIGNAL_COLUMNS,
 )
 from stock_analyser_filter_research.research import (
+    ABSOLUTE_CAP_CONTEXT_FEATURES,
+    BROAD_INTERACTION_FEATURES,
     CompositeCondition,
     CandidateEvaluation,
     Condition,
@@ -475,6 +477,112 @@ def test_volume_and_notional_soft_patterns_have_atomic_and_pair_candidates() -> 
                     f"{volume_feature}_{left_operator}_"
                     f"{notional_feature}_{right_operator}"
                 ) in interaction_names
+
+
+def test_broad_entry_interaction_grid_is_complete_unique_and_strict() -> None:
+    for decision_family, prefix in (
+        ("entry_filter", "ENTRY_"),
+        ("entry_confirmation", "CONFIRM_"),
+    ):
+        templates = build_candidate_templates(decision_family, quantile_count=10)
+        assert len({item.rule_id for item in templates}) == len(templates)
+        grid = [
+            item
+            for item in templates
+            if isinstance(item, PatternTemplate)
+            and item.feature_group == "I"
+            and item.pattern_name.startswith("grid")
+        ]
+        cap_grid = [
+            item
+            for item in templates
+            if isinstance(item, PatternTemplate)
+            and item.feature_group == "I"
+            and item.pattern_name.startswith("capgrid_")
+        ]
+
+        # Four broad pairs already belong to the legacy interaction list.  The
+        # new grid adds the other 24 pairs * 4 tails and all 56 triples * 8.
+        assert len(grid) == 24 * 4 + 56 * 8
+        assert len(cap_grid) == 5 * 2 * 2 * (1 + len(ABSOLUTE_CAP_CONTEXT_FEATURES) * 2)
+        assert all(item.rule_id.startswith(prefix) for item in (*grid, *cap_grid))
+        assert all(item.minimum_clause_count is None for item in (*grid, *cap_grid))
+
+        daily_cap = [
+            item
+            for item in grid
+            if {clause.feature_name for clause in item.clauses}
+            == {"daily_price_change_pct", "log_market_cap_usd"}
+        ]
+        assert {
+            frozenset((clause.feature_name, clause.operator) for clause in item.clauses)
+            for item in daily_cap
+        } == {
+            frozenset(
+                {
+                    ("daily_price_change_pct", move_operator),
+                    ("log_market_cap_usd", cap_operator),
+                }
+            )
+            for move_operator in ("le", "ge")
+            for cap_operator in ("le", "ge")
+        }
+
+        daily_atr_gap = [
+            item
+            for item in grid
+            if {clause.feature_name for clause in item.clauses}
+            == {
+                "daily_price_change_pct",
+                "prior_atr_14d_pct",
+                "signal_gap_pct",
+            }
+        ]
+        assert len(daily_atr_gap) == 8
+        assert {
+            tuple(clause.operator for clause in item.clauses)
+            for item in daily_atr_gap
+        } == set(__import__("itertools").product(("le", "ge"), repeat=3))
+
+        micro_high_atr_low = next(
+            item
+            for item in cap_grid
+            if item.pattern_name
+            == "capgrid_micro_cap_daily_return_high_and_atr14_low"
+        )
+        assert [
+            (
+                clause.feature_name,
+                clause.operator,
+                clause.quantile,
+                clause.fixed_threshold,
+            )
+            for clause in micro_high_atr_low.clauses
+        ] == [
+            ("market_cap_usd", "le", None, 299_999_999.0),
+            ("daily_price_change_pct", "ge", 0.80, None),
+            ("prior_atr_14d_pct", "le", 0.20, None),
+        ]
+
+    assert len(BROAD_INTERACTION_FEATURES) == 8
+
+
+def test_broad_entry_interaction_grid_does_not_expand_landmark_families() -> None:
+    for decision_family, landmark_day in (
+        ("early_cut", 1),
+        ("early_confirmation", 1),
+        ("position_management", 5),
+    ):
+        patterns = [
+            item
+            for item in build_candidate_templates(
+                decision_family, landmark_day, quantile_count=10
+            )
+            if isinstance(item, PatternTemplate)
+        ]
+        assert not any(
+            item.pattern_name.startswith(("grid", "capgrid_")) for item in patterns
+        )
 
 
 def test_current_taxonomy_templates_cover_all_levels_and_interactions() -> None:

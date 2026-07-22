@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from itertools import combinations, product
 import logging
 from math import ceil
 import re
@@ -32,6 +33,44 @@ log = logging.getLogger(__name__)
 
 
 POLICY_KEY_COLUMNS = ("signal_date", *IDENTITY_COLUMNS)
+
+
+INTERACTION_TAILS = (
+    ("le", 0.20, "LOW"),
+    ("ge", 0.80, "HIGH"),
+)
+
+# This grid is deliberately broad but finite.  It covers the signal-day move,
+# its opening/intraday decomposition, absolute size, prior volatility, closing
+# quality and the two canonical activity measures.  Exhaustive higher-order
+# powersets would make the multiple-testing burden and runtime grow without a
+# defensible ex-ante hypothesis boundary.
+BROAD_INTERACTION_FEATURES = (
+    ("DAILY_RETURN", "daily_price_change_pct"),
+    ("INTRADAY_RETURN", "signal_intraday_return_pct"),
+    ("MARKET_CAP", "log_market_cap_usd"),
+    ("ATR14", "prior_atr_14d_pct"),
+    ("GAP", "signal_gap_pct"),
+    ("CLOSE_LOCATION", "signal_close_location_value"),
+    ("VOLUME21", "adjusted_volume_vs_sma21_prior_ratio"),
+    ("NOTIONAL21", "daily_traded_notional_vs_sma21_prior_ratio"),
+)
+
+SIGNAL_MOVE_INTERACTION_FEATURES = BROAD_INTERACTION_FEATURES[:2]
+ABSOLUTE_CAP_CONTEXT_FEATURES = (
+    BROAD_INTERACTION_FEATURES[3],
+    BROAD_INTERACTION_FEATURES[4],
+    BROAD_INTERACTION_FEATURES[5],
+    BROAD_INTERACTION_FEATURES[6],
+    BROAD_INTERACTION_FEATURES[7],
+)
+MARKET_CAP_BANDS = (
+    ("MICRO_CAP", None, 299_999_999.0),
+    ("SMALL_CAP", 300_000_000.0, 1_999_999_999.0),
+    ("MID_CAP", 2_000_000_000.0, 9_999_999_999.0),
+    ("LARGE_CAP", 10_000_000_000.0, 199_999_999_999.0),
+    ("MEGA_CAP", 200_000_000_000.0, None),
+)
 
 
 @dataclass(frozen=True)
@@ -1454,7 +1493,7 @@ def _trader_pattern_templates() -> tuple[PatternTemplate, ...]:
 
 
 def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
-    """Generate all tail combinations for predeclared causal feature pairs."""
+    """Generate bounded pairwise and three-way causal interaction grids."""
 
     activity_score_pairs = tuple(
         (
@@ -1527,6 +1566,184 @@ def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
                         ),
                     )
                 )
+    templates.extend(_broad_interaction_grid_templates(prefix, pairs))
+    templates.extend(_absolute_cap_interaction_grid_templates(prefix))
+    return tuple(templates)
+
+
+def _tail_condition(
+    rule_id: str,
+    position: int,
+    feature_name: str,
+    operator: str,
+    quantile: float,
+    *,
+    fixed_threshold: float | None = None,
+) -> ConditionTemplate:
+    return ConditionTemplate(
+        f"{rule_id}_C{position}",
+        "I",
+        feature_name,
+        operator,
+        quantile if fixed_threshold is None else None,
+        fixed_threshold=fixed_threshold,
+    )
+
+
+def _broad_interaction_grid_templates(
+    prefix: str,
+    existing_pairs: Iterable[tuple[str, str]],
+) -> tuple[PatternTemplate, ...]:
+    """Test every two- and three-factor tail combination in the broad grid.
+
+    Pair masks already emitted by the legacy pair family are not duplicated.
+    Three-factor candidates are strict AND rules; k-of-n variants are omitted
+    because their one- and two-factor cases are already represented directly.
+    """
+
+    existing_pair_keys = {frozenset(pair) for pair in existing_pairs}
+    templates: list[PatternTemplate] = []
+    for clause_count in (2, 3):
+        for combination_number, feature_combination in enumerate(
+            combinations(BROAD_INTERACTION_FEATURES, clause_count), start=1
+        ):
+            feature_names = tuple(item[1] for item in feature_combination)
+            if (
+                clause_count == 2
+                and frozenset(feature_names) in existing_pair_keys
+            ):
+                continue
+            for tail_combination in product(INTERACTION_TAILS, repeat=clause_count):
+                tail_code = "_".join(item[2] for item in tail_combination)
+                rule_id = (
+                    f"{prefix}_I_GRID{clause_count}_{combination_number:02d}_"
+                    f"{tail_code}"
+                )
+                pattern_name = "grid{}_{}".format(
+                    clause_count,
+                    "_and_".join(
+                        f"{feature[0].lower()}_{tail[2].lower()}"
+                        for feature, tail in zip(
+                            feature_combination, tail_combination
+                        )
+                    ),
+                )
+                templates.append(
+                    PatternTemplate(
+                        rule_id,
+                        "I",
+                        pattern_name,
+                        tuple(
+                            _tail_condition(
+                                rule_id,
+                                position,
+                                feature[1],
+                                tail[0],
+                                tail[1],
+                            )
+                            for position, (feature, tail) in enumerate(
+                                zip(feature_combination, tail_combination), start=1
+                            )
+                        ),
+                    )
+                )
+    return tuple(templates)
+
+
+def _absolute_cap_interaction_grid_templates(
+    prefix: str,
+) -> tuple[PatternTemplate, ...]:
+    """Condition both signal-day move definitions on fixed USD cap bands."""
+
+    templates: list[PatternTemplate] = []
+    for band_name, lower, upper in MARKET_CAP_BANDS:
+        for move_tag, move_feature in SIGNAL_MOVE_INTERACTION_FEATURES:
+            for move_operator, move_quantile, move_tail in INTERACTION_TAILS:
+                base_id = (
+                    f"{prefix}_I_CAPGRID_{band_name}_{move_tag}_{move_tail}"
+                )
+                base_clauses: list[ConditionTemplate] = []
+                if lower is not None:
+                    base_clauses.append(
+                        _tail_condition(
+                            base_id,
+                            len(base_clauses) + 1,
+                            "market_cap_usd",
+                            "ge",
+                            0.0,
+                            fixed_threshold=lower,
+                        )
+                    )
+                if upper is not None:
+                    base_clauses.append(
+                        _tail_condition(
+                            base_id,
+                            len(base_clauses) + 1,
+                            "market_cap_usd",
+                            "le",
+                            0.0,
+                            fixed_threshold=upper,
+                        )
+                    )
+                base_clauses.append(
+                    _tail_condition(
+                        base_id,
+                        len(base_clauses) + 1,
+                        move_feature,
+                        move_operator,
+                        move_quantile,
+                    )
+                )
+                templates.append(
+                    PatternTemplate(
+                        base_id,
+                        "I",
+                        (
+                            f"capgrid_{band_name.lower()}_"
+                            f"{move_tag.lower()}_{move_tail.lower()}"
+                        ),
+                        tuple(base_clauses),
+                    )
+                )
+                for context_tag, context_feature in ABSOLUTE_CAP_CONTEXT_FEATURES:
+                    for context_operator, context_quantile, context_tail in (
+                        INTERACTION_TAILS
+                    ):
+                        rule_id = (
+                            f"{base_id}_{context_tag}_{context_tail}"
+                        )
+                        clauses = tuple(
+                            ConditionTemplate(
+                                f"{rule_id}_C{position}",
+                                item.feature_group,
+                                item.feature_name,
+                                item.operator,
+                                item.quantile,
+                                item.minimum_threshold,
+                                item.fixed_threshold,
+                            )
+                            for position, item in enumerate(base_clauses, start=1)
+                        ) + (
+                            _tail_condition(
+                                rule_id,
+                                len(base_clauses) + 1,
+                                context_feature,
+                                context_operator,
+                                context_quantile,
+                            ),
+                        )
+                        templates.append(
+                            PatternTemplate(
+                                rule_id,
+                                "I",
+                                (
+                                    f"capgrid_{band_name.lower()}_"
+                                    f"{move_tag.lower()}_{move_tail.lower()}_and_"
+                                    f"{context_tag.lower()}_{context_tail.lower()}"
+                                ),
+                                clauses,
+                            )
+                        )
     return tuple(templates)
 
 
@@ -1710,15 +1927,8 @@ def _market_cap_pattern_templates() -> tuple[PatternTemplate, ...]:
             ),
         ),
     )
-    bands = (
-        ("MICRO_CAP", None, 299_999_999.0),
-        ("SMALL_CAP", 300_000_000.0, 1_999_999_999.0),
-        ("MID_CAP", 2_000_000_000.0, 9_999_999_999.0),
-        ("LARGE_CAP", 10_000_000_000.0, 199_999_999_999.0),
-        ("MEGA_CAP", 200_000_000_000.0, None),
-    )
     band_patterns: list[PatternTemplate] = []
-    for name, lower, upper in bands:
+    for name, lower, upper in MARKET_CAP_BANDS:
         rule_id = f"ENTRY_M_PATTERN_{name}_RANGE"
         clauses: list[ConditionTemplate] = []
         if lower is not None:

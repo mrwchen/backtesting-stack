@@ -126,6 +126,17 @@ Earnings-Naehe × Gap/Volume, Marktbreite × Leadership sowie fuer jedes der
 sechs aktivitaetsabhaengigen Muster der klassische Volume-Score × sein
 Notional-Gegenstueck.
 
+Darueber hinaus untersucht die Entry-Ausschluss- und Entry-Bestaetigungssuche
+ein grosses, aber weiterhin vorab begrenztes Interaktionsgitter aus acht
+Merkmalen: Signaltagsreturn, Intraday-Return von Open bis Close, logarithmische
+Market Cap in USD, vorherige ATR/14D, Signaltagsgap, Close-Position innerhalb
+der Signaltagskerze, Volume/21D und Notional/21D. Fuer alle Merkmalsmengen der
+Groesse zwei und drei werden saemtliche Kombinationen aus unterem 20-%- und
+oberem 20-%-Tail als strikte `AND`-Regeln geprueft. Bereits in den 31
+Faktorenpaaren vorhandene Zweierregeln werden nicht doppelt erzeugt. Das Gitter
+enthaelt damit insgesamt 112 Zweier-Tail- und 448 Dreier-Tail-Kandidaten je
+Entry-Entscheidungsfamilie.
+
 Fuer alle direkten Volume-/Notional-Ratios der Fenster 7, 14, 21, 50 und 100
 werden neben Quantilen feste Grenzen geprueft: 0,5x, 0,75x, 1x, 1,25x, 1,5x,
 2x, 3x, 5x und 10x, jeweils als Unter- und Obergrenze. Damit wird zum Beispiel
@@ -191,7 +202,12 @@ vorab definierte Mehrfaktor-Setups:
 Market Cap wird ausserdem in feste, disjunkte Baender unterteilt: Micro unter
 300 Mio. USD, Small 300 Mio. bis unter 2 Mrd., Mid 2 bis unter 10 Mrd., Large
 10 bis unter 200 Mrd. und Mega ab 200 Mrd. USD. Jedes Band wird allein sowie
-mit niedrigem/hohem Volume/21D und Notional/21D untersucht.
+mit niedrigem/hohem Volume/21D und Notional/21D untersucht. Zusaetzlich wird
+jedes feste Band mit niedrigem/hohem Signaltagsreturn und niedrigem/hohem
+Intraday-Return kombiniert. Diese Regeln werden jeweils noch einmal um einen
+niedrigen/hohen Kontext aus ATR/14D, Gap, Close-Position, Volume/21D oder
+Notional/21D erweitert. Das sind weitere 220 absolute
+Market-Cap-Interaktionen je Entry-Entscheidungsfamilie.
 
 Diese Namen bezeichnen messbare, datenbasierte Annaeherungen an Ideen von
 Minervini, Ryan/O'Neil, Weinstein, Darvas und Zanger. Sie sind keine Behauptung,
@@ -201,13 +217,15 @@ Schaetzungen und Revisionen werden bewusst nicht geraten oder rueckwirkend
 verwendet.
 
 Maximal drei vollstaendige Kandidaten koennen je Outcome mit `OR` verbunden
-werden. Die bisherigen vollstaendigen `AND`-Muster bleiben als Kontrollgruppe
-erhalten. Fuer Drei-Faktor-Muster wird zusaetzlich 2-von-3 und fuer
-Vier-Faktor-Muster 2-von-4 sowie 3-von-4 getestet. Fehlende Komponenten gelten
-nicht als erfuellt; eine k-von-n-Regel benoetigt weiterhin alle Eingangsdaten.
-Auch verworfene, tatsaechlich getestete Kombinationen werden als
-Kandidatenzeilen gespeichert und in der Korrektur fuer multiples Testen
-mitgezaehlt.
+werden. Die vollstaendigen `AND`-Muster bleiben als Kontrollgruppe erhalten.
+Fuer die vordefinierten Chart- und Trader-Muster wird zusaetzlich 2-von-3 und
+fuer Vier-Faktor-Muster 2-von-4 sowie 3-von-4 getestet. Die neuen
+Interaktionsgitter bleiben dagegen bewusst strikte `AND`-Regeln, weil ihre
+Einzel-, Zweier- und Dreierfaelle bereits direkt im Suchraum stehen. Fehlende
+Komponenten gelten nicht als erfuellt; eine k-von-n-Regel benoetigt weiterhin
+alle Eingangsdaten. Auch verworfene, tatsaechlich getestete Kombinationen
+werden als Kandidatenzeilen gespeichert und in der Korrektur fuer multiples
+Testen mitgezaehlt.
 
 Die weichen Scores trennen das bis D-1 bekannte Setup vom Signaltag-Trigger.
 Die Gesamtscores kombinieren beide Teile gewichtet, ohne eine spaetere Kerze
@@ -407,10 +425,12 @@ Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung mit
 AppName und importiert denselben exportierten PostgreSQL-Snapshot. Nur der
 Hauptprozess schreibt die drei Ergebnistabellen. Wegen der zusaetzlichen
 Horizonte, festen Ratio-Grenzen, Management-Objectives, Dreier-OR-Suche und 999
-Permutationen, k-von-n-Muster, 105 Multi-Window-Scores, zwei zusaetzlichen
-gruppenweiten SQL-Auswertungen und der diagnostischen Taxonomie-Kandidaten ist
-V5 bewusst deutlich rechenintensiver als V4. Die taeglichen Gruppenaggregate
-werden mit PostgreSQL `GROUPING SETS` in einem gemeinsamen Quellscan berechnet.
+Permutationen, k-von-n-Muster, 105 Multi-Window-Scores, 764 zusaetzlichen
+Signaltags-/Kontextinteraktionen je Entry-Entscheidungsfamilie, zwei
+zusaetzlichen gruppenweiten SQL-Auswertungen und der diagnostischen
+Taxonomie-Kandidaten ist V5 bewusst deutlich rechenintensiver als V4. Die
+taeglichen Gruppenaggregate werden mit PostgreSQL `GROUPING SETS` in einem
+gemeinsamen Quellscan berechnet.
 
 ## Tests
 
