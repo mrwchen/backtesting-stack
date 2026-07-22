@@ -100,6 +100,13 @@ def _normalized_sql(sql_text: str) -> str:
     return " ".join(sql_text.split())
 
 
+def test_result_column_names_fit_postgresql_identifier_limit() -> None:
+    for columns in (SIGNAL_COLUMNS, EARLY_CUT_COLUMNS, RULE_COLUMNS):
+        encoded = [column.encode("utf-8") for column in columns]
+        assert all(len(column) <= 63 for column in encoded)
+        assert len({column[:63] for column in encoded}) == len(columns)
+
+
 def test_init_sql_is_the_complete_runtime_contract() -> None:
     sql_text = (PROJECT_ROOT / "init" / "schema.sql").read_text(encoding="utf-8")
     signal_table = "stock_analyser_filter_research_signal_results"

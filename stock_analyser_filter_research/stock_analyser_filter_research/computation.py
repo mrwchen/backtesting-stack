@@ -1229,8 +1229,8 @@ def build_current_taxonomy_backcast_context(
         result[column] = pd.to_numeric(result[column], errors="coerce").astype(float)
     level_minimums = {
         "industry": cfg.taxonomy_backcast_industry_min_members,
-        "category_path": cfg.taxonomy_backcast_category_min_members,
-        "subcategory_path": cfg.taxonomy_backcast_subcategory_min_members,
+        "category": cfg.taxonomy_backcast_category_min_members,
+        "subcategory": cfg.taxonomy_backcast_subcategory_min_members,
     }
     eligible_count_by_metric = {
         **{
@@ -1395,7 +1395,7 @@ def enrich_current_taxonomy_backcast_features(
             "market_date": "signal_date",
             **{column: label_mapping[column] for column in source_label_columns},
             **{
-                suffix: f"current_taxonomy_backcast_{level}_{suffix}"
+                suffix: f"ibkr_taxbc_{level}_{suffix}"
                 for suffix in context_metric_columns
             },
         }

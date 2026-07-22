@@ -140,6 +140,9 @@ Deshalb wird die heutige Zuordnung rueckwirkend nur als Hypothesengenerator
 verwendet. Sie darf unabhaengig von Lift, Stabilitaet oder korrigiertem
 p-Wert weder `include_final` noch `strong_confirmation` beeinflussen und wird
 in der Regeltabelle immer als nicht ausgewaehlter `candidate_rule` gespeichert.
+Die zugehoerigen Signalspalten beginnen mit `ibkr_taxbc_`; `taxbc` steht fuer
+Taxonomy Backcast. `category` und `subcategory` in diesen Namen bezeichnen
+immer den vollstaendigen Pfad ab Industry und keine losgeloeste Einzelgruppe.
 
 Pro Handelstag und Hierarchieebene werden folgende Gruppenmerkmale berechnet:
 

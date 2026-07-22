@@ -169,16 +169,16 @@ CURRENT_TAXONOMY_SOURCE_COLUMNS = (
 )
 
 CURRENT_TAXONOMY_BACKCAST_LABEL_COLUMNS = (
-    "current_taxonomy_backcast_industry",
-    "current_taxonomy_backcast_category",
-    "current_taxonomy_backcast_subcategory",
+    "ibkr_taxbc_industry",
+    "ibkr_taxbc_category",
+    "ibkr_taxbc_subcategory",
 )
 
 CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS = (
     ("industry", ("ibkr_industry",)),
-    ("category_path", ("ibkr_industry", "ibkr_category")),
+    ("category", ("ibkr_industry", "ibkr_category")),
     (
-        "subcategory_path",
+        "subcategory",
         ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
     ),
 )
@@ -217,13 +217,13 @@ CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES = (
 )
 
 CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS = tuple(
-    f"current_taxonomy_backcast_{level}_{suffix}"
+    f"ibkr_taxbc_{level}_{suffix}"
     for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
 )
 
 CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS = tuple(
-    f"current_taxonomy_backcast_{level}_{suffix}"
+    f"ibkr_taxbc_{level}_{suffix}"
     for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     for suffix in (
         "group_member_count",
@@ -233,7 +233,7 @@ CURRENT_TAXONOMY_BACKCAST_INTEGER_COLUMNS = tuple(
 )
 
 CURRENT_TAXONOMY_BACKCAST_UNIT_INTERVAL_COLUMNS = tuple(
-    f"current_taxonomy_backcast_{level}_{suffix}"
+    f"ibkr_taxbc_{level}_{suffix}"
     for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
     if suffix.endswith("_ratio")
@@ -242,7 +242,7 @@ CURRENT_TAXONOMY_BACKCAST_UNIT_INTERVAL_COLUMNS = tuple(
 )
 
 CURRENT_TAXONOMY_BACKCAST_CHANGE_COLUMNS = tuple(
-    f"current_taxonomy_backcast_{level}_{suffix}"
+    f"ibkr_taxbc_{level}_{suffix}"
     for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     for suffix in CURRENT_TAXONOMY_BACKCAST_METRIC_SUFFIXES
     if "_change_" in suffix
@@ -285,7 +285,7 @@ CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS = (
     "signal_date",
     *IDENTITY_COLUMNS,
     *(
-        f"current_taxonomy_backcast_{level}_stock_rs_raw_pct_rank"
+        f"ibkr_taxbc_{level}_stock_rs_raw_pct_rank"
         for level, _label_columns in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     ),
 )

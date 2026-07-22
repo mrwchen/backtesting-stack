@@ -1417,9 +1417,9 @@ def test_current_taxonomy_context_ranks_masks_and_enriches_signals(
         "symbol": "ABC",
         "exchange": "NYSE",
         "cik": 123,
-        "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank": 0.90,
-        "current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank": 0.80,
-        "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank": 0.70,
+        "ibkr_taxbc_industry_stock_rs_raw_pct_rank": 0.90,
+        "ibkr_taxbc_category_stock_rs_raw_pct_rank": 0.80,
+        "ibkr_taxbc_subcategory_stock_rs_raw_pct_rank": 0.70,
     }
     ranks = pd.DataFrame(
         [[rank_values[column] for column in CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS]],
@@ -1431,16 +1431,16 @@ def test_current_taxonomy_context_ranks_masks_and_enriches_signals(
     )
 
     assert tuple(enriched.columns) == SIGNAL_COLUMNS
-    assert enriched.loc[0, "current_taxonomy_backcast_industry"] == "Technology"
+    assert enriched.loc[0, "ibkr_taxbc_industry"] == "Technology"
     assert enriched.loc[
-        0, "current_taxonomy_backcast_industry_group_return_63d_pct_rank"
+        0, "ibkr_taxbc_industry_group_return_63d_pct_rank"
     ] == pytest.approx(1.0)
     assert enriched.loc[
-        0, "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank"
+        0, "ibkr_taxbc_industry_stock_rs_raw_pct_rank"
     ] == pytest.approx(0.90)
     assert pd.isna(
         enriched.loc[
             0,
-            "current_taxonomy_backcast_category_path_group_return_63d_pct_rank",
+            "ibkr_taxbc_category_group_return_63d_pct_rank",
         ]
     )

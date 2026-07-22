@@ -2044,8 +2044,8 @@ def _taxonomy_group_aggregate_sql() -> sql.SQL:
             period_end_date,
             CASE
                 WHEN GROUPING(ibkr_category) = 1 THEN 'industry'
-                WHEN GROUPING(ibkr_subcategory) = 1 THEN 'category_path'
-                ELSE 'subcategory_path'
+                WHEN GROUPING(ibkr_subcategory) = 1 THEN 'category'
+                ELSE 'subcategory'
             END::text,
             ibkr_industry,
             ibkr_category,
@@ -2286,7 +2286,7 @@ def _stock_group_rank_sql(
         partition=partition,
         tie_partition=tie_partition,
         alias=sql.Identifier(
-            f"current_taxonomy_backcast_{level}_stock_rs_raw_pct_rank"
+            f"ibkr_taxbc_{level}_stock_rs_raw_pct_rank"
         ),
     )
 
@@ -2300,10 +2300,10 @@ def load_current_taxonomy_backcast_member_ranks(
         (
             _stock_group_rank_sql("industry", ("ibkr_industry",)),
             _stock_group_rank_sql(
-                "category_path", ("ibkr_industry", "ibkr_category")
+                "category", ("ibkr_industry", "ibkr_category")
             ),
             _stock_group_rank_sql(
-                "subcategory_path",
+                "subcategory",
                 ("ibkr_industry", "ibkr_category", "ibkr_subcategory"),
             ),
         )
@@ -2340,9 +2340,9 @@ def load_current_taxonomy_backcast_member_ranks(
             FROM classified
         )
         SELECT period_end_date, symbol, exchange, cik,
-               current_taxonomy_backcast_industry_stock_rs_raw_pct_rank,
-               current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank,
-               current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank
+               ibkr_taxbc_industry_stock_rs_raw_pct_rank,
+               ibkr_taxbc_category_stock_rs_raw_pct_rank,
+               ibkr_taxbc_subcategory_stock_rs_raw_pct_rank
         FROM ranked
         WHERE trend_template_pass IS TRUE
           AND prior_trend_template_pass IS FALSE

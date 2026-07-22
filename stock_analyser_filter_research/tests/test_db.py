@@ -724,9 +724,9 @@ def test_current_taxonomy_and_group_diagnostic_loaders_are_normalized(
         "symbol": "ABC",
         "exchange": "NYSE",
         "cik": 123,
-        "current_taxonomy_backcast_industry_stock_rs_raw_pct_rank": 0.9,
-        "current_taxonomy_backcast_category_path_stock_rs_raw_pct_rank": 0.8,
-        "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank": 0.7,
+        "ibkr_taxbc_industry_stock_rs_raw_pct_rank": 0.9,
+        "ibkr_taxbc_category_stock_rs_raw_pct_rank": 0.8,
+        "ibkr_taxbc_subcategory_stock_rs_raw_pct_rank": 0.7,
     }
     rank_connection = _StreamingConnection(
         [
@@ -740,7 +740,7 @@ def test_current_taxonomy_and_group_diagnostic_loaders_are_normalized(
     ranks = db.load_current_taxonomy_backcast_member_ranks(rank_connection, cfg)
 
     assert ranks.loc[
-        0, "current_taxonomy_backcast_subcategory_path_stock_rs_raw_pct_rank"
+        0, "ibkr_taxbc_subcategory_stock_rs_raw_pct_rank"
     ] == pytest.approx(0.7)
     rank_statement, rank_parameters = rank_connection.executed[0]
     assert cfg.security_master_current_table in rank_statement

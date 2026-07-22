@@ -697,7 +697,7 @@ def build_current_taxonomy_backcast_templates(
                     )
 
     def feature_group(feature: str) -> str:
-        if feature.startswith("current_taxonomy_backcast_"):
+        if feature.startswith("ibkr_taxbc_"):
             return "G"
         if feature == "adjusted_volume_vs_sma21_prior_ratio":
             return "A"
@@ -709,7 +709,7 @@ def build_current_taxonomy_backcast_templates(
 
     pair_features: list[tuple[str, str, str]] = []
     for level, _labels in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS:
-        base = f"current_taxonomy_backcast_{level}_"
+        base = f"ibkr_taxbc_{level}_"
         pair_features.extend(
             (
                 (
@@ -810,7 +810,7 @@ def build_current_taxonomy_backcast_templates(
                 )
 
     hierarchy_features = tuple(
-        f"current_taxonomy_backcast_{level}_group_rs_raw_pct_rank"
+        f"ibkr_taxbc_{level}_group_rs_raw_pct_rank"
         for level, _labels in CURRENT_TAXONOMY_BACKCAST_LEVEL_SPECS
     )
     for direction, operator, quantile in (
