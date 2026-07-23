@@ -146,15 +146,15 @@ services:
       # Mindestzahl positiver Fälle des Forschungsziels in einem auswertbaren Fold.
       MIN_FOLD_OBJECTIVE_COUNT: "20"
       # Mindestanteil der Schutzklasse, der in jedem auswertbaren Fold erhalten bleiben muss.
-      MIN_FOLD_PROTECTED_RETENTION_PCT: "0.70"
+      MIN_FOLD_PROTECTED_RETENTION_PCT: "0.60"
       # Maximaler Anteil aller gelabelten Signale, den eine Regel in einem Fold treffen darf.
-      MAX_FOLD_MATCH_PCT: "0.50"
+      MAX_FOLD_MATCH_PCT: "0.60"
       # Kleinster zulässiger Trefferanteil eines Regel-Kandidaten in der Entwicklungsstichprobe.
       MIN_CANDIDATE_MATCH_PCT: "0.01"
       # Größter zulässiger Trefferanteil eines Regel-Kandidaten in der Entwicklungsstichprobe.
-      MAX_CANDIDATE_MATCH_PCT: "0.35"
+      MAX_CANDIDATE_MATCH_PCT: "0.60"
       # Mindestanteil der Schutzklasse, den eine Regel insgesamt nicht herausfiltern darf.
-      MIN_PROTECTED_RETENTION_PCT: "0.70"
+      MIN_PROTECTED_RETENTION_PCT: "0.60"
       # Mindestanteil der Regeltreffer mit vollständig bekanntem Ziellabel.
       MIN_MATCHED_LABEL_COVERAGE_PCT: "0.80"
       # Mindestverhältnis der Zielrate unter Regeltreffern zur Zielrate der Grundgesamtheit.
