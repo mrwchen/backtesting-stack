@@ -349,7 +349,7 @@ def _market_query(cfg: Config) -> sql.Composed:
                  AND f.adjusted_close > 0
                 THEN f.atr_value / f.adjusted_close * 100.0
                 ELSE NULL
-            END AS atr14_pct,
+            END AS atr_pct,
             CASE
                 WHEN f.prior_high_observation_count_raw = {high_lookback}
                  AND f.session_number - f.high_boundary_session_number = {high_lookback}

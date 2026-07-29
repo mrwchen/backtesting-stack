@@ -43,7 +43,7 @@ class Bar:
     adjusted_high: Decimal | None
     adjusted_low: Decimal | None
     adjusted_close: Decimal | None
-    atr14_pct: Decimal | None
+    atr_pct: Decimal | None
     prior_high_observation_count: int
     prior_max_adjusted_high: Decimal | None
     analyser: Mapping[str, Any] | None = None
@@ -77,7 +77,7 @@ class Bar:
             adjusted_high=_decimal(row.get("adjusted_high")),
             adjusted_low=_decimal(row.get("adjusted_low")),
             adjusted_close=_decimal(row.get("adjusted_close")),
-            atr14_pct=_decimal(row.get("atr14_pct")),
+            atr_pct=_decimal(row.get("atr_pct")),
             prior_high_observation_count=int(
                 row.get("prior_high_observation_count") or 0
             ),
@@ -236,14 +236,14 @@ def _exit_trigger(
     if _positive(bar.adjusted_close):
         if (
             position.holding_sessions == 1
-            and bar.atr14_pct is not None
-            and bar.atr14_pct <= strategy.atr_day1_exit_max_pct
+            and bar.atr_pct is not None
+            and bar.atr_pct <= strategy.atr_day1_exit_max_pct
         ):
             return "atr_day1", bar.adjusted_close, stop_price, take_profit_price
         if (
             position.holding_sessions == 2
-            and bar.atr14_pct is not None
-            and bar.atr14_pct <= strategy.atr_day2_exit_max_pct
+            and bar.atr_pct is not None
+            and bar.atr_pct <= strategy.atr_day2_exit_max_pct
         ):
             return "atr_day2", bar.adjusted_close, stop_price, take_profit_price
     return None
@@ -283,9 +283,9 @@ def _signal_row(bar: Bar) -> dict[str, Any]:
         "selection_rank": None,
         "decision": None,
         "selected": False,
-        "prior_10d_observation_count": bar.prior_high_observation_count,
-        "prior_10d_max_adjusted_high": bar.prior_max_adjusted_high,
-        "prior_10d_limit_adjusted_price": None,
+        "prior_high_observation_count": bar.prior_high_observation_count,
+        "prior_max_adjusted_high": bar.prior_max_adjusted_high,
+        "prior_high_limit_adjusted_price": None,
         "account_equity_before_entry_usd": None,
         "available_cash_before_entry_usd": None,
         "risk_budget_usd": None,
@@ -443,7 +443,7 @@ def _process_new_entries(
             * (ONE_HUNDRED + strategy.prior_high_max_above_signal_close_pct)
             / ONE_HUNDRED
         )
-        decision["prior_10d_limit_adjusted_price"] = limit_price
+        decision["prior_high_limit_adjusted_price"] = limit_price
         if bar.prior_high_observation_count < strategy.prior_high_lookback_sessions:
             decision["decision"] = "prior_high_history_incomplete"
             signal_decisions.append(decision)

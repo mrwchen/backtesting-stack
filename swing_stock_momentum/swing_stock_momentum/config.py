@@ -99,16 +99,10 @@ class StrategyParameters:
             raise ValueError("stop and take-profit step percentages must be positive")
         if self.atr_period_sessions < 1:
             raise ValueError("ATR_PERIOD_SESSIONS must be >= 1")
-        if self.atr_period_sessions != 14:
-            raise ValueError("ATR_PERIOD_SESSIONS must be 14 for this strategy")
         if self.atr_day1_exit_max_pct < 0 or self.atr_day2_exit_max_pct < 0:
             raise ValueError("ATR exit thresholds must be non-negative")
         if self.prior_high_lookback_sessions < 1:
             raise ValueError("PRIOR_HIGH_LOOKBACK_SESSIONS must be >= 1")
-        if self.prior_high_lookback_sessions != 10:
-            raise ValueError(
-                "PRIOR_HIGH_LOOKBACK_SESSIONS must be 10 for this strategy"
-            )
         if self.prior_high_max_above_signal_close_pct < 0:
             raise ValueError("PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT must be >= 0")
         if self.min_daily_price_change_pct >= self.max_daily_price_change_pct_exclusive:

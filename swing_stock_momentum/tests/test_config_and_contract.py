@@ -38,6 +38,18 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.pg_app_name == "swing_stock_momentum"
 
 
+def test_high_lookback_and_atr_period_are_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRIOR_HIGH_LOOKBACK_SESSIONS", "15")
+    monkeypatch.setenv("ATR_PERIOD_SESSIONS", "20")
+
+    cfg = Config.from_env()
+
+    assert cfg.strategy.prior_high_lookback_sessions == 15
+    assert cfg.strategy.atr_period_sessions == 20
+
+
 def test_logging_is_compact_positional_utc(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging("INFO")
     logging.getLogger("contract-test").info("hello")

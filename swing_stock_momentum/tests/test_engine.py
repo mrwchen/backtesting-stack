@@ -100,7 +100,7 @@ def bar(
         adjusted_high=D(high),
         adjusted_low=D(low),
         adjusted_close=D(close),
-        atr14_pct=D(atr) if atr is not None else None,
+        atr_pct=D(atr) if atr is not None else None,
         prior_high_observation_count=prior_count,
         prior_max_adjusted_high=D(prior_high) if prior_high else None,
         analyser=signal,

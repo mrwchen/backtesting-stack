@@ -9,12 +9,13 @@ vollständig zwischen Core-Daten und Analyzer abgeglichenen Handelstag.
 ## Entry
 
 Eine Zeile ist zunächst Kandidat, wenn alle acht Trend-Template-Kriterien wahr
-sind, `daily_price_change_pct >= 1` und `< 5` ist sowie
-`adjusted_volume_vs_sma21_prior_ratio > 1.2` ist. Zusätzlich müssen die zehn
-unmittelbar vorherigen globalen Handelssessions für dieselbe Identität und
-denselben `price_continuity_segment` vollständig sein. Kein `adjusted_high`
-dieser zehn Sessions darf mehr als 10 % über dem adjustierten Close des
-Signaltages liegen.
+sind, `daily_price_change_pct` innerhalb der konfigurierten Grenzen liegt und
+`adjusted_volume_vs_sma21_prior_ratio` die konfigurierte Untergrenze
+überschreitet. Zusätzlich müssen genau so viele unmittelbar vorherige globale
+Handelssessions vollständig sein, wie `PRIOR_HIGH_LOOKBACK_SESSIONS` vorgibt.
+Kein `adjusted_high` dieser Sessions darf den mit
+`PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT` festgelegten Abstand über dem
+adjustierten Signal-Close überschreiten.
 
 Aus allen gültigen Kandidaten werden bei freien Portfolio-Slots zuerst das
 höhere relative Volumen, dann die höhere Tagesrendite und schließlich Symbol,
@@ -51,9 +52,10 @@ Handelstag gilt strikt:
 3. Ist die Position danach noch offen, wird sie an D+1 bei ATR/14 <= 1,5 %
    beziehungsweise an D+2 bei ATR/14 <= 2 % zum Close verkauft.
 
-ATR/14 ist der einfache Mittelwert der True Range der aktuellen und 13
-vorherigen vollständigen, zusammenhängenden Handelssessions, geteilt durch den
-aktuellen adjustierten Close. Die anfänglichen Levels liegen bei -5 % und
+Der ATR ist der einfache Mittelwert der True Range über die mit
+`ATR_PERIOD_SESSIONS` konfigurierte Zahl vollständiger, zusammenhängender
+Handelssessions, geteilt durch den aktuellen adjustierten Close. Die
+anfänglichen Levels liegen bei -5 % und
 +10 % vom Entry-Fill. Nach jedem vollständigen Fünf-Tage-Block steigen sie ab
 der nächsten Session erneut um 5 beziehungsweise 7,5 Prozentpunkte: D+1 bis
 D+5 `-5/+10`, D+6 bis D+10 `0/+17,5`, D+11 bis D+15 `+5/+25` und so weiter.
