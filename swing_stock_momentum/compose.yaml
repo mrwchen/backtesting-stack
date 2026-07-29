@@ -135,7 +135,7 @@ services:
       # Inklusive Untergrenze der Tageskursänderung eines Entry-Signals in Prozent.
       MIN_DAILY_PRICE_CHANGE_PCT: "2.0"
       # Exklusive Obergrenze der Tageskursänderung eines Entry-Signals in Prozent.
-      MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "10"
+      MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "8"
       # Exklusive Untergrenze für Tagesvolumen geteilt durch den vorherigen 21-Tage-Durchschnitt.
       MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE: "1.3"
 

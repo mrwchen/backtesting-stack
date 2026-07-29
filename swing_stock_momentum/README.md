@@ -81,6 +81,16 @@ gewünschten Nachvollziehbarkeit in die Signaltabelle kopiert. Keine Entry-,
 Exit-, Ranking- oder Sizing-Entscheidung liest diese Spalten. Spätere
 Fundamentaldaten werden ebenfalls nicht nachträglich verbunden.
 
+Für große Zeiträume werden die Quelldaten innerhalb desselben wiederholbar
+lesbaren DB-Snapshots über zwei getrennte Ströme verarbeitet. Der breite
+Analyzer-Datensatz wird bereits in PostgreSQL auf tatsächliche Entry-Kandidaten
+gefiltert. Der vollständige Analyzer-Inhalt wird daher nur für diese Kandidaten
+geladen. Alle übrigen Zeilen laufen als kompakter Kursstrom mit den für
+Bewertung, ATR und vorheriges Hoch erforderlichen zwölf Feldern. Datum, Symbol,
+Börse und CIK verbinden beide Ströme deterministisch. Dadurch bleiben
+Entscheidungen und Nachvollziehbarkeit unverändert, ohne die breiten
+Analyzer-Werte für jede Nicht-Signal-Zeile nach Python zu übertragen.
+
 ## Ergebnistabellen
 
 - `backtest_momentum_runs`: Ergebniskennzahlen, Source-Watermarks und alle

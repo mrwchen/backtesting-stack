@@ -53,35 +53,26 @@ class Bar:
         return self.symbol, self.exchange, self.cik
 
     @classmethod
-    def from_mapping(cls, row: Mapping[str, Any]) -> "Bar":
-        analyser_date = row.get("analyser__period_end_date")
-        analyser: dict[str, Any] | None = None
-        if analyser_date is not None:
-            analyser = {
-                column: row.get(f"analyser__{column}")
-                for column in (
-                    "period_end_date",
-                    "symbol",
-                    "exchange",
-                    "cik",
-                    *ANALYSER_PAYLOAD_COLUMNS,
-                )
-            }
+    def from_market_row(
+        cls,
+        row: Sequence[Any],
+        analyser: Mapping[str, Any] | None,
+    ) -> "Bar":
+        if len(row) != 12:
+            raise ValueError(f"market row must contain 12 columns, got {len(row)}")
         return cls(
-            period_end_date=row["period_end_date"],
-            symbol=str(row["symbol"]),
-            exchange=str(row["exchange"]),
-            cik=int(row["cik"]),
-            price_continuity_segment=int(row["price_continuity_segment"]),
-            adjusted_open=_decimal(row.get("adjusted_open")),
-            adjusted_high=_decimal(row.get("adjusted_high")),
-            adjusted_low=_decimal(row.get("adjusted_low")),
-            adjusted_close=_decimal(row.get("adjusted_close")),
-            atr_pct=_decimal(row.get("atr_pct")),
-            prior_high_observation_count=int(
-                row.get("prior_high_observation_count") or 0
-            ),
-            prior_max_adjusted_high=_decimal(row.get("prior_max_adjusted_high")),
+            period_end_date=row[0],
+            symbol=str(row[1]),
+            exchange=str(row[2]),
+            cik=int(row[3]),
+            price_continuity_segment=int(row[4]),
+            adjusted_open=_decimal(row[5]),
+            adjusted_high=_decimal(row[6]),
+            adjusted_low=_decimal(row[7]),
+            adjusted_close=_decimal(row[8]),
+            atr_pct=_decimal(row[9]),
+            prior_high_observation_count=int(row[10] or 0),
+            prior_max_adjusted_high=_decimal(row[11]),
             analyser=analyser,
         )
 

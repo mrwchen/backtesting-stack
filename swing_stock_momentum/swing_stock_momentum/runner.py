@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+from time import perf_counter
 from uuid import uuid4
 
 from .config import Config
@@ -24,6 +25,7 @@ log = logging.getLogger(__name__)
 def run(cfg: Config) -> str:
     run_id = str(uuid4())
     started_at = datetime.now(timezone.utc)
+    run_started = perf_counter()
     log.info(
         "Backtest %s starting: requested start %s, capital %.2f USD, "
         "max %d new positions per day and %d open positions",
@@ -101,13 +103,14 @@ def run(cfg: Config) -> str:
             connection.commit()
             log.info(
                 "Backtest %s completed through %s: equity %.2f USD, return %.4f%%, "
-                "%d closed and %d open trades",
+                "%d closed and %d open trades in %.1f seconds",
                 run_id,
                 result.end_date,
                 result.ending_equity_usd,
                 result.total_return_pct,
                 result.closed_trade_count,
                 result.open_trade_count,
+                perf_counter() - run_started,
             )
             return run_id
         except Exception:

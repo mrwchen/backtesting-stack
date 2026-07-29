@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import logging
+from time import perf_counter
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import psycopg2
@@ -13,6 +14,7 @@ from psycopg2.extras import RealDictCursor, execute_values
 from .config import Config
 from .contracts import (
     ANALYSER_COLUMNS,
+    ANALYSER_CRITERION_COLUMNS,
     EQUITY_RESULT_COLUMNS,
     RUN_RESULT_COLUMNS,
     SIGNAL_RESULT_COLUMNS,
@@ -25,6 +27,7 @@ from .engine import BacktestResult, Bar
 log = logging.getLogger(__name__)
 ADVISORY_LOCK_KEY = 8_614_026_001
 ANALYSER_STATE_NAME = "stock_analyser"
+CandidateKey = tuple[date, str, str, int]
 
 
 @dataclass(frozen=True)
@@ -253,16 +256,94 @@ def read_snapshot_metadata(
     )
 
 
-def _market_query(cfg: Config) -> sql.Composed:
+def _candidate_query(cfg: Config) -> sql.Composed:
     source = _qualified_identifier(cfg.source_market_table)
     analyser = _qualified_identifier(cfg.source_analyser_table)
     analyser_select = sql.SQL(",\n            ").join(
-        sql.SQL("a.{column} AS {alias}").format(
-            column=sql.Identifier(column),
-            alias=sql.Identifier(f"analyser__{column}"),
-        )
+        sql.SQL("a.{column}").format(column=sql.Identifier(column))
         for column in ANALYSER_COLUMNS
     )
+    criterion_filter = sql.SQL("\n          AND ").join(
+        sql.SQL("a.{column} IS TRUE").format(column=sql.Identifier(column))
+        for column in ANALYSER_CRITERION_COLUMNS
+    )
+    return sql.SQL(
+        """
+        SELECT
+            {analyser_select}
+        FROM {analyser} a
+        JOIN {source} s
+          ON s.period_end_date = a.period_end_date
+         AND s.symbol = a.symbol
+         AND s.exchange = a.exchange
+         AND s.cik = a.cik
+         AND s.price_continuity_segment = a.price_continuity_segment
+        WHERE a.period_end_date BETWEEN %s AND %s
+          AND a.currency = %s
+          AND a.trend_template_pass IS TRUE
+          AND {criterion_filter}
+          AND a.daily_price_change_pct >= %s
+          AND a.daily_price_change_pct < %s
+          AND a.adjusted_volume_vs_sma21_prior_ratio > %s
+        """
+    ).format(
+        analyser_select=analyser_select,
+        analyser=analyser,
+        source=source,
+        criterion_filter=criterion_filter,
+    )
+
+
+def _load_analyser_candidates(
+    connection: psycopg2.extensions.connection,
+    cfg: Config,
+    metadata: SnapshotMetadata,
+) -> dict[CandidateKey, dict[str, Any]]:
+    started = perf_counter()
+    candidates: dict[CandidateKey, dict[str, Any]] = {}
+    cursor_name = (
+        "backtest_momentum_candidates_"
+        f"{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+    )
+    log.info(
+        "Loading prefiltered analyser candidates from %s through %s",
+        cfg.strategy.requested_start_date,
+        metadata.end_date,
+    )
+    with connection.cursor(name=cursor_name, cursor_factory=RealDictCursor) as cursor:
+        cursor.itersize = cfg.db_fetch_batch_size
+        cursor.execute(
+            _candidate_query(cfg),
+            (
+                cfg.strategy.requested_start_date,
+                metadata.end_date,
+                cfg.strategy.currency,
+                cfg.strategy.min_daily_price_change_pct,
+                cfg.strategy.max_daily_price_change_pct_exclusive,
+                cfg.strategy.min_volume_vs_sma21_ratio_exclusive,
+            ),
+        )
+        for raw_row in cursor:
+            row = dict(raw_row)
+            key = (
+                row["period_end_date"],
+                str(row["symbol"]),
+                str(row["exchange"]),
+                int(row["cik"]),
+            )
+            if key in candidates:
+                raise RuntimeError(f"duplicate analyser candidate identity: {key}")
+            candidates[key] = row
+    log.info(
+        "Loaded %d prefiltered analyser candidates in %.1f seconds",
+        len(candidates),
+        perf_counter() - started,
+    )
+    return candidates
+
+
+def _market_query(cfg: Config) -> sql.Composed:
+    source = _qualified_identifier(cfg.source_market_table)
     atr_preceding = sql.Literal(cfg.strategy.atr_period_sessions - 1)
     atr_lag = sql.Literal(cfg.strategy.atr_period_sessions)
     high_lookback = sql.Literal(cfg.strategy.prior_high_lookback_sessions)
@@ -361,21 +442,13 @@ def _market_query(cfg: Config) -> sql.Composed:
                  AND f.session_number - f.high_boundary_session_number = {high_lookback}
                 THEN f.prior_max_adjusted_high_raw
                 ELSE NULL
-            END AS prior_max_adjusted_high,
-            {analyser_select}
+            END AS prior_max_adjusted_high
         FROM featured f
-        LEFT JOIN {analyser} a
-          ON a.period_end_date = f.period_end_date
-         AND a.symbol = f.symbol
-         AND a.exchange = f.exchange
-         AND a.cik = f.cik
         WHERE f.period_end_date BETWEEN %s AND %s
         ORDER BY f.period_end_date, f.symbol, f.exchange, f.cik
         """
     ).format(
         source=source,
-        analyser=analyser,
-        analyser_select=analyser_select,
         atr_preceding=atr_preceding,
         atr_lag=atr_lag,
         high_lookback=high_lookback,
@@ -387,8 +460,22 @@ def iter_market_days(
     cfg: Config,
     metadata: SnapshotMetadata,
 ) -> Iterator[tuple[date, tuple[Bar, ...]]]:
-    cursor_name = f"backtest_momentum_source_{datetime.utcnow().strftime('%H%M%S%f')}"
-    with connection.cursor(name=cursor_name, cursor_factory=RealDictCursor) as cursor:
+    candidates = _load_analyser_candidates(connection, cfg, metadata)
+    initial_candidate_count = len(candidates)
+    streamed_row_count = 0
+    attached_candidate_count = 0
+    database_fetch_seconds = 0.0
+    started = perf_counter()
+    cursor_name = (
+        "backtest_momentum_source_"
+        f"{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+    )
+    log.info(
+        "Streaming compact market rows from %s through %s",
+        metadata.lookback_start_date,
+        metadata.end_date,
+    )
+    with connection.cursor(name=cursor_name) as cursor:
         cursor.itersize = cfg.db_fetch_batch_size
         cursor.execute(
             _market_query(cfg),
@@ -401,15 +488,45 @@ def iter_market_days(
         )
         current_date: date | None = None
         bars: list[Bar] = []
-        for row in cursor:
-            row_date = row["period_end_date"]
-            if current_date is not None and row_date != current_date:
-                yield current_date, tuple(bars)
-                bars = []
-            current_date = row_date
-            bars.append(Bar.from_mapping(row))
+        while True:
+            fetch_started = perf_counter()
+            rows = cursor.fetchmany(cfg.db_fetch_batch_size)
+            database_fetch_seconds += perf_counter() - fetch_started
+            if not rows:
+                break
+            for row in rows:
+                streamed_row_count += 1
+                row_date = row[0]
+                if current_date is not None and row_date != current_date:
+                    yield current_date, tuple(bars)
+                    bars = []
+                current_date = row_date
+                candidate_key = (
+                    row_date,
+                    str(row[1]),
+                    str(row[2]),
+                    int(row[3]),
+                )
+                analyser = candidates.pop(candidate_key, None)
+                if analyser is not None:
+                    attached_candidate_count += 1
+                bars.append(Bar.from_market_row(row, analyser))
         if current_date is not None:
             yield current_date, tuple(bars)
+    if candidates:
+        sample = next(iter(candidates))
+        raise RuntimeError(
+            f"{len(candidates)} analyser candidates had no market row; first: {sample}"
+        )
+    log.info(
+        "Streamed %d compact market rows and attached %d of %d candidates in %.1f "
+        "seconds, including %.1f seconds waiting for database fetches",
+        streamed_row_count,
+        attached_candidate_count,
+        initial_candidate_count,
+        perf_counter() - started,
+        database_fetch_seconds,
+    )
 
 
 def _insert_rows(
