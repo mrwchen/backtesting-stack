@@ -100,7 +100,9 @@ services:
       # Startkapital des unlevered Kontos in US-Dollar.
       STARTING_CAPITAL_USD: "30000"
       # Maximale Anzahl gleichzeitig offener Positionen.
-      MAX_POSITIONS: "2"
+      MAX_POSITIONS: "5"
+      # Maximale Anzahl tatsächlich ausgeführter Neueröffnungen je Handelstag.
+      MAX_NEW_POSITIONS_PER_DAY: "2"
       # Maximales Verlustbudget je neuem Trade in Prozent des aktuellen Account-Equity.
       RISK_PER_POSITION_PCT: "1"
 

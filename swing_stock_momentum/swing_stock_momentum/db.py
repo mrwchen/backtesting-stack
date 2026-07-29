@@ -481,6 +481,7 @@ def build_run_row(
         "ranking_policy": "volume_ratio_desc_return_desc_symbol_asc",
         "symbol_reentry_policy": "allowed_after_exit",
         "max_positions": strategy.max_positions,
+        "max_new_positions_per_day": strategy.max_new_positions_per_day,
         "risk_per_position_pct": strategy.risk_per_position_pct,
         "initial_stop_loss_pct": strategy.initial_stop_loss_pct,
         "stop_step_interval_sessions": strategy.stop_step_interval_sessions,

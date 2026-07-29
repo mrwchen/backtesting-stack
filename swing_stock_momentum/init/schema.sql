@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     ranking_policy                             TEXT NOT NULL,
     symbol_reentry_policy                      TEXT NOT NULL,
     max_positions                              SMALLINT NOT NULL,
+    max_new_positions_per_day                  SMALLINT NOT NULL,
     risk_per_position_pct                      NUMERIC(12,8) NOT NULL,
     initial_stop_loss_pct                      NUMERIC(12,8) NOT NULL,
     stop_step_interval_sessions                SMALLINT NOT NULL,
@@ -114,6 +115,8 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     CHECK (ending_cash_usd >= 0),
     CHECK (ending_market_value_usd >= 0),
     CHECK (max_positions > 0),
+    CHECK (max_new_positions_per_day > 0),
+    CHECK (max_new_positions_per_day <= max_positions),
     CHECK (risk_per_position_pct > 0),
     CHECK (initial_stop_loss_pct < 0),
     CHECK (initial_take_profit_pct > 0),
@@ -218,6 +221,7 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_signals (
             'prior_high_limit_exceeded',
             'symbol_already_open',
             'position_limit_reached',
+            'daily_entry_limit_reached',
             'risk_budget_below_one_share',
             'insufficient_cash'
         )

@@ -19,12 +19,14 @@ adjustierten Signal-Close überschreiten.
 
 Aus allen gültigen Kandidaten werden bei freien Portfolio-Slots zuerst das
 höhere relative Volumen, dann die höhere Tagesrendite und schließlich Symbol,
-Börse und CIK aufsteigend berücksichtigt. Maximal zwei Symbole können
-gleichzeitig offen sein. Eine Position wird mit ganzen Aktien zum adjustierten
-Close eröffnet. Das Stückzahlrisiko einschließlich konfigurierbarer Kosten und
-Slippage überschreitet beim anfänglichen Stop nie 1 % des jeweils aktuellen
-Account-Equity. Da das Konto `unlevered` ist, begrenzt das vorhandene Cash die
-Stückzahl zusätzlich.
+Börse und CIK aufsteigend berücksichtigt. Pro Handelstag werden höchstens zwei
+neue Positionen eröffnet; gleichzeitig können maximal fünf Symbole offen sein.
+Beide Grenzen werden getrennt mit `MAX_NEW_POSITIONS_PER_DAY` und
+`MAX_POSITIONS` konfiguriert. Eine Position wird mit ganzen Aktien zum
+adjustierten Close eröffnet. Das Stückzahlrisiko einschließlich
+konfigurierbarer Kosten und Slippage überschreitet beim anfänglichen Stop nie
+1 % des jeweils aktuellen Account-Equity. Da das Konto `unlevered` ist,
+begrenzt das vorhandene Cash die Stückzahl zusätzlich.
 
 Die Symbol-Eindeutigkeit gilt für das aktuell offene Portfolio. Nach einem
 Verkauf darf dasselbe Symbol bei einem späteren gültigen Signal erneut gekauft

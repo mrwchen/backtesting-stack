@@ -21,6 +21,7 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "STARTING_CAPITAL_USD",
         "BACKTEST_START_DATE",
         "MAX_POSITIONS",
+        "MAX_NEW_POSITIONS_PER_DAY",
         "RISK_PER_POSITION_PCT",
         "COMMISSION_BPS",
         "SLIPPAGE_BPS",
@@ -31,7 +32,8 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert str(cfg.strategy.starting_capital_usd) == "30000"
     assert cfg.strategy.requested_start_date.isoformat() == "2026-01-01"
-    assert cfg.strategy.max_positions == 2
+    assert cfg.strategy.max_positions == 5
+    assert cfg.strategy.max_new_positions_per_day == 2
     assert str(cfg.strategy.risk_per_position_pct) == "1"
     assert str(cfg.strategy.commission_bps) == "0"
     assert str(cfg.strategy.slippage_bps) == "0"

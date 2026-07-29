@@ -134,6 +134,7 @@ RUN_RESULT_COLUMNS = (
     "ranking_policy",
     "symbol_reentry_policy",
     "max_positions",
+    "max_new_positions_per_day",
     "risk_per_position_pct",
     "initial_stop_loss_pct",
     "stop_step_interval_sessions",

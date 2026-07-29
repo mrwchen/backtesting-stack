@@ -22,6 +22,7 @@ def strategy(**changes: object) -> StrategyParameters:
         requested_start_date=date(2026, 1, 1),
         starting_capital_usd=D("30000"),
         max_positions=2,
+        max_new_positions_per_day=2,
         risk_per_position_pct=D("1"),
         initial_stop_loss_pct=D("-5"),
         stop_step_interval_sessions=5,
@@ -125,6 +126,66 @@ def test_ranking_max_positions_and_one_percent_risk_sizing() -> None:
     assert rejected["decision"] == "position_limit_reached"
     assert result.ending_cash_usd == D("18000")
     assert result.ending_equity_usd == D("30000")
+
+
+def test_daily_entry_limit_is_separate_from_total_position_limit() -> None:
+    day1 = date(2026, 1, 2)
+    day2 = date(2026, 1, 5)
+    day3 = date(2026, 1, 6)
+
+    def signal_bar(day: date, symbol: str, cik: int) -> Bar:
+        return bar(day, symbol, signal=analyser(), cik=cik)
+
+    def holding_bar(day: date, symbol: str, cik: int) -> Bar:
+        return bar(day, symbol, signal=None, cik=cik)
+
+    result = run_backtest(
+        [
+            (day1, tuple(signal_bar(day1, symbol, index) for index, symbol in enumerate("ABCDE", 1))),
+            (
+                day2,
+                (
+                    holding_bar(day2, "A", 1),
+                    holding_bar(day2, "B", 2),
+                    signal_bar(day2, "C", 3),
+                    signal_bar(day2, "D", 4),
+                    signal_bar(day2, "E", 5),
+                ),
+            ),
+            (
+                day3,
+                (
+                    holding_bar(day3, "A", 1),
+                    holding_bar(day3, "B", 2),
+                    holding_bar(day3, "C", 3),
+                    holding_bar(day3, "D", 4),
+                    signal_bar(day3, "E", 5),
+                    signal_bar(day3, "F", 6),
+                ),
+            ),
+        ],
+        strategy(max_positions=5, max_new_positions_per_day=2),
+    )
+
+    selected_by_day = {
+        day: sum(
+            row["selected"]
+            for row in result.signal_decisions
+            if row["signal_date"] == day
+        )
+        for day in (day1, day2, day3)
+    }
+    assert selected_by_day == {day1: 2, day2: 2, day3: 1}
+    assert result.open_trade_count == 5
+    assert sum(
+        row["decision"] == "daily_entry_limit_reached"
+        for row in result.signal_decisions
+    ) == 4
+    final_rejection = next(
+        row for row in result.signal_decisions
+        if row["signal_date"] == day3 and row["symbol"] == "F"
+    )
+    assert final_rejection["decision"] == "position_limit_reached"
 
 
 def test_prior_ten_session_high_filter_is_strictly_greater_than_limit() -> None:

@@ -50,6 +50,7 @@ class StrategyParameters:
     requested_start_date: date
     starting_capital_usd: Decimal
     max_positions: int
+    max_new_positions_per_day: int
     risk_per_position_pct: Decimal
     initial_stop_loss_pct: Decimal
     stop_step_interval_sessions: int
@@ -85,6 +86,12 @@ class StrategyParameters:
             raise ValueError("STARTING_CAPITAL_USD must be positive")
         if self.max_positions < 1:
             raise ValueError("MAX_POSITIONS must be >= 1")
+        if self.max_new_positions_per_day < 1:
+            raise ValueError("MAX_NEW_POSITIONS_PER_DAY must be >= 1")
+        if self.max_new_positions_per_day > self.max_positions:
+            raise ValueError(
+                "MAX_NEW_POSITIONS_PER_DAY must not exceed MAX_POSITIONS"
+            )
         if not Decimal("0") < self.risk_per_position_pct <= Decimal("100"):
             raise ValueError("RISK_PER_POSITION_PCT must be in (0, 100]")
         if self.initial_stop_loss_pct >= 0:
@@ -203,7 +210,10 @@ class Config:
                 trading_timezone=os.getenv("TRADING_TIMEZONE", "America/New_York"),
                 requested_start_date=_env_date("BACKTEST_START_DATE", "2026-01-01"),
                 starting_capital_usd=_env_decimal("STARTING_CAPITAL_USD", "30000"),
-                max_positions=_env_int("MAX_POSITIONS", 2),
+                max_positions=_env_int("MAX_POSITIONS", 5),
+                max_new_positions_per_day=_env_int(
+                    "MAX_NEW_POSITIONS_PER_DAY", 2
+                ),
                 risk_per_position_pct=_env_decimal("RISK_PER_POSITION_PCT", "1"),
                 initial_stop_loss_pct=_env_decimal("INITIAL_STOP_LOSS_PCT", "-5"),
                 stop_step_interval_sessions=_env_int(

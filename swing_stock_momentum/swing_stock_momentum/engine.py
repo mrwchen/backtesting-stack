@@ -428,6 +428,7 @@ def _process_new_entries(
     signal_decisions: list[dict[str, Any]],
 ) -> None:
     eligible: list[tuple[Bar, dict[str, Any]]] = []
+    opened_today = 0
     for bar in bars:
         if not _passes_analyser_entry_filter(bar, strategy):
             continue
@@ -477,6 +478,10 @@ def _process_new_entries(
             continue
         if len(portfolio.open_positions) >= strategy.max_positions:
             decision["decision"] = "position_limit_reached"
+            signal_decisions.append(decision)
+            continue
+        if opened_today >= strategy.max_new_positions_per_day:
+            decision["decision"] = "daily_entry_limit_reached"
             signal_decisions.append(decision)
             continue
 
@@ -537,6 +542,7 @@ def _process_new_entries(
         portfolio.total_commission_usd += entry_commission
         portfolio.open_positions[bar.symbol] = position
         portfolio.all_positions.append(position)
+        opened_today += 1
         decision.update(
             {
                 "decision": "selected",
