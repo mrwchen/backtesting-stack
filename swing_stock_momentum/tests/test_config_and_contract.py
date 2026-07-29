@@ -26,6 +26,8 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "COMMISSION_BPS",
         "SLIPPAGE_BPS",
         "PROGRESS_LOG_INTERVAL_SESSIONS",
+        "EARNINGS_BLACKOUT_SESSIONS",
+        "SOURCE_EARNINGS_TABLE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -40,6 +42,8 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert str(cfg.strategy.slippage_bps) == "0"
     assert cfg.pg_app_name == "swing_stock_momentum"
     assert cfg.progress_log_interval_sessions == 20
+    assert cfg.strategy.earnings_blackout_sessions == 10
+    assert cfg.source_earnings_table == "stock_core_earnings_calendar_events"
 
 
 def test_high_lookback_and_atr_period_are_configurable(

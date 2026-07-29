@@ -92,6 +92,16 @@ SOURCE_COLUMNS = (
     "price_continuity_break",
 )
 
+EARNINGS_SOURCE_COLUMNS = (
+    *IDENTITY_COLUMNS,
+    "earnings_date",
+    "source",
+    "source_priority",
+    "source_event_id",
+    "known_as_of_ts",
+    "is_confirmed",
+)
+
 RUN_RESULT_COLUMNS = (
     "run_id",
     "started_at_utc",
@@ -121,6 +131,7 @@ RUN_RESULT_COLUMNS = (
     "analyser_watermark_utc",
     "source_market_table",
     "source_analyser_table",
+    "source_earnings_table",
     "price_basis",
     "entry_execution_model",
     "atr_exit_execution_model",
@@ -133,6 +144,8 @@ RUN_RESULT_COLUMNS = (
     "risk_equity_basis",
     "ranking_policy",
     "symbol_reentry_policy",
+    "earnings_blackout_policy",
+    "incomplete_earnings_horizon_policy",
     "max_positions",
     "max_new_positions_per_day",
     "risk_per_position_pct",
@@ -150,6 +163,7 @@ RUN_RESULT_COLUMNS = (
     "min_daily_price_change_pct",
     "max_daily_price_change_pct_exclusive",
     "min_volume_vs_sma21_ratio_exclusive",
+    "earnings_blackout_sessions",
     "commission_bps",
     "slippage_bps",
     "analyser_min_price_usd",
@@ -178,6 +192,9 @@ SIGNAL_DECISION_PREFIX_COLUMNS = (
     "prior_high_observation_count",
     "prior_max_adjusted_high",
     "prior_high_limit_adjusted_price",
+    "earnings_horizon_complete",
+    "next_earnings_date",
+    "next_earnings_sessions_ahead",
     "account_equity_before_entry_usd",
     "available_cash_before_entry_usd",
     "risk_budget_usd",

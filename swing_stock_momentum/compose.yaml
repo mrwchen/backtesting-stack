@@ -82,6 +82,8 @@ services:
       SOURCE_ANALYSER_TABLE: "stock_analyser_trend_template_daily"
       # Tabelle mit dem Analyzer-Watermark zur Prüfung eines konsistenten Quellstands.
       SOURCE_ANALYSER_STATE_TABLE: "stock_analyser_incremental_state"
+      # Quelltabelle mit bestätigten SEC-Earnings-Terminen für den retrospektiven Entry-Filter.
+      SOURCE_EARNINGS_TABLE: "stock_core_earnings_calendar_events"
       # Zieltabelle für Run-Parameter und zusammengefasste Ergebniskennzahlen.
       RUNS_TABLE: "backtest_momentum_runs"
       # Zieltabelle für Kandidaten, Auswahlentscheidungen und Analyzer-Quellwerte.
@@ -138,6 +140,8 @@ services:
       MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "8"
       # Exklusive Untergrenze für Tagesvolumen geteilt durch den vorherigen 21-Tage-Durchschnitt.
       MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE: "1.3"
+      # Anzahl kommender Handelssessions, in denen ein SEC-Earnings-Termin den Einstieg sperrt.
+      EARNINGS_BLACKOUT_SESSIONS: "10"
 
       # Provision je Kauf oder Verkauf in Basispunkten des jeweiligen Fill-Notionals.
       COMMISSION_BPS: "0"

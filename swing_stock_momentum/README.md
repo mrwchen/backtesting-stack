@@ -1,10 +1,12 @@
 # Swing Stock Momentum Backtest
 
-Deterministischer Portfolio-Backtest mit point-in-time abgegrenzten Quelldaten
-und der unten erläuterten idealisierten Same-Close-Ausführung für die
+Deterministischer Portfolio-Backtest mit grundsätzlich point-in-time
+abgegrenzten Quelldaten, der unten ausdrücklich beschriebenen retrospektiven
+Earnings-Ausnahme und einer idealisierten Same-Close-Ausführung für die
 Ergebnisse von `stock_analyser`. Der Lauf beginnt am ersten vorhandenen
-New-York-Handelstag ab dem 01.01.2026 mit 30.000 USD und endet am letzten
-vollständig zwischen Core-Daten und Analyzer abgeglichenen Handelstag.
+New-York-Handelstag ab `BACKTEST_START_DATE` mit dem über
+`STARTING_CAPITAL_USD` konfigurierten Kapital und endet am letzten vollständig
+zwischen Core-Daten und Analyzer abgeglichenen Handelstag.
 
 ## Entry
 
@@ -16,6 +18,14 @@ Handelssessions vollständig sein, wie `PRIOR_HIGH_LOOKBACK_SESSIONS` vorgibt.
 Kein `adjusted_high` dieser Sessions darf den mit
 `PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT` festgelegten Abstand über dem
 adjustierten Signal-Close überschreiten.
+
+Ein Einstieg wird außerdem verworfen, wenn für dieselbe Identität ein
+bestätigtes SEC-8-K-Earnings-Ereignis in D+1 bis einschließlich der mit
+`EARNINGS_BLACKOUT_SESSIONS` konfigurierten Handelssession liegt. Die
+Standardgrenze beträgt zehn Sessions. Maßgeblich ist der globale
+New-York-Handelskalender der vollständig vorhandenen Marktdaten. Sind am
+Datenende weniger als zehn folgende Sessions vorhanden, werden konservativ
+keine neuen Positionen mehr eröffnet.
 
 Aus allen gültigen Kandidaten werden bei freien Portfolio-Slots zuerst das
 höhere relative Volumen, dann die höhere Tagesrendite und schließlich Symbol,
@@ -81,6 +91,15 @@ gewünschten Nachvollziehbarkeit in die Signaltabelle kopiert. Keine Entry-,
 Exit-, Ranking- oder Sizing-Entscheidung liest diese Spalten. Spätere
 Fundamentaldaten werden ebenfalls nicht nachträglich verbunden.
 
+Der Earnings-Filter ist eine vom Nutzer bewusst gewählte Ausnahme von diesem
+Point-in-time-Prinzip. Er verwendet bestätigte tatsächliche Termine aus
+`stock_core_earnings_calendar_events` mit
+`source = 'sec_8k_item_2_02'`, auch wenn diese Information am früheren
+Signaltag noch nicht veröffentlicht war. Dadurch enthält das Ergebnis beim
+Earnings-Filter ausdrücklich Look-ahead Bias. Policy, Quelle, Fensterlänge,
+gefundener Termin und Sessionabstand werden in den Ergebnistabellen
+mitgeschrieben.
+
 Für große Zeiträume werden die Quelldaten innerhalb desselben wiederholbar
 lesbaren DB-Snapshots über zwei getrennte Ströme verarbeitet. Der breite
 Analyzer-Datensatz wird bereits in PostgreSQL auf tatsächliche Entry-Kandidaten
@@ -96,7 +115,8 @@ Analyzer-Werte für jede Nicht-Signal-Zeile nach Python zu übertragen.
 - `backtest_momentum_runs`: Ergebniskennzahlen, Source-Watermarks und alle
   Strategie- sowie Analyzer-Konfigurationsparameter.
 - `backtest_momentum_signals`: jeder Entry-Kandidat mit Auswahlentscheidung,
-  Sizing-Zwischenwerten und der vollständigen Analyzer-Quellzeile.
+  Earnings-Horizont und -Treffer, Sizing-Zwischenwerten und der vollständigen
+  Analyzer-Quellzeile.
 - `backtest_momentum_trades`: offene und geschlossene Positionen mit Fill,
   Exitgrund, Risiko, Kosten und P&L.
 - `backtest_momentum_equity_daily`: tägliches Cash, Marktwert, Equity, P&L und

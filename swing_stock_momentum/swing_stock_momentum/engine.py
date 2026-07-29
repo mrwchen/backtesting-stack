@@ -47,6 +47,9 @@ class Bar:
     prior_high_observation_count: int
     prior_max_adjusted_high: Decimal | None
     analyser: Mapping[str, Any] | None = None
+    earnings_horizon_complete: bool = True
+    next_earnings_date: date | None = None
+    next_earnings_sessions_ahead: int | None = None
 
     @property
     def identity(self) -> tuple[str, str, int]:
@@ -57,6 +60,9 @@ class Bar:
         cls,
         row: Sequence[Any],
         analyser: Mapping[str, Any] | None,
+        earnings_horizon_complete: bool = True,
+        next_earnings_date: date | None = None,
+        next_earnings_sessions_ahead: int | None = None,
     ) -> "Bar":
         if len(row) != 12:
             raise ValueError(f"market row must contain 12 columns, got {len(row)}")
@@ -74,6 +80,9 @@ class Bar:
             prior_high_observation_count=int(row[10] or 0),
             prior_max_adjusted_high=_decimal(row[11]),
             analyser=analyser,
+            earnings_horizon_complete=earnings_horizon_complete,
+            next_earnings_date=next_earnings_date,
+            next_earnings_sessions_ahead=next_earnings_sessions_ahead,
         )
 
 
@@ -288,6 +297,9 @@ def _signal_row(bar: Bar) -> dict[str, Any]:
         "prior_high_observation_count": bar.prior_high_observation_count,
         "prior_max_adjusted_high": bar.prior_max_adjusted_high,
         "prior_high_limit_adjusted_price": None,
+        "earnings_horizon_complete": bar.earnings_horizon_complete,
+        "next_earnings_date": bar.next_earnings_date,
+        "next_earnings_sessions_ahead": bar.next_earnings_sessions_ahead,
         "account_equity_before_entry_usd": None,
         "available_cash_before_entry_usd": None,
         "risk_budget_usd": None,
@@ -456,6 +468,24 @@ def _process_new_entries(
             or bar.prior_max_adjusted_high > limit_price
         ):
             decision["decision"] = "prior_high_limit_exceeded"
+            signal_decisions.append(decision)
+            continue
+        if bar.next_earnings_date is not None:
+            if (
+                bar.next_earnings_sessions_ahead is None
+                or not 1
+                <= bar.next_earnings_sessions_ahead
+                <= strategy.earnings_blackout_sessions
+            ):
+                raise RuntimeError(
+                    f"invalid earnings-session distance for {bar.identity} on "
+                    f"{bar.period_end_date}"
+                )
+            decision["decision"] = "earnings_blackout"
+            signal_decisions.append(decision)
+            continue
+        if not bar.earnings_horizon_complete:
+            decision["decision"] = "earnings_horizon_incomplete"
             signal_decisions.append(decision)
             continue
         eligible.append((bar, decision))

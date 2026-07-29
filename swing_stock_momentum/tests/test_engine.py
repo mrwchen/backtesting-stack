@@ -38,6 +38,7 @@ def strategy(**changes: object) -> StrategyParameters:
         min_daily_price_change_pct=D("1"),
         max_daily_price_change_pct_exclusive=D("5"),
         min_volume_vs_sma21_ratio_exclusive=D("1.2"),
+        earnings_blackout_sessions=10,
         commission_bps=D("0"),
         slippage_bps=D("0"),
     )
@@ -80,6 +81,9 @@ def bar(
     prior_high: str = "105",
     prior_count: int = 10,
     cik: int = 1,
+    earnings_horizon_complete: bool = True,
+    next_earnings_date: date | None = None,
+    next_earnings_sessions_ahead: int | None = None,
 ) -> Bar:
     if signal is not None:
         signal = dict(signal)
@@ -105,6 +109,9 @@ def bar(
         prior_high_observation_count=prior_count,
         prior_max_adjusted_high=D(prior_high) if prior_high else None,
         analyser=signal,
+        earnings_horizon_complete=earnings_horizon_complete,
+        next_earnings_date=next_earnings_date,
+        next_earnings_sessions_ahead=next_earnings_sessions_ahead,
     )
 
 
@@ -234,6 +241,39 @@ def test_entry_filter_boundaries_are_inclusive_one_exclusive_five_and_volume_str
 
     assert [row["symbol"] for row in result.signal_decisions] == ["A"]
     assert result.signal_decisions[0]["decision"] == "selected"
+
+
+def test_earnings_blackout_and_incomplete_horizon_reject_entries() -> None:
+    day = date(2026, 1, 2)
+    bars = (
+        bar(
+            day,
+            "A",
+            signal=analyser(),
+            cik=1,
+            next_earnings_date=date(2026, 1, 16),
+            next_earnings_sessions_ahead=10,
+        ),
+        bar(
+            day,
+            "B",
+            signal=analyser(),
+            cik=2,
+            earnings_horizon_complete=False,
+        ),
+        bar(day, "C", signal=analyser(), cik=3),
+    )
+
+    result = run_backtest([(day, bars)], strategy())
+
+    decisions = {row["symbol"]: row for row in result.signal_decisions}
+    assert decisions["A"]["decision"] == "earnings_blackout"
+    assert decisions["A"]["next_earnings_date"] == date(2026, 1, 16)
+    assert decisions["A"]["next_earnings_sessions_ahead"] == 10
+    assert decisions["B"]["decision"] == "earnings_horizon_incomplete"
+    assert decisions["B"]["earnings_horizon_complete"] is False
+    assert decisions["C"]["decision"] == "selected"
+    assert result.selected_signal_count == 1
 
 
 def test_low_wins_when_stop_and_take_profit_are_touched_same_day() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -15,6 +16,7 @@ from .config import Config
 from .contracts import (
     ANALYSER_COLUMNS,
     ANALYSER_CRITERION_COLUMNS,
+    EARNINGS_SOURCE_COLUMNS,
     EQUITY_RESULT_COLUMNS,
     RUN_RESULT_COLUMNS,
     SIGNAL_RESULT_COLUMNS,
@@ -28,6 +30,14 @@ log = logging.getLogger(__name__)
 ADVISORY_LOCK_KEY = 8_614_026_001
 ANALYSER_STATE_NAME = "stock_analyser"
 CandidateKey = tuple[date, str, str, int]
+
+
+@dataclass(frozen=True)
+class CandidatePayload:
+    analyser: dict[str, Any]
+    earnings_horizon_complete: bool
+    next_earnings_date: date | None
+    next_earnings_sessions_ahead: int | None
 
 
 @dataclass(frozen=True)
@@ -138,6 +148,7 @@ def validate_schema(
 ) -> None:
     _require_columns(connection, cfg.source_market_table, SOURCE_COLUMNS)
     _require_columns(connection, cfg.source_analyser_table, ANALYSER_COLUMNS)
+    _require_columns(connection, cfg.source_earnings_table, EARNINGS_SOURCE_COLUMNS)
     _require_columns(
         connection,
         cfg.source_analyser_state_table,
@@ -294,13 +305,86 @@ def _candidate_query(cfg: Config) -> sql.Composed:
     )
 
 
+def _load_earnings_session_context(
+    connection: psycopg2.extensions.connection,
+    cfg: Config,
+    metadata: SnapshotMetadata,
+) -> tuple[list[date], dict[tuple[str, str, int], tuple[int, ...]]]:
+    source = _qualified_identifier(cfg.source_market_table)
+    earnings = _qualified_identifier(cfg.source_earnings_table)
+    calendar_query = sql.SQL(
+        """
+        SELECT DISTINCT period_end_date
+        FROM {source}
+        WHERE period_end_date BETWEEN %s AND %s
+        ORDER BY period_end_date
+        """
+    ).format(source=source)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            calendar_query,
+            (cfg.strategy.requested_start_date, metadata.end_date),
+        )
+        session_dates = [row[0] for row in cursor.fetchall()]
+    if not session_dates:
+        raise RuntimeError("earnings blackout calendar contains no market sessions")
+    session_numbers = {session_date: index for index, session_date in enumerate(session_dates)}
+
+    earnings_query = sql.SQL(
+        """
+        SELECT symbol, exchange, cik, earnings_date
+        FROM {earnings}
+        WHERE source = 'sec_8k_item_2_02'
+          AND is_confirmed IS TRUE
+          AND earnings_date BETWEEN %s AND %s
+        ORDER BY symbol, exchange, cik, earnings_date
+        """
+    ).format(earnings=earnings)
+    earnings_by_identity: dict[tuple[str, str, int], set[int]] = {}
+    ignored_non_session_dates = 0
+    with connection.cursor() as cursor:
+        cursor.execute(
+            earnings_query,
+            (cfg.strategy.requested_start_date, metadata.end_date),
+        )
+        for symbol, exchange, cik, earnings_date in cursor:
+            session_number = session_numbers.get(earnings_date)
+            if session_number is None:
+                ignored_non_session_dates += 1
+                continue
+            identity = (str(symbol), str(exchange), int(cik))
+            earnings_by_identity.setdefault(identity, set()).add(session_number)
+    normalized = {
+        identity: tuple(sorted(session_set))
+        for identity, session_set in earnings_by_identity.items()
+    }
+    if not normalized:
+        raise RuntimeError(
+            "no confirmed SEC earnings dates overlap the backtest trading calendar"
+        )
+    log.info(
+        "Loaded %d market sessions and %d confirmed SEC earnings dates; ignored %d "
+        "earnings dates outside the trading calendar",
+        len(session_dates),
+        sum(len(values) for values in normalized.values()),
+        ignored_non_session_dates,
+    )
+    return session_dates, normalized
+
+
 def _load_analyser_candidates(
     connection: psycopg2.extensions.connection,
     cfg: Config,
     metadata: SnapshotMetadata,
-) -> dict[CandidateKey, dict[str, Any]]:
+) -> dict[CandidateKey, CandidatePayload]:
     started = perf_counter()
-    candidates: dict[CandidateKey, dict[str, Any]] = {}
+    candidates: dict[CandidateKey, CandidatePayload] = {}
+    session_dates, earnings_by_identity = _load_earnings_session_context(
+        connection, cfg, metadata
+    )
+    session_numbers = {
+        session_date: index for index, session_date in enumerate(session_dates)
+    }
     cursor_name = (
         "backtest_momentum_candidates_"
         f"{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
@@ -333,7 +417,28 @@ def _load_analyser_candidates(
             )
             if key in candidates:
                 raise RuntimeError(f"duplicate analyser candidate identity: {key}")
-            candidates[key] = row
+            signal_session = session_numbers.get(key[0])
+            if signal_session is None:
+                raise RuntimeError(f"candidate date is absent from market calendar: {key}")
+            final_blackout_session = (
+                signal_session + cfg.strategy.earnings_blackout_sessions
+            )
+            earnings_horizon_complete = final_blackout_session < len(session_dates)
+            next_earnings_date: date | None = None
+            next_earnings_sessions_ahead: int | None = None
+            identity_sessions = earnings_by_identity.get((key[1], key[2], key[3]), ())
+            event_offset = bisect_right(identity_sessions, signal_session)
+            if event_offset < len(identity_sessions):
+                event_session = identity_sessions[event_offset]
+                if event_session <= final_blackout_session:
+                    next_earnings_date = session_dates[event_session]
+                    next_earnings_sessions_ahead = event_session - signal_session
+            candidates[key] = CandidatePayload(
+                analyser=row,
+                earnings_horizon_complete=earnings_horizon_complete,
+                next_earnings_date=next_earnings_date,
+                next_earnings_sessions_ahead=next_earnings_sessions_ahead,
+            )
     log.info(
         "Loaded %d prefiltered analyser candidates in %.1f seconds",
         len(candidates),
@@ -507,10 +612,21 @@ def iter_market_days(
                     str(row[2]),
                     int(row[3]),
                 )
-                analyser = candidates.pop(candidate_key, None)
-                if analyser is not None:
+                candidate = candidates.pop(candidate_key, None)
+                if candidate is not None:
                     attached_candidate_count += 1
-                bars.append(Bar.from_market_row(row, analyser))
+                    bar = Bar.from_market_row(
+                        row,
+                        candidate.analyser,
+                        earnings_horizon_complete=candidate.earnings_horizon_complete,
+                        next_earnings_date=candidate.next_earnings_date,
+                        next_earnings_sessions_ahead=(
+                            candidate.next_earnings_sessions_ahead
+                        ),
+                    )
+                else:
+                    bar = Bar.from_market_row(row, None)
+                bars.append(bar)
         if current_date is not None:
             yield current_date, tuple(bars)
     if candidates:
@@ -585,6 +701,7 @@ def build_run_row(
         "analyser_watermark_utc": metadata.analyser_watermark_utc,
         "source_market_table": cfg.source_market_table,
         "source_analyser_table": cfg.source_analyser_table,
+        "source_earnings_table": cfg.source_earnings_table,
         "price_basis": "adjusted_ohlc",
         "entry_execution_model": "signal_day_close",
         "atr_exit_execution_model": "signal_day_close",
@@ -597,6 +714,8 @@ def build_run_row(
         "risk_equity_basis": "current_account_equity_before_entry",
         "ranking_policy": "volume_ratio_desc_return_desc_symbol_asc",
         "symbol_reentry_policy": "allowed_after_exit",
+        "earnings_blackout_policy": "retrospective_confirmed_sec_actual",
+        "incomplete_earnings_horizon_policy": "reject_new_entries",
         "max_positions": strategy.max_positions,
         "max_new_positions_per_day": strategy.max_new_positions_per_day,
         "risk_per_position_pct": strategy.risk_per_position_pct,
@@ -614,6 +733,7 @@ def build_run_row(
         "min_daily_price_change_pct": strategy.min_daily_price_change_pct,
         "max_daily_price_change_pct_exclusive": strategy.max_daily_price_change_pct_exclusive,
         "min_volume_vs_sma21_ratio_exclusive": strategy.min_volume_vs_sma21_ratio_exclusive,
+        "earnings_blackout_sessions": strategy.earnings_blackout_sessions,
         "commission_bps": strategy.commission_bps,
         "slippage_bps": strategy.slippage_bps,
         "analyser_min_price_usd": analyser.min_price_usd,

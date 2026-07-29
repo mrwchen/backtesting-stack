@@ -66,6 +66,7 @@ class StrategyParameters:
     min_daily_price_change_pct: Decimal
     max_daily_price_change_pct_exclusive: Decimal
     min_volume_vs_sma21_ratio_exclusive: Decimal
+    earnings_blackout_sessions: int
     commission_bps: Decimal
     slippage_bps: Decimal
 
@@ -116,6 +117,8 @@ class StrategyParameters:
             raise ValueError("daily price-change bounds are invalid")
         if self.min_volume_vs_sma21_ratio_exclusive < 0:
             raise ValueError("MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE must be >= 0")
+        if self.earnings_blackout_sessions < 1:
+            raise ValueError("EARNINGS_BLACKOUT_SESSIONS must be >= 1")
         if self.commission_bps < 0 or self.slippage_bps < 0:
             raise ValueError("cost assumptions must be non-negative")
 
@@ -163,6 +166,7 @@ class Config:
     source_market_table: str
     source_analyser_table: str
     source_analyser_state_table: str
+    source_earnings_table: str
     runs_table: str
     signals_table: str
     trades_table: str
@@ -201,6 +205,9 @@ class Config:
             ),
             source_analyser_state_table=_table_name(
                 "SOURCE_ANALYSER_STATE_TABLE", "stock_analyser_incremental_state"
+            ),
+            source_earnings_table=_table_name(
+                "SOURCE_EARNINGS_TABLE", "stock_core_earnings_calendar_events"
             ),
             runs_table=_table_name("RUNS_TABLE", "backtest_momentum_runs"),
             signals_table=_table_name("SIGNALS_TABLE", "backtest_momentum_signals"),
@@ -248,6 +255,9 @@ class Config:
                 ),
                 min_volume_vs_sma21_ratio_exclusive=_env_decimal(
                     "MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE", "1.2"
+                ),
+                earnings_blackout_sessions=_env_int(
+                    "EARNINGS_BLACKOUT_SESSIONS", 10
                 ),
                 commission_bps=_env_decimal("COMMISSION_BPS", "0"),
                 slippage_bps=_env_decimal("SLIPPAGE_BPS", "0"),

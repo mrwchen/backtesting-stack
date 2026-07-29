@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -37,6 +37,9 @@ class _Cursor:
         batch = self.rows[self.offset : self.offset + size]
         self.offset += len(batch)
         return batch
+
+    def fetchall(self) -> list[Any]:
+        return list(self.rows)
 
 
 class _Connection:
@@ -103,14 +106,19 @@ def test_compact_market_rows_receive_only_matching_analyser_candidate() -> None:
             Decimal("55"),
         ),
     ]
+    session_dates = [valuation_date + timedelta(days=index) for index in range(11)]
+    calendar_cursor = _Cursor([(session_date,) for session_date in session_dates])
+    earnings_cursor = _Cursor([("A", "NASDAQ", 1, session_dates[10])])
     candidate_cursor = _Cursor([candidate])
     market_cursor = _Cursor(market_rows)
-    connection = _Connection([candidate_cursor, market_cursor])
+    connection = _Connection(
+        [calendar_cursor, earnings_cursor, candidate_cursor, market_cursor]
+    )
     metadata = SnapshotMetadata(
         source_watermark_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         analyser_watermark_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        source_end_date=valuation_date,
-        analyser_end_date=valuation_date,
+        source_end_date=session_dates[-1],
+        analyser_end_date=session_dates[-1],
         lookback_start_date=valuation_date,
         source_row_count=2,
         analyser_row_count=2,
@@ -121,13 +129,15 @@ def test_compact_market_rows_receive_only_matching_analyser_candidate() -> None:
     assert len(days) == 1
     assert [bar.symbol for bar in days[0][1]] == ["A", "B"]
     assert days[0][1][0].analyser == candidate
+    assert days[0][1][0].earnings_horizon_complete is True
+    assert days[0][1][0].next_earnings_date == session_dates[10]
+    assert days[0][1][0].next_earnings_sessions_ahead == 10
     assert days[0][1][1].analyser is None
     assert candidate_cursor.executed_params == (
         valuation_date,
-        valuation_date,
+        session_dates[-1],
         cfg.strategy.currency,
         cfg.strategy.min_daily_price_change_pct,
         cfg.strategy.max_daily_price_change_pct_exclusive,
         cfg.strategy.min_volume_vs_sma21_ratio_exclusive,
     )
-

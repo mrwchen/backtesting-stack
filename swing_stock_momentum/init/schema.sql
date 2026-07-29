@@ -1,4 +1,5 @@
--- Service-owned schema for the point-in-time swing-stock momentum backtest.
+-- Service-owned schema for the deterministic swing-stock momentum backtest.
+-- Earnings exclusions are intentionally retrospective and stored as such per run.
 -- Re-runnable without migrations. Runtime Python only validates this schema.
 
 DO $$
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     analyser_watermark_utc                     TIMESTAMPTZ NOT NULL,
     source_market_table                        TEXT NOT NULL,
     source_analyser_table                      TEXT NOT NULL,
+    source_earnings_table                      TEXT NOT NULL,
     price_basis                                TEXT NOT NULL,
     entry_execution_model                      TEXT NOT NULL,
     atr_exit_execution_model                   TEXT NOT NULL,
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     risk_equity_basis                          TEXT NOT NULL,
     ranking_policy                             TEXT NOT NULL,
     symbol_reentry_policy                      TEXT NOT NULL,
+    earnings_blackout_policy                   TEXT NOT NULL,
+    incomplete_earnings_horizon_policy         TEXT NOT NULL,
     max_positions                              SMALLINT NOT NULL,
     max_new_positions_per_day                  SMALLINT NOT NULL,
     risk_per_position_pct                      NUMERIC(12,8) NOT NULL,
@@ -77,6 +81,7 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     min_daily_price_change_pct                 NUMERIC(12,8) NOT NULL,
     max_daily_price_change_pct_exclusive       NUMERIC(12,8) NOT NULL,
     min_volume_vs_sma21_ratio_exclusive        NUMERIC(12,8) NOT NULL,
+    earnings_blackout_sessions                 SMALLINT NOT NULL,
     commission_bps                             NUMERIC(12,8) NOT NULL,
     slippage_bps                               NUMERIC(12,8) NOT NULL,
     analyser_min_price_usd                     NUMERIC(20,8) NOT NULL,
@@ -109,6 +114,8 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     CHECK (risk_equity_basis = 'current_account_equity_before_entry'),
     CHECK (ranking_policy = 'volume_ratio_desc_return_desc_symbol_asc'),
     CHECK (symbol_reentry_policy = 'allowed_after_exit'),
+    CHECK (earnings_blackout_policy = 'retrospective_confirmed_sec_actual'),
+    CHECK (incomplete_earnings_horizon_policy = 'reject_new_entries'),
     CHECK (actual_start_date >= requested_start_date),
     CHECK (end_date >= actual_start_date),
     CHECK (starting_capital_usd > 0),
@@ -120,6 +127,7 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_runs (
     CHECK (risk_per_position_pct > 0),
     CHECK (initial_stop_loss_pct < 0),
     CHECK (initial_take_profit_pct > 0),
+    CHECK (earnings_blackout_sessions > 0),
     CHECK (commission_bps >= 0),
     CHECK (slippage_bps >= 0),
     CHECK (source_watermark_utc = analyser_watermark_utc),
@@ -139,6 +147,9 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_signals (
     prior_high_observation_count               SMALLINT NOT NULL,
     prior_max_adjusted_high                     NUMERIC(20,8),
     prior_high_limit_adjusted_price             NUMERIC(20,8),
+    earnings_horizon_complete                  BOOLEAN NOT NULL,
+    next_earnings_date                         DATE,
+    next_earnings_sessions_ahead               SMALLINT,
     account_equity_before_entry_usd            NUMERIC(24,8),
     available_cash_before_entry_usd            NUMERIC(24,8),
     risk_budget_usd                            NUMERIC(24,8),
@@ -219,12 +230,30 @@ CREATE TABLE IF NOT EXISTS backtest_momentum_signals (
             'invalid_execution_price',
             'prior_high_history_incomplete',
             'prior_high_limit_exceeded',
+            'earnings_blackout',
+            'earnings_horizon_incomplete',
             'symbol_already_open',
             'position_limit_reached',
             'daily_entry_limit_reached',
             'risk_budget_below_one_share',
             'insufficient_cash'
         )
+    ),
+    CHECK (
+        (next_earnings_date IS NULL) = (next_earnings_sessions_ahead IS NULL)
+    ),
+    CHECK (
+        next_earnings_date IS NULL OR
+        (next_earnings_date > signal_date AND next_earnings_sessions_ahead > 0)
+    ),
+    CHECK (decision <> 'earnings_blackout' OR next_earnings_date IS NOT NULL),
+    CHECK (
+        decision <> 'earnings_horizon_incomplete'
+        OR NOT earnings_horizon_complete
+    ),
+    CHECK (
+        NOT selected
+        OR (earnings_horizon_complete AND next_earnings_date IS NULL)
     ),
     CHECK (
         trend_template_pass = (
@@ -362,11 +391,12 @@ GRANT SELECT, INSERT ON backtest_momentum_equity_daily TO "backtesting-account";
 GRANT SELECT ON stock_core_market_metrics_daily TO "backtesting-account";
 GRANT SELECT ON stock_analyser_trend_template_daily TO "backtesting-account";
 GRANT SELECT ON stock_analyser_incremental_state TO "backtesting-account";
+GRANT SELECT ON stock_core_earnings_calendar_events TO "backtesting-account";
 
 COMMENT ON TABLE backtest_momentum_runs IS
-    'Completed atomic backtest runs and all strategy/analyser parameters used for reproducibility.';
+    'Completed atomic runs and all strategy, analyser, and retrospective earnings parameters.';
 COMMENT ON TABLE backtest_momentum_signals IS
-    'Entry candidates, deterministic selection decisions, and the complete stock-analyser source row.';
+    'Entry candidates, earnings exclusions, selection decisions, and complete analyser source rows.';
 COMMENT ON TABLE backtest_momentum_trades IS
     'Selected positions with execution, exit, risk, cost, and final mark results.';
 COMMENT ON TABLE backtest_momentum_equity_daily IS

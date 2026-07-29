@@ -28,12 +28,14 @@ def run(cfg: Config) -> str:
     run_started = perf_counter()
     log.info(
         "Backtest %s starting: requested start %s, capital %.2f USD, "
-        "max %d new positions per day and %d open positions",
+        "max %d new positions per day, %d open positions and a %d-session "
+        "retrospective SEC earnings blackout",
         run_id,
         cfg.strategy.requested_start_date,
         cfg.strategy.starting_capital_usd,
         cfg.strategy.max_new_positions_per_day,
         cfg.strategy.max_positions,
+        cfg.strategy.earnings_blackout_sessions,
     )
     with connect(cfg) as connection:
         acquired = False
@@ -88,6 +90,21 @@ def run(cfg: Config) -> str:
                 len(result.equity_daily),
                 len(result.signal_decisions),
                 len(result.trades),
+            )
+            earnings_blackouts = sum(
+                row["decision"] == "earnings_blackout"
+                for row in result.signal_decisions
+            )
+            incomplete_earnings_horizons = sum(
+                row["decision"] == "earnings_horizon_incomplete"
+                for row in result.signal_decisions
+            )
+            log.info(
+                "Backtest %s earnings filter rejected %d candidates for confirmed SEC "
+                "earnings and %d candidates for an incomplete end horizon",
+                run_id,
+                earnings_blackouts,
+                incomplete_earnings_horizons,
             )
             completed_at = datetime.now(timezone.utc)
             run_row = build_run_row(
