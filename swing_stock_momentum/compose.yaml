@@ -96,7 +96,7 @@ services:
       # IANA-Zeitzone, nach der ein Datum als US-Handelstag interpretiert wird.
       TRADING_TIMEZONE: "America/New_York"
       # Frühestes gewünschtes Handelsdatum; der Lauf beginnt am ersten vorhandenen Handelstag danach.
-      BACKTEST_START_DATE: "2026-01-01"
+      BACKTEST_START_DATE: "2024-01-01"
       # Startkapital des unlevered Kontos in US-Dollar.
       STARTING_CAPITAL_USD: "30000"
       # Maximale Anzahl gleichzeitig offener Positionen.
