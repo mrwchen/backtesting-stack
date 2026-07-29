@@ -1,0 +1,86 @@
+services:
+  swing-stock-momentum-init:
+    image: postgres:17-alpine
+    restart: "no"
+    volumes:
+      - ./init/schema.sql:/init.sql:ro
+    environment:
+      PGPASSWORD: "postgres-ts-root-pw"
+      PGAPPNAME: "swing_stock_momentum_init"
+      DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START: "${DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START:-false}"
+    command:
+      - sh
+      - -c
+      - >
+        psql -h timescaledb -p 5432 -U postgres-ts -d postgres
+        -v ON_ERROR_STOP=1
+        -v drop_all_backtest_momentum_tables_on_start="$${DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START:-false}"
+        -f /init.sql
+    networks:
+      - shared_net
+
+  swing-stock-momentum:
+    build: .
+    restart: "no"
+    mem_limit: 2g
+    depends_on:
+      swing-stock-momentum-init:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: "timescaledb"
+      PGPORT: "5432"
+      PGDATABASE: "postgres"
+      PGUSER: "backtesting-account"
+      PGPASSWORD: "backtesting-account-pw"
+      PGAPPNAME: "swing_stock_momentum"
+      DB_CONNECT_TIMEOUT_SECONDS: "15"
+      DB_STATEMENT_TIMEOUT_MS: "0"
+      DB_FETCH_BATCH_SIZE: "10000"
+      DB_WRITE_PAGE_SIZE: "1000"
+      LOG_LEVEL: "INFO"
+      SOURCE_MARKET_TABLE: "stock_core_market_metrics_daily"
+      SOURCE_ANALYSER_TABLE: "stock_analyser_trend_template_daily"
+      SOURCE_ANALYSER_STATE_TABLE: "stock_analyser_incremental_state"
+      RUNS_TABLE: "backtest_momentum_runs"
+      SIGNALS_TABLE: "backtest_momentum_signals"
+      TRADES_TABLE: "backtest_momentum_trades"
+      EQUITY_TABLE: "backtest_momentum_equity_daily"
+      ACCOUNT_TYPE: "unlevered"
+      ACCOUNT_CURRENCY: "USD"
+      TRADING_TIMEZONE: "America/New_York"
+      BACKTEST_START_DATE: "2026-01-01"
+      STARTING_CAPITAL_USD: "30000"
+      MAX_POSITIONS: "2"
+      RISK_PER_POSITION_PCT: "1"
+      INITIAL_STOP_LOSS_PCT: "-5"
+      STOP_STEP_INTERVAL_SESSIONS: "5"
+      STOP_STEP_PCT: "5"
+      INITIAL_TAKE_PROFIT_PCT: "10"
+      TAKE_PROFIT_STEP_INTERVAL_SESSIONS: "5"
+      TAKE_PROFIT_STEP_PCT: "7.5"
+      ATR_PERIOD_SESSIONS: "14"
+      ATR_DAY1_EXIT_MAX_PCT: "1.5"
+      ATR_DAY2_EXIT_MAX_PCT: "2"
+      PRIOR_HIGH_LOOKBACK_SESSIONS: "10"
+      PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT: "10"
+      MIN_DAILY_PRICE_CHANGE_PCT: "1"
+      MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "5"
+      MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE: "1.2"
+      COMMISSION_BPS: "0"
+      SLIPPAGE_BPS: "0"
+      ANALYSER_MIN_PRICE_USD: "5"
+      ANALYSER_MIN_DOLLAR_VOLUME_USD: "2000000"
+      ANALYSER_RS_LOOKBACKS: "63,126,189,252"
+      ANALYSER_RS_WEIGHTS: "2,1,1,1"
+      ANALYSER_RS_MIN: "70"
+      ANALYSER_MA200_TREND_SESSIONS: "21"
+      ANALYSER_MIN_ABOVE_52W_LOW_RATIO: "1.30"
+      ANALYSER_MIN_NEAR_52W_HIGH_RATIO: "0.75"
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
+    name: shared_net
