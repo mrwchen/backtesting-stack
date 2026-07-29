@@ -25,6 +25,7 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "RISK_PER_POSITION_PCT",
         "COMMISSION_BPS",
         "SLIPPAGE_BPS",
+        "PROGRESS_LOG_INTERVAL_SESSIONS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -38,6 +39,7 @@ def test_required_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert str(cfg.strategy.commission_bps) == "0"
     assert str(cfg.strategy.slippage_bps) == "0"
     assert cfg.pg_app_name == "swing_stock_momentum"
+    assert cfg.progress_log_interval_sessions == 20
 
 
 def test_high_lookback_and_atr_period_are_configurable(

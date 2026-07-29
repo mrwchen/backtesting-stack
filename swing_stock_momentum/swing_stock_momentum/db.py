@@ -527,7 +527,9 @@ def write_result(
     trades = [dict(row, run_id=run_id) for row in result.trades]
     equity = [dict(row, run_id=run_id) for row in result.equity_daily]
     with connection.cursor() as cursor:
+        log.info("Backtest %s staging the run summary row", run_id)
         _insert_rows(cursor, cfg.runs_table, RUN_RESULT_COLUMNS, [run_row], 1)
+        log.info("Backtest %s staging %d signal rows", run_id, len(signals))
         _insert_rows(
             cursor,
             cfg.signals_table,
@@ -535,6 +537,7 @@ def write_result(
             signals,
             cfg.db_write_page_size,
         )
+        log.info("Backtest %s staging %d trade rows", run_id, len(trades))
         _insert_rows(
             cursor,
             cfg.trades_table,
@@ -542,6 +545,7 @@ def write_result(
             trades,
             cfg.db_write_page_size,
         )
+        log.info("Backtest %s staging %d daily equity rows", run_id, len(equity))
         _insert_rows(
             cursor,
             cfg.equity_table,

@@ -71,6 +71,8 @@ services:
       DB_FETCH_BATCH_SIZE: "10000"
       # Maximale Zeilenzahl pro gebündeltem INSERT-Abschnitt beim Ergebnisschreiben.
       DB_WRITE_PAGE_SIZE: "1000"
+      # Schreibt nach jeweils so vielen verarbeiteten Handelssessions ein Fortschrittslog.
+      PROGRESS_LOG_INTERVAL_SESSIONS: "20"
       # Minimales Python-Loglevel; INFO schreibt normale Lauf- und Ergebnisfortschritte.
       LOG_LEVEL: "INFO"
 

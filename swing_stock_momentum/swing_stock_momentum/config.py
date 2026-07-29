@@ -158,6 +158,7 @@ class Config:
     db_statement_timeout_ms: int
     db_fetch_batch_size: int
     db_write_page_size: int
+    progress_log_interval_sessions: int
     log_level: str
     source_market_table: str
     source_analyser_table: str
@@ -188,6 +189,9 @@ class Config:
             db_statement_timeout_ms=_env_int("DB_STATEMENT_TIMEOUT_MS", 0),
             db_fetch_batch_size=_env_int("DB_FETCH_BATCH_SIZE", 10_000),
             db_write_page_size=_env_int("DB_WRITE_PAGE_SIZE", 1_000),
+            progress_log_interval_sessions=_env_int(
+                "PROGRESS_LOG_INTERVAL_SESSIONS", 20
+            ),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             source_market_table=_table_name(
                 "SOURCE_MARKET_TABLE", "stock_core_market_metrics_daily"
@@ -281,6 +285,8 @@ class Config:
             raise ValueError("DB_STATEMENT_TIMEOUT_MS must be >= 0")
         if self.db_fetch_batch_size < 1 or self.db_write_page_size < 1:
             raise ValueError("database batch sizes must be >= 1")
+        if self.progress_log_interval_sessions < 1:
+            raise ValueError("PROGRESS_LOG_INTERVAL_SESSIONS must be >= 1")
         targets = (self.runs_table, self.signals_table, self.trades_table, self.equity_table)
         if len(set(targets)) != len(targets):
             raise ValueError("backtest target tables must be distinct")

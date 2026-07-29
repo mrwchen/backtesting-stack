@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_FLOOR
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .config import StrategyParameters
 from .contracts import ANALYSER_CRITERION_COLUMNS, ANALYSER_PAYLOAD_COLUMNS
@@ -164,6 +164,17 @@ class BacktestResult:
             row["status"] == "closed" and row["net_pnl_usd"] < ZERO
             for row in self.trades
         )
+
+
+@dataclass(frozen=True)
+class BacktestProgress:
+    sessions_processed: int
+    valuation_date: date
+    signal_count: int
+    selected_signal_count: int
+    open_position_count: int
+    closed_trade_count: int
+    total_equity_usd: Decimal
 
 
 @dataclass
@@ -619,6 +630,7 @@ def _trade_row(position: Position, strategy: StrategyParameters) -> dict[str, An
 def run_backtest(
     market_days: Iterable[tuple[date, Sequence[Bar]]],
     strategy: StrategyParameters,
+    progress_callback: Callable[[BacktestProgress], None] | None = None,
 ) -> BacktestResult:
     strategy.validate()
     portfolio = _Portfolio(cash_usd=strategy.starting_capital_usd)
@@ -676,6 +688,18 @@ def run_backtest(
                 "drawdown_pct": drawdown,
             }
         )
+        if progress_callback is not None:
+            progress_callback(
+                BacktestProgress(
+                    sessions_processed=len(equity_daily),
+                    valuation_date=valuation_date,
+                    signal_count=len(signal_decisions),
+                    selected_signal_count=len(portfolio.all_positions),
+                    open_position_count=len(portfolio.open_positions),
+                    closed_trade_count=portfolio.closed_trade_count,
+                    total_equity_usd=total_equity,
+                )
+            )
         previous_equity = total_equity
 
     if actual_start_date is None or end_date is None or not equity_daily:

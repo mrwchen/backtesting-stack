@@ -128,6 +128,29 @@ def test_ranking_max_positions_and_one_percent_risk_sizing() -> None:
     assert result.ending_equity_usd == D("30000")
 
 
+def test_progress_callback_reports_each_completed_session() -> None:
+    day1 = date(2026, 1, 2)
+    day2 = date(2026, 1, 5)
+    progress = []
+
+    run_backtest(
+        [
+            (day1, (bar(day1, "A", signal=analyser()),)),
+            (day2, (bar(day2, "A", signal=None),)),
+        ],
+        strategy(),
+        progress_callback=progress.append,
+    )
+
+    assert [item.sessions_processed for item in progress] == [1, 2]
+    assert [item.valuation_date for item in progress] == [day1, day2]
+    assert progress[-1].signal_count == 1
+    assert progress[-1].selected_signal_count == 1
+    assert progress[-1].open_position_count == 1
+    assert progress[-1].closed_trade_count == 0
+    assert progress[-1].total_equity_usd == D("30000")
+
+
 def test_daily_entry_limit_is_separate_from_total_position_limit() -> None:
     day1 = date(2026, 1, 2)
     day2 = date(2026, 1, 5)
