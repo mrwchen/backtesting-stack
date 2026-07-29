@@ -1,86 +1,174 @@
+# Definiert die beiden einmalig laufenden Services des Momentum-Backtests.
 services:
+  # Initialisiert und validiert ausschließlich die serviceeigenen DB-Tabellen.
   swing-stock-momentum-init:
+    # Schlankes PostgreSQL-Image, das den psql-Client für das Init-SQL bereitstellt.
     image: postgres:17-alpine
+    # Der Init-Container soll nach erfolgreicher oder fehlerhafter Ausführung nicht neu starten.
     restart: "no"
+    # Bindet das versionierte Datenbankschema schreibgeschützt in den Container ein.
     volumes:
+      # Lokale Init-SQL-Datei und ihr schreibgeschützter Pfad im Container.
       - ./init/schema.sql:/init.sql:ro
+    # Verbindungs- und Steuerparameter für den Init-Lauf.
     environment:
+      # Passwort des administrativen DB-Benutzers, der Tabellen und Berechtigungen anlegt.
       PGPASSWORD: "postgres-ts-root-pw"
+      # Application Name, unter dem die Init-Verbindung in PostgreSQL sichtbar ist.
       PGAPPNAME: "swing_stock_momentum_init"
+      # Droppt bei true vor dem Neuaufbau alle backtest_momentum-Tabellen; Standard ist false.
       DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START: "${DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START:-false}"
+    # Führt das Init-SQL aus und beendet den Lauf sofort beim ersten SQL-Fehler.
     command:
+      # Startet eine POSIX-Shell für den zusammengesetzten psql-Aufruf.
       - sh
+      # Übergibt den folgenden String als Shell-Kommando.
       - -c
+      # Verbindet sich mit TimescaleDB, reicht den Drop-Schalter weiter und lädt das Schema.
       - >
         psql -h timescaledb -p 5432 -U postgres-ts -d postgres
         -v ON_ERROR_STOP=1
         -v drop_all_backtest_momentum_tables_on_start="$${DROP_ALL_BACKTEST_MOMENTUM_TABLES_ON_START:-false}"
         -f /init.sql
+    # Verbindet den Init-Service mit demselben Docker-Netz wie TimescaleDB.
     networks:
+      # Name des gemeinsam genutzten externen Docker-Netzes.
       - shared_net
 
+  # Führt genau einen vollständigen Momentum-Backtest aus und schreibt dessen Ergebnisse atomar.
   swing-stock-momentum:
+    # Baut das Python-Image aus dem Dockerfile im aktuellen Verzeichnis.
     build: .
+    # Der Batch-Lauf soll nach seinem Ende nicht automatisch erneut gestartet werden.
     restart: "no"
+    # Begrenzt den Arbeitsspeicher des Backtest-Containers auf 2 GiB.
     mem_limit: 2g
+    # Startet den Backtest erst nach einem erfolgreich abgeschlossenen Init-Lauf.
     depends_on:
+      # Abhängigkeit vom serviceeigenen Init-Container.
       swing-stock-momentum-init:
+        # Erfordert Exit-Code 0 des Init-Containers.
         condition: service_completed_successfully
+    # Datenbank-, Datenquellen- und Strategieparameter des Backtests.
     environment:
+      # Docker-DNS-Name des TimescaleDB-Services.
       PGHOST: "timescaledb"
+      # TCP-Port der PostgreSQL-/TimescaleDB-Instanz.
       PGPORT: "5432"
+      # Name der verwendeten PostgreSQL-Datenbank.
       PGDATABASE: "postgres"
+      # Dedizierter DB-Benutzer für lesenden Quellzugriff und schreibenden Ergebniszugriff.
       PGUSER: "backtesting-account"
+      # Passwort des dedizierten Backtesting-DB-Benutzers.
       PGPASSWORD: "backtesting-account-pw"
+      # Application Name, unter dem die Runtime-Verbindung in PostgreSQL sichtbar ist.
       PGAPPNAME: "swing_stock_momentum"
+      # Maximale Dauer in Sekunden für den Aufbau einer DB-Verbindung.
       DB_CONNECT_TIMEOUT_SECONDS: "15"
+      # PostgreSQL-Statement-Timeout in Millisekunden; 0 deaktiviert das Zeitlimit.
       DB_STATEMENT_TIMEOUT_MS: "0"
+      # Anzahl Quellzeilen, die der serverseitige Cursor je Fetch anfordert.
       DB_FETCH_BATCH_SIZE: "10000"
+      # Maximale Zeilenzahl pro gebündeltem INSERT-Abschnitt beim Ergebnisschreiben.
       DB_WRITE_PAGE_SIZE: "1000"
+      # Minimales Python-Loglevel; INFO schreibt normale Lauf- und Ergebnisfortschritte.
       LOG_LEVEL: "INFO"
+
+      # Quelltabelle mit den täglichen adjustierten Marktpreisen und Identitäten.
       SOURCE_MARKET_TABLE: "stock_core_market_metrics_daily"
+      # Quelltabelle mit den acht Analyzer-Kriterien und allen berechneten Kennzahlen.
       SOURCE_ANALYSER_TABLE: "stock_analyser_trend_template_daily"
+      # Tabelle mit dem Analyzer-Watermark zur Prüfung eines konsistenten Quellstands.
       SOURCE_ANALYSER_STATE_TABLE: "stock_analyser_incremental_state"
+      # Zieltabelle für Run-Parameter und zusammengefasste Ergebniskennzahlen.
       RUNS_TABLE: "backtest_momentum_runs"
+      # Zieltabelle für Kandidaten, Auswahlentscheidungen und Analyzer-Quellwerte.
       SIGNALS_TABLE: "backtest_momentum_signals"
+      # Zieltabelle für offene und geschlossene Positionen einschließlich P&L.
       TRADES_TABLE: "backtest_momentum_trades"
+      # Timescale-Zieltabelle für die tägliche Cash-, Equity- und Drawdown-Reihe.
       EQUITY_TABLE: "backtest_momentum_equity_daily"
+
+      # Unlevered verbietet Kreditaufnahme; Käufe werden zusätzlich durch verfügbares Cash begrenzt.
       ACCOUNT_TYPE: "unlevered"
+      # Kontowährung und Währung sämtlicher Kapital-, Risiko- und Ergebniswerte.
       ACCOUNT_CURRENCY: "USD"
+      # IANA-Zeitzone, nach der ein Datum als US-Handelstag interpretiert wird.
       TRADING_TIMEZONE: "America/New_York"
+      # Frühestes gewünschtes Handelsdatum; der Lauf beginnt am ersten vorhandenen Handelstag danach.
       BACKTEST_START_DATE: "2026-01-01"
+      # Startkapital des unlevered Kontos in US-Dollar.
       STARTING_CAPITAL_USD: "30000"
+      # Maximale Anzahl gleichzeitig offener Positionen.
       MAX_POSITIONS: "2"
+      # Maximales Verlustbudget je neuem Trade in Prozent des aktuellen Account-Equity.
       RISK_PER_POSITION_PCT: "1"
+
+      # Initialer Stop Loss in Prozent relativ zum tatsächlichen Entry-Fill.
       INITIAL_STOP_LOSS_PCT: "-5"
+      # Anzahl gehaltener Handelssessions je erneutem Stop-Anhebungsschritt.
       STOP_STEP_INTERVAL_SESSIONS: "5"
+      # Anhebung des Stop Loss nach jedem vollständigen Intervall in Prozentpunkten.
       STOP_STEP_PCT: "5"
+      # Initiales Take Profit in Prozent relativ zum tatsächlichen Entry-Fill.
       INITIAL_TAKE_PROFIT_PCT: "10"
+      # Anzahl gehaltener Handelssessions je erneutem Take-Profit-Anhebungsschritt.
       TAKE_PROFIT_STEP_INTERVAL_SESSIONS: "5"
+      # Anhebung des Take Profit nach jedem vollständigen Intervall in Prozentpunkten.
       TAKE_PROFIT_STEP_PCT: "7.5"
+
+      # Anzahl zusammenhängender Handelssessions für den ATR-Mittelwert.
       ATR_PERIOD_SESSIONS: "14"
+      # Schließt an D+1 zum Close, wenn ATR/14 höchstens diesen Prozentwert erreicht.
       ATR_DAY1_EXIT_MAX_PCT: "1.5"
+      # Schließt an D+2 zum Close, wenn ATR/14 höchstens diesen Prozentwert erreicht.
       ATR_DAY2_EXIT_MAX_PCT: "2"
-      PRIOR_HIGH_LOOKBACK_SESSIONS: "10"
-      PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT: "10"
-      MIN_DAILY_PRICE_CHANGE_PCT: "1"
-      MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "5"
-      MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE: "1.2"
+
+      # Anzahl unmittelbar vorheriger, vollständig benötigter Handelssessions für den High-Filter.
+      PRIOR_HIGH_LOOKBACK_SESSIONS: "15"
+      # Maximal zulässiger Abstand eines vorherigen Highs über dem Signal-Close in Prozent.
+      PRIOR_HIGH_MAX_ABOVE_SIGNAL_CLOSE_PCT: "5"
+      # Inklusive Untergrenze der Tageskursänderung eines Entry-Signals in Prozent.
+      MIN_DAILY_PRICE_CHANGE_PCT: "2.0"
+      # Exklusive Obergrenze der Tageskursänderung eines Entry-Signals in Prozent.
+      MAX_DAILY_PRICE_CHANGE_PCT_EXCLUSIVE: "10"
+      # Exklusive Untergrenze für Tagesvolumen geteilt durch den vorherigen 21-Tage-Durchschnitt.
+      MIN_VOLUME_VS_SMA21_RATIO_EXCLUSIVE: "1.3"
+
+      # Provision je Kauf oder Verkauf in Basispunkten des jeweiligen Fill-Notionals.
       COMMISSION_BPS: "0"
+      # Adverse Slippage je Kauf oder Verkauf in Basispunkten des Referenzpreises.
       SLIPPAGE_BPS: "0"
+
+      # Vom Analyzer verwendeter Mindestkurs für die RS-rankbare Aktienmenge in USD.
       ANALYSER_MIN_PRICE_USD: "5"
+      # Vom Analyzer verwendetes minimales 63-Tage-Dollarvolumen in USD.
       ANALYSER_MIN_DOLLAR_VOLUME_USD: "2000000"
+      # Vier Analyzer-RS-Grenzen in Handelssessions für die disjunkten Renditefenster.
       ANALYSER_RS_LOOKBACKS: "63,126,189,252"
+      # Gewichte der vier Analyzer-RS-Renditefenster in derselben Reihenfolge.
       ANALYSER_RS_WEIGHTS: "2,1,1,1"
+      # Mindestwert des täglichen Analyzer-RS-Ratings für das achte Kriterium.
       ANALYSER_RS_MIN: "70"
+      # Rückblick in Handelssessions für die Prüfung eines steigenden MA200.
       ANALYSER_MA200_TREND_SESSIONS: "21"
+      # Mindestverhältnis des adjustierten Close zum 52-Wochen-Tief.
       ANALYSER_MIN_ABOVE_52W_LOW_RATIO: "1.30"
+      # Mindestverhältnis des adjustierten Close zum 52-Wochen-Hoch.
       ANALYSER_MIN_NEAR_52W_HIGH_RATIO: "0.75"
+
+      # Deaktiviert Python-Ausgabepufferung, damit Container-Logs sofort verfügbar sind.
       PYTHONUNBUFFERED: "1"
+    # Verbindet die Runtime mit TimescaleDB im gemeinsam genutzten Docker-Netz.
     networks:
+      # Name des gemeinsam genutzten externen Docker-Netzes.
       - shared_net
 
+# Deklariert das bereits von der Trading-Infrastruktur bereitgestellte Netzwerk.
 networks:
+  # Logischer Netzwerkname innerhalb dieser Compose-Datei.
   shared_net:
+    # Verhindert, dass Compose das gemeinsam genutzte Netzwerk selbst anlegt oder löscht.
     external: true
+    # Tatsächlicher Name des vorhandenen Docker-Netzes auf der Trading-VM.
     name: shared_net
