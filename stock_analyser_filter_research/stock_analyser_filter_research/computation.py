@@ -60,6 +60,26 @@ from .contracts import (
 _NEW_YORK = ZoneInfo("America/New_York")
 _UTC = ZoneInfo("UTC")
 
+_CASHFLOW_TREND_SPECS = (
+    (
+        "fundamental_operating_cashflow_ttm",
+        "fundamental_operating_cashflow_margin_ttm_yoy_change",
+        "sec_operating_cashflow_ttm",
+    ),
+    (
+        "fundamental_fcf_ttm",
+        "fundamental_fcf_margin_ttm_yoy_change",
+        "sec_free_cashflow_ttm",
+    ),
+    (
+        "fundamental_fcf_sbc_adjusted_ttm",
+        "fundamental_fcf_sbc_adjusted_margin_ttm_yoy_change",
+        "sec_free_cashflow_sbc_adjusted_ttm",
+    ),
+)
+_PREVIOUS_REPORT_GAP_DAYS = (60, 140)
+_PRIOR_YEAR_REPORT_GAP_DAYS = (330, 400)
+
 
 @dataclass(frozen=True)
 class CalculationBatchResult:
@@ -385,6 +405,122 @@ def _verified_currency(value: Any) -> bool:
     return bool(pd.notna(value) and str(value).strip())
 
 
+def _symmetric_change_ratio(current: Any, previous: Any) -> float:
+    current_value = _finite_scalar(current)
+    previous_value = _finite_scalar(previous)
+    scale = abs(current_value) + abs(previous_value)
+    if not np.isfinite(scale) or scale <= 0:
+        return np.nan
+    return float((current_value - previous_value) / scale)
+
+
+def _report_row_near_gap(
+    rows: pd.DataFrame,
+    anchor_date: pd.Timestamp,
+    *,
+    target_days: int,
+    minimum_days: int,
+    maximum_days: int,
+) -> pd.Series | None:
+    report_dates = pd.to_datetime(rows["sec_latest_period_end_date"])
+    gaps = (anchor_date - report_dates).dt.days
+    candidates = rows.loc[gaps.between(minimum_days, maximum_days)].copy()
+    if candidates.empty:
+        return None
+    candidate_gaps = gaps.loc[candidates.index]
+    candidates["_report_gap_distance"] = (candidate_gaps - target_days).abs()
+    return candidates.sort_values(
+        ["_report_gap_distance", "sec_latest_period_end_date"],
+        ascending=[True, False],
+        kind="mergesort",
+    ).iloc[0]
+
+
+def _cashflow_margin(row: pd.Series, cashflow_column: str) -> float:
+    return _safe_scalar_divide(row[cashflow_column], row["sec_revenue_ttm"])
+
+
+def _assign_cashflow_trend_features(
+    output: pd.DataFrame,
+    output_index: Any,
+    selected: pd.Series,
+    ordered_reports: pd.DataFrame,
+) -> None:
+    selected_currency = str(selected["sec_fundamental_currency"]).strip()
+    comparable = ordered_reports.loc[
+        ordered_reports["sec_fundamental_currency"].eq(selected_currency)
+    ]
+    current_report_date = pd.Timestamp(selected["sec_latest_period_end_date"])
+    previous_report = _report_row_near_gap(
+        comparable,
+        current_report_date,
+        target_days=91,
+        minimum_days=_PREVIOUS_REPORT_GAP_DAYS[0],
+        maximum_days=_PREVIOUS_REPORT_GAP_DAYS[1],
+    )
+    prior_year_report = _report_row_near_gap(
+        comparable,
+        current_report_date,
+        target_days=365,
+        minimum_days=_PRIOR_YEAR_REPORT_GAP_DAYS[0],
+        maximum_days=_PRIOR_YEAR_REPORT_GAP_DAYS[1],
+    )
+    previous_prior_year_report = None
+    if previous_report is not None:
+        previous_prior_year_report = _report_row_near_gap(
+            comparable,
+            pd.Timestamp(previous_report["sec_latest_period_end_date"]),
+            target_days=365,
+            minimum_days=_PRIOR_YEAR_REPORT_GAP_DAYS[0],
+            maximum_days=_PRIOR_YEAR_REPORT_GAP_DAYS[1],
+        )
+
+    for feature_prefix, margin_change_feature, source_column in (
+        _CASHFLOW_TREND_SPECS
+    ):
+        current_value = _finite_scalar(selected[source_column])
+        if previous_report is not None:
+            output.at[
+                output_index,
+                f"{feature_prefix}_sequential_change_ratio",
+            ] = _symmetric_change_ratio(
+                current_value, previous_report[source_column]
+            )
+        if prior_year_report is None:
+            continue
+
+        prior_year_value = _finite_scalar(prior_year_report[source_column])
+        current_yoy_change = _symmetric_change_ratio(
+            current_value, prior_year_value
+        )
+        output.at[
+            output_index, f"{feature_prefix}_yoy_change_ratio"
+        ] = current_yoy_change
+        if np.isfinite(current_value) and np.isfinite(prior_year_value):
+            output.at[
+                output_index,
+                f"{feature_prefix}_yoy_negative_to_positive",
+            ] = float(prior_year_value <= 0 < current_value)
+
+        current_margin = _cashflow_margin(selected, source_column)
+        prior_year_margin = _cashflow_margin(prior_year_report, source_column)
+        if np.isfinite(current_margin) and np.isfinite(prior_year_margin):
+            output.at[output_index, margin_change_feature] = (
+                current_margin - prior_year_margin
+            )
+
+        if previous_report is None or previous_prior_year_report is None:
+            continue
+        previous_yoy_change = _symmetric_change_ratio(
+            previous_report[source_column],
+            previous_prior_year_report[source_column],
+        )
+        if np.isfinite(current_yoy_change) and np.isfinite(previous_yoy_change):
+            output.at[
+                output_index, f"{feature_prefix}_growth_acceleration"
+            ] = current_yoy_change - previous_yoy_change
+
+
 def _assign_snapshot_features(
     output: pd.DataFrame,
     output_index: Any,
@@ -401,14 +537,15 @@ def _assign_snapshot_features(
     ]
     if eligible.empty:
         return
-    selected = eligible.sort_values(
+    ordered_reports = eligible.sort_values(
         [
             "sec_latest_period_end_date",
             "sec_data_available_at",
             "period_end_date",
         ],
         kind="mergesort",
-    ).iloc[-1]
+    ).drop_duplicates("sec_latest_period_end_date", keep="last")
+    selected = ordered_reports.iloc[-1]
     available_at = pd.Timestamp(selected["sec_data_available_at"])
     report_date = pd.Timestamp(selected["sec_latest_period_end_date"])
     output.at[output_index, "fundamental_snapshot_age_days"] = (
@@ -557,6 +694,10 @@ def _assign_snapshot_features(
                 output_index,
                 "fundamental_goodwill_intangibles_to_assets_ratio",
             ] = (goodwill + intangibles) / assets
+
+    _assign_cashflow_trend_features(
+        output, output_index, selected, ordered_reports
+    )
 
     selected_shares = _finite_scalar(selected["sec_shares_outstanding"])
     older = eligible.loc[

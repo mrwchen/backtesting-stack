@@ -316,6 +316,21 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     fundamental_accruals_ratio                   NUMERIC(20,8),
     fundamental_sbc_to_revenue_ttm_ratio         NUMERIC(20,8),
     fundamental_operating_cashflow_margin_ttm_ratio NUMERIC(20,8),
+    fundamental_operating_cashflow_ttm_yoy_change_ratio NUMERIC(20,8),
+    fundamental_fcf_ttm_yoy_change_ratio         NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_ttm_yoy_change_ratio NUMERIC(20,8),
+    fundamental_operating_cashflow_ttm_sequential_change_ratio NUMERIC(20,8),
+    fundamental_fcf_ttm_sequential_change_ratio  NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_ttm_sequential_change_ratio NUMERIC(20,8),
+    fundamental_operating_cashflow_margin_ttm_yoy_change NUMERIC(20,8),
+    fundamental_fcf_margin_ttm_yoy_change        NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_margin_ttm_yoy_change NUMERIC(20,8),
+    fundamental_operating_cashflow_ttm_growth_acceleration NUMERIC(20,8),
+    fundamental_fcf_ttm_growth_acceleration      NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_ttm_growth_acceleration NUMERIC(20,8),
+    fundamental_operating_cashflow_ttm_yoy_negative_to_positive NUMERIC(20,8),
+    fundamental_fcf_ttm_yoy_negative_to_positive NUMERIC(20,8),
+    fundamental_fcf_sbc_adjusted_ttm_yoy_negative_to_positive NUMERIC(20,8),
     fundamental_rd_to_revenue_ttm_ratio          NUMERIC(20,8),
     fundamental_sga_to_revenue_ttm_ratio         NUMERIC(20,8),
     fundamental_capex_to_revenue_ttm_ratio       NUMERIC(20,8),
@@ -957,6 +972,12 @@ COMMENT ON COLUMN stock_analyser_filter_research_signal_results.signed_candle_bo
     'Bullish minus bearish one-session candle-body percentage at the signal close.';
 COMMENT ON COLUMN stock_analyser_filter_research_signal_results.short_sma_breadth IS
     'Fraction of MA5, MA9 and MA21 below the signal close; NULL unless all inputs exist.';
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.fundamental_operating_cashflow_ttm_yoy_change_ratio IS
+    'Bounded symmetric change of point-in-time operating cash flow TTM versus the matching report about one year earlier.';
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.fundamental_fcf_ttm_sequential_change_ratio IS
+    'Bounded symmetric change of point-in-time free cash flow TTM versus the immediately preceding quarterly report.';
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.fundamental_fcf_ttm_yoy_negative_to_positive IS
+    'One when point-in-time free cash flow TTM changed from nonpositive to positive versus the matching prior-year report, zero otherwise.';
 
 SELECT create_hypertable(
     'stock_analyser_filter_research_signal_results',

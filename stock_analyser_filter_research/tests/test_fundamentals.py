@@ -304,6 +304,134 @@ def test_extended_quality_and_growth_features_use_only_public_sec_rows() -> None
     )
 
 
+def test_cashflow_trends_compare_matching_point_in_time_reports() -> None:
+    previous_prior_year = _snapshot(
+        period_end_date="2025-02-10",
+        sec_latest_period_end_date="2024-12-31",
+        sec_data_available_at="2025-02-10T19:00:00Z",
+        sec_revenue_ttm=950,
+        sec_operating_cashflow_ttm=100,
+        sec_free_cashflow_ttm=50,
+        sec_free_cashflow_sbc_adjusted_ttm=40,
+    )
+    prior_year = _snapshot(
+        period_end_date="2025-05-01",
+        sec_latest_period_end_date="2025-03-25",
+        sec_data_available_at="2025-05-01T19:00:00Z",
+        sec_revenue_ttm=1_000,
+        sec_operating_cashflow_ttm=100,
+        sec_free_cashflow_ttm=40,
+        sec_free_cashflow_sbc_adjusted_ttm=20,
+    )
+    previous = _snapshot(
+        period_end_date="2026-02-10",
+        sec_latest_period_end_date="2025-12-31",
+        sec_data_available_at="2026-02-10T19:00:00Z",
+        sec_revenue_ttm=1_100,
+        sec_operating_cashflow_ttm=140,
+        sec_free_cashflow_ttm=80,
+        sec_free_cashflow_sbc_adjusted_ttm=60,
+    )
+    current = _snapshot(
+        period_end_date="2026-05-01",
+        sec_latest_period_end_date="2026-03-31",
+        sec_data_available_at="2026-05-01T19:00:00Z",
+        sec_revenue_ttm=1_200,
+        sec_operating_cashflow_ttm=180,
+        sec_free_cashflow_ttm=120,
+        sec_free_cashflow_sbc_adjusted_ttm=90,
+    )
+
+    output = enrich_signal_fundamentals(
+        _signals(),
+        _snapshot_frame(previous_prior_year, prior_year, previous, current),
+        _event_frame(_event()),
+    ).iloc[0]
+
+    assert output["fundamental_operating_cashflow_ttm_yoy_change_ratio"] == (
+        pytest.approx(80 / 280)
+    )
+    assert output["fundamental_fcf_ttm_yoy_change_ratio"] == pytest.approx(0.5)
+    assert output[
+        "fundamental_fcf_sbc_adjusted_ttm_yoy_change_ratio"
+    ] == pytest.approx(70 / 110)
+    assert output[
+        "fundamental_operating_cashflow_ttm_sequential_change_ratio"
+    ] == pytest.approx(40 / 320)
+    assert output["fundamental_fcf_ttm_sequential_change_ratio"] == pytest.approx(
+        0.2
+    )
+    assert output[
+        "fundamental_operating_cashflow_margin_ttm_yoy_change"
+    ] == pytest.approx(0.05)
+    assert output["fundamental_fcf_margin_ttm_yoy_change"] == pytest.approx(0.06)
+    assert output[
+        "fundamental_fcf_sbc_adjusted_margin_ttm_yoy_change"
+    ] == pytest.approx(0.055)
+    assert output[
+        "fundamental_operating_cashflow_ttm_growth_acceleration"
+    ] == pytest.approx(80 / 280 - 40 / 240)
+    assert output["fundamental_fcf_ttm_growth_acceleration"] == pytest.approx(
+        0.5 - 30 / 130
+    )
+    assert output[
+        "fundamental_fcf_sbc_adjusted_ttm_growth_acceleration"
+    ] == pytest.approx(70 / 110 - 20 / 100)
+
+
+def test_cashflow_turnarounds_and_currency_boundaries_are_explicit() -> None:
+    prior_year = _snapshot(
+        period_end_date="2025-05-01",
+        sec_latest_period_end_date="2025-03-31",
+        sec_data_available_at="2025-05-01T19:00:00Z",
+        sec_operating_cashflow_ttm=-100,
+        sec_free_cashflow_ttm=-50,
+        sec_free_cashflow_sbc_adjusted_ttm=-20,
+    )
+    current = _snapshot(
+        period_end_date="2026-05-01",
+        sec_latest_period_end_date="2026-03-31",
+        sec_data_available_at="2026-05-01T19:00:00Z",
+        sec_operating_cashflow_ttm=100,
+        sec_free_cashflow_ttm=50,
+        sec_free_cashflow_sbc_adjusted_ttm=20,
+    )
+    turnaround = enrich_signal_fundamentals(
+        _signals(),
+        _snapshot_frame(prior_year, current),
+        _event_frame(_event()),
+    ).iloc[0]
+
+    for feature in (
+        "fundamental_operating_cashflow_ttm_yoy_negative_to_positive",
+        "fundamental_fcf_ttm_yoy_negative_to_positive",
+        "fundamental_fcf_sbc_adjusted_ttm_yoy_negative_to_positive",
+    ):
+        assert turnaround[feature] == 1.0
+
+    mismatched_currency = enrich_signal_fundamentals(
+        _signals(),
+        _snapshot_frame(
+            {**prior_year, "sec_fundamental_currency": "EUR"}, current
+        ),
+        _event_frame(_event()),
+    ).iloc[0]
+    cashflow_trend_features = tuple(
+        feature
+        for feature in FUNDAMENTAL_FEATURE_COLUMNS
+        if (
+            feature.startswith("fundamental_operating_cashflow")
+            or feature.startswith("fundamental_fcf")
+        )
+        and (
+            "_yoy_" in feature
+            or "_sequential_" in feature
+            or feature.endswith("_growth_acceleration")
+        )
+    )
+    assert mismatched_currency.loc[list(cashflow_trend_features)].isna().all()
+
+
 def test_only_confirmed_sec_earnings_known_by_close_are_features() -> None:
     safe = _earnings()
     unsafe_current_snapshot = _earnings(

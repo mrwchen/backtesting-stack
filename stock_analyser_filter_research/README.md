@@ -107,8 +107,9 @@ Abfolge A -> B -> C -> D.
   Aktienzahl und Turnover aus as-traded Raw Volume.
 - **F – Fundamentals:** Profitabilitaet, Margen, Cash Conversion, ROE/ROA,
   Verschuldung, Liquiditaet, Accruals, SBC, Investitionsintensitaet,
-  Asset-Qualitaet, Verwässerungs-/Buyback-Proxies sowie Quartalswachstum,
-  Beschleunigung, Streaks und Margin-Entwicklung.
+  Asset-Qualitaet, Verwässerungs-/Buyback-Proxies, point-in-time OCF-/FCF-
+  Wachstum und Turnarounds sowie Quartalswachstum, Beschleunigung, Streaks und
+  Margin-Entwicklung.
 - **N – Earnings-Naehe:** Alter eines bestaetigten SEC-8-K-Item-2.02-Ereignisses
   und Ereignisfenster von 0, 5 und 21 Tagen.
 - **M – Unternehmensgroesse:** point-in-time Market Cap in USD, logarithmische
@@ -277,6 +278,26 @@ Wissen behandelt. Es wird keine neue Schaetzungsquelle abgefragt.
 Es werden keine absoluten Fundamentalbetraege zwischen Aktien verglichen.
 Ratios werden nur bei bekannter Berichtswährung gebildet. Das Alter der
 verwendeten SEC-Daten bleibt als eigenes Merkmal sichtbar.
+
+OCF, FCF und SBC-bereinigter FCF werden zusaetzlich mit dem unmittelbar
+vorherigen Bericht sowie dem passenden Bericht etwa ein Jahr zuvor verglichen.
+Zulaessig sind nur bekannte Snapshots derselben Berichtswährung. Der vorherige
+Bericht muss 60 bis 140 Tage, der Vorjahresbericht 330 bis 400 Tage vor der
+aktuellen SEC-Berichtsperiode liegen; dadurch werden 52-/53-Wochen-Jahre
+abgedeckt, fehlende Quartale aber nicht stillschweigend uebersprungen.
+
+Die Change-Ratios verwenden
+`(aktuell - vorher) / (abs(aktuell) + abs(vorher))` und liegen damit zwischen
+`-1` und `1`. Das bleibt auch bei negativen Cashflows stabil. Separate Merkmale
+kennzeichnen den Wechsel von nichtpositivem zu positivem Cashflow, die
+Veraenderung der Cashflow-Margen und die Beschleunigung der YoY-Aenderung. Ein
+`sequential_change_ratio` vergleicht aufeinanderfolgende TTM-Snapshots; er ist
+kein rekonstruierter isolierter Quartals-Cashflow.
+
+Neben den atomaren Quantiltests existieren die Muster `CASHFLOW_GROWTH` und
+`CASHFLOW_DETERIORATION` sowie begrenzte Interaktionen mit Umsatzwachstum,
+FCF-Marge und relativer Staerke. Sie durchlaufen dieselben Walk-forward-,
+Stabilitaets-, Holdout- und Multiple-Testing-Gates wie alle anderen Regeln.
 
 Market Cap aus `stock_core_market_metrics_daily` wird nur fuer exakte
 Signal-Keys geladen. Fuer die spaeteren Ausstiegsvergleiche wird

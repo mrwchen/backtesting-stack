@@ -1586,6 +1586,26 @@ def _trader_pattern_templates() -> tuple[PatternTemplate, ...]:
         ),
         build(
             "F",
+            "CASHFLOW_GROWTH",
+            (
+                (
+                    "fundamental_operating_cashflow_ttm_yoy_change_ratio",
+                    "ge",
+                    0.70,
+                    None,
+                ),
+                ("fundamental_fcf_ttm_yoy_change_ratio", "ge", 0.70, None),
+                (
+                    "fundamental_quarterly_revenue_yoy_growth_ratio",
+                    "ge",
+                    0.70,
+                    None,
+                ),
+                ("fundamental_fcf_margin_ttm_ratio", "ge", 0.70, None),
+            ),
+        ),
+        build(
+            "F",
             "QUALITY_GROWTH",
             (
                 ("fundamental_roe_ttm_ratio", "ge", 0.70, None),
@@ -1643,6 +1663,22 @@ def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
         ("fundamental_quarterly_revenue_yoy_growth_ratio", "cross_sectional_rs_63d_pct_rank"),
         ("fundamental_quarterly_eps_yoy_growth_ratio", "cross_sectional_rs_63d_pct_rank"),
         ("fundamental_quarterly_revenue_growth_acceleration", "adjusted_volume_vs_sma21_prior_ratio"),
+        (
+            "fundamental_quarterly_revenue_yoy_growth_ratio",
+            "fundamental_operating_cashflow_ttm_yoy_change_ratio",
+        ),
+        (
+            "fundamental_quarterly_revenue_yoy_growth_ratio",
+            "fundamental_fcf_ttm_yoy_change_ratio",
+        ),
+        (
+            "fundamental_fcf_ttm_yoy_change_ratio",
+            "fundamental_fcf_margin_ttm_ratio",
+        ),
+        (
+            "fundamental_fcf_ttm_growth_acceleration",
+            "cross_sectional_rs_63d_pct_rank",
+        ),
         ("fundamental_roe_ttm_ratio", "fundamental_cash_conversion_ttm_ratio"),
         ("fundamental_debt_to_assets_ratio", "fundamental_fcf_margin_ttm_ratio"),
         ("earnings_event_age_days", "adjusted_volume_vs_sma21_prior_ratio"),
@@ -1948,6 +1984,22 @@ def _fundamental_pattern_templates() -> tuple[PatternTemplate, ...]:
                     0.30,
                 ),
                 ("fundamental_accruals_ratio", "ge", 0.70),
+            ),
+        ),
+        pattern(
+            "CASHFLOW_DETERIORATION",
+            (
+                (
+                    "fundamental_operating_cashflow_ttm_yoy_change_ratio",
+                    "le",
+                    0.30,
+                ),
+                ("fundamental_fcf_ttm_yoy_change_ratio", "le", 0.30),
+                (
+                    "fundamental_fcf_margin_ttm_yoy_change",
+                    "le",
+                    0.30,
+                ),
             ),
         ),
     )
