@@ -54,8 +54,10 @@ services:
         condition: service_completed_successfully
     # Startet den einmaligen Research-Lauf nach seinem Ende nicht automatisch neu.
     restart: "no"
-    # Begrenzt den Arbeitsspeicher des Research-Containers auf 6 GiB.
-    mem_limit: 6g
+    # Begrenzt den Arbeitsspeicher des Research-Containers auf 8 GiB; die
+    # parallelen Objective-Prozesse teilen Eingabe-Frames, benötigen aber
+    # privaten Speicher für Kandidaten- und Permutationsmatrizen.
+    mem_limit: 8g
     # Konfiguriert Datenbank, Zeitraum, Labels, Regelsuche und Parallelisierung.
     environment:
       # Docker-DNS-Name des PostgreSQL-/TimescaleDB-Servers.
@@ -179,6 +181,10 @@ services:
 
       # Maximale Anzahl paralleler Worker-Prozesse für die CPU- und Datenverarbeitung.
       MAX_WORKERS: "6"
+      # Maximale Zahl paralleler Objective-Prozesse in der speicherintensiven Research-Phase.
+      RESEARCH_MAX_WORKERS: "3"
+      # Mindestabstand zwischen Fortschritts-/ETA-Meldungen desselben Research-Objectives.
+      RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS: "30"
       # Anzahl von Wertpapier-Identitäten, die ein Worker innerhalb einer Aufgabe blockweise verarbeitet.
       WORKER_IDENTITY_BATCH_SIZE: "16"
       # Anzahl von Datenbankzeilen, die beim Lesen pro Cursor-Abruf geholt wird.

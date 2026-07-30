@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from datetime import date
+from queue import Queue
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from stock_analyser_filter_research import db
+from stock_analyser_filter_research import db, research as research_module
 from stock_analyser_filter_research.contracts import (
     CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
     EARLY_CUT_COLUMNS,
@@ -27,12 +29,15 @@ from stock_analyser_filter_research.research import (
     ENTRY_EXCLUSION_SPECS,
     FoldResult,
     ObjectiveSelection,
+    ObjectiveResearchTask,
     PatternTemplate,
     SelectedSummary,
     _Evaluator,
     _apply_max_stat_permutation_gate,
     _choose_sequential_early_prefixes,
+    _duration_text,
     _rule_row,
+    _select_objective_tasks,
     _sequential_policy_metrics,
     _sequential_policy_state,
     _template_text,
@@ -165,6 +170,162 @@ def _early_from_signals(signals: pd.DataFrame) -> pd.DataFrame:
 
 def _template(rule_id: str, group: str, feature: str, quantile: float = 0.20):
     return ConditionTemplate(rule_id, group, feature, "le", quantile)
+
+
+def test_research_objective_task_fallback_logs_progress_and_eta(
+    cfg_factory,
+    monkeypatch,
+    caplog,
+) -> None:
+    cfg = _cfg(
+        cfg_factory,
+        research_max_workers=3,
+        research_progress_log_interval_seconds=5,
+    )
+    specs = ENTRY_EXCLUSION_SPECS[:2]
+    template = _template("ENTRY_A_TEST", "A", A_FEATURE)
+    tasks = tuple(
+        ObjectiveResearchTask(
+            f"test:{spec.objective}",
+            "test stage",
+            spec,
+            (template,),
+        )
+        for spec in specs
+    )
+    calls: list[str] = []
+
+    def fake_select(
+        frame,
+        spec,
+        templates,
+        config,
+        *,
+        allow_selection=True,
+        progress=None,
+    ):
+        calls.append(spec.objective)
+        assert progress is not None
+        progress("single candidates", 1, 1, 1, True)
+        empty = CandidateEvaluation(
+            (), (), {}, (), {}, False, False, {}, None
+        )
+        return ObjectiveSelection(spec, empty, (empty,), (empty,))
+
+    monkeypatch.setattr(research_module, "select_objective", fake_select)
+    monkeypatch.setattr(
+        research_module.multiprocessing,
+        "get_all_start_methods",
+        lambda: ["spawn"],
+    )
+
+    with caplog.at_level("INFO"):
+        result = _select_objective_tasks(pd.DataFrame(), tasks, cfg)
+
+    assert tuple(result) == tuple(task.task_id for task in tasks)
+    assert calls == [spec.objective for spec in specs]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("fork is unavailable" in message for message in messages)
+    assert any("phase single candidates progress 1/1 100.0%" in message for message in messages)
+    assert any("stage test stage progress 2/2 objectives" in message for message in messages)
+    assert _duration_text(3_661) == "1h01m01s"
+
+
+def test_research_objective_tasks_use_fork_shared_state(
+    cfg_factory,
+    monkeypatch,
+) -> None:
+    cfg = _cfg(
+        cfg_factory,
+        research_max_workers=2,
+        research_progress_log_interval_seconds=5,
+    )
+    specs = ENTRY_EXCLUSION_SPECS[:2]
+    template = _template("ENTRY_A_TEST", "A", A_FEATURE)
+    tasks = tuple(
+        ObjectiveResearchTask(
+            f"test:{spec.objective}",
+            "test stage",
+            spec,
+            (template,),
+        )
+        for spec in specs
+    )
+    calls: list[str] = []
+
+    def fake_select(
+        frame,
+        spec,
+        templates,
+        config,
+        *,
+        allow_selection=True,
+        progress=None,
+    ):
+        calls.append(spec.objective)
+        assert progress is not None
+        progress("single candidates", 1, 1, 1, True)
+        empty = CandidateEvaluation(
+            (), (), {}, (), {}, False, False, {}, None
+        )
+        return ObjectiveSelection(spec, empty, (empty,), (empty,))
+
+    class FakeQueue(Queue):
+        def close(self) -> None:
+            return None
+
+        def join_thread(self) -> None:
+            return None
+
+    class FakeContext:
+        @staticmethod
+        def Queue() -> FakeQueue:
+            return FakeQueue()
+
+    class InlineProcessPoolExecutor:
+        def __init__(self, *, max_workers, mp_context) -> None:
+            assert max_workers == 2
+            assert isinstance(mp_context, FakeContext)
+
+        @staticmethod
+        def submit(function, *args) -> Future:
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except BaseException as exc:
+                future.set_exception(exc)
+            return future
+
+        @staticmethod
+        def shutdown(*, wait, cancel_futures) -> None:
+            assert wait is True
+            assert cancel_futures is True
+
+    monkeypatch.setattr(research_module, "select_objective", fake_select)
+    monkeypatch.setattr(
+        research_module.multiprocessing,
+        "get_all_start_methods",
+        lambda: ["fork", "spawn"],
+    )
+    monkeypatch.setattr(
+        research_module.multiprocessing,
+        "get_context",
+        lambda method: FakeContext(),
+    )
+    monkeypatch.setattr(
+        research_module,
+        "ProcessPoolExecutor",
+        InlineProcessPoolExecutor,
+    )
+
+    result = _select_objective_tasks(pd.DataFrame(), tasks, cfg)
+
+    assert tuple(result) == tuple(task.task_id for task in tasks)
+    assert sorted(calls) == sorted(spec.objective for spec in specs)
+    assert research_module._RESEARCH_SHARED_FRAME is None
+    assert research_module._RESEARCH_SHARED_TASKS == {}
+    assert research_module._RESEARCH_SHARED_CFG is None
+    assert research_module._RESEARCH_PROGRESS_QUEUE is None
 
 
 def test_management_decision_applies_exit_rule_and_preserves_hard_stop() -> None:

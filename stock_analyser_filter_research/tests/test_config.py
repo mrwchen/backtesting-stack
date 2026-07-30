@@ -84,6 +84,11 @@ def test_v2_split_dates_must_be_strictly_ordered(cfg_factory, changes, message) 
         ({"max_stat_permutation_p_value": 0.0}, "MAX_STAT_PERMUTATION_P_VALUE"),
         ({"permutation_random_seed": -1}, "PERMUTATION_RANDOM_SEED"),
         ({"max_workers": 0}, "MAX_WORKERS"),
+        ({"research_max_workers": 0}, "RESEARCH_MAX_WORKERS"),
+        (
+            {"research_progress_log_interval_seconds": 4},
+            "RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS",
+        ),
         ({"worker_identity_batch_size": 0}, "WORKER_IDENTITY_BATCH_SIZE"),
         ({"db_fetch_batch_size": 0}, "database batch sizes"),
         ({"db_copy_batch_size": 0}, "database batch sizes"),
@@ -155,6 +160,8 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
         "MAX_STAT_PERMUTATION_P_VALUE": "0.04",
         "PERMUTATION_RANDOM_SEED": "31415",
         "MIN_HOLDOUT_SAMPLE_COUNT": "321",
+        "RESEARCH_MAX_WORKERS": "3",
+        "RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS": "17",
         "WORKER_IDENTITY_BATCH_SIZE": "11",
         "DB_COPY_BATCH_SIZE": "1234",
         "MARKET_METRICS_TABLE": "research.stock_core_market_metrics_daily",
@@ -187,6 +194,8 @@ def test_v2_from_env_reads_holdout_early_cut_and_research_controls(
     assert cfg.max_stat_permutation_p_value == pytest.approx(0.04)
     assert cfg.permutation_random_seed == 31415
     assert cfg.min_holdout_sample_count == 321
+    assert cfg.research_max_workers == 3
+    assert cfg.research_progress_log_interval_seconds == 17
     assert cfg.worker_identity_batch_size == 11
     assert cfg.db_copy_batch_size == 1234
     assert cfg.market_metrics_table == values["MARKET_METRICS_TABLE"]

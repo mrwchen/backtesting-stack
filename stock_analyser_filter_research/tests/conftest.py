@@ -74,6 +74,8 @@ def cfg_factory():
             "taxonomy_backcast_category_min_members": 10,
             "taxonomy_backcast_subcategory_min_members": 5,
             "max_workers": 1,
+            "research_max_workers": 1,
+            "research_progress_log_interval_seconds": 5,
             "worker_identity_batch_size": 2,
             "db_fetch_batch_size": 100,
             "db_copy_batch_size": 100,

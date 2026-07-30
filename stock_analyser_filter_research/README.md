@@ -440,7 +440,26 @@ Programm bei einer alten Struktur oder bereits vorhandenen Zielzeilen ab.
 Die Berechnung nutzt disjunkte, nach Quellzeilenzahl balancierte
 Aktienpartitionen. Jeder Worker-Prozess besitzt eine eigene DB-Verbindung mit
 AppName und importiert denselben exportierten PostgreSQL-Snapshot. Nur der
-Hauptprozess schreibt die drei Ergebnistabellen. Wegen der zusaetzlichen
+Hauptprozess schreibt die drei Ergebnistabellen. Nach der Datenberechnung wertet
+eine zweite, unabhaengig begrenzte Prozessgruppe die Objectives parallel aus.
+`MAX_WORKERS=6` steuert die Daten-/Signalberechnung;
+`RESEARCH_MAX_WORKERS=3` steuert die speicherintensive Research-Phase. Auf der
+Linux-Trading-VM teilen diese Prozesse die grossen, unveraenderten Eingabe-
+Frames per Copy-on-write. Falls `fork` nicht verfuegbar ist, wird bewusst
+seriell gerechnet, statt grosse DataFrames mehrfach zu serialisieren.
+Der Container ist dafuer auf 8 GiB begrenzt. Mehr als drei Research-Worker
+sollten auf der aktuellen 16-GiB-Trading-VM erst nach Beobachtung des realen
+Peak-Speichers eingestellt werden.
+
+Alle Research-Stufen melden Start und Abschluss. Waehrend langer Objectives
+werden Einzelkandidaten, OR-Kombinationen, Aufbau der Permutationsmatrix und
+die 999 Permutationslaeufe mindestens alle
+`RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS=30` Sekunden mit Fortschritt,
+verstrichener Zeit und Phasen-ETA protokolliert. Nach dem ersten abgeschlossenen
+Objective wird zusaetzlich eine gleitende ETA fuer die aktuelle Stufe
+ausgegeben. Eine ETA ist anfangs `pending`, bis genug Durchsatz gemessen wurde.
+
+Wegen der zusaetzlichen
 Horizonte, festen Ratio-Grenzen, Management-Objectives, Dreier-OR-Suche und 999
 Permutationen, k-von-n-Muster, 105 Multi-Window-Scores, 764 zusaetzlichen
 Signaltags-/Kontextinteraktionen je Entry-Entscheidungsfamilie, zwei

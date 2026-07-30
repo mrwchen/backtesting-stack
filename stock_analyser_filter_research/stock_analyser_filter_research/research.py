@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import combinations, product
 import logging
 from math import ceil
+import multiprocessing
+from queue import Empty
 import re
-from typing import Iterable, Mapping
+import time
+from typing import Callable, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -369,6 +373,127 @@ class ObjectiveSelection:
     selected: CandidateEvaluation
     candidates: tuple[CandidateEvaluation, ...]
     prefixes: tuple[CandidateEvaluation, ...]
+
+
+@dataclass(frozen=True)
+class ObjectiveResearchTask:
+    task_id: str
+    stage: str
+    spec: ObjectiveSpec
+    templates: tuple[CandidateTemplate, ...]
+    allow_selection: bool = True
+
+
+@dataclass(frozen=True)
+class ResearchProgressEvent:
+    task_id: str
+    stage: str
+    objective: str
+    landmark_day: int | None
+    phase: str
+    completed: int
+    total: int | None
+    tested_candidate_count: int
+    objective_elapsed_seconds: float
+    phase_elapsed_seconds: float
+
+
+_RESEARCH_SHARED_FRAME: pd.DataFrame | None = None
+_RESEARCH_SHARED_TASKS: dict[str, ObjectiveResearchTask] = {}
+_RESEARCH_SHARED_CFG: Config | None = None
+_RESEARCH_PROGRESS_QUEUE: object | None = None
+
+
+ProgressCallback = Callable[[str, int, int | None, int, bool], None]
+
+
+def _duration_text(seconds: float | None) -> str:
+    if seconds is None or not np.isfinite(seconds) or seconds < 0:
+        return "pending"
+    rounded = int(round(seconds))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h{minutes:02d}m{seconds_part:02d}s"
+    if minutes:
+        return f"{minutes:d}m{seconds_part:02d}s"
+    return f"{seconds_part:d}s"
+
+
+class _ObjectiveProgressReporter:
+    def __init__(
+        self,
+        task: ObjectiveResearchTask,
+        interval_seconds: int,
+        sink: Callable[[ResearchProgressEvent], None],
+    ) -> None:
+        self.task = task
+        self.interval_seconds = interval_seconds
+        self.sink = sink
+        self.objective_started = time.monotonic()
+        self.phase_started = self.objective_started
+        self.phase: str | None = None
+        self.last_emitted = 0.0
+
+    def __call__(
+        self,
+        phase: str,
+        completed: int,
+        total: int | None,
+        tested_candidate_count: int,
+        force: bool = False,
+    ) -> None:
+        now = time.monotonic()
+        if phase != self.phase:
+            self.phase = phase
+            self.phase_started = now
+            force = True
+        if not force and now - self.last_emitted < self.interval_seconds:
+            return
+        self.last_emitted = now
+        self.sink(
+            ResearchProgressEvent(
+                task_id=self.task.task_id,
+                stage=self.task.stage,
+                objective=self.task.spec.objective,
+                landmark_day=self.task.spec.landmark_day,
+                phase=phase,
+                completed=completed,
+                total=total,
+                tested_candidate_count=tested_candidate_count,
+                objective_elapsed_seconds=now - self.objective_started,
+                phase_elapsed_seconds=now - self.phase_started,
+            )
+        )
+
+
+def _log_progress_event(event: ResearchProgressEvent) -> None:
+    if event.total is not None and event.total > 0:
+        percent = min(100.0, event.completed / event.total * 100.0)
+        remaining = max(event.total - event.completed, 0)
+        phase_eta = (
+            event.phase_elapsed_seconds / event.completed * remaining
+            if event.completed > 0
+            else None
+        )
+        progress_text = f"{event.completed}/{event.total} {percent:.1f}%"
+    else:
+        phase_eta = None
+        progress_text = f"{event.completed} completed"
+    day_text = (
+        f" D+{event.landmark_day}" if event.landmark_day is not None else ""
+    )
+    log.info(
+        "Research objective %s%s %s phase %s progress %s; tested %d candidates; elapsed %s; phase ETA %s",
+        event.stage,
+        day_text,
+        event.objective,
+        event.phase,
+        progress_text,
+        event.tested_candidate_count,
+        _duration_text(event.objective_elapsed_seconds),
+        _duration_text(phase_eta),
+    )
 
 
 @dataclass
@@ -2074,7 +2199,9 @@ def _universe(frame: pd.DataFrame, spec: ObjectiveSpec) -> pd.DataFrame:
             else "eligible_at_landmark"
         )
         result = result.loc[_truthy(result[eligibility_column])]
-    return result.copy()
+    # Research evaluators are read-only. Avoid a deep copy here so forked
+    # objective workers keep the large input frame copy-on-write shared.
+    return result
 
 
 def _period_frame(
@@ -2466,6 +2593,7 @@ def _apply_max_stat_permutation_gate(
     spec: ObjectiveSpec,
     candidates: Iterable[CandidateEvaluation],
     cfg: Config,
+    progress: ProgressCallback | None = None,
 ) -> None:
     """Apply a deterministic family-wise max-statistic gate on validation data.
 
@@ -2493,6 +2621,8 @@ def _apply_max_stat_permutation_gate(
         candidate.max_stat_permutation_p_value = None
         candidate.passes_multiple_testing = None
     if not evaluable:
+        if progress is not None:
+            progress("permutation matrix", 0, 0, len(candidate_list), True)
         return
 
     validation = _period_frame(
@@ -2508,14 +2638,33 @@ def _apply_max_stat_permutation_gate(
     if not len(validation) or not objective.any() or not protected.any():
         for candidate in evaluable:
             candidate.passes_multiple_testing = False
+        if progress is not None:
+            progress(
+                "permutation trials",
+                cfg.permutation_trial_count,
+                cfg.permutation_trial_count,
+                len(candidate_list),
+                True,
+            )
         return
-    masks = np.column_stack(
-        [
-            _combined_mask(validation, candidate.final_conditions)
-            .to_numpy(dtype=bool)
-            for candidate in evaluable
-        ]
-    )
+    mask_columns: list[np.ndarray] = []
+    if progress is not None:
+        progress("permutation matrix", 0, len(evaluable), len(candidate_list), True)
+    for position, candidate in enumerate(evaluable, start=1):
+        mask_columns.append(
+            _combined_mask(validation, candidate.final_conditions).to_numpy(
+                dtype=bool
+            )
+        )
+        if progress is not None:
+            progress(
+                "permutation matrix",
+                position,
+                len(evaluable),
+                len(candidate_list),
+                position == len(evaluable),
+            )
+    masks = np.column_stack(mask_columns)
     mask_matrix = masks.astype(np.float32, copy=False)
     objective_count = float(objective.sum())
     protected_count = float(protected.sum())
@@ -2547,6 +2696,14 @@ def _apply_max_stat_permutation_gate(
     )
     null_maxima = np.empty(cfg.permutation_trial_count, dtype=float)
     batch_size = min(25, cfg.permutation_trial_count)
+    if progress is not None:
+        progress(
+            "permutation trials",
+            0,
+            cfg.permutation_trial_count,
+            len(candidate_list),
+            True,
+        )
     for start in range(0, cfg.permutation_trial_count, batch_size):
         stop = min(start + batch_size, cfg.permutation_trial_count)
         trial_count = stop - start
@@ -2565,6 +2722,14 @@ def _apply_max_stat_permutation_gate(
             - mask_matrix.T @ protected_permutations / protected_count
         )
         null_maxima[start:stop] = np.max(null_scores, axis=0)
+        if progress is not None:
+            progress(
+                "permutation trials",
+                stop,
+                cfg.permutation_trial_count,
+                len(candidate_list),
+                stop == cfg.permutation_trial_count,
+            )
 
     for position, candidate in enumerate(evaluable):
         p_value = float(
@@ -2584,10 +2749,23 @@ def select_objective(
     cfg: Config,
     *,
     allow_selection: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> ObjectiveSelection:
     evaluator = _Evaluator(frame, spec, templates, cfg)
     empty = evaluator.evaluate(())
-    singles = [evaluator.evaluate((template,)) for template in templates]
+    singles: list[CandidateEvaluation] = []
+    if progress is not None:
+        progress("single candidates", 0, len(templates), 0, True)
+    for position, template in enumerate(templates, start=1):
+        singles.append(evaluator.evaluate((template,)))
+        if progress is not None:
+            progress(
+                "single candidates",
+                position,
+                len(templates),
+                position,
+                position == len(templates),
+            )
     eligible_singles = [
         item
         for item in singles
@@ -2601,6 +2779,14 @@ def select_objective(
     seen = {tuple(item.rule_id for item in candidate.templates) for candidate in singles}
     for size in range(2, cfg.max_conditions_per_objective + 1):
         expanded: list[CandidateEvaluation] = []
+        if progress is not None:
+            progress(
+                f"combination search size {size}",
+                len(tested),
+                None,
+                len(tested),
+                True,
+            )
         for base in frontier:
             existing_ids = {item.rule_id for item in base.templates}
             existing_atomic = {
@@ -2622,6 +2808,14 @@ def select_objective(
                 seen.add(key)
                 candidate = evaluator.evaluate(combined)
                 tested.append(candidate)
+                if progress is not None:
+                    progress(
+                        f"combination search size {size}",
+                        len(tested),
+                        None,
+                        len(tested),
+                        False,
+                    )
                 base_score = base.selection_score
                 candidate_score = candidate.selection_score
                 if (
@@ -2638,7 +2832,13 @@ def select_objective(
         frontier = expanded[: cfg.rule_search_beam_width]
         if not frontier:
             break
-    _apply_max_stat_permutation_gate(frame, spec, tested, cfg)
+    _apply_max_stat_permutation_gate(
+        frame,
+        spec,
+        tested,
+        cfg,
+        progress=progress,
+    )
     eligible = [
         item for item in viable if item.passes_multiple_testing is True
     ]
@@ -2647,7 +2847,239 @@ def select_objective(
     for length in range(1, len(selected.templates) + 1):
         prefixes.append(evaluator.evaluate(selected.templates[:length]))
     candidates = tuple(sorted(tested, key=_rank))
+    if progress is not None:
+        progress("completed", 1, 1, len(tested), True)
     return ObjectiveSelection(spec, selected, candidates, tuple(prefixes))
+
+
+def _queue_progress_event(event: ResearchProgressEvent) -> None:
+    queue = _RESEARCH_PROGRESS_QUEUE
+    if queue is None:
+        return
+    getattr(queue, "put")(event)
+
+
+def _research_objective_worker(
+    task_id: str,
+) -> tuple[str, ObjectiveSelection, float]:
+    if _RESEARCH_SHARED_FRAME is None or _RESEARCH_SHARED_CFG is None:
+        raise RuntimeError("research worker shared state is not initialized")
+    task = _RESEARCH_SHARED_TASKS[task_id]
+    reporter = _ObjectiveProgressReporter(
+        task,
+        _RESEARCH_SHARED_CFG.research_progress_log_interval_seconds,
+        _queue_progress_event,
+    )
+    started = time.monotonic()
+    selection = select_objective(
+        _RESEARCH_SHARED_FRAME,
+        task.spec,
+        task.templates,
+        _RESEARCH_SHARED_CFG,
+        allow_selection=task.allow_selection,
+        progress=reporter,
+    )
+    return task_id, selection, time.monotonic() - started
+
+
+def _objective_completion_log(
+    task: ObjectiveResearchTask,
+    selection: ObjectiveSelection,
+    elapsed_seconds: float,
+) -> None:
+    multiple_testing_passes = sum(
+        candidate.passes_multiple_testing is True
+        for candidate in selection.candidates
+    )
+    day_text = (
+        f" D+{task.spec.landmark_day}"
+        if task.spec.landmark_day is not None
+        else ""
+    )
+    log.info(
+        "Research objective %s%s %s completed in %s; tested %d candidates; %d passed multiple testing; selected %d conditions",
+        task.stage,
+        day_text,
+        task.spec.objective,
+        _duration_text(elapsed_seconds),
+        len(selection.candidates),
+        multiple_testing_passes,
+        len(selection.selected.templates),
+    )
+
+
+def _stage_progress_log(
+    stage: str,
+    completed_count: int,
+    total_count: int,
+    worker_count: int,
+    completed_durations: list[float],
+    stage_started: float,
+) -> None:
+    elapsed = time.monotonic() - stage_started
+    remaining_count = total_count - completed_count
+    eta = (
+        float(np.mean(completed_durations)) * remaining_count / worker_count
+        if completed_durations and remaining_count > 0
+        else (0.0 if remaining_count == 0 else None)
+    )
+    log.info(
+        "Research stage %s progress %d/%d objectives; %d workers; elapsed %s; stage ETA %s",
+        stage,
+        completed_count,
+        total_count,
+        worker_count,
+        _duration_text(elapsed),
+        _duration_text(eta),
+    )
+
+
+def _drain_research_progress(queue: object) -> None:
+    while True:
+        try:
+            event = getattr(queue, "get_nowait")()
+        except Empty:
+            return
+        _log_progress_event(event)
+
+
+def _select_objective_tasks(
+    frame: pd.DataFrame,
+    tasks: tuple[ObjectiveResearchTask, ...],
+    cfg: Config,
+) -> dict[str, ObjectiveSelection]:
+    if not tasks:
+        return {}
+    if len({task.task_id for task in tasks}) != len(tasks):
+        raise ValueError("research objective task ids must be unique")
+    stages = {task.stage for task in tasks}
+    if len(stages) != 1:
+        raise ValueError("one research task batch must belong to one stage")
+    stage = next(iter(stages))
+    requested_workers = min(cfg.research_max_workers, len(tasks))
+    fork_available = "fork" in multiprocessing.get_all_start_methods()
+    worker_count = requested_workers if fork_available else 1
+    if requested_workers > 1 and not fork_available:
+        log.warning(
+            "Research stage %s requested %d workers but fork is unavailable; using deterministic serial fallback",
+            stage,
+            requested_workers,
+        )
+    log.info(
+        "Research stage %s started with %d objectives, %d worker processes and %d total templates",
+        stage,
+        len(tasks),
+        worker_count,
+        sum(len(task.templates) for task in tasks),
+    )
+    stage_started = time.monotonic()
+    results: dict[str, ObjectiveSelection] = {}
+    completed_durations: list[float] = []
+
+    if worker_count == 1:
+        for task in tasks:
+            reporter = _ObjectiveProgressReporter(
+                task,
+                cfg.research_progress_log_interval_seconds,
+                _log_progress_event,
+            )
+            objective_started = time.monotonic()
+            selection = select_objective(
+                frame,
+                task.spec,
+                task.templates,
+                cfg,
+                allow_selection=task.allow_selection,
+                progress=reporter,
+            )
+            elapsed = time.monotonic() - objective_started
+            results[task.task_id] = selection
+            completed_durations.append(elapsed)
+            _objective_completion_log(task, selection, elapsed)
+            _stage_progress_log(
+                stage,
+                len(results),
+                len(tasks),
+                worker_count,
+                completed_durations,
+                stage_started,
+            )
+        return results
+
+    global _RESEARCH_SHARED_FRAME
+    global _RESEARCH_SHARED_TASKS
+    global _RESEARCH_SHARED_CFG
+    global _RESEARCH_PROGRESS_QUEUE
+    context = multiprocessing.get_context("fork")
+    progress_queue = context.Queue()
+    _RESEARCH_SHARED_FRAME = frame
+    _RESEARCH_SHARED_TASKS = {task.task_id: task for task in tasks}
+    _RESEARCH_SHARED_CFG = cfg
+    _RESEARCH_PROGRESS_QUEUE = progress_queue
+    executor: ProcessPoolExecutor | None = None
+    future_to_task: dict[object, ObjectiveResearchTask] = {}
+    pending: set[object] = set()
+    last_stage_log = stage_started
+    try:
+        executor = ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=context,
+        )
+        future_to_task = {
+            executor.submit(_research_objective_worker, task.task_id): task
+            for task in tasks
+        }
+        pending = set(future_to_task)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=1.0,
+                return_when=FIRST_COMPLETED,
+            )
+            _drain_research_progress(progress_queue)
+            for future in done:
+                task = future_to_task[future]
+                task_id, selection, elapsed = future.result()
+                results[task_id] = selection
+                completed_durations.append(elapsed)
+                _objective_completion_log(task, selection, elapsed)
+                _stage_progress_log(
+                    stage,
+                    len(results),
+                    len(tasks),
+                    worker_count,
+                    completed_durations,
+                    stage_started,
+                )
+                last_stage_log = time.monotonic()
+            if (
+                time.monotonic() - last_stage_log
+                >= cfg.research_progress_log_interval_seconds
+            ):
+                _stage_progress_log(
+                    stage,
+                    len(results),
+                    len(tasks),
+                    worker_count,
+                    completed_durations,
+                    stage_started,
+                )
+                last_stage_log = time.monotonic()
+    except BaseException:
+        for future in pending:
+            getattr(future, "cancel")()
+        raise
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        _drain_research_progress(progress_queue)
+        progress_queue.close()
+        progress_queue.join_thread()
+        _RESEARCH_SHARED_FRAME = None
+        _RESEARCH_SHARED_TASKS = {}
+        _RESEARCH_SHARED_CFG = None
+        _RESEARCH_PROGRESS_QUEUE = None
+    return {task.task_id: results[task.task_id] for task in tasks}
 
 
 def _choose_prefixes(
@@ -2656,12 +3088,45 @@ def _choose_prefixes(
     cfg: Config,
     *,
     require_cross_objective_lift: bool = True,
+    progress_label: str | None = None,
 ) -> dict[str, int]:
     objectives = tuple(selections)
     best_rank: tuple[object, ...] | None = None
     best = {objective: 0 for objective in objectives}
     ranges = [range(len(selections[objective].prefixes)) for objective in objectives]
-    for lengths in __import__("itertools").product(*ranges):
+    combination_count = int(np.prod([len(values) for values in ranges], dtype=np.int64))
+    progress_started = time.monotonic()
+    last_progress_log = progress_started
+    if progress_label is not None:
+        log.info(
+            "Research policy optimization %s started with %d prefix combinations",
+            progress_label,
+            combination_count,
+        )
+    for combination_position, lengths in enumerate(
+        __import__("itertools").product(*ranges), start=1
+    ):
+        now = time.monotonic()
+        if progress_label is not None and (
+            now - last_progress_log
+            >= cfg.research_progress_log_interval_seconds
+        ):
+            completed = combination_position - 1
+            elapsed = now - progress_started
+            eta = (
+                elapsed / completed * (combination_count - completed)
+                if completed > 0
+                else None
+            )
+            log.info(
+                "Research policy optimization %s progress %d/%d combinations; elapsed %s; ETA %s",
+                progress_label,
+                completed,
+                combination_count,
+                _duration_text(elapsed),
+                _duration_text(eta),
+            )
+            last_progress_log = now
         total_conditions = sum(
             len(selections[objective].prefixes[length].templates)
             for objective, length in zip(objectives, lengths)
@@ -2759,6 +3224,13 @@ def _choose_prefixes(
         if best_rank is None or rank < best_rank:
             best_rank = rank
             best = dict(zip(objectives, lengths))
+    if progress_label is not None:
+        log.info(
+            "Research policy optimization %s completed %d combinations in %s",
+            progress_label,
+            combination_count,
+            _duration_text(time.monotonic() - progress_started),
+        )
     return best
 
 
@@ -2767,6 +3239,8 @@ def _gate_refit_prefixes(
     selections: Mapping[str, ObjectiveSelection],
     prefix_lengths: Mapping[str, int],
     cfg: Config,
+    *,
+    progress_label: str | None = None,
 ) -> dict[str, int]:
     """Keep only prefixes whose final, fixed thresholds still pass all gates.
 
@@ -2804,7 +3278,36 @@ def _gate_refit_prefixes(
         (cfg.signal_start_date, cfg.validation_end_date),
         (cfg.discovery_end_date + timedelta(days=1), cfg.validation_end_date),
     )
-    for lengths in combinations:
+    progress_started = time.monotonic()
+    last_progress_log = progress_started
+    if progress_label is not None:
+        log.info(
+            "Research refit gate %s started with %d prefix combinations",
+            progress_label,
+            len(combinations),
+        )
+    for combination_position, lengths in enumerate(combinations, start=1):
+        now = time.monotonic()
+        if progress_label is not None and (
+            now - last_progress_log
+            >= cfg.research_progress_log_interval_seconds
+        ):
+            completed = combination_position - 1
+            elapsed = now - progress_started
+            eta = (
+                elapsed / completed * (len(combinations) - completed)
+                if completed > 0
+                else None
+            )
+            log.info(
+                "Research refit gate %s progress %d/%d combinations; elapsed %s; ETA %s",
+                progress_label,
+                completed,
+                len(combinations),
+                _duration_text(elapsed),
+                _duration_text(eta),
+            )
+            last_progress_log = now
         chosen = {
             objective: selections[objective].prefixes[length]
             for objective, length in zip(objectives, lengths)
@@ -2858,7 +3361,21 @@ def _gate_refit_prefixes(
                 if not valid:
                     break
         if valid:
+            if progress_label is not None:
+                log.info(
+                    "Research refit gate %s completed after %d/%d combinations in %s",
+                    progress_label,
+                    combination_position,
+                    len(combinations),
+                    _duration_text(time.monotonic() - progress_started),
+                )
             return dict(zip(objectives, lengths))
+    if progress_label is not None:
+        log.info(
+            "Research refit gate %s completed without an eligible non-empty prefix in %s",
+            progress_label,
+            _duration_text(time.monotonic() - progress_started),
+        )
     return {objective: 0 for objective in objectives}
 
 
@@ -3098,6 +3615,7 @@ def _choose_sequential_early_prefixes(
     cfg: Config,
 ) -> dict[int, dict[str, int]]:
     """Choose one cumulative early policy under pooled, fold and refit gates."""
+    progress_started = time.monotonic()
     slots = tuple(
         (day, objective)
         for day in EARLY_CUT_LANDMARK_DAYS
@@ -3206,8 +3724,8 @@ def _choose_sequential_early_prefixes(
                 result.setdefault(key, day)
         return result
 
-    fold_contexts = [
-        build_context(
+    context_specs = [
+        (
             fold.start_date,
             fold.end_date,
             fold.end_date,
@@ -3215,19 +3733,69 @@ def _choose_sequential_early_prefixes(
         )
         for fold_index, fold in enumerate(folds)
     ]
-    fixed_contexts = [
-        build_context(start, end, cfg.validation_end_date, None)
+    fixed_specs = [
+        (start, end, cfg.validation_end_date, None)
         for start, end in (
             (cfg.signal_start_date, cfg.validation_end_date),
             (cfg.discovery_end_date + timedelta(days=1), cfg.validation_end_date),
         )
     ]
+    all_context_specs = (*context_specs, *fixed_specs)
+    log.info(
+        "Research sequential early policy context build started for %d evaluation periods",
+        len(all_context_specs),
+    )
+    built_contexts: list[dict[str, object]] = []
+    for position, (start, end, available, fold_index) in enumerate(
+        all_context_specs, start=1
+    ):
+        built_contexts.append(build_context(start, end, available, fold_index))
+        elapsed = time.monotonic() - progress_started
+        eta = elapsed / position * (len(all_context_specs) - position)
+        log.info(
+            "Research sequential early policy context progress %d/%d periods; elapsed %s; ETA %s",
+            position,
+            len(all_context_specs),
+            _duration_text(elapsed),
+            _duration_text(eta),
+        )
+    fold_contexts = built_contexts[: len(context_specs)]
+    fixed_contexts = built_contexts[len(context_specs) :]
     best_rank: tuple[object, ...] | None = None
     best = {
         day: {objective: 0 for objective in selections[day]}
         for day in EARLY_CUT_LANDMARK_DAYS
     }
-    for values in __import__("itertools").product(*ranges):
+    combination_count = int(np.prod([len(values) for values in ranges], dtype=np.int64))
+    combination_started = time.monotonic()
+    last_progress_log = combination_started
+    log.info(
+        "Research sequential early policy optimization started with %d prefix combinations",
+        combination_count,
+    )
+    for combination_position, values in enumerate(
+        __import__("itertools").product(*ranges), start=1
+    ):
+        now = time.monotonic()
+        if (
+            now - last_progress_log
+            >= cfg.research_progress_log_interval_seconds
+        ):
+            completed = combination_position - 1
+            elapsed = now - combination_started
+            eta = (
+                elapsed / completed * (combination_count - completed)
+                if completed > 0
+                else None
+            )
+            log.info(
+                "Research sequential early policy progress %d/%d combinations; elapsed %s; ETA %s",
+                completed,
+                combination_count,
+                _duration_text(elapsed),
+                _duration_text(eta),
+            )
+            last_progress_log = now
         lengths = {
             day: {objective: 0 for objective in selections[day]}
             for day in EARLY_CUT_LANDMARK_DAYS
@@ -3306,6 +3874,11 @@ def _choose_sequential_early_prefixes(
         if best_rank is None or rank < best_rank:
             best_rank = rank
             best = lengths
+    log.info(
+        "Research sequential early policy completed %d combinations in %s",
+        combination_count,
+        _duration_text(time.monotonic() - combination_started),
+    )
     return best
 
 
@@ -4916,6 +5489,7 @@ def run_research(
     trading_dates: pd.DatetimeIndex,
     cfg: Config,
 ) -> ResearchResult:
+    research_started = time.monotonic()
     if signals.empty:
         raise RuntimeError("no false-to-true signals were found")
     if not trading_dates.is_monotonic_increasing or not trading_dates.is_unique:
@@ -4935,11 +5509,27 @@ def run_research(
         ).any()
     ):
         raise RuntimeError("early-cut results contain duplicate primary keys")
+    log.info(
+        "Research pipeline started for %d signals and %d position landmarks with up to %d objective worker processes",
+        len(signals),
+        len(early_cuts),
+        cfg.research_max_workers,
+    )
     entry_templates = build_candidate_templates(
         "entry_filter", quantile_count=cfg.quantile_count
     )
+    entry_tasks = tuple(
+        ObjectiveResearchTask(
+            f"entry_filter:{spec.objective}",
+            "entry filter",
+            spec,
+            entry_templates,
+        )
+        for spec in ENTRY_EXCLUSION_SPECS
+    )
+    entry_task_results = _select_objective_tasks(signals, entry_tasks, cfg)
     entry = {
-        spec.objective: select_objective(signals, spec, entry_templates, cfg)
+        spec.objective: entry_task_results[f"entry_filter:{spec.objective}"]
         for spec in ENTRY_EXCLUSION_SPECS
     }
     entry_frame = _period_frame(
@@ -4950,15 +5540,34 @@ def run_research(
         entry,
         cfg,
         require_cross_objective_lift=False,
+        progress_label="entry filter",
     )
-    entry_lengths = _gate_refit_prefixes(signals, entry, entry_lengths, cfg)
+    entry_lengths = _gate_refit_prefixes(
+        signals,
+        entry,
+        entry_lengths,
+        cfg,
+        progress_label="entry filter",
+    )
     confirmation_templates = build_candidate_templates(
         "entry_confirmation", quantile_count=cfg.quantile_count
     )
-    confirmation = {
-        spec.objective: select_objective(
-            signals, spec, confirmation_templates, cfg
+    confirmation_tasks = tuple(
+        ObjectiveResearchTask(
+            f"entry_confirmation:{spec.objective}",
+            "entry confirmation",
+            spec,
+            confirmation_templates,
         )
+        for spec in ENTRY_CONFIRMATION_SPECS
+    )
+    confirmation_task_results = _select_objective_tasks(
+        signals, confirmation_tasks, cfg
+    )
+    confirmation = {
+        spec.objective: confirmation_task_results[
+            f"entry_confirmation:{spec.objective}"
+        ]
         for spec in ENTRY_CONFIRMATION_SPECS
     }
     confirmation_frame = _period_frame(
@@ -4972,18 +5581,39 @@ def run_research(
         confirmation,
         cfg,
         require_cross_objective_lift=False,
+        progress_label="entry confirmation",
     )
     confirmation_lengths = _gate_refit_prefixes(
-        signals, confirmation, confirmation_lengths, cfg
+        signals,
+        confirmation,
+        confirmation_lengths,
+        cfg,
+        progress_label="entry confirmation",
     )
     early: dict[int, dict[str, ObjectiveSelection]] = {}
     early_lengths: dict[int, dict[str, int]] = {}
-    for day in EARLY_CUT_LANDMARK_DAYS:
-        templates = build_candidate_templates(
+    early_templates_by_day = {
+        day: build_candidate_templates(
             "early_cut", day, quantile_count=cfg.quantile_count
         )
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    early_tasks = tuple(
+        ObjectiveResearchTask(
+            f"early_cut:{day}:{spec.objective}",
+            "early cut",
+            spec,
+            early_templates_by_day[day],
+        )
+        for day in EARLY_CUT_LANDMARK_DAYS
+        for spec in early_specs(day)
+    )
+    early_task_results = _select_objective_tasks(early_cuts, early_tasks, cfg)
+    for day in EARLY_CUT_LANDMARK_DAYS:
         selections = {
-            spec.objective: select_objective(early_cuts, spec, templates, cfg)
+            spec.objective: early_task_results[
+                f"early_cut:{day}:{spec.objective}"
+            ]
             for spec in early_specs(day)
         }
         early[day] = selections
@@ -4998,21 +5628,44 @@ def run_research(
             selections,
             cfg,
             require_cross_objective_lift=False,
+            progress_label=f"early cut D+{day}",
         )
         early_lengths[day] = _gate_refit_prefixes(
-            early_cuts, selections, early_lengths[day], cfg
+            early_cuts,
+            selections,
+            early_lengths[day],
+            cfg,
+            progress_label=f"early cut D+{day}",
         )
     early_lengths = _choose_sequential_early_prefixes(
         early_cuts, early, early_lengths, cfg
     )
     early_confirmation: dict[int, dict[str, ObjectiveSelection]] = {}
     early_confirmation_lengths: dict[int, dict[str, int]] = {}
-    for day in EARLY_CUT_LANDMARK_DAYS:
-        templates = build_candidate_templates(
+    early_confirmation_templates_by_day = {
+        day: build_candidate_templates(
             "early_confirmation", day, quantile_count=cfg.quantile_count
         )
+        for day in EARLY_CUT_LANDMARK_DAYS
+    }
+    early_confirmation_tasks = tuple(
+        ObjectiveResearchTask(
+            f"early_confirmation:{day}:{spec.objective}",
+            "early confirmation",
+            spec,
+            early_confirmation_templates_by_day[day],
+        )
+        for day in EARLY_CUT_LANDMARK_DAYS
+        for spec in early_confirmation_specs(day)
+    )
+    early_confirmation_task_results = _select_objective_tasks(
+        early_cuts, early_confirmation_tasks, cfg
+    )
+    for day in EARLY_CUT_LANDMARK_DAYS:
         selections = {
-            spec.objective: select_objective(early_cuts, spec, templates, cfg)
+            spec.objective: early_confirmation_task_results[
+                f"early_confirmation:{day}:{spec.objective}"
+            ]
             for spec in early_confirmation_specs(day)
         }
         early_confirmation[day] = selections
@@ -5027,21 +5680,41 @@ def run_research(
             selections,
             cfg,
             require_cross_objective_lift=False,
+            progress_label=f"early confirmation D+{day}",
         )
         early_confirmation_lengths[day] = _gate_refit_prefixes(
             early_cuts,
             selections,
             early_confirmation_lengths[day],
             cfg,
+            progress_label=f"early confirmation D+{day}",
         )
     management: dict[int, dict[str, ObjectiveSelection]] = {}
     management_lengths: dict[int, dict[str, int]] = {}
-    for day in MANAGEMENT_LANDMARK_DAYS:
-        templates = build_candidate_templates(
+    management_templates_by_day = {
+        day: build_candidate_templates(
             "position_management", day, quantile_count=cfg.quantile_count
         )
+        for day in MANAGEMENT_LANDMARK_DAYS
+    }
+    management_tasks = tuple(
+        ObjectiveResearchTask(
+            f"position_management:{day}:{spec.objective}",
+            "position management",
+            spec,
+            management_templates_by_day[day],
+        )
+        for day in MANAGEMENT_LANDMARK_DAYS
+        for spec in management_specs(day)
+    )
+    management_task_results = _select_objective_tasks(
+        early_cuts, management_tasks, cfg
+    )
+    for day in MANAGEMENT_LANDMARK_DAYS:
         selections = {
-            spec.objective: select_objective(early_cuts, spec, templates, cfg)
+            spec.objective: management_task_results[
+                f"position_management:{day}:{spec.objective}"
+            ]
             for spec in management_specs(day)
         }
         management[day] = selections
@@ -5056,9 +5729,14 @@ def run_research(
             selections,
             cfg,
             require_cross_objective_lift=False,
+            progress_label=f"position management D+{day}",
         )
         management_lengths[day] = _gate_refit_prefixes(
-            early_cuts, selections, management_lengths[day], cfg
+            early_cuts,
+            selections,
+            management_lengths[day],
+            cfg,
+            progress_label=f"position management D+{day}",
         )
     taxonomy_has_data = signals.loc[
         :, CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS
@@ -5079,24 +5757,41 @@ def run_research(
             len(diagnostic_entry_templates),
             len(diagnostic_confirmation_templates),
         )
+        diagnostic_tasks = (
+            *(
+                ObjectiveResearchTask(
+                    f"taxonomy_entry:{spec.objective}",
+                    "taxonomy diagnostics",
+                    spec,
+                    diagnostic_entry_templates,
+                    allow_selection=False,
+                )
+                for spec in ENTRY_EXCLUSION_SPECS
+            ),
+            *(
+                ObjectiveResearchTask(
+                    f"taxonomy_confirmation:{spec.objective}",
+                    "taxonomy diagnostics",
+                    spec,
+                    diagnostic_confirmation_templates,
+                    allow_selection=False,
+                )
+                for spec in ENTRY_CONFIRMATION_SPECS
+            ),
+        )
+        diagnostic_task_results = _select_objective_tasks(
+            signals, diagnostic_tasks, cfg
+        )
         diagnostic_taxonomy_entry = {
-            spec.objective: select_objective(
-                signals,
-                spec,
-                diagnostic_entry_templates,
-                cfg,
-                allow_selection=False,
-            )
+            spec.objective: diagnostic_task_results[
+                f"taxonomy_entry:{spec.objective}"
+            ]
             for spec in ENTRY_EXCLUSION_SPECS
         }
         diagnostic_taxonomy_confirmation = {
-            spec.objective: select_objective(
-                signals,
-                spec,
-                diagnostic_confirmation_templates,
-                cfg,
-                allow_selection=False,
-            )
+            spec.objective: diagnostic_task_results[
+                f"taxonomy_confirmation:{spec.objective}"
+            ]
             for spec in ENTRY_CONFIRMATION_SPECS
         }
     summary = SelectedSummary(
@@ -5113,12 +5808,32 @@ def run_research(
         diagnostic_taxonomy_entry,
         diagnostic_taxonomy_confirmation,
     )
+    postprocess_started = time.monotonic()
+    log.info("Research result materialization started")
     decided_signals = apply_entry_decisions(signals, summary)
+    log.info(
+        "Research result materialization completed entry decisions for %d signals in %s",
+        len(decided_signals),
+        _duration_text(time.monotonic() - postprocess_started),
+    )
     decided_early = apply_early_decisions(early_cuts, summary)
     decided_early = apply_early_confirmation_decisions(decided_early, summary)
     decided_early = apply_management_decisions(decided_early, summary)
+    log.info(
+        "Research result materialization completed position decisions for %d landmarks in %s",
+        len(decided_early),
+        _duration_text(time.monotonic() - postprocess_started),
+    )
+    rules_started = time.monotonic()
+    log.info("Research rule-result materialization started")
     rules = build_rule_results(
         decided_signals, decided_early, trading_dates, summary, cfg
+    )
+    log.info(
+        "Research rule-result materialization completed %d rows in %s; total research elapsed %s",
+        len(rules),
+        _duration_text(time.monotonic() - rules_started),
+        _duration_text(time.monotonic() - research_started),
     )
     return ResearchResult(
         decided_signals,

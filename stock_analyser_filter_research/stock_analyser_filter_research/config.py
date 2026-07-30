@@ -102,6 +102,8 @@ class Config:
     taxonomy_backcast_subcategory_min_members: int
 
     max_workers: int
+    research_max_workers: int
+    research_progress_log_interval_seconds: int
     worker_identity_batch_size: int
     db_fetch_batch_size: int
     db_copy_batch_size: int
@@ -248,6 +250,12 @@ class Config:
                 "TAXONOMY_BACKCAST_SUBCATEGORY_MIN_MEMBERS", 5
             ),
             max_workers=_env_int("MAX_WORKERS", cpu_default),
+            research_max_workers=_env_int(
+                "RESEARCH_MAX_WORKERS", min(3, cpu_default)
+            ),
+            research_progress_log_interval_seconds=_env_int(
+                "RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS", 30
+            ),
             worker_identity_batch_size=_env_int("WORKER_IDENTITY_BATCH_SIZE", 16),
             db_fetch_batch_size=_env_int("DB_FETCH_BATCH_SIZE", 10_000),
             db_copy_batch_size=_env_int("DB_COPY_BATCH_SIZE", 5_000),
@@ -414,6 +422,12 @@ class Config:
             raise ValueError("PERMUTATION_RANDOM_SEED must be >= 0")
         if self.max_workers < 1:
             raise ValueError("MAX_WORKERS must be >= 1")
+        if self.research_max_workers < 1:
+            raise ValueError("RESEARCH_MAX_WORKERS must be >= 1")
+        if self.research_progress_log_interval_seconds < 5:
+            raise ValueError(
+                "RESEARCH_PROGRESS_LOG_INTERVAL_SECONDS must be >= 5"
+            )
         if self.worker_identity_batch_size < 1:
             raise ValueError("WORKER_IDENTITY_BATCH_SIZE must be >= 1")
         if self.db_fetch_batch_size < 1 or self.db_copy_batch_size < 1:
