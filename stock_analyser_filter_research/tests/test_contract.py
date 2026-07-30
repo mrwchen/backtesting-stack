@@ -150,7 +150,7 @@ def test_init_sql_is_the_complete_runtime_contract() -> None:
         in sql_text
     )
     assert "objective_count + protected_count <= sample_count" not in sql_text
-    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'M', 'N'" in sql_text
+    assert "'none', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'K', 'M', 'N'" in sql_text
     assert "'R', 'S', 'T', 'multiple'" in sql_text
     assert "'entry_filter', 'entry_confirmation', 'early_cut'" in sql_text
     assert (

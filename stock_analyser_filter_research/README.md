@@ -85,6 +85,12 @@ Abfolge A -> B -> C -> D.
 - **D – Chartstruktur bis D-1:** Basisbreite, Trendsteigung und R²,
   Trend-Effizienz, Pullback-, Hoch-/Tiefalter, V-Erholung sowie Distribution-,
   Churning- und Failed-Breakout-Tage.
+- **K – kurzfristige Signaltagsstruktur:** Abstand zum vorherigen 26-Wochen-
+  Hoch, bullische und bearische Kerzenkoerperanteile ueber 1/5/10/15/20/30
+  Sessions, daraus abgeleitete signierte Koerperbilanzen, normierte Abstaende
+  zu MA5/MA9/MA21, MA5-zu-MA9 und MA9-zu-MA21 sowie die Breite ueber den drei
+  kurzen SMAs. Die rohen MAs werden zur Nachvollziehbarkeit gespeichert, aber
+  wegen ihrer absoluten Preisskala nicht direkt als Research-Merkmale genutzt.
 - **T – erweiterte Technik:** 42/63/126/252-Tage-Momentum, Volatilitaets-
   Kontraktion, mehrere Basisbreiten, Tight Closes, MA-Steigungen,
   Overhead-Supply, High Tests, steigende Tiefs, Kontraktionsfolgen und
@@ -118,13 +124,23 @@ Abfolge A -> B -> C -> D.
   vollstaendigen Pfad `Industry -> Category` und dem vollstaendigen Pfad
   `Industry -> Category -> Subcategory`.
 
+Damit sind alle neuen, am Signaltag bekannten Stock-Analyser-Spalten
+angebunden. Bewusst nicht als Eingangsmerkmale uebernommen werden nur die zehn
+Upstream-Lookahead-Spalten `forward_15d_*`, `forward_30d_*`, `forward_45d_*`,
+`forward_60d_*` und `forward_90d_*`. Die Research-Anwendung berechnet ihre
+Outcomes selbst aus dem nachfolgenden OHLC-Pfad und verhindert so, dass Labels
+versehentlich als Features verwendet werden.
+
 Die atomare Quantilsuche prueft fuer jedes numerische Merkmal die unteren und
-oberen Tails. Zusaetzlich werden 31 fachlich vorab definierte Faktorenpaare in
+oberen Tails. `rs_universe_size` wird nur als Abdeckungsdiagnostik gespeichert
+und nicht als Aktienmerkmal getestet. Zusaetzlich werden 37 fachlich vorab
+definierte Faktorenpaare in
 allen vier Tail-Kombinationen mit `AND` untersucht, unter anderem Market Cap ×
 ATR, Market Cap × Volume/Notional, Kompression × Dry-up, Wachstum × RS,
 Earnings-Naehe × Gap/Volume, Marktbreite × Leadership sowie fuer jedes der
 sechs aktivitaetsabhaengigen Muster der klassische Volume-Score × sein
-Notional-Gegenstueck.
+Notional-Gegenstueck. Sechs dieser Paare verknuepfen die neue kurzfristige
+Struktur vorab begrenzt mit Hochnaehe, Aktivitaet und Marktbreite.
 
 Darueber hinaus untersucht die Entry-Ausschluss- und Entry-Bestaetigungssuche
 ein grosses, aber weiterhin vorab begrenztes Interaktionsgitter aus acht
@@ -132,7 +148,7 @@ Merkmalen: Signaltagsreturn, Intraday-Return von Open bis Close, logarithmische
 Market Cap in USD, vorherige ATR/14D, Signaltagsgap, Close-Position innerhalb
 der Signaltagskerze, Volume/21D und Notional/21D. Fuer alle Merkmalsmengen der
 Groesse zwei und drei werden saemtliche Kombinationen aus unterem 20-%- und
-oberem 20-%-Tail als strikte `AND`-Regeln geprueft. Bereits in den 31
+oberem 20-%-Tail als strikte `AND`-Regeln geprueft. Bereits in den 37
 Faktorenpaaren vorhandene Zweierregeln werden nicht doppelt erzeugt. Das Gitter
 enthaelt damit insgesamt 112 Zweier-Tail- und 448 Dreier-Tail-Kandidaten je
 Entry-Entscheidungsfamilie.
@@ -388,7 +404,8 @@ einzumischen.
 Das Init-SQL besitzt ausschliesslich drei serviceeigene Ergebnistabellen:
 
 - `stock_analyser_filter_research_signal_results`: Signale, alle Entry-
-  Merkmale einschliesslich der 105 expliziten Pattern-Score-Spalten (64 mit
+  Merkmale einschliesslich der kurzfristigen Stock-Analyser-Struktur und der
+  105 expliziten Pattern-Score-Spalten (64 mit
   klassischem Volume und 41 getrennte Notional-Varianten), drei
   aktuellen Taxonomiebezeichnungen und 90 diagnostischen Gruppenmerkmalen,
   Outcomes sowie Ausschluss und Bestaetigung.

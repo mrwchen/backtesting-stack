@@ -17,6 +17,8 @@ from stock_analyser_filter_research.computation import (
     _soft_pattern_window_scores,
 )
 from stock_analyser_filter_research.contracts import (
+    CANDLE_BODY_SOURCE_COLUMNS,
+    CANDLE_BODY_WINDOWS,
     CRITERION_COLUMNS,
     CURRENT_TAXONOMY_BACKCAST_GROUP_CONTEXT_COLUMNS,
     CURRENT_TAXONOMY_BACKCAST_MEMBER_RANK_COLUMNS,
@@ -24,6 +26,7 @@ from stock_analyser_filter_research.contracts import (
     EARLY_CUT_COLUMNS,
     EARLY_CUT_FEATURE_GROUPS,
     SIGNAL_COLUMNS,
+    SHORT_TERM_STRUCTURE_FEATURE_COLUMNS,
     SOFT_PATTERN_FEATURE_COLUMNS,
 )
 
@@ -58,14 +61,19 @@ def _source_frame(dates: pd.DatetimeIndex) -> pd.DataFrame:
             "daily_traded_notional_sma50_prior_usd": 95_000.0,
             "daily_traded_notional_vs_sma50_prior_ratio": (close * volume / 95_000.0),
             "dollar_volume_63d": 1_000_000.0,
+            "ma5": close - 0.5,
+            "ma9": close - 1.0,
+            "ma21": close - 1.5,
             "ma50": close - 2.0,
             "ma150": close - 4.0,
             "ma200": close - 6.0,
             "ma200_21_sessions_ago": close - 7.0,
             "low_52w": close / 1.5,
             "high_52w": close / 0.8,
+            "close_vs_prior_26w_high_pct": -2.0,
             "rs_raw": 1.5,
             "rs_rating": 80.0,
+            "rs_universe_size": 1_000,
             # These upstream forward columns must not determine D1-D5 labels.
             "forward_5d_max_gain_pct": 3.0,
             "forward_5d_max_loss_pct": -2.0,
@@ -76,6 +84,9 @@ def _source_frame(dates: pd.DatetimeIndex) -> pd.DataFrame:
             "trend_template_pass": False,
         }
     )
+    for window in CANDLE_BODY_WINDOWS:
+        frame[f"bullish_candle_body_pct_{window}d"] = 60.0
+        frame[f"bearish_candle_body_pct_{window}d"] = 40.0
     for criterion in CRITERION_COLUMNS:
         frame[criterion] = False
     return frame
@@ -682,6 +693,53 @@ def test_future_prices_change_labels_but_not_entry_features(cfg_factory) -> None
         check_dtype=False,
     )
     assert baseline["gain_loss_order_5d"] != changed["gain_loss_order_5d"]
+
+
+def test_short_term_stock_analyser_features_are_normalized_and_causal(
+    cfg_factory,
+) -> None:
+    dates = pd.date_range("2022-06-01", periods=50, freq="D")
+    position = 30
+    source = _source_frame(dates)
+    signal_index = source.index[position]
+    _set_pass(source, position)
+    source.loc[signal_index, ["adjusted_close", "raw_close"]] = 125.0
+    source.loc[signal_index, ["ma5", "ma9", "ma21"]] = [100.0, 110.0, 120.0]
+    source.loc[signal_index, "close_vs_prior_26w_high_pct"] = -3.5
+    source.loc[signal_index, "bullish_candle_body_pct_1d"] = 70.0
+    source.loc[signal_index, "bearish_candle_body_pct_1d"] = np.nan
+    source.loc[signal_index, "bullish_candle_body_pct_5d"] = 60.0
+    source.loc[signal_index, "bearish_candle_body_pct_5d"] = np.nan
+    source.loc[signal_index, "bullish_candle_body_pct_10d"] = 20.0
+    source.loc[signal_index, "bearish_candle_body_pct_10d"] = 55.0
+
+    baseline = calculate_identity_signals(source, dates, cfg_factory()).iloc[0]
+
+    assert baseline["rs_universe_size"] == 1_000
+    assert baseline["close_vs_prior_26w_high_pct"] == pytest.approx(-3.5)
+    assert baseline["signed_candle_body_pct_1d"] == pytest.approx(70.0)
+    assert baseline["candle_body_balance_pct_5d"] == pytest.approx(60.0)
+    assert baseline["candle_body_balance_pct_10d"] == pytest.approx(-35.0)
+    assert baseline["distance_to_ma5_pct"] == pytest.approx(25.0)
+    assert baseline["distance_to_ma9_pct"] == pytest.approx((125 / 110 - 1) * 100)
+    assert baseline["distance_to_ma21_pct"] == pytest.approx((125 / 120 - 1) * 100)
+    assert baseline["ma5_vs_ma9_pct"] == pytest.approx((100 / 110 - 1) * 100)
+    assert baseline["ma9_vs_ma21_pct"] == pytest.approx((110 / 120 - 1) * 100)
+    assert baseline["short_sma_breadth"] == pytest.approx(1.0)
+
+    mutated = source.copy()
+    future_rows = mutated.index[position + 1 :]
+    mutated.loc[future_rows, ["ma5", "ma9", "ma21"]] = 1_000_000.0
+    mutated.loc[future_rows, "close_vs_prior_26w_high_pct"] = -99.0
+    mutated.loc[future_rows, list(CANDLE_BODY_SOURCE_COLUMNS)] = 0.0
+    changed = calculate_identity_signals(mutated, dates, cfg_factory()).iloc[0]
+
+    pd.testing.assert_series_equal(
+        baseline[list(SHORT_TERM_STRUCTURE_FEATURE_COLUMNS)],
+        changed[list(SHORT_TERM_STRUCTURE_FEATURE_COLUMNS)],
+        check_names=False,
+        check_dtype=False,
+    )
 
 
 def test_analysis_splits_use_label_end_and_holdout_starts_after_cutoff(

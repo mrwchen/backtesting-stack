@@ -1528,6 +1528,15 @@ def _interaction_pattern_templates(prefix: str) -> tuple[PatternTemplate, ...]:
         ("market_vix_to_vix3m_ratio", "prior_base_width_20_pct"),
         ("relative_return_vs_spy_63d_pct_points", "adjusted_volume_vs_sma21_prior_ratio"),
         ("signal_turnover_ratio", "signal_close_location_value"),
+        ("close_vs_prior_26w_high_pct", "signed_candle_body_pct_1d"),
+        ("close_vs_prior_26w_high_pct", "candle_body_balance_pct_20d"),
+        ("signed_candle_body_pct_1d", "adjusted_volume_vs_sma21_prior_ratio"),
+        (
+            "signed_candle_body_pct_1d",
+            "daily_traded_notional_vs_sma21_prior_ratio",
+        ),
+        ("candle_body_balance_pct_20d", "distance_to_ma21_pct"),
+        ("short_sma_breadth", "market_breadth_above_ma50_ratio"),
         *activity_score_pairs,
     )
     templates: list[PatternTemplate] = []

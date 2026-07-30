@@ -115,6 +115,9 @@ def _source_column_contracts() -> dict[str, ColumnContract]:
     _add_column_contracts(
         contracts, ("price_continuity_segment",), "int4", nullable=False
     )
+    _add_column_contracts(
+        contracts, ("rs_universe_size",), "int4", nullable=False
+    )
     _add_column_contracts(contracts, ("adjusted_volume",), "int8", nullable=True)
     _add_column_contracts(contracts, ("rs_rating",), "int2", nullable=True)
     _add_column_contracts(contracts, SOURCE_BOOLEAN_COLUMNS, "bool", nullable=False)
@@ -455,6 +458,9 @@ def _signal_column_contracts() -> dict[str, ColumnContract]:
     _add_column_contracts(contracts, ("cik",), "int8", nullable=False)
     _add_column_contracts(
         contracts, ("price_continuity_segment",), "int4", nullable=False
+    )
+    _add_column_contracts(
+        contracts, ("rs_universe_size",), "int4", nullable=False
     )
     _add_column_contracts(
         contracts,

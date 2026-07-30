@@ -17,6 +17,39 @@ CRITERION_COLUMNS = (
     "crit_rs_rating",
 )
 
+SHORT_MA_SOURCE_COLUMNS = ("ma5", "ma9", "ma21")
+CANDLE_BODY_WINDOWS = (1, 5, 10, 15, 20, 30)
+CANDLE_BODY_SOURCE_COLUMNS = tuple(
+    f"{direction}_candle_body_pct_{window}d"
+    for window in CANDLE_BODY_WINDOWS
+    for direction in ("bullish", "bearish")
+)
+CANDLE_BODY_DERIVED_FEATURE_COLUMNS = (
+    "signed_candle_body_pct_1d",
+    *(
+        f"candle_body_balance_pct_{window}d"
+        for window in CANDLE_BODY_WINDOWS
+        if window != 1
+    ),
+)
+SHORT_MA_DERIVED_FEATURE_COLUMNS = (
+    "distance_to_ma5_pct",
+    "distance_to_ma9_pct",
+    "distance_to_ma21_pct",
+    "ma5_vs_ma9_pct",
+    "ma9_vs_ma21_pct",
+    "short_sma_breadth",
+)
+SHORT_TERM_DERIVED_FEATURE_COLUMNS = (
+    *CANDLE_BODY_DERIVED_FEATURE_COLUMNS,
+    *SHORT_MA_DERIVED_FEATURE_COLUMNS,
+)
+SHORT_TERM_STRUCTURE_FEATURE_COLUMNS = (
+    "close_vs_prior_26w_high_pct",
+    *CANDLE_BODY_SOURCE_COLUMNS,
+    *SHORT_TERM_DERIVED_FEATURE_COLUMNS,
+)
+
 SOURCE_COLUMNS = (
     "period_end_date",
     *IDENTITY_COLUMNS,
@@ -38,14 +71,18 @@ SOURCE_COLUMNS = (
     "daily_traded_notional_sma50_prior_usd",
     "daily_traded_notional_vs_sma50_prior_ratio",
     "dollar_volume_63d",
+    *SHORT_MA_SOURCE_COLUMNS,
     "ma50",
     "ma150",
     "ma200",
     "ma200_21_sessions_ago",
     "low_52w",
     "high_52w",
+    "close_vs_prior_26w_high_pct",
+    *CANDLE_BODY_SOURCE_COLUMNS,
     "rs_raw",
     "rs_rating",
+    "rs_universe_size",
     "forward_5d_max_gain_pct",
     "forward_5d_max_loss_pct",
     "forward_10d_max_gain_pct",
@@ -608,14 +645,19 @@ SIGNAL_COLUMNS = (
     "daily_traded_notional_vs_sma50_prior_ratio",
     "daily_traded_notional_vs_sma100_prior_ratio",
     "dollar_volume_63d",
+    *SHORT_MA_SOURCE_COLUMNS,
     "ma50",
     "ma150",
     "ma200",
     "ma200_21_sessions_ago",
     "low_52w",
     "high_52w",
+    "close_vs_prior_26w_high_pct",
+    *CANDLE_BODY_SOURCE_COLUMNS,
     "rs_raw",
     "rs_rating",
+    "rs_universe_size",
+    *SHORT_TERM_DERIVED_FEATURE_COLUMNS,
     "trigger_criteria",
     "trigger_count",
     "previous_criteria_pass_count",
@@ -1022,6 +1064,7 @@ ENTRY_FEATURE_GROUPS = {
         "prior_churning_day_count_20",
         "prior_failed_breakout_count_20",
     ),
+    "K": SHORT_TERM_STRUCTURE_FEATURE_COLUMNS,
     "T": TECHNICAL_V3_FEATURE_COLUMNS,
     "P": SOFT_PATTERN_FEATURE_COLUMNS,
     "S": SUPPLY_DEMAND_FEATURE_COLUMNS,
@@ -1102,6 +1145,7 @@ SOURCE_INTEGER_COLUMNS = (
     "price_continuity_segment",
     "adjusted_volume",
     "rs_rating",
+    "rs_universe_size",
 )
 
 SIGNAL_BOOLEAN_COLUMNS = (
@@ -1133,6 +1177,7 @@ SIGNAL_INTEGER_COLUMNS = (
     "price_continuity_segment",
     "adjusted_volume",
     "rs_rating",
+    "rs_universe_size",
     "trigger_count",
     "previous_criteria_pass_count",
     "prior_7_of_8_count_10d",

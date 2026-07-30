@@ -21,6 +21,7 @@ from stock_analyser_filter_research.contracts import (
     SIGNAL_BOOLEAN_COLUMNS,
     SIGNAL_COLUMNS,
     SIGNAL_INTEGER_COLUMNS,
+    SOURCE_COLUMNS,
     WORLD_MARKET_SOURCE_COLUMNS,
 )
 
@@ -205,7 +206,20 @@ def test_copy_stream_reports_failing_positional_batch(monkeypatch) -> None:
 def test_database_column_contracts_cover_every_written_column(
     monkeypatch,
 ) -> None:
+    assert set(db.SOURCE_COLUMN_CONTRACTS) == set(SOURCE_COLUMNS)
     assert set(db.SIGNAL_COLUMN_CONTRACTS) == set(SIGNAL_COLUMNS)
+    assert db.SOURCE_COLUMN_CONTRACTS["rs_universe_size"] == (
+        "int4",
+        False,
+        None,
+        None,
+    )
+    assert db.SIGNAL_COLUMN_CONTRACTS["rs_universe_size"] == (
+        "int4",
+        False,
+        None,
+        None,
+    )
     assert set(db.FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMN_CONTRACTS) == set(
         FUNDAMENTAL_SNAPSHOT_SOURCE_COLUMNS
     )

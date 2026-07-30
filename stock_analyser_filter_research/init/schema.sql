@@ -54,14 +54,44 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     daily_traded_notional_vs_sma50_prior_ratio   NUMERIC(30,8),
     daily_traded_notional_vs_sma100_prior_ratio  NUMERIC(30,8),
     dollar_volume_63d                            NUMERIC(30,8),
+    ma5                                          NUMERIC(20,8),
+    ma9                                          NUMERIC(20,8),
+    ma21                                         NUMERIC(20,8),
     ma50                                         NUMERIC(20,8),
     ma150                                        NUMERIC(20,8),
     ma200                                        NUMERIC(20,8),
     ma200_21_sessions_ago                        NUMERIC(20,8),
     low_52w                                      NUMERIC(20,8),
     high_52w                                     NUMERIC(20,8),
+    close_vs_prior_26w_high_pct                  NUMERIC(20,8),
+    bullish_candle_body_pct_1d                   NUMERIC(20,8),
+    bearish_candle_body_pct_1d                   NUMERIC(20,8),
+    bullish_candle_body_pct_5d                   NUMERIC(20,8),
+    bearish_candle_body_pct_5d                   NUMERIC(20,8),
+    bullish_candle_body_pct_10d                  NUMERIC(20,8),
+    bearish_candle_body_pct_10d                  NUMERIC(20,8),
+    bullish_candle_body_pct_15d                  NUMERIC(20,8),
+    bearish_candle_body_pct_15d                  NUMERIC(20,8),
+    bullish_candle_body_pct_20d                  NUMERIC(20,8),
+    bearish_candle_body_pct_20d                  NUMERIC(20,8),
+    bullish_candle_body_pct_30d                  NUMERIC(20,8),
+    bearish_candle_body_pct_30d                  NUMERIC(20,8),
     rs_raw                                       NUMERIC(24,10),
     rs_rating                                    SMALLINT,
+    rs_universe_size                             INTEGER NOT NULL,
+
+    signed_candle_body_pct_1d                    NUMERIC(20,8),
+    candle_body_balance_pct_5d                   NUMERIC(20,8),
+    candle_body_balance_pct_10d                  NUMERIC(20,8),
+    candle_body_balance_pct_15d                  NUMERIC(20,8),
+    candle_body_balance_pct_20d                  NUMERIC(20,8),
+    candle_body_balance_pct_30d                  NUMERIC(20,8),
+    distance_to_ma5_pct                          NUMERIC(20,8),
+    distance_to_ma9_pct                          NUMERIC(20,8),
+    distance_to_ma21_pct                         NUMERIC(20,8),
+    ma5_vs_ma9_pct                               NUMERIC(20,8),
+    ma9_vs_ma21_pct                              NUMERIC(20,8),
+    short_sma_breadth                            NUMERIC(20,8),
 
     trigger_criteria                             TEXT NOT NULL,
     trigger_count                                SMALLINT NOT NULL,
@@ -550,6 +580,26 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
     CHECK (price_continuity_segment > 0),
     CHECK (currency = 'USD'),
     CHECK (rs_rating IS NULL OR rs_rating BETWEEN 1 AND 99),
+    CHECK (rs_universe_size >= 0),
+    CHECK (bullish_candle_body_pct_1d IS NULL OR bullish_candle_body_pct_1d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_1d IS NULL OR bearish_candle_body_pct_1d BETWEEN 0 AND 100),
+    CHECK (bullish_candle_body_pct_5d IS NULL OR bullish_candle_body_pct_5d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_5d IS NULL OR bearish_candle_body_pct_5d BETWEEN 0 AND 100),
+    CHECK (bullish_candle_body_pct_10d IS NULL OR bullish_candle_body_pct_10d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_10d IS NULL OR bearish_candle_body_pct_10d BETWEEN 0 AND 100),
+    CHECK (bullish_candle_body_pct_15d IS NULL OR bullish_candle_body_pct_15d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_15d IS NULL OR bearish_candle_body_pct_15d BETWEEN 0 AND 100),
+    CHECK (bullish_candle_body_pct_20d IS NULL OR bullish_candle_body_pct_20d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_20d IS NULL OR bearish_candle_body_pct_20d BETWEEN 0 AND 100),
+    CHECK (bullish_candle_body_pct_30d IS NULL OR bullish_candle_body_pct_30d BETWEEN 0 AND 100),
+    CHECK (bearish_candle_body_pct_30d IS NULL OR bearish_candle_body_pct_30d BETWEEN 0 AND 100),
+    CHECK (signed_candle_body_pct_1d IS NULL OR signed_candle_body_pct_1d BETWEEN -100 AND 100),
+    CHECK (candle_body_balance_pct_5d IS NULL OR candle_body_balance_pct_5d BETWEEN -100 AND 100),
+    CHECK (candle_body_balance_pct_10d IS NULL OR candle_body_balance_pct_10d BETWEEN -100 AND 100),
+    CHECK (candle_body_balance_pct_15d IS NULL OR candle_body_balance_pct_15d BETWEEN -100 AND 100),
+    CHECK (candle_body_balance_pct_20d IS NULL OR candle_body_balance_pct_20d BETWEEN -100 AND 100),
+    CHECK (candle_body_balance_pct_30d IS NULL OR candle_body_balance_pct_30d BETWEEN -100 AND 100),
+    CHECK (short_sma_breadth IS NULL OR short_sma_breadth BETWEEN 0 AND 1),
     CHECK (trigger_count BETWEEN 1 AND 8),
     CHECK (previous_criteria_pass_count BETWEEN 0 AND 7),
     CHECK (prior_7_of_8_count_10d IS NULL OR prior_7_of_8_count_10d BETWEEN 0 AND 10),
@@ -900,6 +950,13 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_signal_results (
         (NOT strong_confirmation AND confirmation_reason IS NULL)
     )
 );
+
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.rs_universe_size IS
+    'Coverage diagnostic from stock_analyser; never an entry candidate feature.';
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.signed_candle_body_pct_1d IS
+    'Bullish minus bearish one-session candle-body percentage at the signal close.';
+COMMENT ON COLUMN stock_analyser_filter_research_signal_results.short_sma_breadth IS
+    'Fraction of MA5, MA9 and MA21 below the signal close; NULL unless all inputs exist.';
 
 SELECT create_hypertable(
     'stock_analyser_filter_research_signal_results',
@@ -1554,7 +1611,7 @@ CREATE TABLE IF NOT EXISTS stock_analyser_filter_research_rule_results (
     ),
     CHECK (
         feature_group IN (
-            'none', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'M', 'N', 'P',
+            'none', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'K', 'M', 'N', 'P',
             'R', 'S', 'T', 'multiple'
         )
     ),

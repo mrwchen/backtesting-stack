@@ -11,6 +11,8 @@ import pandas as pd
 
 from .config import Config
 from .contracts import (
+    CANDLE_BODY_SOURCE_COLUMNS,
+    CANDLE_BODY_WINDOWS,
     CRITERION_COLUMNS,
     CURRENT_TAXONOMY_BACKCAST_CHANGE_COLUMNS,
     CURRENT_TAXONOMY_BACKCAST_FEATURE_COLUMNS,
@@ -43,6 +45,7 @@ from .contracts import (
     SIGNAL_COLUMNS,
     SIGNAL_BOOLEAN_COLUMNS,
     SIGNAL_INTEGER_COLUMNS,
+    SHORT_MA_SOURCE_COLUMNS,
     SOFT_PATTERN_FEATURE_COLUMNS,
     SOFT_PATTERN_SPECS,
     SUPPLY_DEMAND_FEATURE_COLUMNS,
@@ -2903,6 +2906,38 @@ def calculate_identity_signals(
     ma200_prior = _numeric(indexed["ma200_21_sessions_ago"])
     low52 = _numeric(indexed["low_52w"])
     high52 = _numeric(indexed["high_52w"])
+    ma5 = _numeric(indexed["ma5"])
+    ma9 = _numeric(indexed["ma9"])
+    ma21 = _numeric(indexed["ma21"])
+    bullish_body = {
+        window: _numeric(indexed[f"bullish_candle_body_pct_{window}d"])
+        for window in CANDLE_BODY_WINDOWS
+    }
+    bearish_body = {
+        window: _numeric(indexed[f"bearish_candle_body_pct_{window}d"])
+        for window in CANDLE_BODY_WINDOWS
+    }
+    signed_candle_body1 = (
+        bullish_body[1].fillna(0.0) - bearish_body[1].fillna(0.0)
+    ).where(bullish_body[1].notna() | bearish_body[1].notna())
+    candle_body_balance = {
+        window: (
+            bullish_body[window].fillna(0.0)
+            - bearish_body[window].fillna(0.0)
+        ).where(
+            bullish_body[window].notna() | bearish_body[window].notna()
+        )
+        for window in CANDLE_BODY_WINDOWS
+        if window != 1
+    }
+    short_sma_available = (
+        close.notna() & ma5.notna() & ma9.notna() & ma21.notna()
+    )
+    short_sma_breadth = (
+        close.gt(ma5).astype(float)
+        + close.gt(ma9).astype(float)
+        + close.gt(ma21).astype(float)
+    ).div(3.0).where(short_sma_available)
 
     prior_return5 = _prior_return(close, segment, 5)
     prior_return10 = _prior_return(close, segment, 10)
@@ -3089,6 +3124,17 @@ def calculate_identity_signals(
         "previous_criteria_pass_count": previous_criteria_count,
         "prior_7_of_8_count_10d": prior_seven_count,
         "sessions_since_previous_pass": sessions_since_previous_pass,
+        "signed_candle_body_pct_1d": signed_candle_body1,
+        **{
+            f"candle_body_balance_pct_{window}d": values
+            for window, values in candle_body_balance.items()
+        },
+        "distance_to_ma5_pct": _pct_ratio(close, ma5),
+        "distance_to_ma9_pct": _pct_ratio(close, ma9),
+        "distance_to_ma21_pct": _pct_ratio(close, ma21),
+        "ma5_vs_ma9_pct": _pct_ratio(ma5, ma9),
+        "ma9_vs_ma21_pct": _pct_ratio(ma9, ma21),
+        "short_sma_breadth": short_sma_breadth,
         "distance_to_ma50_pct": _pct_ratio(close, ma50),
         "distance_to_ma150_pct": _pct_ratio(close, ma150),
         "distance_to_ma200_pct": _pct_ratio(close, ma200),
@@ -3228,14 +3274,18 @@ def calculate_identity_signals(
             "daily_traded_notional_sma50_prior_usd",
             "daily_traded_notional_vs_sma50_prior_ratio",
             "dollar_volume_63d",
+            *SHORT_MA_SOURCE_COLUMNS,
             "ma50",
             "ma150",
             "ma200",
             "ma200_21_sessions_ago",
             "low_52w",
             "high_52w",
+            "close_vs_prior_26w_high_pct",
+            *CANDLE_BODY_SOURCE_COLUMNS,
             "rs_raw",
             "rs_rating",
+            "rs_universe_size",
             "forward_5d_max_gain_pct",
             "forward_5d_max_loss_pct",
             "forward_10d_max_gain_pct",

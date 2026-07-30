@@ -14,6 +14,7 @@ from stock_analyser_filter_research.contracts import (
     NOTIONAL_SOFT_PATTERN_SPECS,
     RULE_COLUMNS,
     SIGNAL_COLUMNS,
+    SHORT_TERM_STRUCTURE_FEATURE_COLUMNS,
 )
 from stock_analyser_filter_research.research import (
     ABSOLUTE_CAP_CONTEXT_FEATURES,
@@ -370,6 +371,9 @@ def test_quantile_count_controls_template_grid() -> None:
         and item.operator == "ge"
         for item in atomic
     )
+    assert set(SHORT_TERM_STRUCTURE_FEATURE_COLUMNS) <= {
+        item.feature_name for item in atomic if item.feature_group == "K"
+    }
     expected_original_patterns = {
         "flat_base",
         "ordered_uptrend",
@@ -477,6 +481,34 @@ def test_volume_and_notional_soft_patterns_have_atomic_and_pair_candidates() -> 
                     f"{volume_feature}_{left_operator}_"
                     f"{notional_feature}_{right_operator}"
                 ) in interaction_names
+
+
+def test_short_term_structure_interactions_are_bounded_and_complete() -> None:
+    templates = build_candidate_templates("entry_filter", quantile_count=10)
+    interaction_names = {
+        item.pattern_name
+        for item in templates
+        if isinstance(item, PatternTemplate) and item.feature_group == "I"
+    }
+    pairs = (
+        ("close_vs_prior_26w_high_pct", "signed_candle_body_pct_1d"),
+        ("close_vs_prior_26w_high_pct", "candle_body_balance_pct_20d"),
+        ("signed_candle_body_pct_1d", "adjusted_volume_vs_sma21_prior_ratio"),
+        (
+            "signed_candle_body_pct_1d",
+            "daily_traded_notional_vs_sma21_prior_ratio",
+        ),
+        ("candle_body_balance_pct_20d", "distance_to_ma21_pct"),
+        ("short_sma_breadth", "market_breadth_above_ma50_ratio"),
+    )
+
+    for left, right in pairs:
+        for left_operator in ("le", "ge"):
+            for right_operator in ("le", "ge"):
+                assert (
+                    f"{left}_{left_operator}_{right}_{right_operator}"
+                    in interaction_names
+                )
 
 
 def test_broad_entry_interaction_grid_is_complete_unique_and_strict() -> None:
